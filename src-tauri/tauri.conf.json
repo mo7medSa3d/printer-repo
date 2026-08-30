@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Odoo Print Manager",
+  "version": "1.0.0",
+  "identifier": "com.odoo.printmanager",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run desktop:vite:build",
+    "frontendDist": "../dist-desktop"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Odoo Print Manager",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": {
+      "../agent/OdooPrintAgent.exe": "resources/OdooPrintAgent.exe",
+      "../agent/odoo-agent-cli.exe": "resources/odoo-agent-cli.exe"
+    },
+    "windows": {
+      "nsis": {
+        "template": "nsis",
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  },
+  "plugins": {
+    "store": {},
+    "shell": {
+      "scope": [
+        {
+          "name": "run-agent-cli",
+          "cmd": "odoo-agent-cli",
+          "args": true
+        },
+        {
+          "name": "run-agent-service",
+          "cmd": "OdooPrintAgent",
+          "args": true
+        }
+      ]
+    }
+  }
+}

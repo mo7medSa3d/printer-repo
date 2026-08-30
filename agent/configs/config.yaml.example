@@ -1,0 +1,20 @@
+server:
+  url: "https://your-odoo-server.com"
+
+agent:
+  id: ""
+  secret: ""
+  name: "Main Office Agent"
+
+printers:
+  - id: "printer_kitchen"
+    name: "Kitchen Printer"
+    type: "network"
+    endpoint: "192.168.1.50:9100"
+    protocol: "escpos"
+  
+  - id: "printer_receipt"
+    name: "Front Desk Printer"
+    type: "usb"
+    endpoint: "USB001"
+    protocol: "raw"
