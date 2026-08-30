@@ -24,10 +24,12 @@ fn main() {
         .setup(|app| {
             logging::info("application setup started");
 
+            // Tauri's setup closure expects Box<dyn Error>; std::io::Error
+            // converts cleanly (String does not).
             paths::ensure_runtime_dirs().map_err(|e| {
                 let msg = format!("unable to create runtime dirs: {e}");
                 logging::error(&msg);
-                msg
+                std::io::Error::other(msg)
             })?;
             logging::info(&format!(
                 "runtime dirs: manager={}, agent={}",
