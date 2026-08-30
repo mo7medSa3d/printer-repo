@@ -58,7 +58,9 @@ func dpapi(proc *syscall.LazyProc, data []byte, flags uintptr) ([]byte, error) {
 		uintptr(unsafe.Pointer(&outBlob)), // pDataOut
 	)
 	if r == 0 {
-		if callErr != 0 {
+		// LazyProc.Call reports the OS error as an error interface value;
+		// it is non-nil only when the API set the last error.
+		if callErr != nil {
 			return nil, fmt.Errorf("DPAPI call failed: %w", callErr)
 		}
 		return nil, errors.New("DPAPI call failed")
