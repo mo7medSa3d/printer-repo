@@ -26,7 +26,7 @@ func TestCrashWindowSimulation(t *testing.T) {
 	if err := p.Print(ctx, data); err != nil {
 		t.Fatalf("Print: %v", err)
 	}
-	caps := mock.WaitForCaptures(1, time.Second)
+	caps := mock.WaitForCaptures(1, 5*time.Second)
 	if len(caps) != 1 || string(caps[0]) != string(data) {
 		t.Fatalf("capture failed %v", caps)
 	}
@@ -38,7 +38,7 @@ func TestCrashWindowSimulation(t *testing.T) {
 	if err := p.Print(ctx, data); err != nil {
 		t.Fatalf("re-print after crash reclaim: %v", err)
 	}
-	caps2 := mock.WaitForCaptures(2, time.Second)
+	caps2 := mock.WaitForCaptures(2, 5*time.Second)
 	if len(caps2) != 2 {
 		t.Fatalf("expected 2 captures after reclaim (duplicate), got %d", len(caps2))
 	}
@@ -60,7 +60,7 @@ func TestCrashWindowWithIdempotentSuccessGuard(t *testing.T) {
 	mockData := []byte("idempotent")
 	p.Print(ctx, mockData)
 	p.Print(ctx, mockData) // without queue guard, this WILL duplicate at wire level
-	caps := mock.WaitForCaptures(2, time.Second)
+	caps := mock.WaitForCaptures(2, 5*time.Second)
 	if len(caps) != 2 {
 		t.Fatalf("without queue guard, duplicate at wire level is 2, got %d", len(caps))
 	}

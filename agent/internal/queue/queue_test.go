@@ -64,9 +64,14 @@ func TestQueueIdempotencyAndStatus(t *testing.T) {
 
 func TestQueueUpdateWithError(t *testing.T) {
 	dir := t.TempDir()
-	q, _ := New(filepath.Join(dir, "x.db"))
+	q, err := New(filepath.Join(dir, "x.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	defer q.Close()
-	q.Push("j1", "p1", []byte("data"))
+	if err := q.Push("j1", "p1", []byte("data")); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
 	if err := q.UpdateStatusWithError("j1", "failed", "dial timeout"); err != nil {
 		t.Fatalf("UpdateStatusWithError: %v", err)
 	}

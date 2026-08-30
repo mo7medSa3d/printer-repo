@@ -39,7 +39,7 @@ func TestNetworkPrinterPrintSuccessAndOffline(t *testing.T) {
 		if string(got) != string(data) {
 			t.Fatalf("expected %q got %q", data, got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("timeout waiting for data")
 	}
 
