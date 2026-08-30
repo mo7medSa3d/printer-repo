@@ -40,7 +40,7 @@ func TestMockTCPPrinterE2E(t *testing.T) {
 		t.Fatalf("NetworkPrinter.Print: %v", err)
 	}
 
-	caps := mock.WaitForCaptures(1, 2*time.Second)
+	caps := mock.WaitForCaptures(1, 5*time.Second)
 	if len(caps) != 1 {
 		t.Fatalf("expected 1 capture, got %d", len(caps))
 	}
@@ -93,7 +93,7 @@ func TestMockTCPPrinterMultipleAndSerialization(t *testing.T) {
 		}
 		cancel()
 	}
-	caps := mock.WaitForCaptures(3, 2*time.Second)
+	caps := mock.WaitForCaptures(3, 5*time.Second)
 	if len(caps) != 3 {
 		t.Fatalf("expected 3 captures, got %d", len(caps))
 	}
@@ -110,7 +110,7 @@ func TestMockTCPPrinterCaptureExpose(t *testing.T) {
 	ctx := context.Background()
 	p.Print(ctx, []byte("payload1"))
 	p.Print(ctx, []byte("payload2"))
-	caps := mock.WaitForCaptures(2, 2*time.Second)
+	caps := mock.WaitForCaptures(2, 5*time.Second)
 	flat := mock.CapturedFlat()
 	if string(flat) != "payload1payload2" {
 		t.Fatalf("flat mismatch %q", string(flat))

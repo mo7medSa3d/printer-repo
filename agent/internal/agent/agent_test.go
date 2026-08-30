@@ -12,15 +12,37 @@ import (
 
 // fakePrinter for isolation tests
 type fakePrinter struct {
-	mu       sync.Mutex
-	calls    int
-	sleep    time.Duration
+	mu        sync.Mutex
+	calls     int
+	sleep     time.Duration
 	failFirst bool
-	status   string
-	lastData []byte
+	status    string
+	lastData  []byte
+	spans     []printSpan
+}
+
+// printSpan records when a Print call actually occupied the printer, so tests
+// can assert serialization/concurrency by interval overlap instead of fragile
+// wall-clock thresholds (which flake on loaded CI runners).
+type printSpan struct {
+	start time.Time
+	end   time.Time
+}
+
+func (f *fakePrinter) Spans() []printSpan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]printSpan, len(f.spans))
+	copy(out, f.spans)
+	return out
+}
+
+func spansOverlap(a, b printSpan) bool {
+	return a.start.Before(b.end) && b.start.Before(a.end)
 }
 
 func (f *fakePrinter) Print(ctx context.Context, data []byte) error {
+	start := time.Now()
 	f.mu.Lock()
 	f.calls++
 	f.lastData = append([]byte(nil), data...)
@@ -33,6 +55,9 @@ func (f *fakePrinter) Print(ctx context.Context, data []byte) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(f.sleep):
+		f.mu.Lock()
+		f.spans = append(f.spans, printSpan{start: start, end: time.Now()})
+		f.mu.Unlock()
 		return nil
 	}
 }
@@ -73,7 +98,6 @@ func TestPerPrinterSerialization(t *testing.T) {
 
 	ctx := context.Background()
 	// two jobs to same printer should serialize (second waits for first's lock)
-	start := time.Now()
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
@@ -90,40 +114,57 @@ func TestPerPrinterSerialization(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	elapsed := time.Since(start)
-	// if serialized, elapsed >= 180ms (two 100ms sleeps serialized)
-	if elapsed < 180*time.Millisecond {
-		t.Fatalf("expected serialized execution, elapsed %v", elapsed)
-	}
 	if p1.calls != 2 {
 		t.Fatalf("expected 2 calls, got %d", p1.calls)
+	}
+	spans := p1.Spans()
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 recorded spans, got %d", len(spans))
+	}
+	// Serialized execution means the two print intervals never overlap.
+	if spansOverlap(spans[0], spans[1]) {
+		t.Fatalf("expected serialized execution, print spans overlap: %+v", spans)
 	}
 }
 
 func TestDifferentPrintersConcurrent(t *testing.T) {
-	p1 := &fakePrinter{sleep: 100 * time.Millisecond}
-	p2 := &fakePrinter{sleep: 100 * time.Millisecond}
+	// 400ms sleeps give scheduling headroom on loaded CI runners; the
+	// assertion is about interval overlap, not absolute duration.
+	p1 := &fakePrinter{sleep: 400 * time.Millisecond}
+	p2 := &fakePrinter{sleep: 400 * time.Millisecond}
 	cfg := &config.Config{}
 	cfg.Agent.ID = "agt_test"
 	cfg.Agent.Secret = "secret"
 	cfg.Server.URL = "http://localhost:3000"
-	ag, _ := New(cfg, t.TempDir()+"/config.yaml")
+	ag, err := New(cfg, t.TempDir()+"/config.yaml")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	ag.printers = map[string]printer.Printer{"p1": p1, "p2": p2}
 	ag.printerConfigs = map[string]config.PrinterConfig{
 		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100"},
 		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101"},
 	}
 	ctx := context.Background()
-	start := time.Now()
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); ag.processJob(ctx, map[string]interface{}{"id": "j1", "printerId": "p1", "payload": map[string]interface{}{"type": "raw", "encoding": "base64", "data": "aGVsbG8="}, "expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339)}) }()
-	go func() { defer wg.Done(); ag.processJob(ctx, map[string]interface{}{"id": "j2", "printerId": "p2", "payload": map[string]interface{}{"type": "raw", "encoding": "base64", "data": "aGVsbG8="}, "expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339)}) }()
+	go func() {
+		defer wg.Done()
+		ag.processJob(ctx, map[string]interface{}{"id": "j1", "printerId": "p1", "payload": map[string]interface{}{"type": "raw", "encoding": "base64", "data": "aGVsbG8="}, "expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339)})
+	}()
+	go func() {
+		defer wg.Done()
+		ag.processJob(ctx, map[string]interface{}{"id": "j2", "printerId": "p2", "payload": map[string]interface{}{"type": "raw", "encoding": "base64", "data": "aGVsbG8="}, "expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339)})
+	}()
 	wg.Wait()
-	elapsed := time.Since(start)
-	// concurrent printers should finish ~100ms, not 200ms
-	if elapsed > 170*time.Millisecond {
-		t.Fatalf("expected concurrent, elapsed %v", elapsed)
+	s1, s2 := p1.Spans(), p2.Spans()
+	if len(s1) != 1 || len(s2) != 1 {
+		t.Fatalf("expected one span per printer, got %d/%d", len(s1), len(s2))
+	}
+	// Different printers must not block each other: their print intervals
+	// overlap in time.
+	if !spansOverlap(s1[0], s2[0]) {
+		t.Fatalf("expected concurrent execution, spans do not overlap: %v vs %v", s1[0], s2[0])
 	}
 }
 
