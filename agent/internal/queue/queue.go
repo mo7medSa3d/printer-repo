@@ -3,6 +3,8 @@ package queue
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -20,6 +22,19 @@ type Queue struct {
 }
 
 func New(dbPath string) (*Queue, error) {
+	if dbPath == "" {
+		return nil, fmt.Errorf("queue db path is empty")
+	}
+	// A completely fresh Windows installation has no C:\ProgramData\OdooPrintAgent
+	// directory. Always create it before SQLite opens the database file.
+	dir := filepath.Dir(dbPath)
+	if dir == "" || dir == "." {
+		dir = "."
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("create queue directory %s: %w", dir, err)
+	}
+
 	// _busy_timeout + WAL + synchronous=NORMAL are required for crash safety
 	// on Windows without blocking the per-printer serialization mutex.
 	dsn := fmt.Sprintf("%s?_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL", dbPath)
@@ -27,6 +42,11 @@ func New(dbPath string) (*Queue, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite handles writes best with one writer. The application continues to
+	// parallelize printer work through per-printer goroutines; database access
+	// is deliberately serialized to avoid SQLITE_BUSY on Windows.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	// Ensure WAL is actually on (some sqlite builds ignore dsn params)
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		// non-fatal: continue with whatever mode we have

@@ -73,7 +73,8 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 
 func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.Agent.ID == "" {
-		log.Println("CRITICAL: Agent not registered. Please run pairing CLI.")
+		log.Println("CRITICAL: Agent not registered. Staying alive so the desktop manager can pair it.")
+		<-ctx.Done()
 		return nil
 	}
 

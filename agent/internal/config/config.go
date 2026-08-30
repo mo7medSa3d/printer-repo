@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,9 @@ type PrinterConfig struct {
 }
 
 func Load(path string) (*Config, error) {
+	if path == "" {
+		return &Config{}, nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -48,17 +52,63 @@ func Load(path string) (*Config, error) {
 	return &cfg, err
 }
 
+// Ensure creates the config directory and a safe default config file on a
+// completely fresh installation. It is idempotent and never overwrites an
+// existing file.
+func Ensure(path string) error {
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config dir %s: %w", dir, err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "odoo-print-agent"
+	}
+	name := "Odoo Print Agent"
+	if runtime.GOOS == "windows" {
+		name = host
+	}
+	cfg := &Config{}
+	cfg.Agent.Name = name
+	if err := cfg.Save(path); err != nil {
+		return fmt.Errorf("create default config %s: %w", path, err)
+	}
+	return nil
+}
+
 func (c *Config) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
 	f, err := os.Create(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("create config %s: %w", path, err)
 	}
-	defer f.Close()
-
-	return yaml.NewEncoder(f).Encode(c)
+	if err := yaml.NewEncoder(f).Encode(c); err != nil {
+		f.Close()
+		return fmt.Errorf("encode config %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync config %s: %w", path, err)
+	}
+	return f.Close()
 }
 
 // ExecutableDir returns the directory containing the running binary,
@@ -78,9 +128,14 @@ func ExecutableDir() (string, error) {
 }
 
 // DefaultConfigPath returns the production config path.
-// Priority: 1) %PROGRAMDATA%\OdooPrintAgent\config.yaml on Windows 2) beside exe
+// Priority: 1) ODOO_PRINT_AGENT_DATA_DIR override
+//           2) %PROGRAMDATA%\OdooPrintAgent\config.yaml on Windows
+//           3) beside exe
 // Never depends on process.cwd() (service cwd is System32).
 func DefaultConfigPath() string {
+	if override := os.Getenv("ODOO_PRINT_AGENT_DATA_DIR"); override != "" {
+		return filepath.Join(override, "config.yaml")
+	}
 	if pd := os.Getenv("PROGRAMDATA"); pd != "" {
 		return filepath.Join(pd, "OdooPrintAgent", "config.yaml")
 	}
@@ -89,6 +144,21 @@ func DefaultConfigPath() string {
 		return "config.yaml"
 	}
 	return filepath.Join(dir, "config.yaml")
+}
+
+// LocalConfigPath is a per-user fallback when the machine is not being run
+// elevated and the installer has not pre-created %PROGRAMDATA%.
+func LocalConfigPath() string {
+	if override := os.Getenv("ODOO_PRINT_AGENT_DATA_DIR"); override != "" {
+		return filepath.Join(override, "config.yaml")
+	}
+	if la := os.Getenv("LOCALAPPDATA"); la != "" {
+		return filepath.Join(la, "OdooPrintAgent", "config.yaml")
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".config", "odoo-print-agent", "config.yaml")
+	}
+	return DefaultConfigPath()
 }
 
 // LegacyConfigPath is the pre-ProgramData path (beside exe) for migration.
@@ -112,8 +182,19 @@ func QueueDBPath(configPath string) string {
 	return filepath.Join(dir, "agent.db")
 }
 
+// DefaultLogDir returns the writable log directory beside the config file.
+func DefaultLogDir(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "logs")
+}
+
+// DefaultLogPath returns the agent's primary log file path.
+func DefaultLogPath(configPath string) string {
+	return filepath.Join(DefaultLogDir(configPath), "agent.log")
+}
+
 // Validate checks required fields: server url, printer configs with IP:port etc.
-// It does NOT check secret presence — an unregistered agent has empty id/secret.
+// A completely unregistered agent (empty id) is valid; once an agent has been
+// paired it must also have a reachable server URL and a persisted secret.
 func (c *Config) Validate() error {
 	if c.Server.URL != "" {
 		u, err := url.Parse(c.Server.URL)
@@ -123,6 +204,15 @@ func (c *Config) Validate() error {
 		if u.Scheme != "https" && u.Scheme != "http" {
 			return fmt.Errorf("server.url scheme must be https or http, got %q", u.Scheme)
 		}
+		if u.Host == "" {
+			return fmt.Errorf("server.url host is empty")
+		}
+	}
+	if c.Agent.ID != "" && c.Server.URL == "" {
+		return fmt.Errorf("agent.id is set but server.url is empty; re-pair or set server.url")
+	}
+	if c.Agent.ID != "" && c.Agent.Secret == "" {
+		return fmt.Errorf("agent.id is set but agent.secret is empty; re-pair the agent")
 	}
 	for _, p := range c.Printers {
 		if err := ValidatePrinterConfig(p); err != nil {

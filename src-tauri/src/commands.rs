@@ -1,135 +1,177 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::process::Command;
 
-// Thin commands only — Tauri never opens printer TCP directly.
-// Printer tests go via Gateway → Agent → Printer.
+use crate::agent;
+use crate::logging;
+use crate::paths;
 
 #[derive(Serialize)]
 pub struct AgentStatus {
-  pub running: bool,
-  pub service: String,
-  pub version: String,
-  pub hostname: String,
-  pub last_heartbeat: Option<String>,
-  pub ws_connected: bool,
-  pub note: String,
+    pub running: bool,
+    pub service: String,
+    pub version: String,
+    pub hostname: String,
+    pub last_heartbeat: Option<String>,
+    pub ws_connected: bool,
+    pub note: String,
 }
 
 #[tauri::command]
-pub fn get_agent_status() -> AgentStatus {
-  // Phase 1: probe via config + service query stub.
-  // Real Windows: query `sc query OdooPrintAgent` or service API.
-  // On Linux dev, return not-running with diagnostic note.
-  let hostname = hostname::get()
-    .map(|h| h.to_string_lossy().to_string())
-    .unwrap_or_else(|_| "unknown".into());
-  AgentStatus {
-    running: false,
-    service: "OdooPrintAgent".into(),
-    version: env!("CARGO_PKG_VERSION").into(),
-    hostname,
-    last_heartbeat: None,
-    ws_connected: false,
-    note: "Probe via SC on Windows; on this host service not running (dev). See C:\\ProgramData\\OdooPrintAgent\\config.yaml".into(),
-  }
+pub fn get_agent_status(app: tauri::AppHandle) -> AgentStatus {
+    let hostname = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "unknown".into());
+    let (running, _service_running, note) = agent::status(&app);
+    AgentStatus {
+        running,
+        service: "OdooPrintAgent".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        hostname,
+        last_heartbeat: None,
+        ws_connected: running,
+        note,
+    }
 }
 
 #[tauri::command]
-pub fn control_service(action: String) -> Result<String, String> {
-  // Allowlist: only bundled binaries with fixed validated args.
-  // Actual shell execution is done via tauri-plugin-shell with scope allowlist
-  // in tauri.conf.json. This command validates the action string strictly.
-  match action.as_str() {
-    "start" | "stop" | "restart" => Ok(format!("validated action {action} — shell execution allowlisted via plugin-shell scope (requires Windows)")),
-    "install" | "uninstall" => Ok(format!("validated action {action} — requires elevation (runas) on Windows")),
-    _ => Err(format!("invalid service action {action:?} — allowed: start|stop|restart|install|uninstall")),
-  }
+pub fn start_agent(app: tauri::AppHandle) -> Result<String, String> {
+    agent::start(&app).map(|_| "agent started".into())
+}
+
+#[tauri::command]
+pub fn stop_agent(app: tauri::AppHandle) -> Result<String, String> {
+    agent::stop(&app).map(|_| "agent stopped".into())
+}
+
+#[tauri::command]
+pub fn restart_agent(app: tauri::AppHandle) -> Result<String, String> {
+    agent::restart(&app).map(|_| "agent restarted".into())
+}
+
+#[tauri::command]
+pub fn control_service(action: String, app: tauri::AppHandle) -> Result<String, String> {
+    agent::control_service(&action, &app)
 }
 
 #[derive(Deserialize)]
 pub struct PairArgs {
-  pub code: String,
-  pub gateway_url: String,
+    pub code: String,
+    pub gateway_url: String,
 }
 
 fn is_valid_code(s: &str) -> bool {
-  let t = s.trim().to_uppercase();
-  t.len() == 6 && t.chars().all(|c| matches!(c, 'A'..='Z' | '0'..='9')) && !t.contains('O') && !t.contains('0') && !t.contains('I') && !t.contains('1')
-    // Actually we allow the alphabet ABCDEFGHJKLMNPQRSTUVWXYZ23456789 (no 0/O/1/I) but keep simple check: 6 alnum
+    let t = s.trim().to_uppercase();
+    t.len() == 6
+        && t.chars()
+            .all(|c| matches!(c, 'A'..='H' | 'J'..='N' | 'P'..='Z' | '2'..='9'))
 }
 
 #[tauri::command]
-pub fn pair_agent(args: PairArgs) -> Result<String, String> {
-  // Validate only — actual pairing owns secret persistence via CLI.
-  // CLI: odoo-agent-cli.exe -pair CODE -server URL -config C:\ProgramData\OdooPrintAgent\config.yaml
-  // Secret never returned to renderer.
-  let code = args.code.trim().to_uppercase();
-  if code.len() != 6 {
-    return Err("pairing code must be 6 characters".into());
-  }
-  if !code.chars().all(|c| c.is_ascii_alphanumeric()) {
-    return Err("pairing code must be alphanumeric".into());
-  }
-  if args.gateway_url.trim().is_empty() {
-    return Err("gateway_url required".into());
-  }
-  if !(args.gateway_url.starts_with("https://") || args.gateway_url.starts_with("http://")) {
-    return Err("gateway_url must be https:// or http://".into());
-  }
-  // Return the validated command that the frontend should execute via shell plugin (allowlisted)
-  let cfg = r"C:\ProgramData\OdooPrintAgent\config.yaml";
-  Ok(format!("odoo-agent-cli.exe -pair {} -server {} -config \"{}\"  (secret persisted by CLI, never returned)", code, args.gateway_url.trim(), cfg))
+pub fn pair_agent(args: PairArgs, app: tauri::AppHandle) -> Result<String, String> {
+    let code = args.code.trim().to_uppercase();
+    if !is_valid_code(&code) {
+        return Err("pairing code must be a 6-character code from the dashboard (letters without O/I and digits without 0/1)".into());
+    }
+    let gateway_url = args.gateway_url.trim().trim_end_matches('/').to_string();
+    if !(gateway_url.starts_with("https://") || gateway_url.starts_with("http://")) {
+        return Err("gateway_url must be https:// or http://".into());
+    }
+
+    let cli = agent::cli_path(&app)?;
+    let config = paths::agent_config_path();
+    paths::ensure_agent_data_root().map_err(|e| format!("create agent data dir: {e}"))?;
+
+    logging::info(&format!("pairing agent (server={gateway_url})"));
+    let out = Command::new(&cli)
+        .arg("-pair")
+        .arg(&code)
+        .arg("-server")
+        .arg(&gateway_url)
+        .arg("-config")
+        .arg(&config)
+        .env("ODOO_PRINT_AGENT_DATA_DIR", paths::agent_data_root())
+        .output()
+        .map_err(|e| format!("failed to run odoo-agent-cli.exe: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        let msg = if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
+        logging::error(&format!("pairing failed: {msg}"));
+        return Err(msg);
+    }
+    // Do not echo anything that could contain the secret. Register only prints
+    // the agent id and a success hint; keep that contract on the Rust side.
+    logging::info(&format!("pairing succeeded: {stdout}"));
+    Ok(stdout)
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GatewayConfig {
-  pub url: String,
+    pub url: String,
 }
 
-fn manager_store_path() -> PathBuf {
-  // Tauri store plugin uses app data dir + .dat; we use ProgramData on Windows.
-  // For thin command, return the expected path for diagnostics.
-  #[cfg(windows)]
-  {
-    std::env::var("PROGRAMDATA")
-      .map(|pd| PathBuf::from(pd).join("OdooPrintManager").join("settings.json"))
-      .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData\\OdooPrintManager\\settings.json"))
-  }
-  #[cfg(not(windows))]
-  {
-    PathBuf::from("/tmp/odoo-print-manager-settings.json")
-  }
+fn read_file_or_default(path: &PathBuf) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".into()),
+        Err(e) => Err(format!("failed to read settings {}: {e}", path.display())),
+    }
 }
 
 #[tauri::command]
 pub fn get_gateway_config() -> GatewayConfig {
-  // Read via store plugin on frontend; this is diagnostic fallback.
-  GatewayConfig { url: "https://your-gateway.example.com".into() }
+    let path = paths::settings_path();
+    let defaults = GatewayConfig { url: String::new() };
+    let raw = match read_file_or_default(&path) {
+        Ok(r) => r,
+        Err(e) => {
+            logging::error(&e);
+            return defaults;
+        }
+    };
+    match serde_json::from_str::<GatewayConfig>(&raw) {
+        Ok(c) => c,
+        Err(e) => {
+            // A corrupt/old settings file must not prevent the app from starting.
+            logging::warn(&format!("settings corrupted, using defaults: {e}; path={}", path.display()));
+            defaults
+        }
+    }
 }
 
 #[tauri::command]
 pub fn set_gateway_config(url: String) -> Result<String, String> {
-  let u = url.trim();
-  if !(u.starts_with("https://") || u.starts_with("http://")) {
-    return Err("url must be https:// or http://".into());
-  }
-  // Frontend persists via store plugin to ProgramData\OdooPrintManager\settings.json
-  // Least-privilege ACL on that dir is verified on Windows (installer creates with SYSTEM+Administrators F, Users RW where needed)
-  Ok(format!("validated url {u} — persist via store plugin to {:?}", manager_store_path()))
+    let url = url.trim().trim_end_matches('/').to_string();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("url must be https:// or http://".into());
+    }
+    let path = paths::settings_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create settings dir: {e}"))?;
+    }
+    let cfg = GatewayConfig { url };
+    let json = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| format!("serialize settings: {e}"))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("write settings {}: {e}", path.display()))?;
+    logging::info(&format!("gateway settings saved to {}", path.display()));
+    Ok(format!("saved gateway settings to {}", path.display()))
+}
+
+#[tauri::command]
+pub fn get_runtime_paths() -> (String, String, String, String) {
+    (
+        paths::manager_data_root().display().to_string(),
+        paths::settings_path().display().to_string(),
+        paths::agent_config_path().display().to_string(),
+        paths::manager_log_path().display().to_string(),
+    )
 }
 
 #[tauri::command]
 pub fn get_app_version() -> String {
-  env!("CARGO_PKG_VERSION").into()
-}
-
-// Minimal hostname helper without extra crate
-mod hostname {
-  pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
-    // Use std env var fallback
-    if let Ok(h) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
-      return Ok(std::ffi::OsString::from(h));
-    }
-    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no hostname"))
-  }
+    env!("CARGO_PKG_VERSION").into()
 }
