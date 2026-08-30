@@ -1,85 +1,118 @@
 name: Build Windows Installer
-
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-
+    branches: [main]
+  pull_request:
+    branches: [main]
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build-windows:
     runs-on: windows-latest
-
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: '1.27'
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
       - name: Install Tauri CLI
         shell: pwsh
         run: |
           cargo install tauri-cli --version "^2" --locked
-
       - name: Install dependencies
         run: npm ci
-
+      - name: Typecheck frontend
+        run: npm run typecheck
+      - name: Lint frontend
+        run: npm run lint
+      - name: Go agent tests
+        working-directory: agent
+        shell: pwsh
+        run: |
+          go test ./...
       - name: Build Go Agent
         working-directory: agent
         shell: pwsh
         run: |
-          go build -o OdooPrintAgent.exe ./cmd/agent
-          go build -o odoo-agent-cli.exe ./cmd/cli
-
+          go build -trimpath -o OdooPrintAgent.exe ./cmd/agent
+          go build -trimpath -o odoo-agent-cli.exe ./cmd/cli
       - name: Verify Go binaries
         shell: pwsh
         run: |
-          Get-Item agent\OdooPrintAgent.exe
-          Get-Item agent\odoo-agent-cli.exe
-
+          Get-Item agent\OdooPrintAgent.exe | Select-Object FullName, Length
+          Get-Item agent\odoo-agent-cli.exe | Select-Object FullName, Length
+          if (-not (Test-Path "agent\OdooPrintAgent.exe")) { throw "Missing OdooPrintAgent.exe" }
+          if (-not (Test-Path "agent\odoo-agent-cli.exe")) { throw "Missing odoo-agent-cli.exe" }
+      - name: Verify Tauri icon assets
+        shell: pwsh
+        run: |
+          $required = @(
+            "src-tauri\icons\icon.ico",
+            "src-tauri\icons\icon.png",
+            "src-tauri\icons\32x32.png",
+            "src-tauri\icons\48x48.png",
+            "src-tauri\icons\64x64.png",
+            "src-tauri\icons\128x128.png",
+            "src-tauri\icons\128x128@2x.png"
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path $file)) { throw "Missing icon asset: $file" }
+            $item = Get-Item $file
+            if ($item.Length -le 0) { throw "Empty icon asset: $file" }
+          }
+          Write-Host "All Tauri icon assets are present."
       - name: Build desktop frontend
         run: npm run desktop:vite:build
-
-      - name: Build Tauri Windows installer
+      - name: Build Tauri Windows installer (MSI + NSIS EXE)
         shell: pwsh
         run: |
-          cargo tauri build --target x86_64-pc-windows-msvc --bundles msi
-
-      - name: List generated files
-        if: always()
+          cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+      - name: Verify installer artifacts exist
         shell: pwsh
         run: |
-          Write-Host "=== Tauri target ==="
-
-          if (Test-Path "src-tauri\target\x86_64-pc-windows-msvc\release") {
-            Get-ChildItem `
-              -Path "src-tauri\target\x86_64-pc-windows-msvc\release" `
-              -Recurse `
-              -File |
-              Select-Object FullName, Length
+          $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" -ErrorAction SilentlyContinue
+          $exe = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue
+          if (-not $msi) { throw "MSI bundle missing" }
+          if (-not $exe) { throw "NSIS EXE bundle missing" }
+          Write-Host "MSI: $($msi.FullName)"
+          Write-Host "NSIS EXE: $($exe.FullName)"
+      - name: Install MSI and smoke-test installed app
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" | Select-Object -First 1
+          if (-not $msi) { throw "MSI bundle missing" }
+          $msiLog = Join-Path $env:RUNNER_TEMP "odoo-msi-install.log"
+          $proc = Start-Process msiexec -ArgumentList @("/i", "`"$($msi.FullName)`"", "/qn", "/norestart", "/l*v", "`"$msiLog`"") -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Get-Content $msiLog -Tail 200
+            throw "MSI install failed with code $($proc.ExitCode)"
           }
-          else {
-            Write-Host "Tauri target directory does not exist."
+          $installDir = Join-Path $env:ProgramFiles "Odoo Print Manager"
+          if (-not (Test-Path (Join-Path $installDir "odoo-print-manager.exe"))) {
+            throw "Installed EXE missing after MSI install: $installDir"
           }
-
-      - name: Upload Windows MSI
+          & pwsh -NoProfile -File .\scripts\smoke-test-windows.ps1 -InstallDir $installDir
+          if ($LASTEXITCODE -ne 0) { throw "Windows smoke test failed" }
+      - name: Upload Windows MSI and NSIS EXE
         uses: actions/upload-artifact@v6
         with:
           name: Odoo-Print-Manager-Windows
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           if-no-files-found: error
+          compression-level: 9
