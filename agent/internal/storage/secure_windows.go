@@ -10,10 +10,12 @@ import (
 )
 
 var (
-	modadvapi32            = syscall.NewLazyDLL("advapi32.dll")
-	procCryptProtectData   = modadvapi32.NewProc("CryptProtectData")
-	procCryptUnprotectData = modadvapi32.NewProc("CryptUnprotectData")
-	procLocalFree          = modadvapi32.NewProc("LocalFree")
+	modcrypt32  = syscall.NewLazyDLL("crypt32.dll")
+	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
+
+	procCryptProtectData   = modcrypt32.NewProc("CryptProtectData")
+	procCryptUnprotectData = modcrypt32.NewProc("CryptUnprotectData")
+	procLocalFree          = modkernel32.NewProc("LocalFree")
 )
 
 const (
