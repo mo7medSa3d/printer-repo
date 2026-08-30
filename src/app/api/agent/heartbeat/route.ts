@@ -6,6 +6,9 @@ import { NextResponse } from "next/server";
 
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
 const VALID_PRINTER_TYPES = new Set(["network", "usb"]);
+// The agent currently only reports "online"; clamp anything else so a
+// compromised/buggy agent cannot write arbitrary strings into agents.status.
+const VALID_AGENT_STATUSES = new Set(["online", "offline"]);
 
 type ReportedPrinter = {
   id?: unknown;
@@ -30,7 +33,7 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const status = typeof body?.status === "string" ? body.status : "online";
+    const status = typeof body?.status === "string" && VALID_AGENT_STATUSES.has(body.status) ? body.status : "online";
     const reportedPrinters = Array.isArray(body?.printers) ? body.printers : [];
 
     await db.update(agents)

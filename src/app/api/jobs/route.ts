@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { printJobs } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
+import { isJobStatus } from "@/lib/job-status";
 
 export const dynamic = "force-dynamic";
 
@@ -17,12 +18,23 @@ export async function GET(req: Request) {
   const agentId = url.searchParams.get("agentId");
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 200);
 
-  let q = db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(limit);
-  // simple filters — compose where via separate queries for now (small)
-  const rows = await q;
-  let filtered = rows;
-  if (status) filtered = filtered.filter(r => r.status === status);
-  if (printerId) filtered = filtered.filter(r => r.printerId === printerId);
-  if (agentId) filtered = filtered.filter(r => r.agentId === agentId);
-  return NextResponse.json(filtered);
+  if (status && !isJobStatus(status)) {
+    return NextResponse.json({ error: "invalid status filter" }, { status: 400 });
+  }
+
+  // Filter in SQL, not in memory: filtering after .limit() silently drops
+  // matching rows that fell outside the latest-N window.
+  const conditions = [
+    ...(status ? [eq(printJobs.status, status)] : []),
+    ...(printerId ? [eq(printJobs.printerId, printerId)] : []),
+    ...(agentId ? [eq(printJobs.agentId, agentId)] : []),
+  ];
+
+  const rows = await db
+    .select()
+    .from(printJobs)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(printJobs.createdAt))
+    .limit(limit);
+  return NextResponse.json(rows);
 }

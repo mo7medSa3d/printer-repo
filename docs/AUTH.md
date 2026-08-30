@@ -6,6 +6,8 @@
 
 - **Login:** `POST /api/auth/manager/login` `{username,password}` → validates against `MANAGER_USERNAME` + (`MANAGER_PASSWORD_HASH` scrypt `salt:hex` or `MANAGER_PASSWORD` fallback). On success creates `manager_sessions` row `jti, expiresAt=now+8h` and returns `Set-Cookie: mgr_session=<HS256 JWT>; Path=/; HttpOnly; SameSite=Lax; Secure(prod); Max-Age=28800`. JWT payload `{jti, iat, exp, sub:"manager"}`, HMAC-SHA256 with `GATEWAY_JWT_SECRET` (≥32 chars). See `src/lib/manager-auth.ts:15`.
 - **Verification:** `validateManager(req)` checks cookie `mgr_session` else `Authorization: Bearer <jwt>`, verifies HMAC timing-safe, checks `manager_sessions` not revoked/expired. Used by `GET /api/agents`, `/api/printers`, `/api/jobs`, `/api/printers/:id/test-*`, `/api/odoo/keys`.
+- **Pages & actions too:** the `/dashboard` server component verifies the same cookie via `verifyManagerToken` + `validateManagerClaims` and `redirect("/login")` otherwise (it renders DB data directly — without the check it would bypass the API guards entirely), and selects agent rows **without** `agents.secret`. Every `"use server"` action in `src/app/actions.ts` runs `requireManager()` first — server actions are public POST endpoints and are NOT implicitly authenticated.
+- **Jobs filter:** `GET /api/jobs` filters (`status`, `printerId`, `agentId`) are applied in SQL `WHERE` before `LIMIT`; an unknown `status` value returns `400`.
 - **Logout:** `POST /api/auth/manager/logout` → `manager_sessions.revokedAt=now` + `Set-Cookie` clear.
 - **Me:** `GET /api/auth/manager/me` → `{authenticated, jti, exp}`.
 - **Expiry:** 8h fixed, no sliding. After expiry client must re-login. `manager_sessions.expiresAt` indexed.

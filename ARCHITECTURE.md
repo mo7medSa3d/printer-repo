@@ -4,7 +4,7 @@
 
 - **Gateway:** Next.js 16 + PG/Drizzle + custom WS server (`server.ts` + `src/server/ws.ts`). Serves Next + handles `WSS /api/agent/ws` upgrade via `attachAgentWSS`. Desktop polls HTTPS only.
 - **Agent:** Go 1.21 Windows Service (`kardianos/service`) `agent/cmd/agent/main.go` `Arguments: -config C:\ProgramData\OdooPrintAgent\config.yaml`, `Dependencies: Tcpip`. `agent/internal/agent/agent.go` outbound WS + poll fallback (WS connected → poll skipped), heartbeat 30s, per-printer `sync.Mutex`, `net` dial 5s + deadline.
-- **Desktop:** Tauri 2.x + React `src/desktop/main.tsx` + Rust `src-tauri/src/{main,commands,agent,paths,logging,tray}.rs`. Thin Rust commands only (no shell plugin); tray hide-not-exit; settings at `C:\ProgramData\OdooPrintManager\settings.json` with `@tauri-apps/plugin-store` as a resilient fallback.
+- **Desktop:** Tauri 2.x + React `src/desktop/main.tsx` (+ typed IPC layer `src/desktop/lib/ipc.ts`) + Rust `src-tauri/src/{main,commands,agent,paths,logging,tray}.rs`. Async Rust commands only (no shell plugin); tray hide-not-exit; settings at `C:\ProgramData\OdooPrintManager\settings.json`, written exclusively by Rust commands (single source of truth).
 
 ## Two Queue Layers
 

@@ -102,13 +102,29 @@ curl -H "Authorization: Bearer odoo_..." "https://gateway/api/print/jobs?id=job_
 
 ### 7. Desktop Manager (Tauri 2.x, no Python)
 
-```bash
-npm install
-npm run desktop:vite:build   # 224K dist-desktop, Vite externalizes @tauri-apps/api
-# on Windows with Rust stable + cargo install tauri-cli --version "^2":
-cargo tauri build  # → src-tauri/target/release/bundle/nsis/OdooPrintManager_*_x64-setup.exe
-# installer bundles dist-desktop + agent exes, uses downloadBootstrapper for WebView2
+```powershell
+# One-shot production build (Windows host: Node 22+, Go 1.21+, Rust stable + tauri-cli):
+pwsh -File scripts/build-windows-installer.ps1
+# → src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Odoo Print Manager_1.0.0_x64-setup.exe
+# → src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/Odoo Print Manager_1.0.0_x64_en-US.msi
 ```
+
+The installer bundles `dist-desktop` + the two agent EXEs as resources, installs
+per-machine (NSIS), creates Start Menu + desktop shortcuts, registers an
+uninstaller in Add/Remove Programs, and downloads WebView2 Evergreen if missing.
+Customers need **no** Node/Go/Rust/Python.
+
+Manual equivalent steps:
+
+```powershell
+npm ci
+npm run desktop:vite:build            # dist-desktop/ (React UI)
+cd agent; go build -trimpath -ldflags "-s -w" -o OdooPrintAgent.exe ./cmd/agent
+          go build -trimpath -ldflags "-s -w" -o odoo-agent-cli.exe ./cmd/cli; cd ..
+cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+```
+
+Dev loop: `cargo tauri dev` (spins up the Vite dev server on :1420 automatically).
 
 Trails: `C:\ProgramData\OdooPrintManager\settings.json` (SYSTEM:F, Administrators:F, verify icacls). Closing Desktop does NOT stop `OdooPrintAgent` service.
 
@@ -121,8 +137,10 @@ Trails: `C:\ProgramData\OdooPrintManager\settings.json` (SYSTEM:F, Administrator
 
 ```bash
 npm run typecheck && npm run lint && npm run build && npm test
-cd agent && go vet ./... && go test ./... -race -count=1 && go build ./...
+cd agent && go vet ./... && go test ./... -race -count=1 && go build -trimpath -ldflags "-s -w" ./...
 npm run desktop:vite:build
+# Full Windows installer (on a Windows build host):
+pwsh -File scripts/build-windows-installer.ps1
 ```
 
 See `docs/VERIFICATION.md` for CI vs Real Windows vs Real Printer gate (no production-ready claim until all green).

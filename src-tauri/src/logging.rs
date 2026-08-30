@@ -8,6 +8,11 @@ use crate::paths;
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
 
+/// Rotate the log once it grows past this size; rotated copies are kept under
+/// `name.1` … `name.3` next to the live file.
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+const MAX_ROTATED_FILES: u32 = 3;
+
 /// Initialize the production file logger. Logs are written to a writable
 /// ProgramData directory, never to `C:\Program Files\Odoo Print Manager`.
 /// Returns the log path on success.
@@ -19,6 +24,7 @@ pub fn init() -> Option<PathBuf> {
         return None;
     }
     let path = dir.join("odoo-print-manager.log");
+    rotate_if_full(&path);
     let file = match OpenOptions::new()
         .create(true)
         .append(true)
@@ -30,17 +36,54 @@ pub fn init() -> Option<PathBuf> {
             return None;
         }
     };
-    let _ = LOG_FILE.set(Mutex::new(file)).map_err(|_| ());
+    let _ = LOG_FILE.set(Mutex::new(file));
     info("application logger initialized");
     Some(path)
 }
 
-pub fn init_with_path(path: &Path) {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let _ = std::fs::create_dir_all(dir);
-    if let Ok(file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = LOG_FILE.set(Mutex::new(file)).map_err(|_| ());
+/// If `path` exceeds MAX_LOG_BYTES, shift `path.1..MAX` up by one and rename
+/// `path` to `path.1`, so the current file starts empty. All failures are
+/// ignored on purpose: logging must never prevent the app from starting.
+fn rotate_if_full(path: &Path) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= MAX_LOG_BYTES {
+        return;
     }
+    let _ = std::fs::remove_file(rotated_path(path, MAX_ROTATED_FILES));
+    for i in (1..MAX_ROTATED_FILES).rev() {
+        let from = rotated_path(path, i);
+        if from.exists() {
+            let _ = std::fs::rename(&from, rotated_path(path, i + 1));
+        }
+    }
+    let _ = std::fs::rename(path, rotated_path(path, 1));
+}
+
+fn rotated_path(path: &Path, index: u32) -> PathBuf {
+    PathBuf::from(format!("{}.{index}", path.display()))
+}
+
+/// Route Rust panics into the log file. Release builds use the Windows GUI
+/// subsystem (no console), so an unhandled panic would otherwise abort the
+/// process without any trace. The hook writes a PANIC line with location and
+/// payload before the default unwinding continues.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        write_line("PANIC", &format!("panic at {location}: {payload}"));
+    }));
 }
 
 pub fn info(msg: &str) {

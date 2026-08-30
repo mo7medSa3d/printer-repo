@@ -26,12 +26,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   try {
     const { id: jobId } = await createPrintJob(printer.id, payload);
-    // Try immediate WS push if agent connected (best-effort, polling fallback covers offline)
+    // Try immediate WS push if agent connected (best-effort, polling fallback
+    // covers offline). A successful push also claims the job so the agent's
+    // PATCHes pass the claimed→… transition policy.
     try {
-      const { tryPushJob } = await import("@/server/ws");
+      const { pushJobToAgentWithClaim } = await import("@/server/ws");
       const jobRow = await db.query.printJobs.findFirst({ where: eq((await import("@/db/schema")).printJobs.id, jobId) });
       if (jobRow) {
-        tryPushJob({ id: jobRow.id, agentId: jobRow.agentId, printerId: jobRow.printerId, payload: jobRow.payload, expiresAt: jobRow.expiresAt as unknown as string });
+        await pushJobToAgentWithClaim({ id: jobRow.id, agentId: jobRow.agentId, printerId: jobRow.printerId, payload: jobRow.payload, expiresAt: jobRow.expiresAt as unknown as string });
       }
     } catch {}
     return NextResponse.json({ ok: true, jobId, printerId: printer.id }, { status: 201 });

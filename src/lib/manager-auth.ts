@@ -55,6 +55,25 @@ export function getManagerCookieName() {
   return COOKIE_NAME;
 }
 
+/** Verify the HMAC + embedded expiry of a manager token (no DB hit). */
+export function verifyManagerToken(token: string): ManagerClaims | null {
+  return verify(token);
+}
+
+/**
+ * Server-side session state check for already-verified claims: session row
+ * must exist, be unrevoked, and be unexpired. Shared by validateManager
+ * (Bearer/cookie middleware paths) and server components/actions that read
+ * the cookie store directly (next/headers).
+ */
+export async function validateManagerClaims(claims: ManagerClaims | null): Promise<ManagerClaims | null> {
+  if (!claims) return null;
+  const row = await db.query.managerSessions.findFirst({ where: eq(managerSessions.jti, claims.jti) });
+  if (!row || row.revokedAt) return null;
+  if (row.expiresAt.getTime() < Date.now()) return null;
+  return claims;
+}
+
 export async function createManagerSession(): Promise<{ token: string; jti: string; exp: Date }> {
   const jti = randomBytes(16).toString("hex");
   const now = Math.floor(Date.now() / 1000);
@@ -88,10 +107,7 @@ export async function validateManager(req: Request): Promise<ManagerClaims | nul
   if (!token) return null;
   const claims = verify(token);
   if (!claims) return null;
-  const row = await db.query.managerSessions.findFirst({ where: eq(managerSessions.jti, claims.jti) });
-  if (!row || row.revokedAt) return null;
-  if (row.expiresAt.getTime() < Date.now()) return null;
-  return claims;
+  return validateManagerClaims(claims);
 }
 
 export async function revokeManagerSession(jti: string) {
@@ -106,13 +122,6 @@ export function managerCookieHeader(token: string, exp: Date): string {
 
 export function clearManagerCookieHeader(): string {
   return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`;
-}
-
-function hashPasswordScrypt(pw: string): string {
-  const { scryptSync, randomBytes: rb } = require("crypto") as typeof import("crypto");
-  const salt = rb(16).toString("hex");
-  const derived = scryptSync(pw, salt, 32).toString("hex");
-  return `${salt}:${derived}`;
 }
 
 export function verifyManagerPassword(username: string, input: string): boolean {

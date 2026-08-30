@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/kardianos/service"
 	"github.com/odoo-print-agent/agent/internal/agent"
@@ -16,28 +17,58 @@ import (
 
 type program struct {
 	agent  *agent.Agent
-	cfg    *config.Config
 	ctx    context.Context
 	cancel context.CancelFunc
+	wg     sync.WaitGroup // tracks the agent run goroutine for graceful stop
 }
 
 func (p *program) Start(s service.Service) error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
-	go p.run()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		if err := p.agent.Run(p.ctx); err != nil {
+			log.Printf("Agent error: %v", err)
+		}
+	}()
 	return nil
 }
 
-func (p *program) run() {
-	if err := p.agent.Run(p.ctx); err != nil {
-		log.Printf("Agent error: %v", err)
-	}
-}
-
+// Stop is invoked by the service manager (or on Ctrl+C in interactive mode).
+// It cancels the agent, waits for in-flight print jobs to drain, and only
+// then closes the SQLite queue so the database is never closed mid-write.
 func (p *program) Stop(s service.Service) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+	p.wg.Wait()
+	if p.agent != nil {
+		if err := p.agent.Close(); err != nil {
+			log.Printf("WARNING: closing local queue failed: %v", err)
+		}
+	}
 	return nil
+}
+
+const (
+	// maxLogBytes rotates agent.log once it grows past this size so a
+	// long-running installation never fills ProgramData with logs.
+	maxLogBytes     = 5 * 1024 * 1024 // 5 MiB
+	maxRotatedFiles = 3
+)
+
+// rotateLogIfFull shifts agent.log -> agent.log.1 -> agent.log.2 ... keeping
+// at most maxRotatedFiles rotated copies beside the live log.
+func rotateLogIfFull(logPath string) {
+	info, err := os.Stat(logPath)
+	if err != nil || info.Size() <= maxLogBytes {
+		return
+	}
+	_ = os.Remove(fmt.Sprintf("%s.%d", logPath, maxRotatedFiles))
+	for i := maxRotatedFiles - 1; i >= 1; i-- {
+		_ = os.Rename(fmt.Sprintf("%s.%d", logPath, i), fmt.Sprintf("%s.%d", logPath, i+1))
+	}
+	_ = os.Rename(logPath, fmt.Sprintf("%s.1", logPath))
 }
 
 // setupLogging opens a writable log file beside the config file
@@ -57,6 +88,7 @@ func setupLogging(configPath string) (*os.File, error) {
 		return nil, fmt.Errorf("create log directory %s: %w", logDir, err)
 	}
 	logPath := filepath.Join(logDir, "agent.log")
+	rotateLogIfFull(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", logPath, err)
@@ -116,44 +148,36 @@ func main() {
 	}
 
 	svcConfig := &service.Config{
-		Name:        "OdooPrintAgent",
-		DisplayName: "Odoo Print Agent",
-		Description: "Local print gateway for Odoo ERP — outbound HTTPS/WSS only, no inbound ports.",
-		Arguments:   []string{"-config", *configPath},
+		Name:         "OdooPrintAgent",
+		DisplayName:  "Odoo Print Agent",
+		Description:  "Local print gateway for Odoo ERP — outbound HTTPS/WSS only, no inbound ports.",
+		Arguments:    []string{"-config", *configPath},
 		Dependencies: []string{"Tcpip"},
 	}
 
-	prg := &program{
-		agent: app,
-		cfg:   cfg,
-	}
+	prg := &program{agent: app}
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
 		log.Fatalf("Failed to create service wrapper: %v", err)
 	}
 
 	if *svcFlag != "" {
-		switch strings.ToLower(strings.TrimSpace(*svcFlag)) {
-		case "install", "uninstall":
-			// Both require administrator access. kardianos/service returns a
-			// clear "access is denied" error on Windows when not elevated; we
-			// surface that explicitly instead of swallowing it.
-			if err := service.Control(s, *svcFlag); err != nil {
-				log.Printf("Service control %q failed: %v", *svcFlag, err)
-				log.Printf("Hint: run the command from an elevated PowerShell (Run as Administrator).")
-				log.Fatalf("Service control %q failed: %v", *svcFlag, err)
+		action := strings.ToLower(strings.TrimSpace(*svcFlag))
+		switch action {
+		case "install", "uninstall", "start", "stop", "restart":
+			if err := service.Control(s, action); err != nil {
+				if action == "install" || action == "uninstall" {
+					// kardianos/service surfaces "access is denied" when the
+					// shell is not elevated; make the recovery path explicit.
+					log.Printf("Hint: run the command from an elevated PowerShell (Run as Administrator).")
+				}
+				log.Fatalf("Service control %q failed: %v", action, err)
 			}
-		case "start", "stop", "restart":
-			if err := service.Control(s, *svcFlag); err != nil {
-				log.Printf("Service control %q failed: %v", *svcFlag, err)
-				log.Fatalf("Service control %q failed: %v", *svcFlag, err)
-			}
+			log.Printf("Service control %q completed", action)
+			return
 		default:
-			log.Printf("Valid actions: %q\n", service.ControlAction)
-			log.Fatalf("Unknown service action %q", *svcFlag)
+			log.Fatalf("Unknown service action %q. Valid actions: install, uninstall, start, stop, restart", action)
 		}
-		log.Printf("Service control %q completed", *svcFlag)
-		return
 	}
 
 	logger, err := s.Logger(nil)

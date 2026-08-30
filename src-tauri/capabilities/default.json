@@ -1,10 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the Odoo Print Manager main window (least privilege).",
+  "description": "Capabilities for the Odoo Print Manager main window (least privilege — core only; no store/shell/fs/http).",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "store:default"
+    "core:default"
   ]
 }

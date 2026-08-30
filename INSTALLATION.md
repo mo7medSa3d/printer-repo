@@ -77,12 +77,13 @@ Invoke-RestMethod https://gateway/api/printers -Headers @{Cookie="mgr_session=..
 ## 6. Desktop Manager (Tauri, no Python)
 
 ```powershell
-# build host (Windows + Rust stable + cargo install tauri-cli --version "^2"):
-npm run desktop:vite:build
-cargo tauri build  # → src-tauri/target/release/bundle/nsis/OdooPrintManager_*_x64-setup.exe
+# build host (Windows + Node 22 + Go 1.21+ + Rust stable + cargo install tauri-cli --version "^2"):
+pwsh -File scripts/build-windows-installer.ps1
+# → src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Odoo Print Manager_1.0.0_x64-setup.exe (+ MSI)
 # run installer on clean VM (no Node/Python/Go/Rust needed)
+# NSIS: per-machine install, Start Menu folder "Odoo Print Manager", desktop shortcut, Add/Remove Programs uninstaller
 # WebView2: downloadBootstrapper in tauri.conf.json — on VM without WebView2, installer downloads Evergreen Runtime; test on clean VM (docs/VERIFICATION.md W4)
-# Manager data: C:\ProgramData\OdooPrintManager\settings.json (verify icacls)
+# Manager data: C:\ProgramData\OdooPrintManager\settings.json + logs\odoo-print-manager.log (rotated at 5MB; verify icacls)
 ```
 
 Tray: close → hide, Exit → `app.exit(0)`. `Start/Stop/Restart Agent` in the desktop UI invokes Rust commands that either control the Windows service or stop/start the bundled background process with `std::process` (no shell plugin, no arbitrary command execution).

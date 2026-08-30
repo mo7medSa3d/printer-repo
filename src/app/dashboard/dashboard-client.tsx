@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 
+// Agent rows arrive from the dashboard page already stripped of `secret`
+// (agents.secret is the credential hash and must never leave the server).
 type Agent = {
   id: string;
   name: string;
@@ -24,7 +26,7 @@ type Agent = {
   status: string;
   lastSeenAt: Date | null;
   createdAt: Date;
-  metadata?: { hostname?: string; os?: string; version?: string } | null;
+  metadata?: unknown;
 };
 
 type Printer = {
@@ -53,7 +55,6 @@ export default function DashboardClient({
   initialPrinters: Printer[];
   initialJobs: Job[];
 }) {
-  const [agents, setAgents] = useState(initialAgents);
   const [newAgentName, setNewAgentName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 

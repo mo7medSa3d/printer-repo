@@ -15,6 +15,19 @@ describe("payload", () => {
   it("rejects bad type", () => {
     expect(() => validatePrintJobPayload({ type: "pdf", encoding: "base64", data: "aGVsbG8=" })).toThrow();
   });
+  it("rejects non-canonical base64 the Go agent would also reject", () => {
+    // Missing padding — Node's Buffer.from tolerates it, StdEncoding does not.
+    expect(() => validatePrintJobPayload({ type: "raw", encoding: "base64", data: "aGVsbG8" })).toThrow();
+    // Out-of-alphabet characters (whitespace, stray symbols) are skipped by
+    // Buffer.from but rejected by the agent's strict decoder.
+    expect(() => validatePrintJobPayload({ type: "raw", encoding: "base64", data: " aGVsbG8= " })).toThrow();
+    expect(() => validatePrintJobPayload({ type: "raw", encoding: "base64", data: "aGVsbG8=!@#" })).toThrow();
+    expect(() => validatePrintJobPayload({ type: "raw", encoding: "base64", data: "aGVs\nbG8=" })).toThrow();
+  });
+  it("accepts canonical base64 with padding", () => {
+    expect(validatePrintJobPayload({ type: "raw", encoding: "base64", data: "aGVsbG8=" }).data).toBe("aGVsbG8=");
+    expect(validatePrintJobPayload({ type: "raw", encoding: "base64", data: "aGk=" }).data).toBe("aGk=");
+  });
   it("test payload is decodable and has cut command", () => {
     const p = buildTestPrintPayload("Receipt", "Main");
     const decoded = Buffer.from(p.data, "base64").toString("binary");

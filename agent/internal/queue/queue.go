@@ -47,17 +47,11 @@ func New(dbPath string) (*Queue, error) {
 	// is deliberately serialized to avoid SQLITE_BUSY on Windows.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	// Ensure WAL is actually on (some sqlite builds ignore dsn params)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		// non-fatal: continue with whatever mode we have
-		_ = err
-	}
-	if _, err := db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
-		_ = err
-	}
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
-		_ = err
-	}
+	// Ensure WAL is actually on (some sqlite builds ignore dsn params).
+	// Non-fatal: the queue still works in rollback-journal mode.
+	_, _ = db.Exec(`PRAGMA journal_mode=WAL`)
+	_, _ = db.Exec(`PRAGMA synchronous=NORMAL`)
+	_, _ = db.Exec(`PRAGMA busy_timeout=5000`)
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS print_jobs (
