@@ -14,23 +14,38 @@ MANAGER_USERNAME=admin MANAGER_PASSWORD_HASH=$(node -e "const{crypto}=require('c
 npm install && npm run build && npm start  # server.ts on :3000 (Agent WS /api/agent/ws)
 ```
 
-## 2. Agent Service
+## 2. Agent startup
 
-On clean Windows with Go 1.21+ built exes:
+The installer bundles `resources\OdooPrintAgent.exe` and
+`resources\odoo-agent-cli.exe`. On first launch the desktop app:
+
+1. Ensures `C:\ProgramData\OdooPrintAgent\` exists.
+2. Starts the bundled OdooPrintAgent.exe as a detached background process (no
+   elevation needed for a normal user).
+3. If an `OdooPrintAgent` Windows service is already installed and running,
+   the desktop uses the service instead of a background process.
+
+Optional administrator-managed service (survives reboot independently):
 
 ```powershell
-# copy beside installer or from build:
-mkdir "C:\Program Files\OdooPrintAgent"
-copy OdooPrintAgent.exe "C:\Program Files\OdooPrintAgent\"
-copy odoo-agent-cli.exe "C:\Program Files\OdooPrintAgent\"
-.\OdooPrintAgent.exe -service install   # creates service OdooPrintAgent, Arguments: -config C:\ProgramData\OdooPrintAgent\config.yaml, Dependencies: Tcpip
-.\OdooPrintAgent.exe -service start
+# from an elevated PowerShell
+& "C:\Program Files\Odoo Print Manager\resources\OdooPrintAgent.exe" -service install
+& "C:\Program Files\Odoo Print Manager\resources\OdooPrintAgent.exe" -service start
 sc query OdooPrintAgent
-# config: C:\ProgramData\OdooPrintAgent\config.yaml (installer mkdir SYSTEM:F Administrators:F ServiceSID:F, verify: icacls "C:\ProgramData\OdooPrintAgent")
-# db:     C:\ProgramData\OdooPrintAgent\agent.db (WAL, busy_timeout=5000)
 ```
 
-Service restarts via SCM on failure; close Desktop does NOT stop it (`docs/VERIFICATION.md` W6).
+Runtime data prefers `C:\ProgramData\OdooPrintAgent\` and automatically falls
+back to `%LOCALAPPDATA%\OdooPrintAgent\` when the current user is not elevated
+and ProgramData is not writable by that user:
+
+```text
+config.yaml  — server URL, agent id, persisted secret, printer list
+agent.db     — SQLite local delivery queue (WAL, busy_timeout=5000)
+logs\agent.log
+```
+
+If the agent is unpaired it stays alive and waits for the desktop pairing flow;
+it never writes into `C:\Program Files\Odoo Print Manager\`.
 
 ## 3. Pairing (CLI owns secret)
 
@@ -39,9 +54,9 @@ Gateway: `/dashboard` → create Agent → copy 6-char `AB12CD` (30m, single-use
 Agent PC (admin):
 
 ```powershell
-& "C:\Program Files\OdooPrintAgent\odoo-agent-cli.exe" -pair AB12CD -server https://gateway.example.com
-# writes agent.id + secret to C:\ProgramData\OdooPrintAgent\config.yaml — secret never returned to UI
- Restart-Service OdooPrintAgent
+& "C:\Program Files\Odoo Print Manager\resources\odoo-agent-cli.exe" -pair AB12CD -server https://gateway.example.com
+# Writes agent.id + secret to C:\ProgramData\OdooPrintAgent\config.yaml — secret never returned to the UI.
+# Odoo Print Manager also performs this same operation from the Pair screen, so PowerShell is optional.
 ```
 
 Validate: `GET /api/agents` shows `lastSeenAt` fresh, `status online`.
@@ -70,7 +85,7 @@ cargo tauri build  # → src-tauri/target/release/bundle/nsis/OdooPrintManager_*
 # Manager data: C:\ProgramData\OdooPrintManager\settings.json (verify icacls)
 ```
 
-Tray: close → hide, Exit → `app.exit(0)`. Service controls via allowlisted `OdooPrintAgent.exe -service {start,stop,restart}` args only.
+Tray: close → hide, Exit → `app.exit(0)`. `Start/Stop/Restart Agent` in the desktop UI invokes Rust commands that either control the Windows service or stop/start the bundled background process with `std::process` (no shell plugin, no arbitrary command execution).
 
 ## 7. Odoo
 

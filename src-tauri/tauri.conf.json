@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Odoo Print Manager",
         "width": 1200,
         "height": 800,
@@ -26,7 +27,15 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/48x48.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
     "resources": {
       "../agent/OdooPrintAgent.exe": "resources/OdooPrintAgent.exe",
       "../agent/odoo-agent-cli.exe": "resources/odoo-agent-cli.exe"
@@ -39,23 +48,6 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
-    }
-  },
-  "plugins": {
-    "store": {},
-    "shell": {
-      "scope": [
-        {
-          "name": "run-agent-cli",
-          "cmd": "odoo-agent-cli",
-          "args": true
-        },
-        {
-          "name": "run-agent-service",
-          "cmd": "OdooPrintAgent",
-          "args": true
-        }
-      ]
     }
   }
 }

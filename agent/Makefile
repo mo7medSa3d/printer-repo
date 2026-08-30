@@ -1,15 +1,15 @@
 .PHONY: all build-agent build-cli clean test
 
-BINARY_AGENT=odoo-agent.exe
+BINARY_AGENT=OdooPrintAgent.exe
 BINARY_CLI=odoo-agent-cli.exe
 
 all: build-agent build-cli
 
 build-agent:
-	go build -o $(BINARY_AGENT) ./cmd/agent
+	go build -trimpath -o $(BINARY_AGENT) ./cmd/agent
 
 build-cli:
-	go build -o $(BINARY_CLI) ./cmd/cli
+	go build -trimpath -o $(BINARY_CLI) ./cmd/cli
 
 test:
 	go test ./internal/...
