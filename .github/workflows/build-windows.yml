@@ -1,0 +1,64 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Go Agent
+        working-directory: agent
+        shell: pwsh
+        run: |
+          go build -o OdooPrintAgent.exe ./cmd/agent
+          go build -o odoo-agent-cli.exe ./cmd/cli
+
+      - name: Verify Go binaries
+        shell: pwsh
+        run: |
+          Get-Item agent\OdooPrintAgent.exe
+          Get-Item agent\odoo-agent-cli.exe
+
+      - name: Build desktop frontend
+        run: npm run desktop:vite:build
+
+      - name: Build Tauri Windows installer
+        shell: pwsh
+        run: |
+          cargo tauri build --target x86_64-pc-windows-msvc
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: Odoo-Print-Manager-Windows
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error
