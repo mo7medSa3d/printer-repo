@@ -32,7 +32,8 @@ jobs:
 
       - name: Install Tauri CLI
         shell: pwsh
-        run: cargo install tauri-cli --version "^2"
+        run: |
+          cargo install tauri-cli --version "^2" --locked
 
       - name: Install dependencies
         run: npm ci
@@ -47,16 +48,24 @@ jobs:
       - name: Verify Go binaries
         shell: pwsh
         run: |
-          Get-Item agent\OdooPrintAgent.exe
-          Get-Item agent\odoo-agent-cli.exe
+          Get-Item OdooPrintAgent.exe
+          Get-Item odoo-agent-cli.exe
 
       - name: Build desktop frontend
         run: npm run desktop:vite:build
 
-      - name: Build Tauri Windows installer
+      - name: Build Tauri application
         shell: pwsh
         run: |
-          cargo tauri build --target x86_64-pc-windows-msvc
+          cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: List generated files
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== Tauri target ==="
+          Get-ChildItem -Path "src-tauri\target\x86_64-pc-windows-msvc\release" -Recurse -File |
+            Select-Object FullName, Length
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v6
@@ -64,5 +73,5 @@ jobs:
           name: Odoo-Print-Manager-Windows
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: error
+
