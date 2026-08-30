@@ -34,6 +34,8 @@ Server upserts `agents.lastSeenAt` and `printers` scoped to `agent.id` (cannot o
 ### 5. WebSocket (Agent only)
 `WSS /api/agent/ws` — handled in `server.ts` + `src/server/ws.ts` (Next route returns 426). Upgrade with `Authorization: Bearer agt:secret`. Server validates then `attachAgentWSS` tracks `Map<agentId,Set<WS>>`, ping/pong 30s, `broadcastJobToAgent` on job creation. Desktop **does not** use WS — polls HTTPS.
 
+**Push claim semantics:** job creation paths use `pushJobToAgentWithClaim` (`src/server/ws.ts`). If (and only if) an open socket received the push, the job row is atomically moved `queued→claimed` (racing polls collapse to a 0-row no-op) — this grants the WS-delivered agent the same PATCH lease the poll path would establish. A failed push (no open socket) leaves the job `queued` for the agent's poll fallback.
+
 ## Manager (Desktop + Dashboard)
 
 All require `validateManager` (cookie/JWT 8h).
@@ -46,15 +48,15 @@ All require `validateManager` (cookie/JWT 8h).
 - `GET /api/printers` / `POST /api/printers` / `GET/PATCH/DELETE /api/printers/:id` — validates `ip:port`, `type`, `protocol` (`zod` + `config.ValidatePrinterConfig`)
 - `POST /api/printers/:id/test-connection` — **RPC, no job row** `src/app/api/printers/[id]/test-connection/route.ts:1` → `{reachable, latencyMs, agentOnline, error}`
   - **Explicit semantics (final gate):** Preferred `Tauri→Gateway→Agent→immediate TCP dial/probe→measured latencyMs→Gateway→Tauri` (Agent `NetworkPrinter.Status` 2s / DialContext 5s). Current `latencyMs:null` is **cached** from last heartbeat `printer.status` because Gateway cannot dial LAN; file header documents next-phase live WS probe `{type:"probe",printerId}`. `probeId` only if tracing required — not used. `test-connection` never touches `printJobs` (grep verified).
-- `POST /api/printers/:id/test-print` — **real job** `buildTestPrintPayload` → `createPrintJob` → `queued → claimed(lease) → printing → success/failed` + `tryPushJob` WS
-- `GET /api/jobs?status=&printerId=&agentId=&limit=` / `GET /api/jobs/:id` (manager read)
+- `POST /api/printers/:id/test-print` — **real job** `buildTestPrintPayload` → `createPrintJob` → `queued → claimed(lease) → printing → success/failed` + claim-aware WS push (`pushJobToAgentWithClaim`)
+- `GET /api/jobs?status=&printerId=&agentId=&limit=` / `GET /api/jobs/:id` (manager read) — filters applied in SQL `WHERE` before `LIMIT`; unknown `status` → `400`
 - `GET /api/odoo/keys` / `POST /api/odoo/keys` (manager)
 
 ## Odoo → Gateway
 
 - `POST /api/print/jobs` (Odoo key) `{"printerId","payload":{type:"raw|escpos",encoding:"base64",data:"..."},"expiresAt?","idempotencyKey?"}`
-  - Validates printer exists+enabled, `validatePrintJobPayload` (5 MiB cap `src/lib/payload.ts:6`), `expiresAt` future, idempotency via `job_<hash>` if `idempotencyKey` provided.
-  - Inserts `printJobs` `queued`, `tryPushJob` to Agent via WS (polling fallback).
+  - Validates printer exists+enabled, `validatePrintJobPayload` (5 MiB cap `src/lib/payload.ts:6`; **canonical, padded base64 only** — matches the agent's strict `base64.StdEncoding`; unpadded or out-of-alphabet input → `400`), `expiresAt` future, idempotency via `job_<hash>` if `idempotencyKey` provided.
+  - Inserts `printJobs` `queued`, `pushJobToAgentWithClaim` to Agent via WS (polling fallback for offline/unconnected agents).
   - → `201 {jobId,status:"queued",printerId,agentId}` or `200` if idempotent hit.
 - `GET /api/print/jobs?id=job_xxx` (Odoo key) → `{jobId,status,printerId,agentId,error,retries,expiresAt,updatedAt}`
 

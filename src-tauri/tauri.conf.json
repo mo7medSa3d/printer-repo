@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "identifier": "com.odoo.printmanager",
   "build": {
-    "beforeDevCommand": "",
+    "beforeDevCommand": "npm run desktop:dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run desktop:vite:build",
     "frontendDist": "../dist-desktop"
@@ -27,6 +27,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Odoo Print",
+    "copyright": "Copyright © 2026 Odoo Print",
+    "shortDescription": "Local print manager for Odoo POS/ERP",
+    "longDescription": "Odoo Print Manager pairs this Windows PC with the Odoo Print Gateway, runs the local print agent, and shows gateway/agent health from the system tray.",
     "icon": [
       "icons/32x32.png",
       "icons/48x48.png",
@@ -42,8 +46,10 @@
     },
     "windows": {
       "nsis": {
-        "template": "nsis",
-        "displayLanguageSelector": false
+        "installMode": "perMachine",
+        "displayLanguageSelector": false,
+        "createDesktopShortcut": true,
+        "startMenuFolder": "Odoo Print Manager"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

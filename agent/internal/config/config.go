@@ -88,6 +88,12 @@ func Ensure(path string) error {
 	return nil
 }
 
+// Save persists the config atomically: the serialized YAML is written to a
+// sibling temp file with 0600 permissions, fsynced, and then renamed over the
+// target. A crash mid-write can therefore never leave a truncated config
+// (which could strand the pairing secret), and the secret is never
+// momentarily world-readable on POSIX filesystems. On Windows the installer
+// applies the ProgramData ACLs on top (see INSTALLATION.md).
 func (c *Config) Save(path string) error {
 	if path == "" {
 		return fmt.Errorf("config path is empty")
@@ -96,19 +102,37 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
-	f, err := os.Create(path)
+
+	data, err := yaml.Marshal(c)
 	if err != nil {
-		return fmt.Errorf("create config %s: %w", path, err)
-	}
-	if err := yaml.NewEncoder(f).Encode(c); err != nil {
-		f.Close()
 		return fmt.Errorf("encode config %s: %w", path, err)
+	}
+
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create temp config %s: %w", tmp, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("write temp config %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return fmt.Errorf("sync config %s: %w", path, err)
+		return fmt.Errorf("sync temp config %s: %w", tmp, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close temp config %s: %w", tmp, err)
+	}
+	// os.Rename on the same volume is atomic; on Windows it replaces an
+	// existing destination file (Go >= 1.20 semantics).
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("commit config %s: %w", path, err)
+	}
+	// Belt-and-braces: re-assert restrictive permissions on the final path
+	// (the rename already carries 0600 from the temp file on POSIX).
+	_ = os.Chmod(path, 0600)
+	return nil
 }
 
 // ExecutableDir returns the directory containing the running binary,

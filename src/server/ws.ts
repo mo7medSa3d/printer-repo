@@ -51,6 +51,36 @@ export function tryPushJob(job: { id: string; agentId: string; printerId: string
   });
 }
 
+/**
+ * Push a freshly created job over the agent WebSocket AND record the gateway
+ * lease that the poll path (GET /api/agent/jobs) would normally establish.
+ *
+ * Why this matters: the PATCH status machine (src/lib/job-status.ts) refuses
+ * every transition out of 'queued' — only a 'claimed' row may become
+ * 'printing'/'failed'. A bare WS push left the job in 'queued', so a
+ * WS-connected agent could never report progress/success (PATCH → 409), and
+ * the job churned until TTL/reclaim. Now, when the push actually reached an
+ * open socket, we atomically claim the row. If a poll (or another creator)
+ * claimed it concurrently, the UPDATE simply matches 0 rows.
+ *
+ * Returns true when the job was delivered over WS (and the claim attempt was
+ * made). A false return means "no open socket" — the row stays 'queued' and
+ * the agent's poll fallback claims it normally.
+ *
+ * Known, accepted ms-window: a very fast agent can PATCH 'printing' between
+ * the WS dispatch and the claim landing; that single progress tick may be
+ * rejected with 409, but the terminal success/failed PATCH then lands
+ * correctly against the claimed row.
+ */
+export async function pushJobToAgentWithClaim(job: { id: string; agentId: string; printerId: string; payload: unknown; expiresAt: string | Date }): Promise<boolean> {
+  const delivered = tryPushJob(job);
+  if (!delivered) return false;
+  await db.update(printJobs)
+    .set({ status: "claimed", claimedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(printJobs.id, job.id), eq(printJobs.status, "queued")));
+  return true;
+}
+
 export function attachAgentWSS(server: HttpServer) {
   const wss = new WebSocketServer({ noServer: true, path: "/api/agent/ws" });
 

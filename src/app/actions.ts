@@ -5,16 +5,35 @@ import { agents, printers, printJobs } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { generatePairingCode } from "@/lib/agent-auth";
 import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
+import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
+
+/**
+ * Server actions are public HTTP endpoints (POST) like any route handler —
+ * "use server" does NOT authenticate them. Every action here mutates printer
+ * state, so require a valid manager session (cookie round-trip, same policy
+ * as the management API routes) before touching the DB.
+ */
+async function requireManager() {
+  const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
+  const claims = await validateManagerClaims(token ? verifyManagerToken(token) : null);
+  if (!claims) throw new Error("Unauthorized");
+  return claims;
+}
 
 export async function createAgent(name: string) {
+  await requireManager();
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 200) {
+    throw new Error("invalid agent name");
+  }
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
 
   await db.insert(agents).values({
     id,
-    name,
+    name: name.trim(),
     pairingCode,
     pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30), // 30 mins
     status: "offline",
@@ -25,6 +44,7 @@ export async function createAgent(name: string) {
 }
 
 export async function createPrintJob(printerId: string, payload: unknown) {
+  await requireManager();
   const printer = await db.query.printers.findFirst({
     where: eq(printers.id, printerId),
   });
@@ -47,10 +67,11 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   };
   await db.insert(printJobs).values(row);
 
-  // Best-effort WS push (polling fallback covers offline agent)
+  // Best-effort WS push (polling fallback covers offline agent). A delivered
+  // push also claims the job so the agent's PATCHes pass the claimed→… check.
   try {
-    const { tryPushJob } = await import("@/server/ws");
-    tryPushJob({ id, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt: row.expiresAt });
+    const { pushJobToAgentWithClaim } = await import("@/server/ws");
+    await pushJobToAgentWithClaim({ id, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt: row.expiresAt });
   } catch {}
 
   revalidatePath("/dashboard");
@@ -63,6 +84,7 @@ export async function createPrintJob(printerId: string, payload: unknown) {
  * uses (queued -> claimed -> printing -> success/failed).
  */
 export async function createTestPrintJob(printerId: string) {
+  await requireManager();
   const printer = await db.query.printers.findFirst({
     where: eq(printers.id, printerId),
   });
@@ -77,6 +99,7 @@ export async function createTestPrintJob(printerId: string) {
 }
 
 export async function deleteAgent(id: string) {
+  await requireManager();
   await db.delete(agents).where(eq(agents.id, id));
   revalidatePath("/dashboard");
 }

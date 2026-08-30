@@ -12,9 +12,14 @@ export const printJobPayloadSchema = z.object({
     if (s.length > (MAX_PAYLOAD_BYTES / 3) * 4 + 8) return false;
     try {
       const decoded = Buffer.from(s, "base64");
-      // round-trip check guards invalid base64 accepted by Buffer.from
       if (decoded.length === 0) return false;
       if (decoded.length > MAX_PAYLOAD_BYTES) return false;
+      // Round-trip check: Buffer.from silently tolerates invalid base64
+      // (skips non-alphabet chars, accepts missing padding), while the Go
+      // agent's base64.StdEncoding.DecodeString is strict. Canonical
+      // re-encoding keeps the gateway's validator in lockstep with the
+      // agent's, so a job we accept can never be rejected downstream.
+      if (decoded.toString("base64") !== s) return false;
       return true;
     } catch {
       return false;

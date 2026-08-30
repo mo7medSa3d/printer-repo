@@ -137,14 +137,6 @@ pub fn agent_config_path() -> PathBuf {
     agent_data_root().join("config.yaml")
 }
 
-pub fn agent_database_path() -> PathBuf {
-    agent_data_root().join("agent.db")
-}
-
-pub fn agent_log_dir() -> PathBuf {
-    agent_data_root().join("logs")
-}
-
 pub fn manager_log_dir() -> PathBuf {
     manager_data_root().join("logs")
 }

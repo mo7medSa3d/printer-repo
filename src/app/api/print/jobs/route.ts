@@ -80,10 +80,12 @@ export async function POST(req: Request) {
     expiresAt,
   });
 
-  // Best-effort WS push to Agent (polling fallback covers offline)
+  // Best-effort WS push to Agent (polling fallback covers offline).
+  // On a successful push the job is claimed so the agent's status PATCHes
+  // satisfy the claimed→… transition policy (src/lib/job-status.ts).
   try {
-    const { tryPushJob } = await import("@/server/ws");
-    tryPushJob({ id: jobId, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt });
+    const { pushJobToAgentWithClaim } = await import("@/server/ws");
+    await pushJobToAgentWithClaim({ id: jobId, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt });
   } catch {}
 
   return NextResponse.json({ jobId, status: "queued", printerId: printer.id, agentId: printer.agentId }, { status: 201 });

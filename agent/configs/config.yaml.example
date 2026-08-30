@@ -13,8 +13,11 @@ printers:
     endpoint: "192.168.1.50:9100"
     protocol: "escpos"
   
+  # NOTE: type "usb" validates but the Windows spooler backend is not wired
+  # yet — printer.New() rejects USB printers with an explicit error (see
+  # PRINTERS.md / factory.go). Prefer network (RAW TCP 9100) printers today.
   - id: "printer_receipt"
     name: "Front Desk Printer"
-    type: "usb"
-    endpoint: "USB001"
+    type: "network"
+    endpoint: "192.168.1.51:9100"
     protocol: "raw"

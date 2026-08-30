@@ -14,9 +14,10 @@ fn main() {
     if logging::init().is_none() {
         eprintln!("[odoo-print-manager] file logging could not be initialized");
     }
+    // Release builds have no console; make panics land in the log file.
+    logging::install_panic_hook();
 
     let result = tauri::Builder::default()
-        .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -38,7 +39,7 @@ fn main() {
             ));
 
             // Register the desktop manager to launch on Windows login/reboot.
-            // The setup() handler below then starts the bundled agent so a normal
+            // The setup() handler then starts the bundled agent so a normal
             // user gets the full stack again after a reboot.
             #[cfg(windows)]
             {
@@ -97,10 +98,10 @@ fn main() {
         }
     };
 
-    let result = app.run(|_app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
-            logging::info("application exit requested");
-        }
+    let result = app.run(|_app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => logging::info("application exit requested"),
+        tauri::RunEvent::Exit => logging::info("application exited"),
+        _ => {}
     });
 
     if let Err(e) = result {

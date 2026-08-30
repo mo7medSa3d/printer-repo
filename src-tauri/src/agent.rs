@@ -37,9 +37,14 @@ fn resolve_executable(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, Str
         candidates.push(dir.join("resources").join(name));
         candidates.push(dir.join(name));
     }
-    // Development fallback, kept out of the production binary path logic.
-    let dev_base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("agent");
-    candidates.push(dev_base.join(name));
+    // Development fallback (repository checkout): compiled into debug builds
+    // only, so the release installer never carries a reference to the
+    // developer's working directory.
+    #[cfg(debug_assertions)]
+    {
+        let dev_base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("agent");
+        candidates.push(dev_base.join(name));
+    }
 
     let path = candidates
         .into_iter()
@@ -172,7 +177,7 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
 pub fn stop(app: &tauri::AppHandle) -> Result<(), String> {
     if is_running(app) {
         if sc_query().map(|q| q.to_ascii_uppercase().contains("RUNNING")).unwrap_or(false) {
-            let _ = run_net("stop")?;
+            run_net("stop")?;
         } else {
             #[cfg(windows)]
             {
