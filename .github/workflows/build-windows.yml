@@ -1,124 +1,297 @@
 name: Build Windows Installer
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
 concurrency:
   group: windows-build-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
+
     permissions:
       contents: read
+
     steps:
+      # ============================================================
+      # Checkout
+      # ============================================================
       - name: Checkout
         uses: actions/checkout@v6
+
+      # ============================================================
+      # Node.js + npm cache
+      # ============================================================
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: ".nvmrc"
           cache: npm
+          cache-dependency-path: package-lock.json
+
+      # ============================================================
+      # Go + Go modules cache
+      # ============================================================
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27'
+          go-version: stable
+          cache: true
           cache-dependency-path: agent/go.sum
+
+      # ============================================================
+      # Rust
+      # ============================================================
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - name: Cache Tauri CLI
+
+      # ============================================================
+      # Rust / Cargo / Tauri cache
+      #
+      # Cache:
+      #   - Tauri CLI
+      #   - Cargo registry
+      #   - Cargo git dependencies
+      #   - Rust target directory
+      #
+      # Cargo.lock controls dependency invalidation.
+      # ============================================================
+      - name: Cache Rust and Tauri
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/cargo-tauri.exe
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-tauri-${{ runner.os }}-${{ hashFiles('.github/workflows/build-windows.yml') }}
+            src-tauri/target
+          key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-
+
+      # ============================================================
+      # Install Tauri CLI only when it is not restored from cache
+      # ============================================================
       - name: Install Tauri CLI
         shell: pwsh
         run: |
-          if (Get-Command cargo-tauri -ErrorAction SilentlyContinue) {
+          $tauri = Get-Command cargo-tauri -ErrorAction SilentlyContinue
+
+          if ($tauri) {
             cargo tauri --version
-            Write-Host "tauri-cli restored from cache; skipping install"
-            exit 0
+            Write-Host "Tauri CLI restored from cache; skipping install."
           }
-          cargo install tauri-cli --version "^2" --locked
+          else {
+            Write-Host "Tauri CLI not found in cache; installing..."
+            cargo install tauri-cli --version "^2" --locked
+          }
+
+      # ============================================================
+      # Install Node dependencies
+      #
+      # npm cache is handled automatically by setup-node.
+      # ============================================================
       - name: Install dependencies
         run: npm ci
+
+      # ============================================================
+      # Frontend validation
+      # ============================================================
       - name: Typecheck frontend
         run: npm run typecheck
+
       - name: Lint frontend
         run: npm run lint
-      - name: Go agent tests
+
+      # ============================================================
+      # Go validation
+      # ============================================================
+      - name: Go vet
         working-directory: agent
         shell: pwsh
-        run: |
-          go test ./...
+        run: go vet ./...
+
+      - name: Go tests
+        working-directory: agent
+        shell: pwsh
+        run: go test ./...
+
+      - name: Go race tests
+        working-directory: agent
+        shell: pwsh
+        run: go test -race ./...
+
+      # ============================================================
+      # Build Go Agent + CLI
+      # ============================================================
       - name: Build Go Agent
         working-directory: agent
         shell: pwsh
         run: |
-          go build -trimpath -o OdooPrintAgent.exe ./cmd/agent
-          go build -trimpath -o odoo-agent-cli.exe ./cmd/cli
+          go build -trimpath -ldflags="-s -w" -o OdooPrintAgent.exe ./cmd/agent
+          go build -trimpath -ldflags="-s -w" -o odoo-agent-cli.exe ./cmd/cli
+
+      # ============================================================
+      # Verify Go binaries
+      # ============================================================
       - name: Verify Go binaries
         shell: pwsh
         run: |
-          Get-Item agent\OdooPrintAgent.exe | Select-Object FullName, Length
-          Get-Item agent\odoo-agent-cli.exe | Select-Object FullName, Length
-          if (-not (Test-Path "agent\OdooPrintAgent.exe")) { throw "Missing OdooPrintAgent.exe" }
-          if (-not (Test-Path "agent\odoo-agent-cli.exe")) { throw "Missing odoo-agent-cli.exe" }
+          $agent = "agent\OdooPrintAgent.exe"
+          $cli = "agent\odoo-agent-cli.exe"
+
+          if (-not (Test-Path $agent)) {
+            throw "Missing OdooPrintAgent.exe"
+          }
+
+          if (-not (Test-Path $cli)) {
+            throw "Missing odoo-agent-cli.exe"
+          }
+
+          Get-Item $agent | Select-Object FullName, Length
+          Get-Item $cli | Select-Object FullName, Length
+
+      # ============================================================
+      # Verify Tauri icon assets
+      # ============================================================
       - name: Verify Tauri icon assets
         shell: pwsh
         run: |
-          # Verify exactly the icons referenced by tauri.conf.json bundle.icon
-          # instead of a hardcoded list, so config and assets cannot drift apart.
           $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $icons = @($conf.bundle.icon)
-          if ($icons.Count -eq 0) { throw "No bundle.icon entries in src-tauri/tauri.conf.json" }
+
+          if ($icons.Count -eq 0) {
+            throw "No bundle.icon entries in src-tauri/tauri.conf.json"
+          }
+
           foreach ($icon in $icons) {
             $p = Join-Path "src-tauri" ($icon -replace '/', '\')
-            if (-not (Test-Path $p)) { throw "Missing configured icon: $p" }
+
+            if (-not (Test-Path $p)) {
+              throw "Missing configured icon: $p"
+            }
+
             $len = (Get-Item $p).Length
-            if ($len -le 0) { throw "Empty configured icon: $p" }
+
+            if ($len -le 0) {
+              throw "Empty configured icon: $p"
+            }
+
             Write-Host "OK icon $icon ($len bytes)"
           }
+
           Write-Host "All $($icons.Count) configured icons are present."
+
+      # ============================================================
+      # Build desktop frontend
+      # ============================================================
       - name: Build desktop frontend
         run: npm run desktop:vite:build
+
+      # ============================================================
+      # Build Windows MSI + NSIS installer
+      #
+      # Rust target directory is restored from cache above,
+      # so unchanged crates should not be rebuilt from scratch.
+      # ============================================================
       - name: Build Tauri Windows installer (MSI + NSIS EXE)
         shell: pwsh
         run: |
-          cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+          cargo tauri build `
+            --target x86_64-pc-windows-msvc `
+            --bundles nsis,msi
+
+      # ============================================================
+      # Verify installer artifacts
+      # ============================================================
       - name: Verify installer artifacts exist
         shell: pwsh
         run: |
-          $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" -ErrorAction SilentlyContinue
-          $exe = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue
-          if (-not $msi) { throw "MSI bundle missing" }
-          if (-not $exe) { throw "NSIS EXE bundle missing" }
-          Write-Host "MSI: $($msi.FullName)"
-          Write-Host "NSIS EXE: $($exe.FullName)"
+          $msi = Get-ChildItem `
+            "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" `
+            -ErrorAction SilentlyContinue
+
+          $exe = Get-ChildItem `
+            "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $msi) {
+            throw "MSI bundle missing"
+          }
+
+          if (-not $exe) {
+            throw "NSIS EXE bundle missing"
+          }
+
+          Write-Host "MSI:"
+          $msi | Select-Object FullName, Length
+
+          Write-Host "NSIS EXE:"
+          $exe | Select-Object FullName, Length
+
+      # ============================================================
+      # Install MSI and smoke-test installed app
+      # ============================================================
       - name: Install MSI and smoke-test installed app
         shell: pwsh
         run: |
-          $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" | Select-Object -First 1
-          if (-not $msi) { throw "MSI bundle missing" }
+          $msi = Get-ChildItem `
+            "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" `
+            | Select-Object -First 1
+
+          if (-not $msi) {
+            throw "MSI bundle missing"
+          }
+
           $msiLog = Join-Path $env:RUNNER_TEMP "odoo-msi-install.log"
-          $proc = Start-Process msiexec -ArgumentList @("/i", "`"$($msi.FullName)`"", "/qn", "/norestart", "/l*v", "`"$msiLog`"") -Wait -PassThru
+
+          $proc = Start-Process `
+            msiexec `
+            -ArgumentList @(
+              "/i",
+              "`"$($msi.FullName)`"",
+              "/qn",
+              "/norestart",
+              "/l*v",
+              "`"$msiLog`""
+            ) `
+            -Wait `
+            -PassThru
+
           if ($proc.ExitCode -ne 0) {
             Get-Content $msiLog -Tail 200
             throw "MSI install failed with code $($proc.ExitCode)"
           }
+
           $installDir = Join-Path $env:ProgramFiles "Odoo Print Manager"
-          if (-not (Test-Path (Join-Path $installDir "odoo-print-manager.exe"))) {
+
+          $installedExe = Join-Path `
+            $installDir `
+            "odoo-print-manager.exe"
+
+          if (-not (Test-Path $installedExe)) {
             throw "Installed EXE missing after MSI install: $installDir"
           }
-          & pwsh -NoProfile -File .\scripts\smoke-test-windows.ps1 -InstallDir $installDir
-          if ($LASTEXITCODE -ne 0) { throw "Windows smoke test failed" }
+
+          & pwsh `
+            -NoProfile `
+            -File .\scripts\smoke-test-windows.ps1 `
+            -InstallDir $installDir
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows smoke test failed"
+          }
+
+      # ============================================================
+      # Upload installers
+      # ============================================================
       - name: Upload Windows MSI and NSIS EXE
         uses: actions/upload-artifact@v6
         with:
