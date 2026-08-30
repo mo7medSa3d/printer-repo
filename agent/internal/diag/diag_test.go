@@ -48,7 +48,12 @@ func TestCIPackageDiagnostics(t *testing.T) {
 	}
 	if failed == 0 {
 		fmt.Println("::notice::diag: all agent packages pass")
+		return
 	}
+	// Fail this test so `go test ./...` prints the diag package's stdout
+	// verbatim; go hides output of passing packages, which would swallow the
+	// ::error:: workflow commands above.
+	t.Fatalf("diag: %d package(s) failed; full output was emitted via ::error:: above", failed)
 }
 
 func shortPkg(pkg string) string {

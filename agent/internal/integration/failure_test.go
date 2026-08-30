@@ -47,7 +47,11 @@ func TestFailureTimeout(t *testing.T) {
 }
 
 func TestFailurePrinterDisconnectAndRetry(t *testing.T) {
-	mock := testutil.NewMockTCPPrinter("127.0.0.1:0")
+	// Deliberately NOT an ephemeral port: after mock.Close() the OS could hand
+	// a freed ephemeral port to another package's listener running in parallel,
+	// which would make "second print must fail" flaky. Static TEST ports are
+	// never picked by net.Listen(":0").
+	mock := testutil.NewMockTCPPrinter("127.0.0.1:19997")
 	mock.Start()
 	defer mock.Close()
 	p := &printer.NetworkPrinter{Address: mock.Addr}
