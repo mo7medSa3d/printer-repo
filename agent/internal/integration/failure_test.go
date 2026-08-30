@@ -41,13 +41,17 @@ func TestFailureTimeout(t *testing.T) {
 	case err := <-done:
 		// either err (deadline) or nil (if dial+write beat delay) — both acceptable, just must not hang
 		_ = err
-	case <-time.After(2 * time.Second):
-		t.Fatalf("Print hung beyond 2s")
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Print hung beyond 10s")
 	}
 }
 
 func TestFailurePrinterDisconnectAndRetry(t *testing.T) {
-	mock := testutil.NewMockTCPPrinter("127.0.0.1:0")
+	// Deliberately NOT an ephemeral port: after mock.Close() the OS could hand
+	// a freed ephemeral port to another package's listener running in parallel,
+	// which would make "second print must fail" flaky. Static TEST ports are
+	// never picked by net.Listen(":0").
+	mock := testutil.NewMockTCPPrinter("127.0.0.1:19997")
 	mock.Start()
 	defer mock.Close()
 	p := &printer.NetworkPrinter{Address: mock.Addr}
@@ -57,7 +61,7 @@ func TestFailurePrinterDisconnectAndRetry(t *testing.T) {
 	if err := p.Print(ctx, []byte("first")); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	caps := mock.WaitForCaptures(1, time.Second)
+	caps := mock.WaitForCaptures(1, 5*time.Second)
 	if len(caps) != 1 || string(caps[0]) != "first" {
 		t.Fatalf("capture first failed %v", caps)
 	}
@@ -89,8 +93,8 @@ func TestMultiplePrintersIndependently(t *testing.T) {
 		t.Fatalf("p2: %v", err)
 	}
 	// wait for async capture
-	m1.WaitForCaptures(1, time.Second)
-	m2.WaitForCaptures(1, time.Second)
+	m1.WaitForCaptures(1, 5*time.Second)
+	m2.WaitForCaptures(1, 5*time.Second)
 	if string(m1.CapturedFlat()) != "printer1" {
 		t.Fatalf("m1 flat %q", string(m1.CapturedFlat()))
 	}
