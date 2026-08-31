@@ -14,6 +14,7 @@ fn main() {
     if logging::init().is_none() {
         eprintln!("[odoo-print-manager] file logging could not be initialized");
     }
+
     // Release builds have no console; make panics land in the log file.
     logging::install_panic_hook();
 
@@ -32,6 +33,7 @@ fn main() {
                 logging::error(&msg);
                 std::io::Error::other(msg)
             })?;
+
             logging::info(&format!(
                 "runtime dirs: manager={}, agent={}",
                 paths::manager_data_root().display(),
@@ -44,9 +46,12 @@ fn main() {
             #[cfg(windows)]
             {
                 use tauri_plugin_autostart::ManagerExt;
+
                 match app.autolaunch().enable() {
                     Ok(_) => logging::info("desktop autostart enabled at Windows login"),
-                    Err(e) => logging::warn(&format!("desktop autostart could not be enabled: {e}")),
+                    Err(e) => logging::warn(&format!(
+                        "desktop autostart could not be enabled: {e}"
+                    )),
                 }
             }
 
@@ -55,6 +60,7 @@ fn main() {
             // Hide on close: window close => hide, not exit. Tray Exit does real exit.
             if let Some(win) = app.get_webview_window("main") {
                 let handle = win.clone();
+
                 win.on_window_event(move |e| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = e {
                         api.prevent_close();
@@ -66,12 +72,15 @@ fn main() {
             // Start exactly one agent. A missing/unregistered configuration is
             // not fatal to the desktop app; the agent logs the situation.
             if let Err(e) = agent::ensure_started(app.handle()) {
-                logging::warn(&format!("agent could not be started during setup: {e}"));
+                logging::warn(&format!(
+                    "agent could not be started during setup: {e}"
+                ));
             } else {
                 logging::info("agent process/service started during setup");
             }
 
             logging::info("application setup completed");
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -98,16 +107,13 @@ fn main() {
         }
     };
 
-    let result = app.run(|_app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { .. } => logging::info("application exit requested"),
-        tauri::RunEvent::Exit => logging::info("application exited"),
+    app.run(|_app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            logging::info("application exit requested")
+        }
+        tauri::RunEvent::Exit => {
+            logging::info("application exited")
+        }
         _ => {}
     });
-
-    if let Err(e) = result {
-        let msg = format!("error while running tauri app: {e}");
-        logging::error(&msg);
-        eprintln!("{msg}");
-        std::process::exit(1);
-    }
 }
