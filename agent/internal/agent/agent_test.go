@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -75,11 +76,11 @@ func newTestAgent(t *testing.T, printerID string, p printer.Printer) *Agent {
 	cfg.Agent.ID = "agt_test"
 	cfg.Agent.Secret = "secret"
 	cfg.Server.URL = "http://localhost:3000"
-	// bypass queue file by using temp
-	qPath := t.TempDir() + "/q.db"
-	// we need to set config path to temp so QueueDBPath lands there
-	cfgPath := t.TempDir() + "/config.yaml"
-	// create agent directly without calling New (to inject fake printer)
+	// Use a single temp dir for config and queue so t.Cleanup can close the agent
+	// before the temp dir is removed. This mirrors the production lifecycle:
+	// Run() -> waitForJobs() -> Close().
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
 	ag, err := New(cfg, cfgPath)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -87,8 +88,12 @@ func newTestAgent(t *testing.T, printerID string, p printer.Printer) *Agent {
 	// override auto-created printers with fake
 	ag.printers = map[string]printer.Printer{printerID: p}
 	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100"}}
-	// override queue path for isolation (already created via New, but keep)
-	_ = qPath
+	// Ensure the agent's queue is closed before the temp dir is cleaned up.
+	t.Cleanup(func() {
+		if err := ag.Close(); err != nil {
+			t.Logf("Agent.Close() error: %v", err)
+		}
+	})
 	return ag
 }
 
@@ -132,14 +137,20 @@ func TestDifferentPrintersConcurrent(t *testing.T) {
 	// assertion is about interval overlap, not absolute duration.
 	p1 := &fakePrinter{sleep: 400 * time.Millisecond}
 	p2 := &fakePrinter{sleep: 400 * time.Millisecond}
+	tmpDir := t.TempDir()
 	cfg := &config.Config{}
 	cfg.Agent.ID = "agt_test"
 	cfg.Agent.Secret = "secret"
 	cfg.Server.URL = "http://localhost:3000"
-	ag, err := New(cfg, t.TempDir()+"/config.yaml")
+	ag, err := New(cfg, filepath.Join(tmpDir, "config.yaml"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := ag.Close(); err != nil {
+			t.Logf("Agent.Close() error: %v", err)
+		}
+	})
 	ag.printers = map[string]printer.Printer{"p1": p1, "p2": p2}
 	ag.printerConfigs = map[string]config.PrinterConfig{
 		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100"},

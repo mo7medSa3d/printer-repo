@@ -33,7 +33,23 @@ export function hashOdooKey(raw: string): string {
  * Odoo authenticates via Authorization: Bearer odoo_xxx  or  X-Api-Key: odoo_xxx
  * Separate from agent Bearer agt:secret. Never logs raw key.
  */
-export async function validateOdooKey(req: Request) {
+export function isBranchScopedKeyAllowed(keyBranchId: string | null | undefined, expectedBranchId?: string | null): boolean {
+  if (!expectedBranchId) return true;
+  return !keyBranchId || keyBranchId === expectedBranchId;
+}
+
+export function isOdooKeyAllowedForDocumentType(
+  key: { allowedDocumentTypes?: string[] | null; scope?: string | null },
+  documentType?: string | null,
+  operation: "read" | "write" = "read"
+): boolean {
+  if (key.scope === "read_only" && operation === "write") return false;
+  if (!key.allowedDocumentTypes || key.allowedDocumentTypes.length === 0) return true;
+  if (!documentType) return true;
+  return key.allowedDocumentTypes.includes(documentType);
+}
+
+export async function validateOdooKey(req: Request, expectedBranchId?: string | null) {
   const auth = req.headers.get("authorization") ?? req.headers.get("x-api-key") ?? "";
   let raw = "";
   if (auth.startsWith("Bearer ")) raw = auth.slice(7).trim();
@@ -44,12 +60,10 @@ export async function validateOdooKey(req: Request) {
   }
   if (!raw || !raw.startsWith("odoo_")) return null;
   const hashed = hashKey(raw);
-  // find by hashedKey — unique index
   const row = await db.query.apiKeys.findFirst({ where: eq(apiKeys.hashedKey, hashed) });
   if (!row || row.revokedAt) return null;
-  // timing-safe double-check (defense if DB compromised to return wrong row)
+  if (!isBranchScopedKeyAllowed(row.branchId, expectedBranchId)) return null;
   if (!timingSafeEqualStr(row.hashedKey, hashed)) return null;
-  // opportunistic lastUsedAt update (fire-and-forget)
   db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.id)).then(() => {}).catch(() => {});
   return row;
 }

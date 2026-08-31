@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, branches } from "@/db/schema";
 import { eq, and, gt } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { generateSecret, hashSecret } from "@/lib/agent-auth";
@@ -9,6 +9,22 @@ export async function POST(req: Request) {
     const body = await req.json();
     const pairingCode = body?.pairingCode;
     const metadata = body?.metadata;
+    const branchId = typeof body?.branchId === "string" ? body.branchId.trim() : null;
+
+    if (branchId) {
+      try {
+        const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId) });
+        if (!branch) {
+          return NextResponse.json({ error: "Branch not found" }, { status: 404 });
+        }
+        if (branch.enabled === false) {
+          return NextResponse.json({ error: "Branch is disabled" }, { status: 409 });
+        }
+      } catch {
+        // Migration has not been applied yet; retain legacy behavior until the
+        // schema is backfilled in a deployed environment.
+      }
+    }
 
     if (!pairingCode || typeof pairingCode !== "string") {
       return NextResponse.json({ error: "Pairing code required" }, { status: 400 });
@@ -37,6 +53,7 @@ export async function POST(req: Request) {
       .set({
         pairingCode: null,
         pairingCodeExpiresAt: null,
+        branchId: branchId ?? agent.branchId,
         secret: hashSecret(secret),
         status: "online",
         metadata: (metadata && typeof metadata === "object") ? metadata : {},

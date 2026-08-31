@@ -20,12 +20,18 @@ export async function GET(req: Request) {
 
   // 1. TTL sweep, scoped to this agent: anything past its deadline that
   //    hasn't reached a terminal state is expired before we do anything else.
+  // Optional branch restriction fragment: when agents are scoped to a branch
+  // ensure queries only touch jobs that belong to the same branch. This keeps
+  // behavior compatible with pre-migration installs where agent.branchId may be null.
+  const branchFilter = agent.branchId ? sql`AND branch_id = ${agent.branchId}` : sql``;
+
   await db.execute(sql`
     UPDATE print_jobs
     SET status = 'expired', updated_at = now()
     WHERE agent_id = ${agent.id}
       AND status NOT IN ('success', 'failed', 'expired')
       AND expires_at <= now()
+      ${branchFilter}
   `);
 
   // 2. Give up on stale claims that have exhausted their retry budget -
@@ -39,6 +45,7 @@ export async function GET(req: Request) {
       AND status IN ('claimed', 'printing')
       AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
       AND retries >= ${MAX_RETRIES}
+      ${branchFilter}
   `);
 
   // 3. Atomically claim: fresh queued jobs, plus stale claimed/printing
@@ -59,6 +66,7 @@ export async function GET(req: Request) {
             AND retries < ${MAX_RETRIES}
           )
         )
+        ${branchFilter}
       ORDER BY created_at ASC
       LIMIT ${MAX_CLAIM_BATCH}
       FOR UPDATE SKIP LOCKED
@@ -108,8 +116,12 @@ export async function PATCH(req: Request) {
       ? rawError.slice(0, MAX_ERROR_LENGTH)
       : null;
 
+  const whereClause = agent.branchId
+    ? and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id), eq(printJobs.branchId, agent.branchId))
+    : and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id));
+
   const job = await db.query.printJobs.findFirst({
-    where: and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id)),
+    where: whereClause,
   });
 
   if (!job) {

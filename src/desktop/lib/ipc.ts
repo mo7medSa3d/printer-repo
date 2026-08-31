@@ -29,6 +29,29 @@ export interface RuntimePaths {
   agent_data: string;
 }
 
+export function normalizeGatewayUrl(raw: string): string {
+  const url = raw.trim();
+  if (!url) return "";
+  if (/\s/.test(url)) {
+    throw new Error("Gateway URL cannot contain whitespace");
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error("Gateway URL must start with http:// or https://");
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      throw new Error("Gateway URL cannot include embedded credentials");
+    }
+    if (parsed.search || parsed.hash) {
+      throw new Error("Gateway URL cannot include query strings or fragments");
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    throw new Error("Gateway URL is invalid");
+  }
+}
+
 export function getAgentStatus(): Promise<AgentStatus> {
   return invoke<AgentStatus>("get_agent_status");
 }

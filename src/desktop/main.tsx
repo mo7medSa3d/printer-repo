@@ -7,6 +7,7 @@ import {
   getGatewayUrl,
   getRuntimePaths,
   isTauri,
+  normalizeGatewayUrl,
   onTrayNavigate,
   onTrayRestartAgent,
   pairAgent,
@@ -55,15 +56,22 @@ function App() {
       setHealth({ error: "Gateway URL is empty" });
       return;
     }
+    let url: string;
+    try {
+      url = normalizeGatewayUrl(gatewayUrl);
+    } catch (e) {
+      setHealth({ error: errMsg(e) });
+      return;
+    }
     setBusyBoth(true);
     try {
-      setHealth(await fetchGatewayHealth(gatewayUrl));
+      setHealth(await fetchGatewayHealth(url));
     } catch (e) {
       const m = errMsg(e);
       setHealth({
         error:
           m.includes("abort") || m === "The operation was aborted."
-            ? `gateway did not respond within 8s (${gatewayUrl})`
+            ? `gateway did not respond within 8s (${url})`
             : m,
       });
     } finally {
@@ -111,13 +119,20 @@ function App() {
   }, [refreshStatus, setBusyBoth]);
 
   const saveGateway = useCallback(async () => {
-    const url = gatewayUrl.trim().replace(/\/$/, "");
+    let url: string;
+    try {
+      url = normalizeGatewayUrl(gatewayUrl);
+    } catch (e) {
+      setMsg(errMsg(e));
+      return;
+    }
     if (!isTauri) {
       await checkHealth();
       return;
     }
     try {
       await setGatewayUrl(url);
+      setGw(url);
       setMsg("Gateway URL saved on this desktop.");
     } catch (e) {
       setMsg(errMsg(e));
@@ -131,9 +146,16 @@ function App() {
       setMsg("Pairing requires the Windows desktop app (uses bundled odoo-agent-cli.exe).");
       return;
     }
+    let url: string;
+    try {
+      url = normalizeGatewayUrl(gatewayUrl);
+    } catch (e) {
+      setMsg(errMsg(e));
+      return;
+    }
     setBusyBoth(true);
     try {
-      setMsg(String(await pairAgent(pairCode, gatewayUrl.trim().replace(/\/$/, ""))));
+      setMsg(String(await pairAgent(pairCode, url)));
       setPairCode("");
       await startAgent();
     } catch (e) {
@@ -141,7 +163,7 @@ function App() {
     } finally {
       setBusyBoth(false);
     }
-  }, [pairCode, gatewayUrl, startAgent, setBusyBoth]);
+  }, [gatewayUrl, pairCode, startAgent, setBusyBoth]);
 
   // Startup: restore persisted settings, wire tray events (with cleanup).
   // State updates are deferred to a microtask so React never sees a
