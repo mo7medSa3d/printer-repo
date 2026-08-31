@@ -48,7 +48,6 @@
       "nsis": {
         "installMode": "perMachine",
         "displayLanguageSelector": false,
-        "createDesktopShortcut": true,
         "startMenuFolder": "Odoo Print Manager"
       },
       "webviewInstallMode": {
