@@ -110,6 +110,9 @@ jobs:
       - name: Lint frontend
         run: npm run lint
 
+      - name: Run Vitest suite
+        run: npm run test
+
       # ============================================================
       # Go validation
       # ============================================================

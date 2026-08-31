@@ -4,6 +4,7 @@ package testutil
 import (
 	"io"
 	"net"
+	"sort"
 	"sync"
 	"time"
 )
@@ -15,14 +16,22 @@ type MockTCPPrinter struct {
 	Addr string
 	ln   net.Listener
 	mu   sync.Mutex
-	// captured payloads, one per connection
-	captured [][]byte
+	// captured payloads, one per connection, tagged with accept-order sequence
+	// number so concurrent per-connection handler goroutines can't reorder
+	// results relative to the order connections were accepted in.
+	captured []captureEntry
+	nextSeq  int
 	// behavior knobs
 	delay            time.Duration
 	disconnectAfter  int // if >0, close after reading N bytes
 	acceptFail       bool
 	partialReadLimit int // if >0, read only N bytes then stall
 	closed           bool
+}
+
+type captureEntry struct {
+	seq  int
+	data []byte
 }
 
 func NewMockTCPPrinter(addr string) *MockTCPPrinter {
@@ -53,11 +62,15 @@ func (m *MockTCPPrinter) acceptLoop() {
 			conn.Close()
 			continue
 		}
-		go m.handle(conn)
+		m.mu.Lock()
+		seq := m.nextSeq
+		m.nextSeq++
+		m.mu.Unlock()
+		go m.handle(conn, seq)
 	}
 }
 
-func (m *MockTCPPrinter) handle(conn net.Conn) {
+func (m *MockTCPPrinter) handle(conn net.Conn, seq int) {
 	defer conn.Close()
 	if m.delay > 0 {
 		time.Sleep(m.delay)
@@ -73,17 +86,28 @@ func (m *MockTCPPrinter) handle(conn net.Conn) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	m.mu.Lock()
-	m.captured = append(m.captured, data)
+	m.captured = append(m.captured, captureEntry{seq: seq, data: data})
 	m.mu.Unlock()
+}
+
+// sortedCaptured returns a copy of m.captured ordered by accept sequence
+// (i.e. the order connections arrived in), not by handler-goroutine
+// completion order. Caller must hold m.mu.
+func (m *MockTCPPrinter) sortedCaptured() []captureEntry {
+	sorted := make([]captureEntry, len(m.captured))
+	copy(sorted, m.captured)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].seq < sorted[j].seq })
+	return sorted
 }
 
 func (m *MockTCPPrinter) Captured() [][]byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([][]byte, len(m.captured))
-	for i, c := range m.captured {
-		cp := make([]byte, len(c))
-		copy(cp, c)
+	sorted := m.sortedCaptured()
+	out := make([][]byte, len(sorted))
+	for i, c := range sorted {
+		cp := make([]byte, len(c.data))
+		copy(cp, c.data)
 		out[i] = cp
 	}
 	return out
@@ -106,6 +130,7 @@ func (m *MockTCPPrinter) Count() int {
 func (m *MockTCPPrinter) Reset() {
 	m.mu.Lock()
 	m.captured = nil
+	m.nextSeq = 0
 	m.mu.Unlock()
 }
 

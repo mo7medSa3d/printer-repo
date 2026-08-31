@@ -167,6 +167,9 @@ export async function POST(req: Request) {
     const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
     if (!printer) return NextResponse.json({ error: "printerId not found" }, { status: 404 });
     if (printer.enabled === false) return NextResponse.json({ error: "printer disabled" }, { status: 409 });
+    if (odoo.branchId && printer.branchId && odoo.branchId !== printer.branchId) {
+      return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
+    }
 
     let expiresAt: Date;
     try { expiresAt = parseExpiresAt(parsed.expiresAt); } catch (e) {

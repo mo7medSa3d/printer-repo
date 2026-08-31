@@ -99,17 +99,116 @@ ALTER TABLE "agents" ALTER COLUMN "branch_id" SET NOT NULL;
 ALTER TABLE "printers" ALTER COLUMN "branch_id" SET NOT NULL;
 ALTER TABLE "print_jobs" ALTER COLUMN "branch_id" SET NOT NULL;
 
-ALTER TABLE "agents" ADD CONSTRAINT IF NOT EXISTS "agents_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "agents" ADD CONSTRAINT IF NOT EXISTS "agents_local_network_id_local_networks_id_fk" FOREIGN KEY ("local_network_id") REFERENCES "public"."local_networks"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "printers" ADD CONSTRAINT IF NOT EXISTS "printers_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "print_jobs" ADD CONSTRAINT IF NOT EXISTS "print_jobs_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "print_jobs" ADD CONSTRAINT IF NOT EXISTS "print_jobs_destination_id_destinations_id_fk" FOREIGN KEY ("destination_id") REFERENCES "public"."destinations"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "api_keys" ADD CONSTRAINT IF NOT EXISTS "api_keys_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "destinations" ADD CONSTRAINT IF NOT EXISTS "destinations_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "local_networks" ADD CONSTRAINT IF NOT EXISTS "local_networks_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "printer_bindings" ADD CONSTRAINT IF NOT EXISTS "printer_bindings_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "printer_bindings" ADD CONSTRAINT IF NOT EXISTS "printer_bindings_destination_id_destinations_id_fk" FOREIGN KEY ("destination_id") REFERENCES "public"."destinations"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "printer_bindings" ADD CONSTRAINT IF NOT EXISTS "printer_bindings_printer_id_printers_id_fk" FOREIGN KEY ("printer_id") REFERENCES "public"."printers"("id") ON DELETE no action ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'agents_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "agents" ADD CONSTRAINT "agents_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'agents_local_network_id_local_networks_id_fk'
+  ) THEN
+    ALTER TABLE "agents" ADD CONSTRAINT "agents_local_network_id_local_networks_id_fk"
+      FOREIGN KEY ("local_network_id") REFERENCES "public"."local_networks"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'printers_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "printers" ADD CONSTRAINT "printers_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'print_jobs_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "print_jobs" ADD CONSTRAINT "print_jobs_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'print_jobs_destination_id_destinations_id_fk'
+  ) THEN
+    ALTER TABLE "print_jobs" ADD CONSTRAINT "print_jobs_destination_id_destinations_id_fk"
+      FOREIGN KEY ("destination_id") REFERENCES "public"."destinations"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'api_keys_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'destinations_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "destinations" ADD CONSTRAINT "destinations_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'local_networks_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "local_networks" ADD CONSTRAINT "local_networks_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'printer_bindings_branch_id_branches_id_fk'
+  ) THEN
+    ALTER TABLE "printer_bindings" ADD CONSTRAINT "printer_bindings_branch_id_branches_id_fk"
+      FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'printer_bindings_destination_id_destinations_id_fk'
+  ) THEN
+    ALTER TABLE "printer_bindings" ADD CONSTRAINT "printer_bindings_destination_id_destinations_id_fk"
+      FOREIGN KEY ("destination_id") REFERENCES "public"."destinations"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'printer_bindings_printer_id_printers_id_fk'
+  ) THEN
+    ALTER TABLE "printer_bindings" ADD CONSTRAINT "printer_bindings_printer_id_printers_id_fk"
+      FOREIGN KEY ("printer_id") REFERENCES "public"."printers"("id")
+      ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS "agents_branch_id_idx" ON "agents" USING btree ("branch_id");
 CREATE INDEX IF NOT EXISTS "agents_local_network_id_idx" ON "agents" USING btree ("local_network_id");
