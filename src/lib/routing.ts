@@ -161,6 +161,7 @@ export async function resolvePrinterForJob({
 
     const fallbackChain: string[] = [];
     let lastOfflinePrinter: string | null = null;
+    let lastDisabledPrinter: string | null = null;
     let lastCapabilityReason: string | null = null;
 
     for (let idx = 0; idx < candidates.length; idx++) {
@@ -182,9 +183,12 @@ export async function resolvePrinterForJob({
         continue;
       }
 
-      // Enabled check
+      // Enabled check. An administratively disabled printer is a distinct,
+      // non-transient condition from an offline one: it is reported as
+      // PRINTER_DISABLED (409, fix it in configuration) instead of
+      // PRINTER_OFFLINE (503, retry later).
       if (printer.enabled === false) {
-        if (idx === 0) lastOfflinePrinter = printer.id;
+        lastDisabledPrinter = printer.id;
         continue; // try fallback
       }
 
@@ -230,7 +234,13 @@ export async function resolvePrinterForJob({
       return { error: "CAPABILITY_MISMATCH", message: lastCapabilityReason };
     }
     if (lastOfflinePrinter) {
+      // Offline is preferred over disabled when both occurred: an offline
+      // printer may come back on its own, so the caller should retry (503)
+      // rather than be told to change configuration.
       return { error: "PRINTER_OFFLINE", message: `All candidate printers offline (last tried ${lastOfflinePrinter})` };
+    }
+    if (lastDisabledPrinter) {
+      return { error: "PRINTER_DISABLED", message: `All candidate printers are disabled (last tried ${lastDisabledPrinter})` };
     }
     return { error: "NO_PRINTER_FOUND", message: `No available printer after evaluating ${candidates.length} bindings` };
   } catch (e) {

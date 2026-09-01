@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/odoo-print-agent/agent/internal/config"
 	"github.com/odoo-print-agent/agent/internal/printer"
+	"github.com/odoo-print-agent/agent/internal/queue"
 )
 
 // Agent-side regression tests for the claim-before-delivery WebSocket
@@ -298,4 +299,105 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met within timeout")
+}
+
+// --- crash recovery (at-least-once made visible, NOT exactly-once) --------
+
+// A job that was still printing when the agent stopped must be reported to the
+// gateway as an explicit, marked failure at startup instead of silently
+// sitting in 'printing' until the claim lease expires.
+func TestInterruptedJobIsReportedAtStartup(t *testing.T) {
+	gw := newRecordingGateway(t)
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+
+	// Simulate the previous process dying mid-print.
+	if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := ag.queue.UpdateStatus("job_crashed", "printing"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+
+	ag.recoverInterruptedJobs()
+
+	updates := gw.Updates()
+	if len(updates) != 1 {
+		t.Fatalf("expected exactly one status report, got %#v", updates)
+	}
+	if updates[0].JobID != "job_crashed" || updates[0].Status != "failed" {
+		t.Fatalf("unexpected report: %#v", updates[0])
+	}
+	if !strings.Contains(updates[0].Error, queue.InterruptedMarker) {
+		t.Fatalf("report must carry the interruption marker, got %q", updates[0].Error)
+	}
+	if p.calls != 0 {
+		t.Fatalf("startup recovery must never print, got %d prints", p.calls)
+	}
+}
+
+// With reprint_after_crash disabled the agent refuses to print an interrupted
+// job again and re-reports the interruption; the default keeps the historical
+// at-least-once behaviour (the job is printed again).
+func TestReprintAfterCrashPolicy(t *testing.T) {
+	job := map[string]interface{}{
+		"id":        "job_crashed",
+		"printerId": "p1",
+		"payload":   makeJobPayload("job_crashed"),
+		"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
+	}
+
+	t.Run("disabled: never reprints, reports the interruption", func(t *testing.T) {
+		gw := newRecordingGateway(t)
+		p := &fakePrinter{}
+		ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+		no := false
+		ag.cfg.Agent.ReprintAfterCrash = &no
+
+		if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
+			t.Fatalf("Push: %v", err)
+		}
+		if err := ag.queue.UpdateStatus("job_crashed", "printing"); err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		ag.recoverInterruptedJobs()
+
+		ag.processJob(context.Background(), job)
+
+		if p.calls != 0 {
+			t.Fatalf("interrupted job must not be reprinted when the policy forbids it, got %d prints", p.calls)
+		}
+		updates := gw.Updates()
+		last := updates[len(updates)-1]
+		if last.Status != "failed" || !strings.Contains(last.Error, queue.InterruptedMarker) {
+			t.Fatalf("expected a marked failure, got %#v", last)
+		}
+	})
+
+	t.Run("default: reprints (at-least-once, may duplicate paper)", func(t *testing.T) {
+		gw := newRecordingGateway(t)
+		p := &fakePrinter{}
+		ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+		if !ag.cfg.ReprintAfterCrashEnabled() {
+			t.Fatal("reprint_after_crash must default to true")
+		}
+
+		if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
+			t.Fatalf("Push: %v", err)
+		}
+		if err := ag.queue.UpdateStatus("job_crashed", "printing"); err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		ag.recoverInterruptedJobs()
+
+		ag.processJob(context.Background(), job)
+
+		if p.calls != 1 {
+			t.Fatalf("default policy must retry the interrupted job exactly once here, got %d prints", p.calls)
+		}
+		last := gw.Updates()[len(gw.Updates())-1]
+		if last.Status != "success" {
+			t.Fatalf("expected the retry to succeed, got %#v", last)
+		}
+	})
 }

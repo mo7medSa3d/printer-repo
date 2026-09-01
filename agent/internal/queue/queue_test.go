@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func newTestQueue(t *testing.T) *Queue {
+	t.Helper()
+	q, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+	return q
+}
+
 func TestQueueIdempotencyAndStatus(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -78,5 +88,56 @@ func TestQueueUpdateWithError(t *testing.T) {
 	_, status, _, _ := q.Get("j1")
 	if status != "failed" {
 		t.Fatalf("expected failed, got %s", status)
+	}
+}
+
+// A job left in 'printing' by a crash must become a terminal local failure
+// carrying the interruption marker, so the ambiguity is explicit instead of
+// looking like a normal transient failure.
+func TestMarkInterruptedFlagsMidPrintJobs(t *testing.T) {
+	q := newTestQueue(t)
+
+	if err := q.Push("job_crash", "printer_1", []byte("data")); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := q.UpdateStatus("job_crash", "printing"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if err := q.Push("job_done", "printer_1", []byte("data")); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := q.UpdateStatus("job_done", "success"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+
+	interrupted, err := q.MarkInterrupted()
+	if err != nil {
+		t.Fatalf("MarkInterrupted: %v", err)
+	}
+	if len(interrupted) != 1 || interrupted[0].ID != "job_crash" || interrupted[0].PrinterID != "printer_1" {
+		t.Fatalf("expected only job_crash to be interrupted, got %#v", interrupted)
+	}
+
+	_, status, found, err := q.Get("job_crash")
+	if err != nil || !found {
+		t.Fatalf("Get(job_crash): found=%v err=%v", found, err)
+	}
+	if status != "failed" {
+		t.Fatalf("interrupted job must be terminal locally, got %q", status)
+	}
+	if !q.WasInterrupted("job_crash") {
+		t.Fatal("interrupted job must be detectable via WasInterrupted")
+	}
+	if q.WasInterrupted("job_done") {
+		t.Fatal("a completed job must never be reported as interrupted")
+	}
+
+	// Idempotent: a second startup finds nothing left in 'printing'.
+	again, err := q.MarkInterrupted()
+	if err != nil {
+		t.Fatalf("MarkInterrupted (2nd): %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("second scan must find nothing, got %#v", again)
 	}
 }

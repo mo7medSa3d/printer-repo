@@ -48,10 +48,10 @@ func TestValidPDFPassesValidation(t *testing.T) {
 
 func TestInvalidPDFIsRejected(t *testing.T) {
 	cases := map[string][]byte{
-		"empty":         {},
-		"escpos bytes":  []byte("\x1b\x40Hello receipt\n\x1d\x56\x01"),
-		"missing header": []byte("not a pdf at all but ends correctly\n%%EOF\n"),
-		"missing eof":   []byte("%PDF-1.7\n1 0 obj<<>>endobj\n"),
+		"empty":           {},
+		"escpos bytes":    []byte("\x1b\x40Hello receipt\n\x1d\x56\x01"),
+		"missing header":  []byte("not a pdf at all but ends correctly\n%%EOF\n"),
+		"missing eof":     []byte("%PDF-1.7\n1 0 obj<<>>endobj\n"),
 		"header too late": append(bytes.Repeat([]byte("A"), 128), validPDF()...),
 	}
 	for name, data := range cases {

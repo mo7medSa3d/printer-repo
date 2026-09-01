@@ -50,10 +50,10 @@ const shutdownGrace = 25 * time.Second
 const wsSafetyPollEvery = 3
 
 type Agent struct {
-	cfg            *config.Config
-	configPath     string
-	registryPath   string
-	client         *http.Client
+	cfg          *config.Config
+	configPath   string
+	registryPath string
+	client       *http.Client
 	// printersMu protects printers and printerConfigs: the async discovery
 	// goroutine and Discover/RegisterManual mutate them while heartbeat
 	// payloads and job dispatch read them concurrently.
@@ -65,8 +65,8 @@ type Agent struct {
 	locksMutex     sync.Mutex
 
 	// Job executor: bounded, deduplicated, and tracked for clean shutdown.
-	execSem      chan struct{}      // limits concurrently executing jobs
-	pendingSlots chan struct{}      // limits accepted (executing + waiting) jobs
+	execSem      chan struct{}       // limits concurrently executing jobs
+	pendingSlots chan struct{}       // limits accepted (executing + waiting) jobs
 	inFlight     map[string]struct{} // job ids currently in the executor
 	inFlightMu   sync.Mutex
 	wg           sync.WaitGroup
@@ -383,6 +383,9 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	log.Printf("Agent %s starting (ID: %s, %d printer(s) configured)", a.cfg.Agent.Name, a.cfg.Agent.ID, a.printerCount())
 
+	// Crash recovery must run before any new delivery is accepted.
+	a.recoverInterruptedJobs()
+
 	go a.connectWebSocket(ctx)
 
 	heartbeatTicker := time.NewTicker(30 * time.Second)
@@ -430,6 +433,37 @@ func (a *Agent) Run(ctx context.Context) error {
 				}
 			}
 		}
+	}
+}
+
+// recoverInterruptedJobs reports jobs that were still physically printing when
+// the previous agent process stopped.
+//
+// Their outcome is genuinely unknown (the printer may have printed everything,
+// part of the document, or nothing), so the agent does NOT guess: it marks
+// them terminal locally with queue.InterruptedMarker and tells the gateway the
+// job failed with that explicit reason. Without this the row stayed 'printing'
+// locally and the gateway only noticed after the 90s claim lease, then
+// re-delivered the job and a duplicate page came out with nobody informed.
+//
+// This is honest at-least-once behaviour made visible — it is NOT exactly-once
+// printing. Set agent.reprint_after_crash: false to stop the agent from
+// automatically printing such a job again (see processJob).
+func (a *Agent) recoverInterruptedJobs() {
+	interrupted, err := a.queue.MarkInterrupted()
+	if err != nil {
+		log.Printf("WARNING: could not scan the local queue for interrupted jobs: %v", err)
+	}
+	for _, job := range interrupted {
+		log.Printf(
+			"WARNING: job %s on printer %s was still printing when the agent stopped. Physical output is UNKNOWN (full, partial or none). Reporting it as failed; reprint_after_crash=%v",
+			job.ID, job.PrinterID, a.cfg.ReprintAfterCrashEnabled(),
+		)
+		a.updateJobStatus(job.ID, "failed", queue.InterruptedMarker+
+			": the agent stopped while this job was printing; the physical output is unknown (full, partial or none)")
+	}
+	if len(interrupted) > 0 {
+		log.Printf("Crash recovery: %d job(s) were interrupted mid-print and reported to the gateway", len(interrupted))
 	}
 }
 
@@ -1045,6 +1079,15 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	} else if found && localStatus == "success" {
 		log.Printf("Job %s already completed locally (success). Re-reporting terminal result instead of printing again.", jobID)
 		a.updateJobStatus(jobID, "success", "")
+		return
+	} else if found && a.queue.WasInterrupted(jobID) && !a.cfg.ReprintAfterCrashEnabled() {
+		// This job was already at the printer when the agent stopped, so it
+		// may have produced paper. With reprint_after_crash disabled the agent
+		// refuses to print it a second time and re-reports the interruption
+		// instead of silently duplicating the document.
+		reason := queue.InterruptedMarker + ": refusing to reprint after a crash (agent.reprint_after_crash=false); the previous attempt may have produced output"
+		log.Printf("Job %s: %s", jobID, reason)
+		a.updateJobStatus(jobID, "failed", reason)
 		return
 	}
 

@@ -28,6 +28,21 @@ type Config struct {
 		// elements and executed without a shell. When unset, Windows uses the
 		// registered PDF handler (ShellExecuteExW "printto").
 		PDFPrintCommand []string `yaml:"pdf_print_command,omitempty"`
+		// ReprintAfterCrash controls what happens when the gateway re-delivers
+		// a job that this agent was still physically printing when it stopped
+		// (crash, service restart, power loss). The physical outcome of such a
+		// job is UNKNOWN — see Queue.MarkInterrupted.
+		//
+		//   true  (default) — print it again. No document is lost, but a
+		//                     duplicate page can come out. This is the
+		//                     historical at-least-once behaviour.
+		//   false           — refuse to print it again and re-report the
+		//                     interruption. No duplicate is ever produced
+		//                     automatically; recovering the document requires
+		//                     an explicit new job from Odoo/the operator.
+		//
+		// Neither setting provides exactly-once physical printing.
+		ReprintAfterCrash *bool `yaml:"reprint_after_crash,omitempty"`
 	} `yaml:"agent"`
 	Printers []PrinterConfig `yaml:"printers"`
 }
@@ -46,6 +61,15 @@ type PrinterConfig struct {
 	USBSerial      string                 `yaml:"usb_serial,omitempty"`
 	Capabilities   map[string]interface{} `yaml:"capabilities,omitempty"`
 	Enabled        *bool                  `yaml:"enabled,omitempty"`
+}
+
+// ReprintAfterCrashEnabled reports the effective crash-reprint policy
+// (default true: preserve the at-least-once behaviour).
+func (c *Config) ReprintAfterCrashEnabled() bool {
+	if c == nil || c.Agent.ReprintAfterCrash == nil {
+		return true
+	}
+	return *c.Agent.ReprintAfterCrash
 }
 
 func Load(path string) (*Config, error) {
@@ -167,8 +191,9 @@ func ExecutableDir() (string, error) {
 
 // DefaultConfigPath returns the production config path.
 // Priority: 1) ODOO_PRINT_AGENT_DATA_DIR override
-//           2) %PROGRAMDATA%\OdooPrintAgent\config.yaml on Windows
-//           3) beside exe
+//  2. %PROGRAMDATA%\OdooPrintAgent\config.yaml on Windows
+//  3. beside exe
+//
 // Never depends on process.cwd() (service cwd is System32).
 func DefaultConfigPath() string {
 	if override := os.Getenv("ODOO_PRINT_AGENT_DATA_DIR"); override != "" {

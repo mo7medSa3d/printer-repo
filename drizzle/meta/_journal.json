@@ -29,6 +29,13 @@
       "when": 1788063485217,
       "tag": "0003_add_idempotency_key",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788063485218,
+      "tag": "0004_add_job_delivery_tracking",
+      "breakpoints": true
     }
   ]
 }

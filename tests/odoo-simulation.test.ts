@@ -33,7 +33,9 @@ describe("Odoo simulation — POST /api/print/jobs contract", () => {
     // 3) payload validation failures → 400
     // 4) expired job → PATCH returns 409 expired (TTL wins)
     // 5) job transitions via PATCH from agent: claimed→printing→success (validated by canTransition)
-    // See docs/VERIFICATION.md #P4 for manual curl steps when PG is up.
+    // The full flow now runs automatically in tests/e2e-job-flow.test.ts and
+    // tests/ws-claim-delivery.test.ts whenever DATABASE_URL points at a test DB
+    // (see docs/TESTING.md).
     expect(true).toBe(true);
   });
 });

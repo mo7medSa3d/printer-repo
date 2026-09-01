@@ -42,6 +42,18 @@ export function isBranchScopedKeyAllowed(keyBranchId: string | null | undefined,
   return !keyBranchId || String(keyBranchId) === String(expectedBranchId);
 }
 
+/**
+ * Document types are matched case-insensitively and whitespace-insensitively,
+ * exactly like the routing layer (`selectBestBinding` in src/lib/routing.ts
+ * lower-cases both sides). Odoo sends document types derived from user-visible
+ * names ("Invoice"), while allow-lists are usually typed in lower case, so a
+ * case-sensitive comparison here rejected legitimate jobs with 403 while
+ * routing considered the very same value a match.
+ */
+function normalizeDocumentType(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export function isOdooKeyAllowedForDocumentType(
   key: { allowedDocumentTypes?: string[] | null; scope?: string | null },
   documentType?: string | null,
@@ -50,7 +62,11 @@ export function isOdooKeyAllowedForDocumentType(
   if (key.scope === "read_only" && operation === "write") return false;
   if (!key.allowedDocumentTypes || key.allowedDocumentTypes.length === 0) return true;
   if (!documentType) return true;
-  return key.allowedDocumentTypes.includes(documentType);
+  const requested = normalizeDocumentType(documentType);
+  if (!requested) return true;
+  return key.allowedDocumentTypes
+    .filter((entry): entry is string => typeof entry === "string")
+    .some((entry) => normalizeDocumentType(entry) === requested);
 }
 
 export async function validateOdooKey(req: Request, expectedBranchId?: string | null) {

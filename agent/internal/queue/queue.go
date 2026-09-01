@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -12,8 +13,8 @@ import (
 // Queue is the Agent's local durable delivery queue. It is distinct from the
 // Gateway's PostgreSQL job table:
 //
-//   Gateway PG: queued → claimed (lease) → printing → success/failed/expired  (cloud ownership)
-//   Agent SQLite: queued → printing → success/failed                          (local execution)
+//	Gateway PG: queued → claimed (lease) → printing → success/failed/expired  (cloud ownership)
+//	Agent SQLite: queued → printing → success/failed                          (local execution)
 //
 // The local record id == Gateway job_id for correlation. The local queue
 // survives agent crashes, Windows restarts, and network outages via WAL.
@@ -130,6 +131,68 @@ func (q *Queue) Get(id string) (printerID string, status string, found bool, err
 		return "", "", false, err
 	}
 	return printerID, status, true, nil
+}
+
+// InterruptedMarker prefixes the local last_error of a job that was still
+// physically printing when the agent process stopped. The physical outcome of
+// such a job is UNKNOWN: the printer may have printed everything, part of the
+// document, or nothing at all. The marker makes that ambiguity explicit
+// instead of letting the job look like an ordinary transient failure.
+const InterruptedMarker = "AGENT_RESTART_DURING_PRINT"
+
+// InterruptedJob is a job that was left mid-print by a crash/restart.
+type InterruptedJob struct {
+	ID        string
+	PrinterID string
+}
+
+// MarkInterrupted moves every job still recorded as 'printing' into a terminal
+// local 'failed' state carrying InterruptedMarker, and returns them.
+//
+// It must be called exactly once at startup, before any new job is accepted:
+// a row in 'printing' after a fresh start can only mean the previous process
+// died while the document was at the printer.
+func (q *Queue) MarkInterrupted() ([]InterruptedJob, error) {
+	rows, err := q.db.Query(`SELECT id, printer_id FROM print_jobs WHERE status = 'printing'`)
+	if err != nil {
+		return nil, err
+	}
+	var found []InterruptedJob
+	for rows.Next() {
+		var j InterruptedJob
+		if err := rows.Scan(&j.ID, &j.PrinterID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		found = append(found, j)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	for _, j := range found {
+		msg := InterruptedMarker + ": the agent stopped while this job was printing; the physical output is unknown (it may have printed fully, partially, or not at all)"
+		if err := q.UpdateStatusWithError(j.ID, "failed", msg); err != nil {
+			return found, err
+		}
+	}
+	return found, nil
+}
+
+// WasInterrupted reports whether the local record for id is the terminal
+// failure produced by MarkInterrupted (i.e. a crash during physical printing).
+func (q *Queue) WasInterrupted(id string) bool {
+	var status string
+	var lastErr sql.NullString
+	if err := q.db.QueryRow(`SELECT status, last_error FROM print_jobs WHERE id = ?`, id).Scan(&status, &lastErr); err != nil {
+		return false
+	}
+	if status != "failed" || !lastErr.Valid {
+		return false
+	}
+	return strings.HasPrefix(lastErr.String, InterruptedMarker)
 }
 
 // CountByStatus is a small diagnostic helper for the Tauri/desktop health view.

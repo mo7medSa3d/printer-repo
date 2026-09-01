@@ -37,21 +37,21 @@ const (
 )
 
 type shellExecuteInfoW struct {
-	cbSize       uint32
-	fMask        uint32
-	hwnd         windows.Handle
-	lpVerb       *uint16
-	lpFile       *uint16
-	lpParameters *uint16
-	lpDirectory  *uint16
-	nShow        int32
-	hInstApp     windows.Handle
-	lpIDList     uintptr
-	lpClass      *uint16
-	hkeyClass    windows.Handle
-	dwHotKey     uint32
+	cbSize         uint32
+	fMask          uint32
+	hwnd           windows.Handle
+	lpVerb         *uint16
+	lpFile         *uint16
+	lpParameters   *uint16
+	lpDirectory    *uint16
+	nShow          int32
+	hInstApp       windows.Handle
+	lpIDList       uintptr
+	lpClass        *uint16
+	hkeyClass      windows.Handle
+	dwHotKey       uint32
 	hIconOrMonitor windows.Handle
-	hProcess     windows.Handle
+	hProcess       windows.Handle
 }
 
 var (

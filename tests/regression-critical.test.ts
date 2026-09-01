@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { validatePrintJobPayload } from "@/lib/payload";
-import { validatePayloadForPrinter } from "@/lib/routing";
+import { validatePayloadForPrinter, selectBestBinding } from "@/lib/routing";
+import { isOdooKeyAllowedForDocumentType } from "@/lib/odoo-auth";
 import { canTransition } from "@/lib/job-status";
 
 describe("regression: truncated 40-bit jobId removed", () => {
@@ -239,5 +240,63 @@ describe("regression: Odoo sync is validated and transactional (contract-level)"
     const successIdx = syncSrc.indexOf("success: true");
     const commitIdx = syncSrc.indexOf("});", syncSrc.indexOf("db.transaction"));
     expect(successIdx).toBeGreaterThan(commitIdx);
+  });
+});
+
+describe("regression: PRINTER_DISABLED is distinct from PRINTER_OFFLINE", () => {
+  const routingSrc = readFileSync("src/lib/routing.ts", "utf8");
+
+  it("tracks disabled printers separately from offline ones", () => {
+    expect(routingSrc).toContain("lastDisabledPrinter");
+    // A disabled printer must no longer be reported through the offline path.
+    expect(routingSrc).not.toContain("if (idx === 0) lastOfflinePrinter = printer.id;");
+    const disabledIdx = routingSrc.indexOf('error: "PRINTER_DISABLED"');
+    expect(disabledIdx).toBeGreaterThan(-1);
+  });
+
+  it("maps the code to HTTP 409 at the API layer", () => {
+    const routeSrc = readFileSync("src/app/api/print/jobs/route.ts", "utf8");
+    expect(routeSrc).toContain("PRINTER_DISABLED: 409");
+  });
+});
+
+describe("regression: Odoo key document-type matching is normalized like routing", () => {
+  it("accepts a differently-cased or padded document type", () => {
+    const key = { allowedDocumentTypes: ["invoice", "receipt"], scope: "standard" };
+    expect(isOdooKeyAllowedForDocumentType(key, "Invoice", "write")).toBe(true);
+    expect(isOdooKeyAllowedForDocumentType(key, "  RECEIPT ", "write")).toBe(true);
+    expect(isOdooKeyAllowedForDocumentType({ allowedDocumentTypes: ["Invoice"] }, "invoice", "write")).toBe(true);
+  });
+
+  it("still rejects a document type that is not on the list", () => {
+    const key = { allowedDocumentTypes: ["invoice"], scope: "standard" };
+    expect(isOdooKeyAllowedForDocumentType(key, "delivery", "write")).toBe(false);
+    expect(isOdooKeyAllowedForDocumentType({ scope: "read_only", allowedDocumentTypes: ["invoice"] }, "Invoice", "write")).toBe(false);
+  });
+
+  it("matches the routing layer's normalization for the same value", () => {
+    const bindings = [{ id: "b1", branchId: "br", destinationId: "d", documentType: "invoice", printerId: "p", priority: 1, enabled: true }];
+    // routing accepts "Invoice" for a binding declared as "invoice" …
+    expect(selectBestBinding(bindings, "Invoice")?.id).toBe("b1");
+    // … so authorization must accept it too (this was the 403 mismatch).
+    expect(isOdooKeyAllowedForDocumentType({ allowedDocumentTypes: ["invoice"] }, "Invoice", "write")).toBe(true);
+  });
+});
+
+describe("regression: agent crash duplicate-print exposure", () => {
+  it("marks mid-print jobs as an explicit interruption instead of leaving them printing", () => {
+    const queueSrc = readFileSync("agent/internal/queue/queue.go", "utf8");
+    expect(queueSrc).toContain("InterruptedMarker");
+    expect(queueSrc).toContain("MarkInterrupted");
+    const agentSrc = readFileSync("agent/internal/agent/agent.go", "utf8");
+    expect(agentSrc).toContain("recoverInterruptedJobs");
+    expect(agentSrc).toContain("ReprintAfterCrashEnabled");
+  });
+
+  it("does not claim exactly-once physical printing anywhere in the docs", () => {
+    for (const file of ["PRINTERS.md", "README.md", "API.md"]) {
+      const text = readFileSync(file, "utf8").toLowerCase();
+      expect(text).not.toContain("exactly-once physical");
+    }
   });
 });
