@@ -1,5 +1,12 @@
 # Printer Gateway — Complete UI/UX Modernization Report
 
+> **Superseded in part (2026-09):** the product has since been rebranded to the
+> "Signal Blue" enterprise identity — a sophisticated blue primary (`#2563EB`) on cool
+> neutrals, applied repository-wide (web, desktop, Odoo). The structural/UX work described
+> below still stands; every colour reference in this document reflects the *previous*
+> plum accent. See **[DESIGN_SYSTEM.md](DESIGN_SYSTEM.md)** for the current tokens,
+> palette and Odoo scoping rules.
+
 Scope: full product modernization of Odoo Print Gateway — Desktop Manager (flagship), Next.js web app, simulator, and Odoo add-on views — with zero changes to backend architecture, database schema, API/IPC contracts, authentication, agent protocol, or printing behavior.
 
 ---
@@ -44,7 +51,7 @@ Scope: full product modernization of Odoo Print Gateway — Desktop Manager (fla
 
 Single source of truth, imported by both Desktop (Vite) and Web (Next):
 
-- **Brand**: `--brand-50…900` (brand-700 `#714b67` = existing accent), hover/active stairs.
+- **Brand**: `--brand-50…900` (at the time, brand-700 `#714b67`; **now** `--brand` = `#2563EB`, hover `#1D4ED8`, active `#1E40AF` — see DESIGN_SYSTEM.md), hover/active stairs.
 - **Neutrals**: `--bg`, `--surface`, `--surface-2`, `--surface-3`, `--border`, `--border-strong`, `--text / --text-2 / --text-3` (warm ink).
 - **Semantic**: `--ok / --warn / --bad / --info` + `-bg` + `-edge` variants; shared by printer/agent/job/gateway statuses (ONLINE/CONNECTED/SUCCESS/READY → ok; OFFLINE/FAILED/ERROR → bad; PRINTING/BUSY → warn; CLAIMED → info).
 - **Dark mode**: automatic via `prefers-color-scheme`, same token names — no `dark:` color exceptions.
@@ -115,7 +122,7 @@ Button (primary/secondary/ghost/danger, sizes, loading) · IconButton (label enf
 - **Theme toggle**: dark/light follows the OS automatically; an in-app manual theme override is not implemented (would need persisted preference plumbing across Desktop + Web — left as follow-up).
 - **Fleet detail**: per-agent listing (pairing codes, per-agent printers) requires the gateway manager session; desktop shows real aggregate counts from `/api/health` plus honest guidance.
 - **No visual regression suite**: no Playwright/Percy added (per "no new dependencies"); could be added on request.
-- **Odoo brand color**: Odoo keeps its own theme; the plum accent is expressed only via highlight buttons/status semantics to stay within native UX.
+- **Odoo brand color**: *(superseded)* the add-on now ships a scoped brand layer — `--pg-*` tokens plus a skin bound to `.o_pg_view` / `.o_pg_form` / `.o_pg_list` / `.o_pg_kanban` — so Odoo carries the same blue identity while Odoo's own theme and every other app stay untouched. See DESIGN_SYSTEM.md §7.
 
 ## 10. Environment-Gated Checks
 

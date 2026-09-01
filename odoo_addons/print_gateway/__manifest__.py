@@ -42,6 +42,16 @@ Features:
         'data/cron.xml',
         'data/report_mappings.xml',
     ],
+    # Brand layer only: `--pg-*` design tokens + a skin scoped to this
+    # add-on's own views (.o_pg_view / .o_pg_form / .o_pg_list /
+    # .o_pg_kanban). No JS, no widget overrides, no changes to Odoo's
+    # own Bootstrap variables — other apps are untouched.
+    'assets': {
+        'web.assets_backend': [
+            'print_gateway/static/src/scss/print_gateway_tokens.scss',
+            'print_gateway/static/src/scss/print_gateway_backend.scss',
+        ],
+    },
     'installable': True,
     'application': True,
     'license': 'LGPL-3',

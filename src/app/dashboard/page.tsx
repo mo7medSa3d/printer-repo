@@ -51,11 +51,18 @@ export default async function DashboardPage() {
 
   return (
     <div className="container mx-auto py-8 px-4">
-      <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-bold text-ink">Management console</h1>
-        <span className="rounded-md border border-edge bg-surface-2 px-2 py-1 font-mono text-[11px] font-medium text-ink-3">live</span>
-      </div>
-      <p className="text-sm text-ink-2 mt-1">Agents, printers and the job queue, straight from PostgreSQL. A manager session (8h httpOnly, revocable) is required for this page and its actions.</p>
+      <header className="mb-6 border-b border-edge pb-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-[-0.015em] text-ink">Management console</h1>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-edge-accent bg-brand-subtle px-2.5 py-0.5 text-[11px] font-semibold text-brand-subtle-text">
+            <span className="h-1.5 w-1.5 rounded-full bg-ok-solid" aria-hidden />
+            Live
+          </span>
+        </div>
+        <p className="mt-1.5 max-w-3xl text-sm leading-relaxed text-ink-2">
+          Agents, printers and the job queue, straight from PostgreSQL. A manager session (8h httpOnly, revocable) is required for this page and its actions.
+        </p>
+      </header>
       <DashboardClient initialAgents={allAgents} initialPrinters={allPrinters} initialJobs={allJobs} />
     </div>
   );

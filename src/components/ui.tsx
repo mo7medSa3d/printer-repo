@@ -9,6 +9,8 @@ import { X, Check, Loader2, Copy, AlertTriangle } from "lucide-react";
    surfaces stay visually and semantically consistent.
    ============================================================ */
 
+export { BrandMark } from "./brand";
+
 export type Tone = "ok" | "warn" | "bad" | "info" | "neutral" | "brand";
 
 export const toneBg: Record<Tone, string> = {
@@ -17,17 +19,18 @@ export const toneBg: Record<Tone, string> = {
   bad: "bg-bad-bg text-bad border-bad-edge",
   info: "bg-info-bg text-info border-info-edge",
   neutral: "bg-surface-2 text-ink-2 border-edge",
-  brand:
-    "bg-brand-50 text-brand-800 border-brand-200 dark:text-brand-200 dark:border-brand-800",
+  brand: "bg-brand-subtle text-brand-subtle-text border-edge-accent",
 };
 
+/* Dots use the `-solid` fills: saturated enough to read at 8px,
+   while the text tokens above stay AA-legible on tinted surfaces. */
 export const toneDot: Record<Tone, string> = {
-  ok: "bg-ok",
-  warn: "bg-warn",
-  bad: "bg-bad",
-  info: "bg-info",
-  neutral: "bg-ink-3",
-  brand: "bg-brand-500",
+  ok: "bg-ok-solid",
+  warn: "bg-warn-solid",
+  bad: "bg-bad-solid",
+  info: "bg-info-solid",
+  neutral: "bg-ink-4",
+  brand: "bg-brand",
 };
 
 /* ---------- Buttons ---------- */
@@ -36,12 +39,13 @@ type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary:
-    "bg-brand-700 text-white hover:bg-brand-800 active:bg-brand-900 border border-transparent",
+    "bg-brand text-brand-contrast border border-transparent shadow-xs hover:bg-brand-hover active:bg-brand-active",
   secondary:
-    "bg-surface text-ink border-edge hover:bg-surface-2 active:bg-surface-3 border",
+    "bg-surface text-ink border border-edge shadow-xs hover:bg-surface-2 hover:border-edge-strong active:bg-surface-3",
   ghost:
-    "bg-transparent text-ink-2 hover:bg-surface-2 hover:text-ink border border-transparent",
-  danger: "bg-bad text-white hover:bg-bad/90 active:bg-bad border border-transparent",
+    "bg-transparent text-ink-2 border border-transparent hover:bg-brand-subtle hover:text-brand-subtle-text",
+  danger:
+    "bg-bad-solid text-white border border-transparent shadow-xs hover:brightness-95 active:brightness-90",
 };
 
 export function Button({
@@ -62,7 +66,7 @@ export function Button({
     size === "sm" ? "h-8 px-3 text-xs gap-1.5" : "h-9 px-3.5 text-sm gap-2";
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:pointer-events-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 ${buttonVariants[variant]} ${sizes} ${className}`}
+      className={`inline-flex items-center justify-center rounded-md font-semibold transition-[background-color,border-color,color,box-shadow,filter] duration-150 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${buttonVariants[variant]} ${sizes} ${className}`}
       disabled={loading || props.disabled}
       {...props}
     >
@@ -85,7 +89,7 @@ export function IconButton({
     <button
       aria-label={label}
       title={label}
-      className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors disabled:opacity-50 ${className}`}
+      className={`inline-flex items-center justify-center w-8 h-8 rounded-md text-ink-3 transition-colors duration-150 hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -185,7 +189,7 @@ export function EmptyState({
     <div
       className={`flex flex-col items-center justify-center text-center px-6 py-14 ${className}`}
     >
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-edge bg-surface-2 text-ink-3">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-edge-accent bg-surface-accent text-brand">
         {icon}
       </div>
       <h3 className="mt-4 text-sm font-semibold text-ink">{title}</h3>
@@ -245,7 +249,7 @@ export function LoadingState({
       {Array.from({ length: rows }).map((_, i) => (
         <div
           key={i}
-          className="h-9 animate-pulse rounded-lg bg-surface-3"
+          className="skeleton h-9"
           style={{ width: `${100 - i * 12}%` }}
         />
       ))}
@@ -273,7 +277,7 @@ export function Field({
     <div className={className}>
       <label
         htmlFor={htmlFor}
-        className="block text-xs font-semibold uppercase tracking-wide text-ink-2"
+        className="label-caps block text-ink-2"
       >
         {label}
       </label>
@@ -286,7 +290,7 @@ export function Field({
 }
 
 export const inputClass =
-  "w-full h-9 rounded-lg border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-3 transition-colors hover:border-edge-strong focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25 disabled:opacity-50";
+  "w-full h-9 rounded-md border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
 
 export function Input({
   className = "",
@@ -355,7 +359,7 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
-        className="pg-fade-in absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+        className="pg-fade-in absolute inset-0 backdrop-blur-[2px]"
         style={{ backgroundColor: "var(--overlay)" }}
         onClick={onClose}
         aria-hidden
@@ -368,7 +372,7 @@ export function Modal({
         tabIndex={-1}
         className={`pg-rise-in relative w-full ${
           wide ? "sm:max-w-2xl" : "sm:max-w-lg"
-        } max-h-[92vh] overflow-auto rounded-t-2xl sm:rounded-2xl border border-edge bg-surface shadow-2xl outline-none`}
+        } max-h-[92vh] overflow-auto rounded-t-2xl sm:rounded-2xl border border-edge bg-surface shadow-xl outline-none`}
       >
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-edge bg-surface px-5 py-4">
           <div className="min-w-0">
@@ -422,7 +426,7 @@ export function Drawer({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className="pg-slide-in-right relative flex h-full w-full max-w-md flex-col border-l border-edge bg-surface shadow-2xl outline-none"
+        className="pg-slide-in-right relative flex h-full w-full max-w-md flex-col border-l border-edge bg-surface shadow-xl outline-none"
       >
         <div className="flex items-start justify-between gap-4 border-b border-edge px-5 py-4">
           <div className="min-w-0">
@@ -479,7 +483,7 @@ export function Tabs<T extends string>({
               <span
                 className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
                   selected
-                    ? "bg-brand-100 text-brand-800 dark:bg-brand-900 dark:text-brand-200"
+                    ? "bg-brand-subtle text-brand-subtle-text"
                     : "bg-surface-2 text-ink-3"
                 }`}
               >
@@ -487,7 +491,7 @@ export function Tabs<T extends string>({
               </span>
             )}
             {selected && (
-              <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-brand-700" />
+              <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-brand" />
             )}
           </button>
         );
@@ -523,7 +527,7 @@ export function CopyButton({
           /* clipboard unavailable inside WebView without focus; ignore */
         }
       }}
-      className={`inline-flex h-7 items-center gap-1 rounded-md border border-edge bg-surface px-2 text-[11px] font-medium text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors ${className}`}
+      className={`inline-flex h-7 items-center gap-1 rounded-sm border border-edge bg-surface px-2 text-[11px] font-medium text-ink-2 transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${className}`}
     >
       <Copy className="h-3 w-3" aria-hidden />
       {label}

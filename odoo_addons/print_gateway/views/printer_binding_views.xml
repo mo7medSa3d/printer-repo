@@ -4,7 +4,7 @@
         <field name="name">print_gateway.printer_binding.form</field>
         <field name="model">print_gateway.printer_binding</field>
         <field name="arch" type="xml">
-            <form string="Printer Binding">
+            <form string="Printer Binding" class="o_pg_view o_pg_form">
                 <sheet>
                     <group string="Scope">
                         <field name="branch_id"/>
@@ -36,7 +36,7 @@
         <field name="name">print_gateway.printer_binding.tree</field>
         <field name="model">print_gateway.printer_binding</field>
         <field name="arch" type="xml">
-            <tree string="Bindings" decoration-success="enabled" decoration-muted="not enabled" decoration-bf="priority==1">
+            <tree string="Bindings" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled" decoration-bf="priority==1">
                 <field name="branch_id"/>
                 <field name="destination_id"/>
                 <field name="document_type"/>

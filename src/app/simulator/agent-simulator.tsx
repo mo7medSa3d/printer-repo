@@ -158,9 +158,9 @@ export default function AgentSimulator() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
       <div className="lg:col-span-1 space-y-6">
-        <div className="p-6 border-edge rounded-xl bg-surface shadow-sm border-edge">
-          <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-            <Database className="w-5 h-5 text-info" />
+        <div className="card p-6">
+          <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold tracking-[-0.01em] text-ink">
+            <Database className="w-5 h-5 text-brand" aria-hidden />
             Configuration
           </h2>
 
@@ -171,13 +171,13 @@ export default function AgentSimulator() {
                 <input
                   type="text"
                   placeholder="Pairing Code"
-                  className="flex-1 px-3 py-2 border-edge rounded-md text-sm bg-surface-2"
+                  className="h-9 flex-1 rounded-md border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)]"
                   value={pairingCode}
                   onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
                 />
                 <button
                   onClick={handleRegister}
-                  className="bg-brand-700 text-white px-4 py-2 h-9 rounded-lg text-sm font-semibold hover:bg-brand-800 transition-colors disabled:opacity-50"
+                  className="h-9 rounded-md bg-brand px-4 text-sm font-semibold text-brand-contrast shadow-xs transition-colors duration-150 hover:bg-brand-hover active:bg-brand-active disabled:opacity-50"
                 >
                   Pair
                 </button>
@@ -185,17 +185,17 @@ export default function AgentSimulator() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="p-3 bg-ok-bg border-ok-edge text-ok rounded-lg text-sm font-mono border">
+              <div className="rounded-md border border-ok-edge bg-ok-bg p-3 font-mono text-sm text-ok">
                 Paired: {agentAuth.id}
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => setIsRunning(!isRunning)}
                   className={cn(
-                    "flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-bold transition-colors",
+                    "flex h-9 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold shadow-xs transition-colors duration-150",
                     isRunning
-                      ? "bg-bad-bg text-bad hover:bg-bad-bg/70"
-                      : "bg-ok text-white hover:bg-ok/90"
+                      ? "border border-bad-edge bg-bad-bg text-bad hover:brightness-[0.98]"
+                      : "bg-brand text-brand-contrast hover:bg-brand-hover active:bg-brand-active"
                   )}
                 >
                   {isRunning ? (
@@ -221,17 +221,20 @@ export default function AgentSimulator() {
           )}
         </div>
 
-        <div className="p-6 border-edge rounded-xl bg-surface shadow-sm border-edge">
-          <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-            <PrinterIcon className="w-5 h-5 text-brand-600" />
+        <div className="card p-6">
+          <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold tracking-[-0.01em] text-ink">
+            <PrinterIcon className="w-5 h-5 text-brand" aria-hidden />
             Local Printers
           </h2>
           <div className="space-y-3">
             {printers.map(p => (
-              <div key={p.id} className="text-xs p-3 border-edge rounded-lg bg-surface-2">
-                <div className="flex justify-between font-bold mb-1">
-                  <span>{p.name}</span>
-                  <span className="text-ok uppercase text-[10px]">{p.status}</span>
+              <div key={p.id} className="rounded-lg border border-edge bg-surface-2 p-3 text-xs">
+                <div className="mb-1 flex items-center justify-between gap-2 font-semibold text-ink">
+                  <span className="truncate">{p.name}</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-ok-edge bg-ok-bg px-2 py-0.5 text-[10px] uppercase tracking-wide text-ok">
+                    <span className="h-1.5 w-1.5 rounded-full bg-ok-solid" aria-hidden />
+                    {p.status}
+                  </span>
                 </div>
                 <div className="text-ink-3">
                   {p.type === 'network' ? `IP: ${p.config.ip}:${p.config.port}` : `USB Path: ${p.config.address}`}
@@ -242,32 +245,32 @@ export default function AgentSimulator() {
         </div>
       </div>
 
-      <div className="lg:col-span-2 flex flex-col h-[600px] border-edge rounded-xl bg-surface-2 shadow-inner overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-2 bg-surface-2 border-b border-edge">
-          <div className="flex items-center gap-2 text-ink-3 text-sm font-mono">
-            <Terminal className="w-4 h-4" />
-            Agent Logs
+      <div className="card flex h-[600px] flex-col overflow-hidden lg:col-span-2">
+        <div className="flex items-center justify-between border-b border-edge bg-surface-2 px-4 py-2.5">
+          <div className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-[0.06em] text-ink-3">
+            <Terminal className="h-4 w-4" aria-hidden />
+            Agent logs
           </div>
           <div className="flex items-center gap-2">
             {isRunning ? (
               <span className="flex items-center gap-1.5 text-ok text-xs font-medium">
-                <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />
+                <span className="h-2 w-2 animate-pulse rounded-full bg-ok-solid" />
                 Connected
               </span>
             ) : (
               <span className="flex items-center gap-1.5 text-ink-2 text-xs font-medium">
-                <span className="w-2 h-2 rounded-full bg-ink-3" />
+                <span className="h-2 w-2 rounded-full bg-ink-4" />
                 Offline
               </span>
             )}
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-sm">
+        <div className="flex-1 space-y-1 overflow-y-auto bg-surface-2/60 p-4 font-mono text-xs leading-relaxed">
           {logs.map((log, i) => (
             <div key={i} className="flex gap-3">
-              <span className="text-ink-2 shrink-0">[{log.time}]</span>
+              <span className="shrink-0 text-ink-3 tabular-nums">[{log.time}]</span>
               <span className={cn(
-                "font-bold uppercase shrink-0 w-12",
+                "w-12 shrink-0 font-semibold uppercase tracking-wide",
                 log.level === "info" && "text-info",
                 log.level === "success" && "text-ok",
                 log.level === "warn" && "text-warn",
@@ -279,7 +282,7 @@ export default function AgentSimulator() {
             </div>
           ))}
           {logs.length === 0 && (
-            <div className="text-ink-2 italic">No logs yet...</div>
+            <div className="italic text-ink-3">No logs yet…</div>
           )}
         </div>
       </div>

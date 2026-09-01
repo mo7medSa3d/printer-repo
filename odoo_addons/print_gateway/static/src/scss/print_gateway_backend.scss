@@ -1,0 +1,550 @@
+/* ============================================================
+   PRINT GATEWAY — Odoo backend skin
+   ------------------------------------------------------------
+   Scope rules (deliberate, to protect Odoo's native UX):
+
+   * Every rule is scoped to `.o_pg_view` — the class the add-on
+     puts on its own list/form/kanban roots. Nothing here can
+     restyle Sales, Inventory, Accounting or any other app.
+   * The control panel / breadcrumbs sit OUTSIDE the view root,
+     so they are branded through `:has(.o_pg_view)` only while a
+     Print Gateway view is on screen; browsers without `:has()`
+     simply keep Odoo's native chrome (progressive enhancement).
+   * Only spacing, colour, radius, elevation and state feedback
+     are touched. No layout re-engineering, no widget overrides,
+     no JS — Odoo keeps behaving like Odoo.
+
+   Tokens come from print_gateway_tokens.scss (`--pg-*`).
+   ============================================================ */
+
+// ------------------------------------------------------------
+// 1. Shared primitives
+// ------------------------------------------------------------
+.o_pg_view {
+    color: var(--pg-text-2);
+
+    // Section titles: quiet uppercase labels with a brand tick
+    .o_horizontal_separator,
+    .o_group > .o_horizontal_separator {
+        color: var(--pg-text);
+        font-size: var(--pg-fs-caption);
+        font-weight: 600;
+        letter-spacing: var(--pg-tracking-label);
+        text-transform: uppercase;
+        border-bottom: 1px solid var(--pg-border);
+        padding-bottom: var(--pg-space-2);
+        margin-bottom: var(--pg-space-3);
+
+        &::before {
+            content: "";
+            display: inline-block;
+            width: 3px;
+            height: 12px;
+            margin-right: var(--pg-space-2);
+            vertical-align: -1px;
+            border-radius: var(--pg-r-pill);
+            background: var(--pg-brand);
+        }
+    }
+
+    // Labels + values: clear hierarchy instead of flat grey
+    .o_form_label,
+    .o_field_widget > label {
+        color: var(--pg-text-3);
+        font-weight: 600;
+    }
+
+    // Inputs: cool borders, brand focus ring
+    input.o_input,
+    select.o_input,
+    textarea.o_input,
+    .o_field_widget input,
+    .o_field_widget select,
+    .o_field_widget textarea {
+        border-radius: var(--pg-r-sm);
+        transition: border-color var(--pg-dur) var(--pg-ease),
+            box-shadow var(--pg-dur) var(--pg-ease);
+    }
+
+    .o_field_widget:focus-within input:not([type="checkbox"]),
+    .o_field_widget:focus-within select,
+    .o_field_widget:focus-within textarea {
+        border-color: var(--pg-brand);
+        box-shadow: 0 0 0 3px var(--pg-brand-ring);
+        outline: none;
+    }
+
+    // Links and interactive text
+    a:not(.btn) {
+        color: var(--pg-brand);
+
+        &:hover,
+        &:focus {
+            color: var(--pg-brand-hover);
+        }
+    }
+
+    // Buttons — one button language across desktop, web and Odoo
+    .btn-primary {
+        background-color: var(--pg-brand);
+        border-color: var(--pg-brand);
+        color: var(--pg-brand-contrast);
+        border-radius: var(--pg-r-sm);
+        font-weight: 600;
+        box-shadow: var(--pg-shadow-xs);
+        transition: background-color var(--pg-dur) var(--pg-ease),
+            border-color var(--pg-dur) var(--pg-ease),
+            box-shadow var(--pg-dur) var(--pg-ease);
+
+        &:hover,
+        &:focus {
+            background-color: var(--pg-brand-hover);
+            border-color: var(--pg-brand-hover);
+            color: var(--pg-brand-contrast);
+        }
+
+        &:active,
+        &.active {
+            background-color: var(--pg-brand-active) !important;
+            border-color: var(--pg-brand-active) !important;
+        }
+
+        &:focus-visible {
+            box-shadow: 0 0 0 3px var(--pg-brand-ring);
+        }
+    }
+
+    .btn-secondary {
+        background-color: var(--pg-surface);
+        border-color: var(--pg-border);
+        color: var(--pg-text);
+        border-radius: var(--pg-r-sm);
+        font-weight: 600;
+
+        &:hover,
+        &:focus {
+            background-color: var(--pg-brand-subtle);
+            border-color: var(--pg-border-accent);
+            color: var(--pg-brand-subtle-text);
+        }
+    }
+
+    .btn-link {
+        color: var(--pg-brand);
+
+        &:hover {
+            color: var(--pg-brand-hover);
+        }
+    }
+
+    // Status badges (widget="badge") mapped to the shared status scale
+    .o_field_badge > span,
+    .o_field_badge .badge,
+    span.badge {
+        border-radius: var(--pg-r-pill);
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        padding: 2px 10px;
+    }
+
+    .o_field_badge.text-bg-success > span,
+    .o_field_badge > span.text-bg-success,
+    .badge.text-bg-success {
+        background-color: var(--pg-ok-bg) !important;
+        border: 1px solid var(--pg-ok-border);
+        color: var(--pg-ok) !important;
+    }
+
+    .o_field_badge.text-bg-warning > span,
+    .o_field_badge > span.text-bg-warning,
+    .badge.text-bg-warning {
+        background-color: var(--pg-warn-bg) !important;
+        border: 1px solid var(--pg-warn-border);
+        color: var(--pg-warn) !important;
+    }
+
+    .o_field_badge.text-bg-danger > span,
+    .o_field_badge > span.text-bg-danger,
+    .badge.text-bg-danger {
+        background-color: var(--pg-bad-bg) !important;
+        border: 1px solid var(--pg-bad-border);
+        color: var(--pg-bad) !important;
+    }
+
+    .o_field_badge.text-bg-info > span,
+    .o_field_badge > span.text-bg-info,
+    .badge.text-bg-info,
+    .o_field_badge > span {
+        background-color: var(--pg-info-bg);
+        border: 1px solid var(--pg-info-border);
+        color: var(--pg-info);
+    }
+
+    // Alert callouts inside our views
+    .alert {
+        border-radius: var(--pg-r-lg);
+        border-width: 1px;
+        font-size: var(--pg-fs-body);
+    }
+
+    .alert-info {
+        background-color: var(--pg-info-bg);
+        border-color: var(--pg-info-border);
+        color: var(--pg-text-2);
+    }
+
+    .alert-warning {
+        background-color: var(--pg-warn-bg);
+        border-color: var(--pg-warn-border);
+        color: var(--pg-text-2);
+    }
+
+    .alert-danger {
+        background-color: var(--pg-bad-bg);
+        border-color: var(--pg-bad-border);
+        color: var(--pg-text-2);
+    }
+
+    .alert-success {
+        background-color: var(--pg-ok-bg);
+        border-color: var(--pg-ok-border);
+        color: var(--pg-text-2);
+    }
+
+    // Booleans / toggles pick up the brand accent
+    .o_field_boolean input:checked,
+    .form-check-input:checked {
+        background-color: var(--pg-brand);
+        border-color: var(--pg-brand);
+    }
+
+    .form-check-input:focus {
+        border-color: var(--pg-brand);
+        box-shadow: 0 0 0 3px var(--pg-brand-ring);
+    }
+
+    // Monospace technical data (IDs, endpoints, keys)
+    .o_pg_mono,
+    .o_pg_mono input {
+        font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+        font-size: var(--pg-fs-small);
+    }
+}
+
+// ------------------------------------------------------------
+// 2. Form views
+// ------------------------------------------------------------
+.o_pg_form {
+    .o_form_sheet_bg {
+        background-color: var(--pg-bg);
+    }
+
+    .o_form_sheet {
+        background-color: var(--pg-surface);
+        border: 1px solid var(--pg-border);
+        border-radius: var(--pg-r-xl);
+        box-shadow: var(--pg-shadow-sm);
+        position: relative;
+        overflow: hidden;
+
+        // The single sanctioned gradient in the whole product:
+        // a 2px brand hairline that ties the sheet to the brand.
+        &::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(
+                90deg,
+                var(--pg-brand) 0%,
+                var(--pg-brand-400) 45%,
+                transparent 100%
+            );
+            pointer-events: none;
+        }
+    }
+
+    .o_form_statusbar {
+        background-color: var(--pg-surface-2);
+        border-bottom: 1px solid var(--pg-border);
+    }
+
+    // Notebook tabs: brand underline for the active page
+    .o_notebook .nav-tabs {
+        border-bottom-color: var(--pg-border);
+
+        .nav-link {
+            color: var(--pg-text-3);
+            font-weight: 600;
+            border: none;
+            border-bottom: 2px solid transparent;
+            transition: color var(--pg-dur) var(--pg-ease),
+                border-color var(--pg-dur) var(--pg-ease);
+
+            &:hover {
+                color: var(--pg-text);
+            }
+
+            &.active {
+                color: var(--pg-brand-subtle-text);
+                background-color: transparent;
+                border-bottom-color: var(--pg-brand);
+            }
+        }
+    }
+
+    // Read-only technical fields read as data, not as inputs
+    .o_field_widget[name="gateway_printer_id"] input,
+    .o_field_widget[name="gateway_agent_id"] input,
+    .o_field_widget[name="gateway_job_id"] input,
+    .o_field_widget[name="agent_id"] input,
+    .o_field_widget[name="idempotency_key"] input {
+        font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+        font-size: var(--pg-fs-small);
+    }
+}
+
+// ------------------------------------------------------------
+// 3. List views
+// ------------------------------------------------------------
+.o_pg_list {
+    thead th {
+        background-color: var(--pg-surface-2) !important;
+        color: var(--pg-text-3) !important;
+        font-size: var(--pg-fs-caption);
+        font-weight: 600;
+        letter-spacing: var(--pg-tracking-label);
+        text-transform: uppercase;
+        border-bottom: 1px solid var(--pg-border) !important;
+    }
+
+    tbody tr.o_data_row {
+        transition: background-color var(--pg-dur) ease-out;
+
+        &:hover {
+            background-color: var(--pg-surface-accent) !important;
+        }
+
+        &.o_data_row_selected,
+        &.table-info {
+            background-color: var(--pg-brand-subtle) !important;
+        }
+
+        td {
+            border-bottom: 1px solid var(--pg-border);
+        }
+    }
+
+    // Row decorations reuse the shared status scale rather than
+    // Bootstrap's default green/red so Odoo matches desktop + web.
+    tbody tr.text-success,
+    tbody tr td.text-success {
+        color: var(--pg-ok) !important;
+    }
+
+    tbody tr.text-warning,
+    tbody tr td.text-warning {
+        color: var(--pg-warn) !important;
+    }
+
+    tbody tr.text-danger,
+    tbody tr td.text-danger {
+        color: var(--pg-bad) !important;
+    }
+
+    tbody tr.text-info,
+    tbody tr td.text-info {
+        color: var(--pg-info) !important;
+    }
+
+    tbody tr.text-muted {
+        color: var(--pg-text-4) !important;
+    }
+}
+
+// ------------------------------------------------------------
+// 4. Kanban views (branded operational cards)
+// ------------------------------------------------------------
+.o_pg_kanban {
+    .o_kanban_record {
+        background-color: var(--pg-surface);
+        border: 1px solid var(--pg-border);
+        border-radius: var(--pg-r-xl);
+        box-shadow: var(--pg-shadow-xs);
+        transition: border-color var(--pg-dur) var(--pg-ease),
+            box-shadow var(--pg-dur) var(--pg-ease);
+
+        &:hover,
+        &:focus {
+            border-color: var(--pg-border-accent);
+            box-shadow: var(--pg-shadow-md);
+        }
+    }
+
+    .o_pg_card_title {
+        color: var(--pg-text);
+        font-weight: 600;
+        letter-spacing: -0.01em;
+    }
+
+    .o_pg_card_meta {
+        color: var(--pg-text-3);
+        font-size: var(--pg-fs-small);
+    }
+
+    .o_pg_card_mono {
+        font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+        font-size: var(--pg-fs-caption);
+        color: var(--pg-text-3);
+    }
+
+    // Status pills reused from the shared status scale
+    .o_pg_pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 10px;
+        border-radius: var(--pg-r-pill);
+        border: 1px solid var(--pg-border);
+        background-color: var(--pg-surface-2);
+        color: var(--pg-text-2);
+        font-size: var(--pg-fs-caption);
+        font-weight: 600;
+        white-space: nowrap;
+
+        &::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: var(--pg-r-pill);
+            background-color: var(--pg-text-4);
+        }
+    }
+
+    .o_pg_pill_ok {
+        background-color: var(--pg-ok-bg);
+        border-color: var(--pg-ok-border);
+        color: var(--pg-ok);
+
+        &::before {
+            background-color: var(--pg-ok-solid);
+        }
+    }
+
+    .o_pg_pill_warn {
+        background-color: var(--pg-warn-bg);
+        border-color: var(--pg-warn-border);
+        color: var(--pg-warn);
+
+        &::before {
+            background-color: var(--pg-warn-solid);
+        }
+    }
+
+    .o_pg_pill_bad {
+        background-color: var(--pg-bad-bg);
+        border-color: var(--pg-bad-border);
+        color: var(--pg-bad);
+
+        &::before {
+            background-color: var(--pg-bad-solid);
+        }
+    }
+
+    .o_pg_pill_info {
+        background-color: var(--pg-info-bg);
+        border-color: var(--pg-info-border);
+        color: var(--pg-info);
+
+        &::before {
+            background-color: var(--pg-info-solid);
+        }
+    }
+
+    .o_pg_card_icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: var(--pg-r-md);
+        background-color: var(--pg-brand-subtle);
+        border: 1px solid var(--pg-border-accent);
+        color: var(--pg-brand);
+    }
+}
+
+// ------------------------------------------------------------
+// 5. Empty / no-content states
+// ------------------------------------------------------------
+.o_pg_view {
+    .o_view_nocontent {
+        .o_nocontent_help {
+            color: var(--pg-text-3);
+
+            p:first-child,
+            .o_view_nocontent_smiling_face {
+                color: var(--pg-text);
+            }
+
+            b {
+                color: var(--pg-brand-subtle-text);
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// 6. Control panel — only while a Print Gateway view is open
+//    (`:has()` keeps this from leaking into other Odoo apps;
+//     unsupported browsers just keep the native chrome)
+// ------------------------------------------------------------
+.o_action_manager:has(.o_pg_view) {
+    .o_control_panel {
+        background-color: var(--pg-surface);
+        border-bottom: 1px solid var(--pg-border);
+
+        .o_breadcrumb .active,
+        .breadcrumb-item.active,
+        .o_last_breadcrumb_item {
+            color: var(--pg-text);
+            font-weight: 600;
+            letter-spacing: -0.01em;
+        }
+
+        .btn-primary {
+            background-color: var(--pg-brand);
+            border-color: var(--pg-brand);
+            color: var(--pg-brand-contrast);
+            border-radius: var(--pg-r-sm);
+            font-weight: 600;
+
+            &:hover,
+            &:focus {
+                background-color: var(--pg-brand-hover);
+                border-color: var(--pg-brand-hover);
+            }
+
+            &:focus-visible {
+                box-shadow: 0 0 0 3px var(--pg-brand-ring);
+            }
+        }
+
+        .o_searchview {
+            border-radius: var(--pg-r-sm);
+
+            &:focus-within {
+                border-color: var(--pg-brand);
+                box-shadow: 0 0 0 3px var(--pg-brand-ring);
+            }
+        }
+
+        .o_facet_values,
+        .o_searchview_facet .o_facet_values {
+            background-color: var(--pg-brand-subtle);
+            color: var(--pg-brand-subtle-text);
+        }
+    }
+}

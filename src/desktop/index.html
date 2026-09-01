@@ -4,8 +4,16 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <meta name="color-scheme" content="light dark"/>
-    <meta name="theme-color" content="#714b67"/>
+    <!-- Brand primary — keeps the OS/WebView chrome on-brand -->
+    <meta name="theme-color" content="#2563EB"/>
     <title>Odoo Print Manager</title>
+    <style>
+      /* Paint the branded canvas before the bundle loads (no white flash) */
+      html, body { margin: 0; background-color: #f8fafc; }
+      @media (prefers-color-scheme: dark) {
+        html, body { background-color: #0a1120; }
+      }
+    </style>
   </head>
   <body><div id="root"></div><script type="module" src="./main.tsx"></script></body>
 </html>

@@ -4,7 +4,7 @@
         <field name="name">print_gateway.report_mapping.form</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <form string="Report Mapping">
+            <form string="Report Mapping" class="o_pg_view o_pg_form">
                 <sheet>
                     <group string="Mapping">
                         <field name="name" readonly="1"/>
@@ -40,7 +40,7 @@
         <field name="name">print_gateway.report_mapping.tree</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <tree string="Report Mappings" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
+            <tree string="Report Mappings" class="o_pg_view o_pg_list" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
                 <field name="name"/>
                 <field name="report_id"/>
                 <field name="report_xml_id"/>

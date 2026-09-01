@@ -4,7 +4,7 @@
         <field name="name">print_gateway.document_type.form</field>
         <field name="model">print_gateway.document_type</field>
         <field name="arch" type="xml">
-            <form string="Document Type">
+            <form string="Document Type" class="o_pg_view o_pg_form">
                 <sheet>
                     <group string="Identity">
                         <field name="name" placeholder="receipt, invoice, label, order" help="Lowercase logical type, e.g. receipt, invoice, label, order."/>
@@ -25,7 +25,7 @@
         <field name="name">print_gateway.document_type.tree</field>
         <field name="model">print_gateway.document_type</field>
         <field name="arch" type="xml">
-            <tree string="Document Types" decoration-success="enabled" decoration-muted="not enabled">
+            <tree string="Document Types" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="payload_hint"/>

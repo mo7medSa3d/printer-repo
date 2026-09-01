@@ -1,5 +1,8 @@
 # Architecture & Design Verification — Current
 
+> **Visual identity:** the product-wide design system (tokens, palette, component rules and
+> the Odoo scoping strategy) is documented in **[DESIGN_SYSTEM.md](DESIGN_SYSTEM.md)**.
+
 ## Project State: PRODUCTION HARDENED — Generic Odoo Printing Complete
 
 The project is now **multi-branch, multi-destination, generic report routing** with:
