@@ -209,16 +209,18 @@ func TestManualPrinterTypes(t *testing.T) {
 }
 
 func TestPrinterTestOperation(t *testing.T) {
+	if os.Getenv("RUN_PHYSICAL_PRINTER_TESTS") != "true" {
+		t.Skip("Skipping physical printer test: no physical printer test environment configured.")
+	}
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg := &config.Config{}
 	registryPath := config.RegistryPath(cfgPath)
 
-	// This test performs a real Windows spooler operation.
-	// GitHub Actions does not provide a printer named "Test Printer For Unit",
-	// so skip the physical spooler operation when running on Windows.
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping physical Windows spooler test: no test printer available")
+	// This test performs a real Windows spooler operation and requires a
+	// printer named "Test Printer For Unit" configured on the host.
+	if runtime.GOOS != "windows" {
+		t.Skip("skipping Windows spooler test: requires Windows")
 	}
 
 	// Add a spooler printer manually (stub on non-windows will succeed via file write)
