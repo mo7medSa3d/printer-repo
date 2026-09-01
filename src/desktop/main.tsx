@@ -34,9 +34,37 @@ import {
   Eye,
   Info,
   Plus,
+  Network,
+  Cpu,
+  KeyRound,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import {
+  Button,
+  IconButton,
+  Drawer,
+  Modal,
+  Field,
+  Input,
+  Select,
+  StatusBadge,
+  StatusDot,
+  Card,
+  CardHeader,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  Tabs,
+  Toast,
+  CopyButton,
+  MetaRow,
+  Mono,
+  type Tone,
+} from "@/components/ui";
+import {
   fetchGatewayHealth,
+  fetchGatewayJobs,
   getAgentStatus,
   getAppVersion,
   getGatewayUrl,
@@ -72,17 +100,17 @@ function friendlyPrinterError(raw: string): string {
   if (lower.includes("offline")) return "Printer is offline.";
   if (lower.includes("not found") || lower.includes("no such")) return "Printer not found.";
   if (lower.includes("access denied") || lower.includes("permission")) return "Access denied. Check Windows printer permissions.";
-  return raw.length > 120 ? raw.slice(0, 120) + "…" : raw;
+  return raw.length > 140 ? raw.slice(0, 140) + "…" : raw;
 }
 
 type AgentStatusView = Partial<AgentStatus> & { error?: string };
-type Page = "dashboard" | "printers" | "jobs" | "settings";
+type Page = "dashboard" | "printers" | "jobs" | "agents" | "settings";
 type JobTab = "all" | "pending" | "printing" | "completed" | "failed";
 
 function useHashPage(defaultPage: Page): [Page, (p: Page) => void] {
   const getHash = (): Page => {
     const h = window.location.hash.replace("#", "") as Page;
-    if (["dashboard", "printers", "jobs", "settings"].includes(h)) return h;
+    if (["dashboard", "printers", "jobs", "agents", "settings"].includes(h)) return h;
     return defaultPage;
   };
   const [page, setPage] = useState<Page>(() => getHash());
@@ -98,91 +126,118 @@ function useHashPage(defaultPage: Page): [Page, (p: Page) => void] {
   return [page, navigate];
 }
 
-function Badge({ children, variant = "default" }: { children: React.ReactNode; variant?: "default" | "success" | "warning" | "danger" | "info" | "neutral" }) {
-  const map: Record<string, string> = {
-    default: "bg-zinc-100 text-zinc-700 border-zinc-200",
-    success: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    warning: "bg-amber-50 text-amber-700 border-amber-200",
-    danger: "bg-red-50 text-red-700 border-red-200",
-    info: "bg-indigo-50 text-indigo-700 border-indigo-200",
-    neutral: "bg-zinc-50 text-zinc-500 border-zinc-200",
-  };
-  return <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${map[variant]}`}>{children}</span>;
+/* ---------- Status vocabulary (single source, icon + color + label) ---------- */
+
+function printerTone(status: string): Tone {
+  switch (status) {
+    case "online": return "ok";
+    case "busy": return "warn";
+    case "error":
+    case "offline": return "bad";
+    default: return "neutral";
+  }
 }
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`bg-white border border-zinc-200/70 rounded-2xl shadow-sm ${className}`}>{children}</div>;
+function jobTone(status: string): Tone {
+  switch (status) {
+    case "success":
+    case "completed": return "ok";
+    case "failed":
+    case "expired": return "bad";
+    case "printing": return "warn";
+    case "claimed": return "info";
+    case "queued": return "neutral";
+    default: return "neutral";
+  }
 }
-function StatCard({ title, value, subtitle, icon, color }: { title: string; value: string; subtitle?: string; icon: React.ReactNode; color: string }) {
+function labelPrinter(status: string): string {
+  return status === "unknown" ? "Unknown" : status.charAt(0).toUpperCase() + status.slice(1);
+}
+function labelJob(status: string): string {
+  if (status === "success" || status === "completed") return "Completed";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function JobTimeline({ status }: { status: string }) {
+  const s = String(status).toLowerCase();
+  const flow = ["queued", "claimed", "printing"] as const;
+  const done = s === "success" || s === "completed";
+  const failed = s === "failed" || s === "expired";
+  const idx = flow.indexOf(s as any);
+  const terminalLabel = done ? "Completed" : failed ? "Failed" : "Outcome";
+  const steps = flow.map((step, i) => {
+    const current = idx === i;
+    const isReached = done || failed || idx > i;
+    return { label: step, state: current && !done && !failed ? "current" : isReached ? "done" : "todo" } as { label: string; state: string };
+  });
   return (
-    <Card className="p-5 relative overflow-hidden">
-      <div className={`absolute inset-x-0 top-0 h-1 ${color}`} />
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-xs font-semibold tracking-widest uppercase text-zinc-500">{title}</p>
-          <p className="text-2xl font-black mt-1 text-zinc-900">{value}</p>
-          {subtitle && <p className="text-xs text-zinc-500 mt-1">{subtitle}</p>}
-        </div>
-        <div className="w-10 h-10 rounded-xl bg-zinc-50 border border-zinc-200/50 flex items-center justify-center text-zinc-700">{icon}</div>
-      </div>
-    </Card>
-  );
-}
-function EmptyState({ icon, title, description, action }: { icon: React.ReactNode; title: string; description: string; action?: React.ReactNode }) {
-  return (
-    <div className="py-16 flex flex-col items-center text-center">
-      <div className="w-16 h-16 rounded-2xl bg-zinc-100 flex items-center justify-center text-zinc-400 mb-4">{icon}</div>
-      <h3 className="font-bold text-sm text-zinc-900">{title}</h3>
-      <p className="text-sm text-zinc-500 max-w-sm mt-1">{description}</p>
-      {action && <div className="mt-4">{action}</div>}
+    <div className="rounded-xl border border-edge bg-surface-2/50 px-4 py-3.5" role="img" aria-label={`Job pipeline: ${labelJob(status)}`}>
+      <ol className="flex items-start">
+        {steps.map((step, i) => (
+          <li key={step.label} className={`flex items-start flex-1 ${i === 0 ? "" : ""}`}>
+            {i > 0 && (
+              <span aria-hidden className={`mt-2 h-px flex-1 ${idx >= i || done || failed ? "bg-ok/50" : "bg-edge-strong"}`} />
+            )}
+            <span className="flex flex-col items-center gap-1.5 px-0.5" aria-hidden>
+              <span className={`flex h-4 w-4 items-center justify-center rounded-full border text-[8px] font-bold transition-colors ${
+                step.state === "current" ? "border-brand-500 bg-brand-100 text-brand-800 dark:bg-brand-900 dark:text-brand-200 ring-2 ring-brand-500/25"
+                : step.state === "done" ? "border-ok-edge bg-ok text-surface"
+                : "border-edge-strong bg-surface text-ink-3"
+              }`}>
+                {step.state === "done" ? "✓" : step.state === "current" ? "●" : ""}
+              </span>
+              <span className={`w-full min-w-max text-center text-[10px] font-semibold capitalize ${step.state === "current" ? "text-ink" : step.state === "done" ? "text-ok" : "text-ink-3"}`}>
+                {step.label}
+              </span>
+            </span>
+          </li>
+        ))}
+        <li className="flex items-start flex-1">
+          <span aria-hidden className={`mt-2 h-px flex-1 ${done || failed ? "bg-ok/50" : "bg-edge-strong"}`} />
+          <span className="flex flex-col items-center gap-1.5 px-0.5" aria-hidden>
+            <span className={`flex h-4 w-4 items-center justify-center rounded-full border text-[8px] font-bold transition-colors ${
+              done ? "border-ok-edge bg-ok text-surface" : failed ? "border-bad-edge bg-bad text-surface" : "border-edge-strong bg-surface text-ink-3"
+            }`}>
+              {done ? "✓" : failed ? "✕" : ""}
+            </span>
+            <span className={`w-full min-w-max text-center text-[10px] font-semibold ${done ? "text-ok" : failed ? "text-bad" : "text-ink-3"}`}>
+              {terminalLabel}
+            </span>
+          </span>
+        </li>
+      </ol>
     </div>
   );
 }
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-3 animate-pulse">
-      <div className="h-4 bg-zinc-100 rounded w-1/3" />
-      <div className="h-24 bg-zinc-100 rounded-xl" />
-      <div className="h-24 bg-zinc-100 rounded-xl" />
-    </div>
-  );
-}
-function DetailsDrawer({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-white shadow-2xl border-l border-zinc-200 flex flex-col">
-        <div className="p-5 border-b border-zinc-200 flex items-center justify-between">
-          <h3 className="font-bold text-sm">{title}</h3>
-          <button onClick={onClose} className="p-2 hover:bg-zinc-100 rounded-xl"><X className="w-4 h-4" /></button>
-        </div>
-        <div className="flex-1 overflow-auto p-5 space-y-4 text-sm">{children}</div>
-      </div>
-    </div>
-  );
-}
+
 function humanType(p: PrinterInfo): string {
   const isVirtual = (p as any).isVirtual || (p as any).is_virtual || p.printer_type === "virtual" || (p.capabilities as any)?.virtual === true;
   if (isVirtual) return "Virtual";
   const t = (p.printer_type || "").toLowerCase();
-  if (t === "thermal" || t === "label") return "Physical";
-  if (t === "laser" || t === "inkjet") return "Physical";
-  if ((p.connection_type || "").toLowerCase() === "network") return "Network";
-  if ((p.connection_type || "").toLowerCase() === "usb") return "Physical";
-  if (t === "virtual") return "Virtual";
+  if (t === "thermal" || t === "label") return "Thermal";
+  if (t === "laser") return "Laser";
+  if (t === "inkjet") return "Inkjet";
+  if ((p.connection_type || "").toLowerCase() === "usb") return "USB device";
   if (t && t !== "unknown") return t.charAt(0).toUpperCase() + t.slice(1);
-  return "Physical";
+  return "Printer";
 }
 function humanConnection(p: PrinterInfo): string {
   const c = (p.connection_type || p.printer_type || "").toLowerCase();
   const proto = (p.protocol || "").toLowerCase();
-  if (c === "spooler" || proto === "spooler") return "Spooler";
+  if (c === "spooler" || proto === "spooler") return "Windows spooler";
   if (c === "usb") return "USB";
   if (c === "ipp" || c === "ipps" || proto === "ipp" || proto === "ipps") return "IPP";
-  if (c === "network" || c === "tcp") return "TCP/IP";
-  if (c === "virtual") return "Spooler";
-  return c ? c.toUpperCase() : "Spooler";
+  if (c === "network" || c === "tcp") return "Network (TCP)";
+  if (c === "virtual") return "Virtual spooler";
+  return "Printer";
 }
+function printerEndpoint(p: PrinterInfo): string {
+  if (p.network_address) return `${p.network_address}${p.port ? `:${p.port}` : ""}`;
+  if (p.endpoint) return p.endpoint;
+  return p.spooler_name || "—";
+}
+
+/* ---------- Add Printer ---------- */
+
 function AddPrinterDialog({ open, onClose, onSuccess, spoolerPrinters, usbPrinters }: { open: boolean; onClose: () => void; onSuccess: () => void; spoolerPrinters: PrinterInfo[]; usbPrinters: PrinterInfo[] }) {
   const [name, setName] = useState("");
   const [conn, setConn] = useState<"spooler" | "network" | "usb" | "ipp">("spooler");
@@ -199,7 +254,7 @@ function AddPrinterDialog({ open, onClose, onSuccess, spoolerPrinters, usbPrinte
   useEffect(() => { if (open) { setError(null); } }, [open]);
   const validate = (): string | null => {
     if (!name.trim()) return "Printer name is required.";
-    if (conn === "spooler" && !spoolerName.trim()) return "Select a spooler printer.";
+    if (conn === "spooler" && !spoolerName.trim()) return "Select or type a spooler printer name.";
     if (conn === "network") {
       if (!host.trim()) return "Host is required.";
       if (host.includes(" ")) return "Invalid host.";
@@ -217,7 +272,7 @@ function AddPrinterDialog({ open, onClose, onSuccess, spoolerPrinters, usbPrinte
     setBusy(true);
     setError(null);
     try {
-      let req: any = { name: name.trim(), connectionType: conn };
+      const req: any = { name: name.trim(), connectionType: conn };
       if (conn === "spooler") { req.spoolerName = spoolerName.trim(); req.endpoint = spoolerName.trim(); req.protocol = "spooler"; }
       if (conn === "network") { req.endpoint = `${host.trim()}:${port.trim()}`; req.protocol = protocol; }
       if (conn === "ipp") { req.endpoint = ippUrl.trim(); req.protocol = "ipp"; }
@@ -231,86 +286,82 @@ function AddPrinterDialog({ open, onClose, onSuccess, spoolerPrinters, usbPrinte
       setName(""); setHost(""); setPort("9100"); setSpoolerName(""); setIppUrl(""); setUsbSel("");
     } catch (e) { setError(friendlyPrinterError(errMsg(e))); } finally { setBusy(false); }
   };
-  if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-auto">
-        <div className="p-6 border-b border-zinc-200">
-          <h2 className="font-bold text-base">Add Printer</h2>
-          <p className="text-xs text-zinc-500 mt-1">Register a printer for this agent. Discovery is preferred, but manual works for legacy devices.</p>
-        </div>
-        <div className="p-6 space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-zinc-700">Printer name</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="HP LaserJet" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#714B67]/20 focus:border-[#714B67]" />
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Add printer"
+      description="Register a printer for this agent. Discovery is preferred, but manual registration works for legacy devices."
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={handleSubmit} loading={busy} icon={<Plus className="h-4 w-4" />}>
+            Add printer
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Printer name" htmlFor="pp-name">
+          <Input id="pp-name" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Kitchen receipt" autoFocus />
+        </Field>
+        <Field label="Connection type" htmlFor="pp-conn">
+          <Select id="pp-conn" value={conn} onChange={e => setConn(e.target.value as any)}>
+            <option value="spooler">Windows spooler</option>
+            <option value="network">Network (TCP)</option>
+            <option value="usb">USB</option>
+            <option value="ipp">IPP</option>
+          </Select>
+        </Field>
+        {conn === "spooler" && (
+          <Field label="Spooler printer" htmlFor="pp-spooler" hint={physicalSpoolers.length === 0 ? "No physical spooler printers were discovered — run Discovery first, or type the exact Windows printer name." : undefined}>
+            <Select id="pp-spooler" value={spoolerName} onChange={e => setSpoolerName(e.target.value)}>
+              <option value="">Select…</option>
+              {physicalSpoolers.map(p => <option key={p.id} value={p.spooler_name || p.name}>{p.name}</option>)}
+              {physicalSpoolers.length === 0 && <option disabled>None discovered</option>}
+            </Select>
+            {physicalSpoolers.length === 0 && (
+              <Input className="mt-2" value={spoolerName} onChange={e => setSpoolerName(e.target.value)} placeholder="Type Windows printer name" />
+            )}
+          </Field>
+        )}
+        {conn === "network" && (
+          <div className="grid grid-cols-[1.6fr_1fr] gap-3">
+            <Field label="Host" htmlFor="pp-host">
+              <Input id="pp-host" value={host} onChange={e => setHost(e.target.value)} placeholder="192.168.1.50" />
+            </Field>
+            <Field label="Port" htmlFor="pp-port">
+              <Input id="pp-port" value={port} onChange={e => setPort(e.target.value)} placeholder="9100" inputMode="numeric" />
+            </Field>
+            <Field label="Protocol" htmlFor="pp-proto" className="col-span-2" hint="RAW sends bytes as-is; ESC/POS is the usual thermal receipt language.">
+              <Select id="pp-proto" value={protocol} onChange={e => setProtocol(e.target.value)}>
+                <option value="raw">RAW</option>
+                <option value="escpos">ESC/POS</option>
+              </Select>
+            </Field>
           </div>
-          <div>
-            <label className="text-xs font-semibold text-zinc-700">Connection type</label>
-            <select value={conn} onChange={e => setConn(e.target.value as any)} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm">
-              <option value="spooler">Spooler (Windows)</option>
-              <option value="network">Network / TCP</option>
-              <option value="usb">USB</option>
-              <option value="ipp">IPP</option>
-            </select>
-          </div>
-          {conn === "spooler" && (
-            <div>
-              <label className="text-xs font-semibold text-zinc-700">Spooler printer</label>
-              <select value={spoolerName} onChange={e => setSpoolerName(e.target.value)} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm">
-                <option value="">Select…</option>
-                {physicalSpoolers.map(p => <option key={p.id} value={p.spooler_name || p.name}>{p.name}</option>)}
-                {physicalSpoolers.length === 0 && <option disabled>No physical spooler printers found — try Discover or enter name manually</option>}
-              </select>
-              {physicalSpoolers.length === 0 && <input value={spoolerName} onChange={e => setSpoolerName(e.target.value)} placeholder="Or type spooler name" className="mt-2 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm" />}
-            </div>
-          )}
-          {conn === "network" && (
-            <div className="grid grid-cols-[2fr_1fr] gap-3">
-              <div>
-                <label className="text-xs font-semibold text-zinc-700">Host</label>
-                <input value={host} onChange={e => setHost(e.target.value)} placeholder="192.168.1.50" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm" />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-zinc-700">Port</label>
-                <input value={port} onChange={e => setPort(e.target.value)} placeholder="9100" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm" />
-              </div>
-              <div className="col-span-2">
-                <label className="text-xs font-semibold text-zinc-700">Protocol</label>
-                <select value={protocol} onChange={e => setProtocol(e.target.value)} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm">
-                  <option value="raw">RAW</option>
-                  <option value="escpos">ESC/POS</option>
-                </select>
-              </div>
-            </div>
-          )}
-          {conn === "usb" && (
-            <div>
-              <label className="text-xs font-semibold text-zinc-700">USB printer</label>
-              <select value={usbSel} onChange={e => setUsbSel(e.target.value)} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm">
-                <option value="">Select…</option>
-                {filteredUsb.map(p => <option key={p.id} value={p.id}>{p.name} {p.usbVid ? `(${p.usbVid}:${p.usbPid})` : ""}</option>)}
-                {filteredUsb.length === 0 && <option disabled>No USB printers discovered</option>}
-              </select>
-              <p className="text-xs text-zinc-500 mt-1">Only valid USB printers are listed. Generic USB devices are hidden.</p>
-            </div>
-          )}
-          {conn === "ipp" && (
-            <div>
-              <label className="text-xs font-semibold text-zinc-700">IPP endpoint</label>
-              <input value={ippUrl} onChange={e => setIppUrl(e.target.value)} placeholder="ipp://192.168.1.60/ipp/print or http://host:631/ipp/print" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm" />
-            </div>
-          )}
-          {error && <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex gap-2"><XCircle className="w-4 h-4 flex-shrink-0" /> {error}</div>}
-        </div>
-        <div className="p-6 border-t border-zinc-200 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2.5 rounded-xl border border-zinc-200 text-sm font-semibold hover:bg-zinc-50">Cancel</button>
-          <button onClick={handleSubmit} disabled={busy} className="px-5 py-2.5 bg-[#714B67] hover:bg-[#5a3c52] text-white rounded-xl text-sm font-semibold disabled:opacity-50 flex items-center gap-2">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Add Printer</button>
-        </div>
+        )}
+        {conn === "usb" && (
+          <Field label="USB printer" htmlFor="pp-usb" hint="Only valid USB printers are listed — generic USB devices are hidden.">
+            <Select id="pp-usb" value={usbSel} onChange={e => setUsbSel(e.target.value)}>
+              <option value="">Select…</option>
+              {filteredUsb.map(p => <option key={p.id} value={p.id}>{p.name} {p.usbVid ? `(${p.usbVid}:${p.usbPid})` : ""}</option>)}
+              {filteredUsb.length === 0 && <option disabled>No USB printers discovered</option>}
+            </Select>
+          </Field>
+        )}
+        {conn === "ipp" && (
+          <Field label="IPP endpoint" htmlFor="pp-ipp" hint="Examples: ipp://192.168.1.60/ipp/print or http://host:631/ipp/print">
+            <Input id="pp-ipp" value={ippUrl} onChange={e => setIppUrl(e.target.value)} placeholder="ipp://192.168.1.60/ipp/print" />
+          </Field>
+        )}
+        {error && <ErrorState title="Cannot add printer" message={error} />}
       </div>
-    </div>
+    </Modal>
   );
 }
+
+/* ---------- App ---------- */
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -324,6 +375,7 @@ export default function App() {
   const [runtimePaths, setRuntimePaths] = useState<RuntimePaths | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+  const [confirmStop, setConfirmStop] = useState(false);
   const busyRef = useRef(false);
   const setBusyBoth = useCallback((v: boolean) => { busyRef.current = v; setBusy(v); }, []);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
@@ -333,7 +385,9 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState<"all" | "online" | "offline" | "virtual">("all");
   const [jobs, setJobs] = useState<Record<string, unknown>[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsError, setJobsError] = useState<string | null>(null);
   const [jobTab, setJobTab] = useState<JobTab>("all");
+  const [jobSearch, setJobSearch] = useState("");
   const [autostart, setAutostartState] = useState<boolean | null>(null);
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -341,6 +395,8 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState<Record<string, unknown> | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [gatewaySaving, setGatewaySaving] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [jobPrinterFilter, setJobPrinterFilter] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
     if (!isTauri) return;
@@ -367,12 +423,17 @@ export default function App() {
     if (!gatewayUrl) return;
     setJobsLoading(true);
     try {
-      const res = await fetch(`${gatewayUrl.replace(/\/$/, "")}/api/jobs?limit=50`, { credentials: "include" });
-      if (!res.ok) throw new Error(`Gateway ${res.status}`);
-      const data = await res.json();
+      const data = await fetchGatewayJobs(gatewayUrl);
       setJobs(Array.isArray(data) ? data : []);
-    } catch {
+      setJobsError(null);
+    } catch (e: any) {
       setJobs([]);
+      const status = Number(e?.status ?? 0);
+      setJobsError(
+        status === 401 || status === 403
+          ? "Gateway requires a manager session — sign in at the gateway dashboard to view jobs."
+          : `Could not load jobs: ${errMsg(e)}`
+      );
     } finally { setJobsLoading(false); }
   }, [gatewayUrl]);
   const checkHealth = useCallback(async () => {
@@ -398,7 +459,7 @@ export default function App() {
   const handleTest = useCallback(async (id: string) => {
     try {
       setBusyBoth(true);
-      const res = await testPrinter(id);
+      await testPrinter(id);
       setMsg({ text: "Test print sent", type: "success" });
     } catch (e) { setMsg({ text: friendlyPrinterError(errMsg(e)), type: "error" }); } finally { setBusyBoth(false); }
   }, [setBusyBoth]);
@@ -406,7 +467,7 @@ export default function App() {
     try { const n = normalizeGatewayUrl(gatewayUrl); setGatewaySaving(true); await setGatewayUrl(n); setGw(n); setMsg({ text: "Gateway saved", type: "success" }); checkHealth(); } catch (e) { setMsg({ text: errMsg(e), type: "error" }); } finally { setGatewaySaving(false); }
   }, [gatewayUrl, checkHealth]);
   const startAgent = useCallback(async () => { try { setBusyBoth(true); const m = await ipcStartAgent(); setMsg({ text: m, type: "success" }); refreshStatus(); } catch (e) { setMsg({ text: friendlyPrinterError(errMsg(e)), type: "error" }); } finally { setBusyBoth(false); } }, [refreshStatus, setBusyBoth]);
-  const stopAgent = useCallback(async () => { try { setBusyBoth(true); const m = await ipcStopAgent(); setMsg({ text: m, type: "success" }); refreshStatus(); } catch (e) { setMsg({ text: errMsg(e), type: "error" }); } finally { setBusyBoth(false); } }, [refreshStatus, setBusyBoth]);
+  const stopAgent = useCallback(async () => { setConfirmStop(false); try { setBusyBoth(true); const m = await ipcStopAgent(); setMsg({ text: m, type: "success" }); refreshStatus(); } catch (e) { setMsg({ text: errMsg(e), type: "error" }); } finally { setBusyBoth(false); } }, [refreshStatus, setBusyBoth]);
   const restartAgent = useCallback(async () => { try { setBusyBoth(true); const m = await ipcRestartAgent(); setMsg({ text: m, type: "success" }); refreshStatus(); } catch (e) { setMsg({ text: errMsg(e), type: "error" }); } finally { setBusyBoth(false); } }, [refreshStatus, setBusyBoth]);
   const pair = useCallback(async () => {
     if (!pairCode.trim()) { setMsg({ text: "Enter pairing code", type: "error" }); return; }
@@ -427,21 +488,27 @@ export default function App() {
   useEffect(() => { if (gatewayUrl) refreshJobs(); }, [gatewayUrl, refreshJobs]);
   useEffect(() => {
     if (!isTauri) return;
-    onTrayNavigate((anchor) => { const p = anchor.replace("#", "") as Page; if (["dashboard","printers","jobs","settings"].includes(p)) navigate(p); });
+    onTrayNavigate((anchor) => { const p = anchor.replace("#", "") as Page; if (["dashboard","printers","jobs","agents","settings"].includes(p)) navigate(p); });
     onTrayRestartAgent(() => restartAgent());
   }, [navigate, restartAgent]);
 
   const isOnline = !!agentStatus && !(agentStatus as any).error && (agentStatus as any).running !== false;
+  const gatewayConnected = !!health && (health as any).ok !== false && !healthError;
   const totalPrinters = printers.length;
   const onlinePrinters = printers.filter(p => p.status === "online").length;
+  const offlinePrinters = printers.filter(p => p.status === "offline" || p.status === "error").length;
   const pendingJobs = jobs.filter((j: any) => ["queued","claimed"].includes(String(j.status))).length;
   const failedJobs = jobs.filter((j: any) => ["failed","expired"].includes(String(j.status))).length;
+  const fleetAgents = (health as any)?.agents as { total?: number; online?: number } | undefined;
+  const fleetTotal = Number(fleetAgents?.total ?? 0);
+  const fleetOnline = Number(fleetAgents?.online ?? 0);
+  const printerFilterName = printers.find(pp => pp.id === jobPrinterFilter)?.name ?? jobPrinterFilter ?? "";
 
   const filteredPrinters = useMemo(() => {
     let list = printers;
     if (printersFilter) {
       const q = printersFilter.toLowerCase();
-      list = list.filter(p => p.name.toLowerCase().includes(q) || (p.connection_type||"").toLowerCase().includes(q) || (p.printer_type||"").toLowerCase().includes(q));
+      list = list.filter(p => p.name.toLowerCase().includes(q) || (p.connection_type||"").toLowerCase().includes(q) || (p.printer_type||"").toLowerCase().includes(q) || printerEndpoint(p).toLowerCase().includes(q));
     }
     if (statusFilter !== "all") {
       if (statusFilter === "virtual") list = list.filter(p => (p as any).isVirtual || p.printer_type === "virtual");
@@ -456,172 +523,303 @@ export default function App() {
   }, [printers, printersFilter, statusFilter]);
 
   const jobsFiltered = useMemo(() => {
-    if (jobTab === "all") return jobs;
-    return jobs.filter((j: any) => {
-      const s = String(j.status).toLowerCase();
-      if (jobTab === "pending") return ["queued","claimed"].includes(s);
-      if (jobTab === "printing") return s === "printing";
-      if (jobTab === "completed") return ["success","completed"].includes(s);
-      if (jobTab === "failed") return ["failed","expired"].includes(s);
-      return true;
-    });
-  }, [jobs, jobTab]);
+    let list = jobs;
+    if (jobPrinterFilter) {
+      const t = printers.find(pp => pp.id === jobPrinterFilter);
+      const target = (t?.name || "").toLowerCase();
+      list = list.filter((j: any) => {
+        const pid = String(j.printerId ?? "");
+        return pid === jobPrinterFilter || (target && (pid.toLowerCase() === target || String(j.printerName ?? "").toLowerCase() === target));
+      });
+    }
+    if (jobTab !== "all") {
+      list = list.filter((j: any) => {
+        const s = String(j.status).toLowerCase();
+        if (jobTab === "pending") return ["queued","claimed"].includes(s);
+        if (jobTab === "printing") return s === "printing";
+        if (jobTab === "completed") return ["success","completed"].includes(s);
+        if (jobTab === "failed") return ["failed","expired"].includes(s);
+        return true;
+      });
+    }
+    if (jobSearch) {
+      const q = jobSearch.toLowerCase();
+      list = list.filter((j: any) =>
+        String(j.id || j.jobId || "").toLowerCase().includes(q) ||
+        String(j.documentType || j.document_type || "").toLowerCase().includes(q) ||
+        String(j.printerId || "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [jobs, jobTab, jobSearch, jobPrinterFilter, printers]);
+
+  const jobCounts = useMemo(() => ({
+    all: jobs.length,
+    pending: pendingJobs,
+    printing: jobs.filter((j: any) => String(j.status) === "printing").length,
+    completed: jobs.filter((j: any) => ["success","completed"].includes(String(j.status))).length,
+    failed: failedJobs,
+  }), [jobs, pendingJobs, failedJobs]);
+
+  const attentionItems: string[] = [];
+  if (!isOnline) attentionItems.push("Local agent is offline");
+  if (!gatewayUrl) attentionItems.push("Gateway is not configured");
+  else if (!gatewayConnected) attentionItems.push("Gateway is unreachable");
+  if (offlinePrinters > 0) attentionItems.push(`${offlinePrinters} printer${offlinePrinters > 1 ? "s" : ""} need${offlinePrinters === 1 ? "s" : ""} attention`);
+  if (failedJobs > 0) attentionItems.push(`${failedJobs} job${failedJobs > 1 ? "s" : ""} failed`);
+  const allGood = attentionItems.length === 0 && isTauri;
+
+  const nav = [
+    { id: "dashboard" as Page, label: "Overview", icon: LayoutDashboard, desc: isOnline ? "Operational" : "Check status" },
+    { id: "printers" as Page, label: "Printers", icon: Printer, desc: `${totalPrinters} total` },
+    { id: "jobs" as Page, label: "Print Jobs", icon: ClipboardList, desc: `${pendingJobs} pending` },
+    { id: "agents" as Page, label: "Agents", icon: Cpu, desc: isOnline ? "Local online" : "Local stopped" },
+    { id: "settings" as Page, label: "Settings", icon: Settings, desc: "Gateway & agent" },
+  ];
+
+  const pageMeta: Record<Page, { title: string; subtitle: string }> = {
+    dashboard: { title: "Overview", subtitle: "Agent, gateway and print infrastructure at a glance" },
+    printers: { title: "Printers", subtitle: "Discover, register and test the printers this agent can reach" },
+    jobs: { title: "Print Jobs", subtitle: "Operational queue — queued, printing, completed and failed" },
+    agents: { title: "Agents", subtitle: "This PC's print agent and the gateway fleet" },
+    settings: { title: "Settings", subtitle: "Gateway connection, local agent and pairing" },
+  };
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 flex">
-      <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-zinc-200 flex flex-col ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"} transition-transform`}>
-        <div className="h-16 px-5 flex items-center gap-3 border-b border-zinc-200">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={appIcon} alt="Odoo Print Manager" className="w-8 h-8 rounded-xl object-contain bg-white border border-zinc-200 shadow-sm" />
-          <div>
-            <div className="font-black text-sm leading-none">Odoo Print</div>
-            <div className="text-xs text-zinc-500">Manager • v{version || "1.0.0"}</div>
+    <div className="min-h-screen bg-app text-ink">
+      {/* Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-60 ${collapsed ? "lg:w-16" : "lg:w-60"} bg-surface border-r border-edge flex flex-col transition-all duration-200 ease-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+        <div className={`h-16 flex items-center gap-2.5 border-b border-edge ${collapsed ? "lg:justify-center px-0" : "px-4"}`}>
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-edge bg-surface-2 overflow-hidden">
+            {/* Tauri desktop app: next/image is not available; asset is bundled locally */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={appIcon} alt="" className="h-7 w-7 object-contain" />
           </div>
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="text-sm font-bold leading-tight text-ink">Print Gateway</div>
+              <div className="text-[11px] text-ink-3 leading-tight">Odoo Print Manager</div>
+            </div>
+          )}
+          <button onClick={() => { setCollapsed(false); setSidebarOpen(false); }} className="lg:hidden ml-auto p-1.5 rounded-lg text-ink-3 hover:bg-surface-2" aria-label="Close navigation">
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <nav className="flex-1 p-3 space-y-1">
-          {[
-            { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, desc: "Overview" },
-            { id: "printers", label: "Printers", icon: Printer, desc: `${totalPrinters} printers` },
-            { id: "jobs", label: "Print Jobs", icon: ClipboardList, desc: `${jobs.length} jobs` },
-            { id: "settings", label: "Settings", icon: Settings, desc: "Gateway & agent" },
-          ].map(item => (
-            <button key={item.id} onClick={() => { navigate(item.id as Page); setSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition ${page === item.id ? "bg-zinc-900 text-white shadow" : "hover:bg-zinc-100 text-zinc-700"}`}>
-              <item.icon className="w-4 h-4" />
-              <span className="flex-1 text-left">{item.label}</span>
-              <span className={`text-xs ${page===item.id?"text-white/60":"text-zinc-500"}`}>{item.desc}</span>
-            </button>
-          ))}
+        <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-0.5" aria-label="Primary">
+          {nav.map(item => {
+            const active = page === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => { navigate(item.id); setSidebarOpen(false); }}
+                aria-current={active ? "page" : undefined}
+                aria-label={collapsed ? item.label : undefined}
+                title={collapsed ? item.label : undefined}
+                className={`w-full flex items-center gap-2.5 rounded-lg text-sm font-medium transition-colors ${collapsed ? "lg:justify-center px-2 py-2" : "px-2.5 py-2"} ${
+                  active ? "bg-brand-50 text-brand-800 dark:bg-brand-900/60 dark:text-brand-200" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
+                }`}
+              >
+                <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden />
+                {!collapsed && <span className="flex-1 text-left">{item.label}</span>}
+                {!collapsed && <span className={`text-[11px] tabular-nums ${active ? "text-brand-700/70 dark:text-brand-300/80" : "text-ink-3"}`}>{item.desc}</span>}
+              </button>
+            );
+          })}
         </nav>
-        <div className="p-3 border-t border-zinc-200">
-          <div className="flex items-center gap-2 text-xs">
-            <span className={`w-2 h-2 rounded-full ${isOnline?"bg-emerald-500":"bg-red-500"}`} />
-            <span className="font-semibold">{isOnline?"Agent Online":"Agent Offline"}</span>
-            <span className="ml-auto text-zinc-500">{lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}</span>
+        <div className="border-t border-edge px-2.5 py-2 space-y-2">
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            className="hidden lg:inline-flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-ink-3 hover:bg-surface-2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </button>
+          <div className={`${collapsed ? "flex flex-col items-center gap-2.5" : "space-y-2.5"} px-1.5 pb-1`}>
+            <div className="flex items-center gap-2 text-xs" title={collapsed ? (gatewayConnected ? "Gateway connected" : "Gateway offline") : undefined}>
+              <StatusDot tone={gatewayConnected ? "ok" : "bad"} pulse={gatewayConnected} />
+              {!collapsed && (
+                <div className="min-w-0">
+                  <div className="font-semibold text-ink-2">{gatewayConnected ? "Gateway connected" : gatewayUrl ? "Gateway offline" : "Gateway not set"}</div>
+                  <div className="truncate text-[11px] text-ink-3">{gatewayUrl || "Set in Settings"}</div>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-xs" title={collapsed ? (isOnline ? `Agent running v${version || "1.0.0"}` : "Agent stopped") : undefined}>
+              <StatusDot tone={isOnline ? "ok" : "bad"} pulse={isOnline} />
+              {!collapsed && (
+                <div className="min-w-0">
+                  <div className="font-semibold text-ink-2">{isOnline ? "Agent running" : "Agent stopped"}</div>
+                  <div className="text-[11px] text-ink-3">v{version || "1.0.0"}</div>
+                </div>
+              )}
+              {!collapsed && <span className="ml-auto text-[11px] text-ink-3" title="Last status check">{lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}</span>}
+            </div>
           </div>
         </div>
       </aside>
-      {sidebarOpen && <div className="fixed inset-0 bg-black/20 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/35 lg:hidden" style={{ backgroundColor: "var(--overlay)" }} onClick={() => setSidebarOpen(false)} aria-hidden />}
 
-      <div className="flex-1 lg:ml-64 flex flex-col min-h-screen min-w-0">
-        <header className="sticky top-0 z-20 backdrop-blur-xl bg-white/80 border-b border-zinc-200 px-4 lg:px-6 py-3 flex items-center gap-3">
-          <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 rounded-lg hover:bg-zinc-100"><Menu className="w-5 h-5" /></button>
-          <div className="flex-1 min-w-0">
-            <h1 className="font-bold text-sm capitalize">{page === "jobs" ? "Print Jobs" : page}</h1>
-            <p className="text-xs text-zinc-500 hidden sm:block">
-              {page === "dashboard" && "Agent, gateway and printer overview"}
-              {page === "printers" && "Manage printers, discover and test"}
-              {page === "jobs" && "Track print jobs and retries"}
-              {page === "settings" && "Gateway, branch and agent configuration"}
-            </p>
+      {/* Main */}
+      <div className={`flex min-h-screen min-w-0 flex-col ${collapsed ? "lg:pl-16" : "lg:pl-60"}`}>
+        <header className="sticky top-0 z-20 border-b border-edge bg-surface/90 backdrop-blur px-4 lg:px-8 py-3 flex items-center gap-3">
+          <button onClick={() => { setCollapsed(false); setSidebarOpen(true); }} className="lg:hidden p-2 rounded-lg text-ink-2 hover:bg-surface-2" aria-label="Open navigation">
+            <Menu className="h-5 w-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-base font-bold text-ink leading-tight">{pageMeta[page].title}</h1>
+            <p className="hidden sm:block text-xs text-ink-3 truncate">{pageMeta[page].subtitle}</p>
           </div>
           <div className="flex items-center gap-2">
-            <span className={`hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${isOnline ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
-              <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-emerald-500 animate-pulse" : "bg-red-500"}`} />
-              {isOnline ? "Online" : "Offline"}
-            </span>
-            <span className="hidden sm:inline-flex text-xs font-mono px-2 py-1 bg-zinc-900 text-white rounded-lg">v{version || "…"}</span>
+            <StatusBadge tone={isOnline ? "ok" : "bad"} label={isOnline ? "Agent online" : "Agent offline"} />
+            <button
+              onClick={() => { refreshStatus(); refreshPrinters(); if (gatewayUrl) refreshJobs(); }}
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-edge bg-surface px-2.5 h-8 text-xs font-medium text-ink-2 hover:bg-surface-2 transition-colors"
+              aria-label="Refresh all"
+            >
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Refresh
+            </button>
           </div>
         </header>
 
-        {(msg || healthError) && (
-          <div className="mx-4 lg:mx-6 mt-4 space-y-2">
-            {msg && (
-              <div className={`flex items-start gap-3 p-3 rounded-xl border text-sm ${msg.type === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-800" : msg.type === "error" ? "bg-red-50 border-red-200 text-red-800" : "bg-indigo-50 border-indigo-200 text-indigo-800"}`}>
-                {msg.type === "success" ? <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" /> : msg.type === "error" ? <XCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />}
-                <span className="flex-1">{msg.text}</span>
-                <button onClick={() => setMsg(null)} className="p-1 hover:bg-black/5 rounded"><X className="w-3 h-3" /></button>
-              </div>
-            )}
-            {healthError && !msg && (
-              <div className="flex items-center gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
-                <AlertTriangle className="w-4 h-4" /> {healthError}
-              </div>
-            )}
-          </div>
-        )}
-
-        <main className="flex-1 p-4 lg:p-6 max-w-7xl w-full mx-auto">
+        <main className="flex-1 w-full mx-auto max-w-7xl px-4 lg:px-8 py-6 space-y-6">
           {page === "dashboard" && (
-            <div className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard title="Agent" value={isOnline ? "Online" : "Offline"} subtitle={(agentStatus as any)?.note || (isTauri ? "Windows Service" : "Browser mode")} icon={isOnline ? <Activity className="w-5 h-5 text-emerald-600" /> : <WifiOff className="w-5 h-5 text-red-600" />} color={isOnline ? "bg-gradient-to-r from-emerald-500 to-teal-500" : "bg-gradient-to-r from-red-500 to-orange-500"} />
-                <StatCard title="Gateway" value={health && (health as any).ok !== false ? "Connected" : healthError ? "Unreachable" : "Unknown"} subtitle={gatewayUrl || "Not configured"} icon={<Server className="w-5 h-5 text-indigo-600" />} color="bg-gradient-to-r from-violet-600 to-indigo-600" />
-                <StatCard title="Printers" value={`${onlinePrinters}/${totalPrinters}`} subtitle={`${totalPrinters} total`} icon={<Printer className="w-5 h-5 text-indigo-600" />} color="bg-gradient-to-r from-indigo-500 to-violet-500" />
-                <StatCard title="Print Jobs" value={`${pendingJobs} pending`} subtitle={`${failedJobs} failed • ${jobs.length} total`} icon={<ClipboardList className="w-5 h-5 text-amber-600" />} color="bg-gradient-to-r from-amber-500 to-orange-500" />
-              </div>
-              {!isOnline && (
-                <Card className="p-4 border-amber-200 bg-amber-50">
-                  <div className="flex items-center justify-between">
-                    <div className="flex gap-3">
-                      <AlertTriangle className="w-5 h-5 text-amber-600" />
-                      <div>
-                        <div className="font-semibold text-sm">Agent is offline</div>
-                        <p className="text-xs text-zinc-600 mt-1">Start the agent to receive print jobs. The agent runs as a Windows service in the background.</p>
-                      </div>
-                    </div>
-                    <button onClick={startAgent} disabled={busy} className="px-4 py-2 bg-[#714B67] text-white rounded-xl text-sm font-semibold flex items-center gap-2"><Play className="w-4 h-4" /> Start Agent</button>
+            <>
+              {allGood ? (
+                <div className="flex items-start gap-3 rounded-xl border border-ok-edge bg-ok-bg px-4 py-3.5">
+                  <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-ok" aria-hidden />
+                  <div>
+                    <div className="text-sm font-semibold text-ok">Everything is running normally</div>
+                    <p className="mt-0.5 text-xs text-ink-2">
+                      {isTauri ? "The local agent is online, the gateway is reachable and no printers or jobs need attention." : "Open the desktop manager for full agent status."}
+                    </p>
                   </div>
-                </Card>
-              )}
-              <div className="grid gap-6 lg:grid-cols-3">
-                <Card className="lg:col-span-2 p-5">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="font-bold text-sm flex items-center gap-2"><Printer className="w-4 h-4 text-indigo-600" /> Printers</h2>
-                    <button onClick={refreshPrinters} className="text-xs px-3 py-1.5 rounded-xl border border-zinc-200 hover:bg-zinc-50 flex items-center gap-1.5"><RefreshCw className="w-3 h-3" /> Refresh</button>
-                  </div>
-                  {printersLoading ? <LoadingSkeleton /> : printers.length === 0 ? (
-                    <EmptyState icon={<Inbox className="w-8 h-8" />} title="No printers found" description="No physical or configured printers are currently available." action={<div className="flex gap-2"><button onClick={handleDiscover} className="px-4 py-2 bg-[#714B67] text-white rounded-xl text-sm font-semibold">Discover Printers</button><button onClick={() => setShowAdd(true)} className="px-4 py-2 border border-zinc-200 rounded-xl text-sm font-semibold">Add Printer</button></div>} />
-                  ) : (
-                    <div className="space-y-3">
-                      {printers.slice(0, 4).map((p) => (
-                        <div key={p.id} className="flex items-center gap-3 p-3 rounded-xl border border-zinc-200 hover:bg-zinc-50/50">
-                          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-zinc-900 to-zinc-700 flex items-center justify-center text-white text-xs font-bold">{p.name.slice(0, 2).toUpperCase()}</div>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-sm truncate flex items-center gap-2">{p.name} {(p as any).isVirtual && <span className="text-xs px-1.5 py-0.5 rounded border bg-zinc-100 text-zinc-500">Virtual</span>}</div>
-                            <div className="text-xs text-zinc-500 truncate">{humanType(p)} • {humanConnection(p)} • {p.network_address ? `${p.network_address}:${p.port}` : p.spooler_name || "—"}</div>
-                          </div>
-                          <Badge variant={p.status === "online" ? "success" : p.status === "offline" ? "danger" : p.status === "busy" ? "warning" : "neutral"}>{p.status === "online" ? "Online" : p.status.charAt(0).toUpperCase()+p.status.slice(1)}</Badge>
-                        </div>
-                      ))}
-                      <button onClick={() => navigate("printers")} className="w-full text-xs py-2 rounded-xl hover:bg-zinc-50 flex items-center justify-center gap-1.5 text-zinc-600">View all printers <ChevronRight className="w-3 h-3" /></button>
-                    </div>
-                  )}
-                </Card>
-                <Card className="p-5">
-                  <h2 className="font-bold text-sm mb-4 flex items-center gap-2"><Clock className="w-4 h-4 text-zinc-500" /> Activity</h2>
-                  <div className="space-y-3 text-sm">
-                    <div className="flex justify-between"><span className="text-zinc-500">Last heartbeat</span><span className="font-mono text-xs">{lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}</span></div>
-                    <div className="flex justify-between"><span className="text-zinc-500">Gateway</span><span className="text-xs truncate max-w-[150px]">{gatewayUrl || "—"}</span></div>
-                    <div className="pt-3 border-t border-zinc-100">
-                      <div className="text-xs font-semibold mb-2">Quick actions</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button onClick={refreshStatus} className="px-3 py-2 rounded-xl bg-zinc-900 text-white text-xs font-semibold">Refresh</button>
-                        <button onClick={checkHealth} className="px-3 py-2 rounded-xl border border-zinc-200 text-xs font-semibold hover:bg-zinc-50">Check gateway</button>
-                      </div>
-                    </div>
-                  </div>
-                </Card>
-              </div>
-              <Card className="p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="font-bold text-sm flex items-center gap-2"><ClipboardList className="w-4 h-4 text-amber-600" /> Recent Jobs</h2>
-                  <button onClick={() => navigate("jobs")} className="text-xs px-3 py-1.5 rounded-xl border border-zinc-200 hover:bg-zinc-50 flex items-center gap-1">View all <ChevronRight className="w-3 h-3" /></button>
                 </div>
-                {jobsLoading ? <LoadingSkeleton /> : jobs.length === 0 ? (
-                  <EmptyState icon={<FileText className="w-8 h-8" />} title="No jobs yet" description="Print jobs will appear here when printing starts." />
+              ) : (
+                <div className="flex items-start gap-3 rounded-xl border border-warn-edge bg-warn-bg px-4 py-3.5">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-warn" aria-hidden />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-warn">Needs attention</div>
+                    <p className="mt-0.5 text-xs text-ink-2">{attentionItems.join(" · ") || "No issues detected yet — agent/gateway data is still loading."}</p>
+                  </div>
+                  {!isOnline && (
+                    <Button size="sm" variant="primary" onClick={startAgent} icon={<Play className="h-3.5 w-3.5" />} className="shrink-0">
+                      Start agent
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { label: "Agent", value: isOnline ? "Online" : "Offline", sub: (agentStatus as any)?.note || "Windows service", tone: (isOnline ? "ok" : "bad") as Tone, icon: <Activity className="h-4 w-4" /> },
+                  { label: "Gateway", value: gatewayUrl ? (gatewayConnected ? "Connected" : "Unreachable") : "Not configured", sub: gatewayUrl ? "Reachable" : "Set URL in Settings", tone: (gatewayConnected ? "ok" : gatewayUrl ? "bad" : "neutral") as Tone, icon: <Server className="h-4 w-4" /> },
+                  { label: "Printers", value: `${onlinePrinters}/${totalPrinters}`, sub: `${totalPrinters} total · ${offlinePrinters} attention`, tone: (onlinePrinters === totalPrinters && totalPrinters > 0 ? "ok" : totalPrinters === 0 ? "neutral" : "warn") as Tone, icon: <Printer className="h-4 w-4" /> },
+                  { label: "Print jobs", value: `${pendingJobs} pending`, sub: `${failedJobs} failed · ${jobs.length} total`, tone: (failedJobs > 0 ? "bad" : pendingJobs > 0 ? "info" : "neutral") as Tone, icon: <ClipboardList className="h-4 w-4" /> },
+                ].map(s => (
+                  <Card key={s.label} className="p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{s.label}</span>
+                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-surface-2 text-ink-2">{s.icon}</span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <StatusDot tone={s.tone} pulse={s.tone === "ok" && s.label !== "Print jobs"} />
+                      <span className="text-xl font-bold tabular-nums text-ink">{s.value}</span>
+                    </div>
+                    <p className="mt-1 truncate text-xs text-ink-3">{s.sub}</p>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-3">
+                <Card className="lg:col-span-2 overflow-hidden">
+                  <CardHeader
+                    title="Printers"
+                    subtitle={`${onlinePrinters} of ${totalPrinters} online`}
+                    icon={<Printer className="h-4 w-4 text-brand-600" aria-hidden />}
+                    actions={<Button size="sm" variant="ghost" onClick={refreshPrinters} icon={<RefreshCw className="h-3.5 w-3.5" />}>Refresh</Button>}
+                  />
+                  <div className="px-5 pb-5">
+                    {printersLoading ? <LoadingState rows={3} /> : printers.length === 0 ? (
+                      <EmptyState
+                        icon={<Printer className="h-7 w-7" />}
+                        title="No printers yet"
+                        description="Discover printers connected to this PC, or register one manually."
+                        action={<>
+                          <Button variant="primary" size="sm" onClick={handleDiscover} icon={<RefreshCw className="h-3.5 w-3.5" />}>Discover</Button>
+                          <Button variant="secondary" size="sm" onClick={() => setShowAdd(true)} icon={<Plus className="h-3.5 w-3.5" />}>Add printer</Button>
+                        </>}
+                      />
+                    ) : (
+                      <div className="space-y-2">
+                        {printers.slice(0, 4).map(p => (
+                          <button key={p.id} onClick={() => setSelectedPrinter(p)} className="w-full flex items-center gap-3 rounded-xl border border-edge bg-surface px-3 py-2.5 text-left transition-colors hover:border-edge-strong hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500">
+                            <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-surface-3 text-xs font-bold text-ink-2">
+                              {p.name.slice(0, 2).toUpperCase()}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-medium text-ink">{p.name} {(p as any).isVirtual && <span className="ml-1 text-[10px] font-semibold uppercase text-ink-3">Virtual</span>}</span>
+                              <span className="block truncate text-xs text-ink-3">{humanType(p)} · {humanConnection(p)} · {printerEndpoint(p)}</span>
+                            </span>
+                            <StatusBadge tone={printerTone(p.status)} label={labelPrinter(p.status)} />
+                          </button>
+                        ))}
+                        <button onClick={() => navigate("printers")} className="w-full py-2 text-xs font-medium text-ink-3 hover:text-ink transition-colors inline-flex items-center justify-center gap-1">
+                          View all printers <ChevronRight className="h-3 w-3" aria-hidden />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+
+                <Card className="p-5">
+                  <CardHeader title="Activity" subtitle="Local agent & gateway health" icon={<Clock className="h-4 w-4 text-ink-3" aria-hidden />} />
+                  <div className="divide-y divide-edge px-5 pb-5 text-sm">
+                    <MetaRow label="Last status check"><Mono>{lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}</Mono></MetaRow>
+                    <MetaRow label="Gateway"><span className="truncate">{gatewayUrl || "—"}</span></MetaRow>
+                    <MetaRow label="Agent"><span>{isOnline ? "Running" : "Stopped"}</span></MetaRow>
+                    <div className="pt-4">
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">Quick actions</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button variant="primary" size="sm" onClick={refreshStatus} icon={<RefreshCw className="h-3.5 w-3.5" />}>Refresh</Button>
+                        <Button variant="secondary" size="sm" onClick={checkHealth} icon={<Activity className="h-3.5 w-3.5" />}>Check gateway</Button>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              <Card className="overflow-hidden">
+                <CardHeader
+                  title="Recent jobs"
+                  subtitle={`${pendingJobs} pending · ${failedJobs} failed`}
+                  icon={<ClipboardList className="h-4 w-4 text-brand-600" aria-hidden />}
+                  actions={<Button size="sm" variant="ghost" onClick={() => navigate("jobs")}>View all <ChevronRight className="h-3.5 w-3.5" aria-hidden /></Button>}
+                />
+                {jobsLoading ? (
+                  <div className="px-5 pb-5"><LoadingState rows={3} /></div>
+                ) : jobsError ? (
+                  <div className="px-5 pb-5"><ErrorState title="Jobs unavailable" message={jobsError} retry={refreshJobs} /></div>
+                ) : jobs.length === 0 ? (
+                  <EmptyState icon={<FileText className="h-7 w-7" />} title="No print jobs yet" description="Print jobs will appear here as soon as the agent starts printing." />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead className="text-xs text-zinc-500">
-                        <tr><th className="text-left font-semibold py-2">Document</th><th className="text-left font-semibold">Printer</th><th className="text-left font-semibold">Status</th><th className="text-left font-semibold">Time</th></tr>
+                      <thead>
+                        <tr className="border-y border-edge bg-surface-2/60 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                          <th className="px-5 py-2.5">Document</th>
+                          <th className="px-3 py-2.5">Printer</th>
+                          <th className="px-3 py-2.5">Status</th>
+                          <th className="px-5 py-2.5 text-right">Updated</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {jobs.slice(0, 5).map((j: any) => (
-                          <tr key={String(j.id || j.jobId)} className="border-t border-zinc-100">
-                            <td className="py-2.5 text-xs truncate max-w-[160px]">{String(j.documentType || j.document_type || "Document")}</td>
-                            <td className="py-2.5 text-xs truncate max-w-[140px]">{String(printers.find(p => p.id === j.printerId)?.name || j.printerId || "—")}</td>
-                            <td className="py-2.5"><Badge variant={String(j.status) === "success" || String(j.status) === "completed" ? "success" : String(j.status) === "failed" || String(j.status) === "expired" ? "danger" : String(j.status) === "printing" ? "warning" : "neutral"}>{String(j.status) === "success" ? "Completed" : String(j.status).charAt(0).toUpperCase()+String(j.status).slice(1)}</Badge></td>
-                            <td className="py-2.5 text-xs text-zinc-500">{j.updatedAt ? new Date(String(j.updatedAt)).toLocaleTimeString() : "—"}</td>
+                          <tr key={String(j.id || j.jobId)} className="border-b border-edge last:border-0 hover:bg-surface-2/40">
+                            <td className="px-5 py-2.5 text-xs font-medium text-ink">{String(j.documentType || j.document_type || "Document")}</td>
+                            <td className="px-3 py-2.5 text-xs text-ink-2">{String(printers.find(p => p.id === j.printerId)?.name || j.printerId || "—")}</td>
+                            <td className="px-3 py-2.5"><StatusBadge tone={jobTone(String(j.status))} label={labelJob(String(j.status))} /></td>
+                            <td className="px-5 py-2.5 text-right text-xs text-ink-3">{j.updatedAt ? new Date(String(j.updatedAt)).toLocaleString() : "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -629,59 +827,77 @@ export default function App() {
                   </div>
                 )}
               </Card>
-            </div>
+            </>
           )}
 
           {page === "printers" && (
             <div className="space-y-4">
-              <Card className="p-4 flex flex-col sm:flex-row gap-3">
-                <div className="flex-1 relative">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-                  <input value={printersFilter} onChange={(e) => setPrintersFilter(e.target.value)} placeholder="Search printers..." className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-zinc-200 bg-zinc-50/50 text-sm focus:outline-none focus:ring-2 focus:ring-[#714B67]/20" />
+              <Card className="p-4">
+                <div className="flex flex-col sm:flex-row gap-3 items-stretch">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" aria-hidden />
+                    <Input value={printersFilter} onChange={e => setPrintersFilter(e.target.value)} placeholder="Search by name, type or address…" className="pl-9" aria-label="Search printers" />
+                  </div>
+                  <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className="sm:w-40" aria-label="Filter by status">
+                    <option value="all">All statuses</option>
+                    <option value="online">Online</option>
+                    <option value="offline">Offline</option>
+                    <option value="virtual">Virtual</option>
+                  </Select>
+                  <div className="flex gap-2">
+                    <Button variant="primary" onClick={() => setShowAdd(true)} icon={<Plus className="h-4 w-4" />}>Add printer</Button>
+                    <Button variant="secondary" onClick={handleDiscover} loading={printersLoading} icon={<RefreshCw className="h-4 w-4" />}>Discover</Button>
+                    <Button variant="ghost" onClick={refreshPrinters} icon={<RefreshCw className="h-4 w-4" />}>Refresh</Button>
+                  </div>
                 </div>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm">
-                  <option value="all">All</option>
-                  <option value="online">Online</option>
-                  <option value="offline">Offline</option>
-                  <option value="virtual">Virtual</option>
-                </select>
-                <button onClick={() => setShowAdd(true)} className="px-4 py-2.5 bg-[#714B67] hover:bg-[#5a3c52] text-white rounded-xl text-sm font-semibold flex items-center gap-2"><Plus className="w-4 h-4" /> Add Printer</button>
-                <button onClick={handleDiscover} disabled={printersLoading} className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold flex items-center gap-2 disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${printersLoading ? "animate-spin" : ""}`} /> Discover</button>
-                <button onClick={refreshPrinters} className="px-4 py-2.5 border border-zinc-200 rounded-xl text-sm font-semibold hover:bg-zinc-50">Refresh</button>
+                {printersError && !printersLoading && (
+                  <div className="mt-3"><ErrorState title="Could not load printers" message={printersError} retry={refreshPrinters} /></div>
+                )}
               </Card>
               <Card className="overflow-hidden">
                 {printersLoading ? (
-                  <div className="p-6"><LoadingSkeleton /></div>
-                ) : printersError ? (
-                  <div className="p-6 flex items-center gap-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl m-4"><XCircle className="w-5 h-5" /> {printersError}</div>
+                  <div className="p-6"><LoadingState rows={5} /></div>
                 ) : filteredPrinters.length === 0 ? (
-                  <EmptyState icon={<Printer className="w-8 h-8" />} title={printers.length === 0 ? "No printers found" : "No matches"} description={printers.length === 0 ? "Connect a printer or add one manually." : "Try a different search or filter."} action={printers.length === 0 ? <div className="flex gap-2"><button onClick={handleDiscover} className="px-4 py-2 bg-[#714B67] text-white rounded-xl text-sm font-semibold">Discover Printers</button><button onClick={() => setShowAdd(true)} className="px-4 py-2 border border-zinc-200 rounded-xl text-sm font-semibold">Add Printer</button></div> : undefined} />
+                  <EmptyState
+                    icon={<Printer className="h-7 w-7" />}
+                    title={printers.length === 0 ? "No printers connected" : "No matches"}
+                    description={printers.length === 0 ? "Connect a printer to this PC, then run Discovery or add it manually." : "Try a different search term or status filter."}
+                    action={printers.length === 0 ? <>
+                      <Button variant="primary" size="sm" onClick={handleDiscover} icon={<RefreshCw className="h-3.5 w-3.5" />}>Discover printers</Button>
+                      <Button variant="secondary" size="sm" onClick={() => setShowAdd(true)} icon={<Plus className="h-3.5 w-3.5" />}>Add printer</Button>
+                    </> : undefined}
+                  />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead className="bg-zinc-50/50 text-xs text-zinc-500">
-                        <tr>
-                          <th className="text-left font-semibold px-4 py-3">Name</th>
-                          <th className="text-left font-semibold px-4 py-3">Type</th>
-                          <th className="text-left font-semibold px-4 py-3">Connection</th>
-                          <th className="text-left font-semibold px-4 py-3">Status</th>
-                          <th className="text-right font-semibold px-4 py-3">Actions</th>
+                      <thead>
+                        <tr className="border-b border-edge bg-surface-2/60 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                          <th className="px-5 py-3">Printer</th>
+                          <th className="px-3 py-3">Type</th>
+                          <th className="px-3 py-3">Connection</th>
+                          <th className="px-3 py-3">Status</th>
+                          <th className="px-5 py-3 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredPrinters.map((p) => (
-                          <tr key={p.id} className="border-t border-zinc-100 hover:bg-zinc-50/50">
-                            <td className="px-4 py-3">
-                              <div className="font-semibold text-sm flex items-center gap-2">{p.name} {(p as any).isVirtual && <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 border text-zinc-500">Virtual</span>}</div>
-                              <div className="text-xs text-zinc-500 truncate max-w-[220px]">{p.spooler_name || p.network_address || ""}</div>
+                        {filteredPrinters.map(p => (
+                          <tr key={p.id} className="border-b border-edge last:border-0 hover:bg-surface-2/40">
+                            <td className="px-5 py-3">
+                              <div className="flex items-center gap-2.5">
+                                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-3 text-[10px] font-bold text-ink-2">{p.name.slice(0, 2).toUpperCase()}</span>
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium text-ink">{p.name} {(p as any).isVirtual && <span className="ml-1 text-[10px] font-semibold uppercase text-ink-3">Virtual</span>}</div>
+                                  <div className="truncate text-xs text-ink-3 font-mono">{printerEndpoint(p)}</div>
+                                </div>
+                              </div>
                             </td>
-                            <td className="px-4 py-3"><Badge variant={(p as any).isVirtual ? "neutral" : "default"}>{humanType(p)}</Badge></td>
-                            <td className="px-4 py-3 text-xs">{humanConnection(p)}</td>
-                            <td className="px-4 py-3"><Badge variant={p.status === "online" ? "success" : p.status === "offline" ? "danger" : p.status === "busy" ? "warning" : "neutral"}>{p.status === "online" ? "Online" : p.status.charAt(0).toUpperCase()+p.status.slice(1)}</Badge></td>
-                            <td className="px-4 py-3">
+                            <td className="px-3 py-3 text-xs text-ink-2 whitespace-nowrap">{humanType(p)}</td>
+                            <td className="px-3 py-3 text-xs text-ink-2 whitespace-nowrap">{humanConnection(p)}</td>
+                            <td className="px-3 py-3"><StatusBadge tone={printerTone(p.status)} label={labelPrinter(p.status)} /></td>
+                            <td className="px-5 py-3">
                               <div className="flex items-center justify-end gap-1">
-                                <button onClick={() => handleTest(p.id)} className="p-2 rounded-xl hover:bg-zinc-100 border border-zinc-200/50" title="Test"><Zap className="w-4 h-4" /></button>
-                                <button onClick={() => setSelectedPrinter(p)} className="p-2 rounded-xl hover:bg-zinc-100" title="Details"><Eye className="w-4 h-4" /></button>
+                                <Button size="sm" variant="ghost" onClick={() => handleTest(p.id)} icon={<Zap className="h-3.5 w-3.5" />}>Test</Button>
+                                <Button size="sm" variant="ghost" onClick={() => setSelectedPrinter(p)} icon={<Eye className="h-3.5 w-3.5" />}>Details</Button>
                               </div>
                             </td>
                           </tr>
@@ -696,57 +912,71 @@ export default function App() {
 
           {page === "jobs" && (
             <div className="space-y-4">
-              <Card className="p-2 flex gap-1 overflow-x-auto">
-                {(["all", "pending", "printing", "completed", "failed"] as JobTab[]).map((tab) => (
-                  <button key={tab} onClick={() => setJobTab(tab)} className={`px-4 py-2 rounded-xl text-sm font-semibold capitalize whitespace-nowrap ${jobTab === tab ? "bg-zinc-900 text-white shadow" : "hover:bg-zinc-100 text-zinc-600"}`}>
-                    {tab} {tab !== "all" && <span className="ml-1 opacity-60">({jobs.filter((j: any) => {
-                      const s = String(j.status).toLowerCase();
-                      if (tab === "pending") return ["queued", "claimed"].includes(s);
-                      if (tab === "printing") return s === "printing";
-                      if (tab === "completed") return ["success", "completed"].includes(s);
-                      if (tab === "failed") return ["failed", "expired"].includes(s);
-                      return false;
-                    }).length})</span>}
-                  </button>
-                ))}
-                <div className="ml-auto flex items-center gap-2 pl-2">
-                  <button onClick={refreshJobs} className="p-2 rounded-xl hover:bg-zinc-100 border border-zinc-200/50" title="Refresh"><RefreshCw className={`w-4 h-4 ${jobsLoading ? "animate-spin" : ""}`} /></button>
+              <Card className="px-2 pt-1">
+                <Tabs
+                  tabs={["all", "pending", "printing", "completed", "failed"] as const}
+                  active={jobTab}
+                  onChange={setJobTab}
+                  counts={jobCounts}
+                />
+                <div className="flex items-center gap-2 p-3">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" aria-hidden />
+                    <Input value={jobSearch} onChange={e => setJobSearch(e.target.value)} placeholder="Search job, document or printer…" className="pl-9" aria-label="Search jobs" />
+                  </div>
+                  <Button variant="ghost" onClick={refreshJobs} loading={jobsLoading} icon={<RefreshCw className="h-4 w-4" />}>Refresh</Button>
                 </div>
+                {jobPrinterFilter && (
+                  <div className="flex items-center gap-2 px-3 pb-3">
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-brand-300 bg-brand-50 px-2 py-1 text-[11px] font-medium text-brand-800 dark:border-brand-800 dark:bg-brand-900/50 dark:text-brand-200">
+                      <Printer className="h-3 w-3" aria-hidden />
+                      Filtered to <Mono className="text-inherit">{printerFilterName}</Mono>
+                      <button onClick={() => setJobPrinterFilter(null)} aria-label={`Clear printer filter ${printerFilterName}`} className="ml-0.5 rounded p-0.5 hover:bg-surface-2">
+                        <X className="h-3 w-3" aria-hidden />
+                      </button>
+                    </span>
+                  </div>
+                )}
               </Card>
               <Card className="overflow-hidden">
-                {jobsLoading ? <div className="p-6"><LoadingSkeleton /></div> : jobsFiltered.length === 0 ? (
-                  <EmptyState icon={jobTab === "failed" ? <XCircle className="w-8 h-8 text-red-400" /> : jobTab === "completed" ? <CheckCircle2 className="w-8 h-8 text-emerald-500" /> : <Inbox className="w-8 h-8" />} title={jobTab === "all" ? "No print jobs yet" : `No ${jobTab} jobs`} description={jobTab === "failed" ? "Failed jobs will appear here with error details." : jobTab === "pending" ? "Queued jobs waiting for agent." : "Print jobs will appear here when printing starts."} />
+                {jobsLoading ? (
+                  <div className="p-6"><LoadingState rows={5} /></div>
+                ) : jobsError ? (
+                  <div className="p-6"><ErrorState title="Jobs unavailable" message={jobsError} retry={refreshJobs} /></div>
+                ) : jobsFiltered.length === 0 ? (
+                  <EmptyState
+                    icon={jobTab === "failed" ? <XCircle className="h-7 w-7 text-bad" /> : jobTab === "completed" ? <CheckCircle2 className="h-7 w-7 text-ok" /> : <Inbox className="h-7 w-7" />}
+                    title={jobPrinterFilter ? `No jobs for ${printerFilterName}` : jobTab === "all" ? "No print jobs yet" : `No ${jobTab} jobs`}
+                    description={jobPrinterFilter ? "This printer has no jobs in the current view — clear the filter to see the full queue." : jobTab === "failed" ? "Failed jobs will appear here with the reason and printer." : jobTab === "pending" ? "Queued jobs waiting for the agent to claim them." : "Print jobs will appear here when printing starts."}
+                    action={jobPrinterFilter ? <Button size="sm" variant="secondary" onClick={() => setJobPrinterFilter(null)} icon={<X className="h-3.5 w-3.5" />}>Clear filter</Button> : undefined}
+                  />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead className="bg-zinc-50/50 text-xs text-zinc-500">
-                        <tr>
-                          <th className="text-left font-semibold px-4 py-3">Document</th>
-                          <th className="text-left font-semibold px-4 py-3">Printer</th>
-                          <th className="text-left font-semibold px-4 py-3">Status</th>
-                          <th className="text-left font-semibold px-4 py-3">Time</th>
-                          <th className="text-right font-semibold px-4 py-3">Actions</th>
+                      <thead>
+                        <tr className="border-b border-edge bg-surface-2/60 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                          <th className="px-5 py-3">Document</th>
+                          <th className="px-3 py-3">Printer</th>
+                          <th className="px-3 py-3">Status</th>
+                          <th className="px-3 py-3">Updated</th>
+                          <th className="px-5 py-3 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {jobsFiltered.map((j: any) => {
-                          const status = String(j.status);
-                          const isFailed = status === "failed" || status === "expired";
-                          const isSuccess = status === "success" || status === "completed";
-                          return (
-                            <tr key={String(j.id || j.jobId)} className="border-t border-zinc-100 hover:bg-zinc-50/50">
-                              <td className="px-4 py-3 text-xs">{String(j.documentType || j.document_type || "Document")}</td>
-                              <td className="px-4 py-3 text-xs truncate max-w-[160px]">{String(printers.find(p => p.id === j.printerId)?.name || j.printerId || "—")}</td>
-                              <td className="px-4 py-3"><Badge variant={isSuccess ? "success" : isFailed ? "danger" : status === "printing" ? "warning" : "neutral"}>{isSuccess ? "Completed" : status.charAt(0).toUpperCase()+status.slice(1)}</Badge></td>
-                              <td className="px-4 py-3 text-xs text-zinc-500">{j.updatedAt ? new Date(String(j.updatedAt)).toLocaleString() : "—"}</td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center justify-end gap-1">
-                                  <button onClick={() => setSelectedJob(j)} className="p-2 rounded-xl hover:bg-zinc-100" title="Details"><Eye className="w-4 h-4" /></button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {jobsFiltered.map((j: any) => (
+                          <tr key={String(j.id || j.jobId)} className="border-b border-edge last:border-0 hover:bg-surface-2/40">
+                            <td className="px-5 py-3">
+                              <div className="font-medium text-xs text-ink">{String(j.documentType || j.document_type || "Document")}</div>
+                              <div className="font-mono text-[10px] text-ink-3">{String(j.id || j.jobId)}</div>
+                            </td>
+                            <td className="px-3 py-3 text-xs text-ink-2 whitespace-nowrap">{String(printers.find(p => p.id === j.printerId)?.name || j.printerId || "—")}</td>
+                            <td className="px-3 py-3"><StatusBadge tone={jobTone(String(j.status))} label={labelJob(String(j.status))} /></td>
+                            <td className="px-3 py-3 text-xs text-ink-3 whitespace-nowrap">{j.updatedAt ? new Date(String(j.updatedAt)).toLocaleString() : "—"}</td>
+                            <td className="px-5 py-3 text-right">
+                              <Button size="sm" variant="ghost" onClick={() => setSelectedJob(j)} icon={<Eye className="h-3.5 w-3.5" />}>Details</Button>
+                            </td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -755,84 +985,208 @@ export default function App() {
             </div>
           )}
 
+          {page === "agents" && (
+            <div className="grid gap-6 xl:grid-cols-2 max-w-5xl">
+              <Card className="overflow-hidden">
+                <CardHeader
+                  title="This PC agent"
+                  subtitle="The agent this desktop app supervises"
+                  icon={<Cpu className="h-4 w-4 text-brand-600" aria-hidden />}
+                  actions={<Button size="sm" variant="ghost" onClick={refreshStatus} icon={<RefreshCw className="h-3.5 w-3.5" />}>Refresh</Button>}
+                />
+                <div className="px-5 pb-5 space-y-4">
+                  <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+                    <StatusDot tone={isOnline ? "ok" : "bad"} pulse={isOnline} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-ink">{isOnline ? "Agent running" : "Agent stopped"}</div>
+                      <div className="truncate text-xs text-ink-3">{(agentStatus as any)?.hostname || "This PC"}</div>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <Button size="sm" variant="primary" onClick={startAgent} icon={<Play className="h-3.5 w-3.5" />}>Start</Button>
+                      <Button size="sm" variant="secondary" onClick={() => setConfirmStop(true)} icon={<Square className="h-3.5 w-3.5" />}>Stop</Button>
+                      <Button size="sm" variant="ghost" onClick={restartAgent} icon={<RotateCcw className="h-3.5 w-3.5" />}>Restart</Button>
+                    </div>
+                  </div>
+                  <div className="divide-y divide-edge text-sm">
+                    <MetaRow label="Status check"><Mono>{lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}</Mono></MetaRow>
+                    <MetaRow label="Service"><span className="truncate">{String((agentStatus as any)?.service || "Windows service")}</span></MetaRow>
+                    <MetaRow label="Version"><Mono>{String((agentStatus as any)?.version || version || "1.0.0")}</Mono></MetaRow>
+                    <MetaRow label="Hostname"><Mono>{String((agentStatus as any)?.hostname || "—")}</Mono></MetaRow>
+                    <MetaRow label="Printers on this PC"><span className="tabular-nums">{onlinePrinters}/{totalPrinters} online · {offlinePrinters} attention</span></MetaRow>
+                  </div>
+                  {(agentStatus as any)?.note && (
+                    <p className="rounded-lg border border-edge bg-surface-2/60 px-3 py-2 text-xs leading-relaxed text-ink-2">{String((agentStatus as any).note)}</p>
+                  )}
+                  {(agentStatus as any)?.error && (
+                    <ErrorState title="Agent status unavailable" message={String((agentStatus as any).error)} retry={refreshStatus} />
+                  )}
+                </div>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardHeader
+                  title="Gateway fleet"
+                  subtitle={`Agents registered with ${gatewayUrl ? "the gateway" : "no gateway configured"}`}
+                  icon={<Server className="h-4 w-4 text-brand-600" aria-hidden />}
+                  actions={gatewayUrl ? <Button size="sm" variant="ghost" onClick={checkHealth} icon={<Activity className="h-3.5 w-3.5" />}>Check</Button> : undefined}
+                />
+                <div className="px-5 pb-5 space-y-4">
+                  {!gatewayUrl ? (
+                    <EmptyState
+                      icon={<Server className="h-7 w-7" />}
+                      title="Gateway not configured"
+                      description="Set the gateway URL in Settings so this agent can register and the fleet can be reported."
+                      action={<Button size="sm" variant="primary" onClick={() => navigate("settings")} icon={<Settings className="h-3.5 w-3.5" />}>Open settings</Button>}
+                    />
+                  ) : healthError ? (
+                    <ErrorState title="Gateway check failed" message={friendlyPrinterError(healthError)} retry={checkHealth} />
+                  ) : fleetTotal > 0 ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl border border-edge bg-surface px-3.5 py-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Total agents</div>
+                          <div className="mt-1 text-2xl font-bold tabular-nums text-ink">{fleetTotal}</div>
+                        </div>
+                        <div className="rounded-xl border border-edge bg-surface px-3.5 py-3">
+                          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">Online <StatusDot tone={fleetOnline > 0 ? "ok" : "bad"} /></div>
+                          <div className="mt-1 flex items-baseline gap-1.5">
+                            <span className="text-2xl font-bold tabular-nums text-ink">{fleetOnline}</span>
+                            <span className="text-xs text-ink-3">of {fleetTotal}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-xs leading-relaxed text-ink-3">
+                        Fleet counts come from the gateway health endpoint. Full per-agent management — pairing codes,
+                        per-agent printers and status history — is available in the gateway dashboard with a manager session.
+                      </p>
+                      <div className="flex items-center gap-2 rounded-lg border border-edge bg-surface-2/60 px-3 py-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-3">{gatewayUrl}</span>
+                        <CopyButton value={gatewayUrl} label="Copy" onCopied={() => setMsg({ text: "Gateway URL copied", type: "success" })} />
+                      </div>
+                    </>
+                  ) : (
+                    <EmptyState
+                      icon={<Server className="h-7 w-7" />}
+                      title="Fleet report unavailable"
+                      description="The gateway is reachable but did not report any agents. Sign in at the gateway dashboard to manage the fleet."
+                      action={<Button size="sm" variant="secondary" onClick={checkHealth} icon={<RefreshCw className="h-3.5 w-3.5" />}>Check again</Button>}
+                    />
+                  )}
+                </div>
+              </Card>
+
+              <Card className="xl:col-span-2 overflow-hidden">
+                <CardHeader title="How agents work" subtitle="One agent per machine, many printers per agent" icon={<ShieldCheck className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <div className="px-5 pb-5 grid gap-4 md:grid-cols-3 text-xs leading-relaxed text-ink-2">
+                  <div className="rounded-xl border border-edge p-3.5">
+                    <div className="mb-1.5 font-semibold text-ink">Pair once</div>
+                    A one-time pairing code from the gateway dashboard registers this PC. The agent keeps its credentials in a protected local config.
+                  </div>
+                  <div className="rounded-xl border border-edge p-3.5">
+                    <div className="mb-1.5 font-semibold text-ink">Print locally</div>
+                    The agent claims queued jobs and sends bytes directly to the printer — RAW, ESC/POS, IPP/IPPS, USB or the Windows spooler.
+                  </div>
+                  <div className="rounded-xl border border-edge p-3.5">
+                    <div className="mb-1.5 font-semibold text-ink">Report honestly</div>
+                    Heartbeats and job status flow back to the gateway. If the gateway is unreachable the agent keeps its local queue and drains it on reconnect.
+                  </div>
+                </div>
+              </Card>
+            </div>
+          )}
+
           {page === "settings" && (
-            <div className="space-y-6 max-w-4xl">
-              <Card className="p-5">
-                <h2 className="font-bold flex items-center gap-2"><Link2 className="w-4 h-4 text-indigo-600" /> Connection</h2>
-                <p className="text-xs text-zinc-500 mt-1">Gateway connection status and URL.</p>
-                <div className="mt-4 p-3 rounded-xl border flex items-center gap-3">
-                  <span className={`w-2 h-2 rounded-full ${health && (health as any).ok !== false ? "bg-emerald-500" : "bg-red-500"}`} />
-                  <span className="text-sm font-semibold">{health && (health as any).ok !== false ? "Connected" : healthError ? "Not connected" : "Unknown"}</span>
-                  <span className="text-xs text-zinc-500 ml-auto truncate max-w-[200px]">{gatewayUrl || "Not configured"}</span>
-                </div>
-                <div className="mt-4 flex gap-2">
-                  <input value={gatewayUrl} onChange={(e) => setGw(e.target.value)} placeholder="https://gateway.example.com" className="flex-1 px-3.5 py-2.5 rounded-xl border border-zinc-200 bg-zinc-50/50 text-sm focus:outline-none focus:ring-2 focus:ring-[#714B67]/20" />
-                  <button onClick={saveGateway} disabled={gatewaySaving} className="px-4 py-2.5 bg-zinc-900 text-white rounded-xl text-sm font-semibold disabled:opacity-50">{gatewaySaving ? "Saving…" : "Save"}</button>
-                  <button onClick={checkHealth} disabled={busy} className="px-4 py-2.5 border border-zinc-200 rounded-xl text-sm font-semibold hover:bg-zinc-50 disabled:opacity-50 flex items-center gap-2"><Activity className="w-4 h-4" /> Check</button>
-                </div>
-                {healthError && <div className="mt-3 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs">{friendlyPrinterError(healthError)}</div>}
-                {health && !(health as any).error && <div className="mt-3 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs flex gap-2"><CheckCircle2 className="w-4 h-4" /> Gateway reachable</div>}
-              </Card>
-
-              <Card className="p-5">
-                <h2 className="font-bold flex items-center gap-2"><Server className="w-4 h-4 text-violet-600" /> Agent</h2>
-                <div className="mt-3 p-4 rounded-xl border bg-zinc-50/50 flex items-center gap-3">
-                  <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-emerald-500" : "bg-red-500"}`} />
-                  <div>
-                    <div className="font-semibold text-sm">{isOnline ? "Online" : "Offline"}</div>
-                    <div className="text-xs text-zinc-500">{(agentStatus as any)?.hostname || "—"}</div>
+            <div className="grid gap-6 xl:grid-cols-2 max-w-5xl">
+              <Card className="overflow-hidden">
+                <CardHeader title="Gateway connection" subtitle="Where the agent reports and receives jobs" icon={<Link2 className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <div className="px-5 pb-5 space-y-4">
+                  <div className="flex items-center gap-2.5 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+                    <StatusDot tone={gatewayConnected ? "ok" : gatewayUrl ? "bad" : "neutral"} pulse={gatewayConnected} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-ink">{gatewayConnected ? "Connected" : gatewayUrl ? "Not reachable" : "Not configured"}</div>
+                      <div className="truncate text-xs text-ink-3">{gatewayUrl || "Enter the gateway URL below"}</div>
+                    </div>
+                    <Button size="sm" variant="secondary" onClick={checkHealth} icon={<Activity className="h-3.5 w-3.5" />}>Check</Button>
                   </div>
-                  <div className="ml-auto flex gap-2">
-                    <button onClick={startAgent} disabled={busy} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5"><Play className="w-3 h-3" /> Start</button>
-                    <button onClick={stopAgent} disabled={busy} className="px-3 py-2 bg-zinc-900 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5"><Square className="w-3 h-3" /> Stop</button>
-                    <button onClick={restartAgent} disabled={busy} className="px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5"><RotateCcw className="w-3 h-3" /> Restart</button>
+                  <Field label="Gateway URL" htmlFor="gw-url" hint="Base URL of the Odoo Print Gateway, e.g. https://print.example.com">
+                    <Input id="gw-url" value={gatewayUrl} onChange={e => setGw(e.target.value)} placeholder="https://gateway.example.com" />
+                  </Field>
+                  <div className="flex justify-end">
+                    <Button variant="primary" onClick={saveGateway} loading={gatewaySaving} icon={<Link2 className="h-4 w-4" />}>Save connection</Button>
+                  </div>
+                  {healthError && <ErrorState title="Gateway check failed" message={friendlyPrinterError(healthError)} retry={checkHealth} />}
+                </div>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardHeader title="Local agent" subtitle="The Windows service that talks to printers on this PC" icon={<Server className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <div className="px-5 pb-5 space-y-4">
+                  <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+                    <StatusDot tone={isOnline ? "ok" : "bad"} pulse={isOnline} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-ink">{isOnline ? "Agent online" : "Agent stopped"}</div>
+                      <div className="truncate text-xs text-ink-3">{(agentStatus as any)?.hostname || "This PC"}</div>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <Button size="sm" variant="primary" onClick={startAgent} icon={<Play className="h-3.5 w-3.5" />}>Start</Button>
+                      <Button size="sm" variant="secondary" onClick={() => setConfirmStop(true)} icon={<Square className="h-3.5 w-3.5" />}>Stop</Button>
+                      <Button size="sm" variant="ghost" onClick={restartAgent} icon={<RotateCcw className="h-3.5 w-3.5" />}>Restart</Button>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between rounded-xl border border-edge px-3.5 py-3">
+                    <div className="flex items-center gap-2.5">
+                      <Power className="h-4 w-4 text-ink-3" aria-hidden />
+                      <div>
+                        <div className="text-sm font-medium text-ink">Start with Windows</div>
+                        <div className="text-xs text-ink-3">Launch the agent automatically when you sign in.</div>
+                      </div>
+                    </div>
+                    <button
+                      role="switch"
+                      aria-checked={!!autostart}
+                      aria-label="Start agent with Windows"
+                      onClick={async () => { if (autostart === null) return; const res = await setAutostart(!autostart); setMsg({ text: res, type: "success" }); const s = await getAutostart(); setAutostartState(s.enabled); }}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${autostart ? "bg-brand-700" : "bg-surface-3"}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-surface transition-transform ${autostart ? "translate-x-6" : "translate-x-1"}`} />
+                    </button>
                   </div>
                 </div>
-                <div className="mt-4">
-                  <div className="text-xs font-semibold text-zinc-700">Agent name</div>
-                  <div className="text-sm mt-1">{(agentStatus as any)?.hostname || "—"}</div>
-                </div>
               </Card>
 
-              <Card className="p-5">
-                <h2 className="font-bold">Pairing</h2>
-                <p className="text-xs text-zinc-500 mt-1">Connect this Manager to your Odoo Print Agent.</p>
-                <div className="flex gap-2 mt-3">
-                  <input value={pairCode} onChange={(e) => setPairCode(e.target.value.toUpperCase())} placeholder="AB12CD" maxLength={6} className="flex-1 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-mono tracking-widest uppercase text-center" />
-                  <button onClick={pair} disabled={busy || !pairCode} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold disabled:opacity-50">Pair Agent</button>
-                </div>
-                <div className="mt-3 flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
-                  <ShieldCheck className="w-4 h-4" /> Connection secured — credentials are stored securely and not shown here.
-                </div>
-              </Card>
-
-              <Card className="p-5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold text-sm flex items-center gap-2"><Power className="w-4 h-4 text-zinc-500" /> Start with Windows</div>
-                    <div className="text-xs text-zinc-500">Automatically start when you sign in.</div>
+              <Card className="xl:col-span-2 overflow-hidden">
+                <CardHeader title="Pair agent" subtitle="Connect this PC to the gateway as a print agent" icon={<KeyRound className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <div className="px-5 pb-5 grid gap-4 lg:grid-cols-[1fr_auto] items-end">
+                  <div className="space-y-2 text-xs text-ink-2">
+                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800 dark:bg-brand-900 dark:text-brand-200">1</span> Save the gateway URL above.</div>
+                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800 dark:bg-brand-900 dark:text-brand-200">2</span> Generate a pairing code on the gateway dashboard.</div>
+                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800 dark:bg-brand-900 dark:text-brand-200">3</span> Enter it here — the agent registers and stays paired.</div>
                   </div>
-                  <button onClick={async () => { if (autostart===null) return; const res = await setAutostart(!autostart); setMsg({ text: res, type: "success" }); const s = await getAutostart(); setAutostartState(s.enabled); }} className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${autostart ? "bg-[#714B67]" : "bg-zinc-300"}`}>
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${autostart ? "translate-x-6" : "translate-x-1"}`} />
-                  </button>
+                  <div className="flex w-full max-w-sm items-end gap-2">
+                    <Field label="Pairing code" htmlFor="pair-code" className="flex-1">
+                      <Input id="pair-code" value={pairCode} onChange={e => setPairCode(e.target.value.toUpperCase())} placeholder="AB12CD" maxLength={6} className="font-mono tracking-[0.3em] uppercase text-center" autoComplete="off" />
+                    </Field>
+                    <Button variant="primary" onClick={pair} loading={busy} icon={<ShieldCheck className="h-4 w-4" />}>Pair agent</Button>
+                  </div>
                 </div>
               </Card>
 
-              <Card className="p-5">
-                <button onClick={() => setAdvancedOpen(!advancedOpen)} className="w-full flex items-center justify-between">
-                  <span className="font-bold text-sm">Advanced</span>
-                  <ChevronRight className={`w-4 h-4 transition ${advancedOpen ? "rotate-90" : ""}`} />
+              <Card className="xl:col-span-2 overflow-hidden">
+                <button onClick={() => setAdvancedOpen(!advancedOpen)} className="w-full flex items-center justify-between px-5 py-4 text-left" aria-expanded={advancedOpen}>
+                  <span className="text-sm font-semibold text-ink">Advanced</span>
+                  <ChevronRight className={`h-4 w-4 text-ink-3 transition-transform ${advancedOpen ? "rotate-90" : ""}`} aria-hidden />
                 </button>
                 {advancedOpen && (
-                  <div className="mt-4 space-y-4 text-xs">
+                  <div className="border-t border-edge px-5 py-5 grid gap-6 lg:grid-cols-2">
                     <div>
-                      <div className="font-semibold">Security information</div>
-                      <p className="text-zinc-500 mt-1">Connection uses secure authentication. Credentials are stored with OS-level protection and never displayed.</p>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">Security</div>
+                      <p className="mt-1.5 text-xs leading-relaxed text-ink-2">Pairing uses a one-time code; credentials are stored in the agent config with OS-level protection and never displayed here.</p>
+                      <div className="mt-3 flex items-center gap-2 text-xs text-ok"><ShieldCheck className="h-4 w-4" aria-hidden /> Credentials stay on this PC</div>
                     </div>
-                    {runtimePaths && (
-                      <div>
-                        <div className="font-semibold">Data locations</div>
-                        <div className="mt-2 space-y-2">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">Data locations</div>
+                      {runtimePaths ? (
+                        <div className="mt-2 space-y-1.5">
                           {[
                             ["Manager data", runtimePaths.manager_data],
                             ["Settings", runtimePaths.settings],
@@ -840,22 +1194,17 @@ export default function App() {
                             ["Manager log", runtimePaths.manager_log],
                             ["Agent data", runtimePaths.agent_data],
                           ].map(([label, path]) => (
-                            <div key={label} className="flex items-center gap-2 p-2 rounded-xl border bg-zinc-50">
-                              <span className="font-semibold min-w-[110px]">{label}</span>
-                              <span className="flex-1 truncate font-mono text-zinc-600">{String(path)}</span>
-                              <button onClick={async () => { await navigator.clipboard.writeText(String(path)); setMsg({ text: "Copied", type: "success" }); }} className="px-2 py-1 rounded border bg-white text-xs">Copy</button>
+                            <div key={label} className="flex items-center gap-2 rounded-lg border border-edge bg-surface-2/60 px-2.5 py-1.5">
+                              <span className="w-28 flex-shrink-0 text-xs font-medium text-ink-2">{label}</span>
+                              <span className="flex-1 truncate font-mono text-[11px] text-ink-3">{String(path)}</span>
+                              <CopyButton value={String(path)} label="Copy" onCopied={() => setMsg({ text: "Copied to clipboard", type: "success" })} />
                             </div>
                           ))}
                         </div>
-                      </div>
-                    )}
-                    <div>
-                      <div className="font-semibold">About</div>
-                      <p className="text-zinc-500 mt-1">Odoo Print Manager • Version {version || "1.0.0"} • © 2026 Odoo Print</p>
-                      <details className="mt-2">
-                        <summary className="cursor-pointer text-zinc-700">Technical information</summary>
-                        <p className="text-zinc-500 mt-2">Lightweight desktop manager for the Odoo Print Agent.</p>
-                      </details>
+                      ) : (
+                        <p className="mt-2 text-xs text-ink-3">Loading paths…</p>
+                      )}
+                      <p className="mt-4 text-xs text-ink-3">Odoo Print Manager · v{version || "1.0.0"} · © 2026 Odoo Print</p>
                     </div>
                   </div>
                 )}
@@ -865,45 +1214,92 @@ export default function App() {
         </main>
       </div>
 
-      <AddPrinterDialog open={showAdd} onClose={() => setShowAdd(false)} onSuccess={() => { refreshPrinters(); setMsg({ text: "Printer added", type: "success" }); }} spoolerPrinters={printers.filter(p => p.spooler_name)} usbPrinters={printers.filter(p => (p.connection_type||"").toLowerCase()==="usb" && !(p as any).isVirtual)} />
+      <AddPrinterDialog
+        open={showAdd}
+        onClose={() => setShowAdd(false)}
+        onSuccess={() => { refreshPrinters(); setMsg({ text: "Printer added", type: "success" }); }}
+        spoolerPrinters={printers.filter(p => p.spooler_name)}
+        usbPrinters={printers.filter(p => (p.connection_type || "").toLowerCase() === "usb" && !(p as any).isVirtual)}
+      />
 
-      <DetailsDrawer open={!!selectedPrinter} onClose={() => setSelectedPrinter(null)} title={selectedPrinter?.name || "Printer details"}>
+      <Modal
+        open={confirmStop}
+        onClose={() => setConfirmStop(false)}
+        title="Stop the local agent?"
+        description="The agent will stop accepting print jobs until it is started again."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirmStop(false)}>Cancel</Button>
+            <Button variant="danger" onClick={stopAgent} icon={<Square className="h-4 w-4" />}>Stop agent</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink-2">In-flight jobs are drained first; the gateway keeps them queued and they can be resumed when the agent is back online.</p>
+      </Modal>
+
+      <Drawer open={!!selectedPrinter} onClose={() => setSelectedPrinter(null)} title="Printer details" description={selectedPrinter?.name}>
         {selectedPrinter && (
-          <div className="space-y-4">
-            <div><div className="text-xs font-semibold text-zinc-500">Status</div><div className="mt-1"><Badge variant={selectedPrinter.status==="online"?"success":selectedPrinter.status==="offline"?"danger":"neutral"}>{selectedPrinter.status}</Badge></div></div>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div><div className="text-zinc-500">Type</div><div className="font-semibold">{humanType(selectedPrinter)}</div></div>
-              <div><div className="text-zinc-500">Connection</div><div className="font-semibold">{humanConnection(selectedPrinter)}</div></div>
-              <div><div className="text-zinc-500">Protocol</div><div className="font-semibold">{selectedPrinter.protocol || "—"}</div></div>
-              <div><div className="text-zinc-500">Endpoint</div><div className="font-mono truncate">{selectedPrinter.endpoint || selectedPrinter.spooler_name || "—"}</div></div>
+          <div className="space-y-5">
+            <div className="flex items-center gap-2.5 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+              <StatusDot tone={printerTone(selectedPrinter.status)} />
+              <span className="text-sm font-semibold text-ink">{labelPrinter(selectedPrinter.status)}</span>
+              <span className="ml-auto text-xs text-ink-3">{humanType(selectedPrinter)}</span>
             </div>
-            <details className="rounded-xl border p-3 bg-zinc-50">
-              <summary className="font-semibold text-xs cursor-pointer">Advanced</summary>
-              <div className="mt-3 space-y-2 text-xs font-mono">
-                <div>Stable ID: {selectedPrinter.id}</div>
-                {selectedPrinter.spooler_name && <div>Spooler: {selectedPrinter.spooler_name}</div>}
-                {selectedPrinter.network_address && <div>Network: {selectedPrinter.network_address}:{selectedPrinter.port}</div>}
-                {selectedPrinter.usbVid && <div>USB: {selectedPrinter.usbVid}:{selectedPrinter.usbPid} {selectedPrinter.usbSerial}</div>}
-                <div>Status: {selectedPrinter.status}</div>
-              </div>
-            </details>
-            <button onClick={() => handleTest(selectedPrinter.id)} className="w-full py-2.5 bg-[#714B67] text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2"><Zap className="w-4 h-4" /> Test Print</button>
+            <div className="divide-y divide-edge">
+              <MetaRow label="Connection">{humanConnection(selectedPrinter)}</MetaRow>
+              <MetaRow label="Protocol">{selectedPrinter.protocol || "—"}</MetaRow>
+              <MetaRow label="Address"><Mono>{printerEndpoint(selectedPrinter)}</Mono></MetaRow>
+              <MetaRow label="Stable ID"><Mono>{selectedPrinter.id}</Mono></MetaRow>
+              {selectedPrinter.usbVid && <MetaRow label="USB"><Mono>{selectedPrinter.usbVid}:{selectedPrinter.usbPid} {selectedPrinter.usbSerial || ""}</Mono></MetaRow>}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="primary" onClick={() => handleTest(selectedPrinter.id)} icon={<Zap className="h-4 w-4" />}>
+                Test print
+              </Button>
+              <Button variant="secondary" onClick={() => { setJobPrinterFilter(selectedPrinter.id); setSelectedPrinter(null); navigate("jobs"); }} icon={<ClipboardList className="h-4 w-4" />}>
+                View jobs
+              </Button>
+            </div>
+            <p className="text-xs leading-relaxed text-ink-3">A test print goes through the same job pipeline as real prints — queued, claimed by the agent, then to the printer.</p>
           </div>
         )}
-      </DetailsDrawer>
+      </Drawer>
 
-      <DetailsDrawer open={!!selectedJob} onClose={() => setSelectedJob(null)} title="Job details">
+      <Drawer open={!!selectedJob} onClose={() => setSelectedJob(null)} title="Job details" description={selectedJob ? String((selectedJob as any).documentType || (selectedJob as any).document_type || "Print job") : undefined}>
         {selectedJob && (
-          <div className="space-y-3 text-xs">
-            <div><span className="text-zinc-500">Job ID:</span> <span className="font-mono">{String((selectedJob as any).id || (selectedJob as any).jobId)}</span></div>
-            <div><span className="text-zinc-500">Status:</span> <Badge variant={String((selectedJob as any).status)==="success"?"success":String((selectedJob as any).status)==="failed"?"danger":"neutral"}>{String((selectedJob as any).status)}</Badge></div>
-            <div><span className="text-zinc-500">Printer:</span> {String((selectedJob as any).printerId || "—")}</div>
-            <div><span className="text-zinc-500">Retries:</span> {String((selectedJob as any).retries ?? 0)}</div>
-            <div><span className="text-zinc-500">Updated:</span> { (selectedJob as any).updatedAt ? new Date(String((selectedJob as any).updatedAt)).toLocaleString() : "—"}</div>
-            {(selectedJob as any).error && <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700"><div className="font-semibold">Error</div><div className="mt-1">{friendlyPrinterError(String((selectedJob as any).error))}</div><details className="mt-2"><summary className="cursor-pointer">Technical details</summary><div className="font-mono mt-1 break-all">{String((selectedJob as any).error)}</div></details></div>}
+          <div className="space-y-4">
+            <div className="space-y-3">
+              <StatusBadge tone={jobTone(String((selectedJob as any).status))} label={labelJob(String((selectedJob as any).status))} />
+              <JobTimeline status={String((selectedJob as any).status)} />
+            </div>
+            <div className="divide-y divide-edge">
+              <MetaRow label="Job ID"><Mono>{String((selectedJob as any).id || (selectedJob as any).jobId)}</Mono></MetaRow>
+              <MetaRow label="Printer"><span className="truncate">{String(printers.find(p => p.id === (selectedJob as any).printerId)?.name || (selectedJob as any).printerId || "—")}</span></MetaRow>
+              <MetaRow label="Branch"><span className="truncate">{String((selectedJob as any).branchId || "—")}</span></MetaRow>
+              <MetaRow label="Retries">{String((selectedJob as any).retries ?? 0)}</MetaRow>
+              <MetaRow label="Created">{ (selectedJob as any).createdAt ? new Date(String((selectedJob as any).createdAt)).toLocaleString() : "—"}</MetaRow>
+              <MetaRow label="Updated">{ (selectedJob as any).updatedAt ? new Date(String((selectedJob as any).updatedAt)).toLocaleString() : "—"}</MetaRow>
+            </div>
+            {(selectedJob as any).error ? (
+              <div className="rounded-xl border border-bad-edge bg-bad-bg p-3.5">
+                <div className="flex items-center gap-2 text-sm font-semibold text-bad"><AlertTriangle className="h-4 w-4" aria-hidden /> Print failed</div>
+                <p className="mt-1.5 text-xs leading-relaxed text-ink-2">{friendlyPrinterError(String((selectedJob as any).error))}</p>
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs font-medium text-ink-3">Technical details</summary>
+                  <p className="mt-1.5 break-all font-mono text-[11px] text-ink-2">{String((selectedJob as any).error)}</p>
+                </details>
+                <p className="mt-2 text-xs text-ink-3">Retries: {String((selectedJob as any).retries ?? 0)} of 5 — the gateway re-delivers the job to the agent while retries remain.</p>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-xl border border-info-edge bg-info-bg px-3.5 py-3 text-xs text-info">
+                <Info className="h-4 w-4 flex-shrink-0" aria-hidden /> No error recorded for this job.
+              </div>
+            )}
           </div>
         )}
-      </DetailsDrawer>
+      </Drawer>
+
+      <Toast toast={msg} onDismiss={() => setMsg(null)} />
     </div>
   );
 }

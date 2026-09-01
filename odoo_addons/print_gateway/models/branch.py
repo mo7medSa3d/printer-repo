@@ -105,8 +105,12 @@ class PrintGatewayBranch(models.Model):
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
+                # Gateway ids are strings; Odoo record ids must be stringified
+                # before they are used as branchId query params (the Gateway
+                # compares them against text columns and branch-scoped keys).
+                gateway_branch_id = str(branch.gateway_branch_id or branch.id)
                 # Sync agents
-                resp = requests.get(f"{base}/api/odoo/agents", params={'branchId': branch.gateway_branch_id or branch.id}, headers=headers, timeout=10)
+                resp = requests.get(f"{base}/api/odoo/agents", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     for ag in resp.json():
                         existing = branch.env['print_gateway.agent'].search([('gateway_agent_id', '=', ag.get('id')), ('branch_id', '=', branch.id)], limit=1)
@@ -122,7 +126,7 @@ class PrintGatewayBranch(models.Model):
                         else:
                             branch.env['print_gateway.agent'].create(vals)
                 # Sync printers
-                resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': branch.gateway_branch_id or branch.id}, headers=headers, timeout=10)
+                resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     for pr in resp.json():
                         existing = branch.env['print_gateway.printer'].search([('gateway_printer_id', '=', pr.get('id')), ('branch_id', '=', branch.id)], limit=1)
@@ -163,15 +167,15 @@ class PrintGatewayBranch(models.Model):
                 base = branch._gateway_base()
                 payload = {
                     'branches': [{
-                        'id': branch.gateway_branch_id or branch.id,
+                        'id': str(branch.gateway_branch_id or branch.id),
                         'name': branch.name,
                         'description': branch.description,
                         'location': branch.location,
                         'enabled': branch.enabled,
                     }],
                     'destinations': [{
-                        'id': d.gateway_destination_id or d.id,
-                        'branchId': branch.gateway_branch_id or branch.id,
+                        'id': str(d.gateway_destination_id or d.id),
+                        'branchId': str(branch.gateway_branch_id or branch.id),
                         'name': d.name,
                         'type': d.destination_type,
                         'description': d.description,
@@ -179,11 +183,11 @@ class PrintGatewayBranch(models.Model):
                         'enabled': d.enabled,
                     } for d in branch.destination_ids],
                     'bindings': [{
-                        'id': b.gateway_binding_id or b.id,
-                        'branchId': branch.gateway_branch_id or branch.id,
-                        'destinationId': b.destination_id.gateway_destination_id or b.destination_id.id,
+                        'id': str(b.gateway_binding_id or b.id),
+                        'branchId': str(branch.gateway_branch_id or branch.id),
+                        'destinationId': str(b.destination_id.gateway_destination_id or b.destination_id.id),
                         'documentType': b.document_type_id.name if b.document_type_id else b.document_type,
-                        'printerId': b.printer_id.gateway_printer_id or b.printer_id.id,
+                        'printerId': str(b.printer_id.gateway_printer_id or b.printer_id.id),
                         'priority': b.priority,
                         'enabled': b.enabled,
                     } for b in branch.binding_ids],
@@ -223,9 +227,16 @@ class PrintGatewayBranch(models.Model):
         # we generate one here so every job is still idempotent against retries.
         if not idempotency_key:
             idempotency_key = uuid.uuid4().hex
+        # Gateway IDs are string columns. Odoo int ids (record ids) MUST be
+        # stringified here: a bare int in JSON would make the Gateway's
+        # branchId/destinationId comparisons fail against its text columns
+        # (mismatch with branch-scoped API keys, routing 404, FK-less
+        # destination lookup). If sync ran, gateway_destination_id carries the
+        # id the Gateway stored for the Odoo destination; otherwise the Odoo
+        # record id is the stable id sent to the Gateway (sync creates it).
         data = {
-            'branchId': self.gateway_branch_id or self.id,
-            'destinationId': destination_id,
+            'branchId': str(self.gateway_branch_id or self.id),
+            'destinationId': str(destination_id),
             'documentType': document_type,
             'payload': payload,
             'idempotencyKey': idempotency_key,
@@ -268,10 +279,26 @@ class PrintGatewayBranch(models.Model):
         # Create local tracking record with full metadata (payload stored as metadata, not huge binary in DB)
         # Do not store full binary payload if huge; store truncated metadata
         payload_meta = str(payload)[:2000] if payload else ''
+        # destination_id is a string (gateway id when synced) or an Odoo int
+        # record id. gateway_destination_id is only populated by explicit
+        # admin input, so fall back to the Odoo destination record itself
+        # when the gateway-id search finds nothing.
+        dest = self.env['print_gateway.destination'].search(
+            [('gateway_destination_id', '=', str(destination_id))], limit=1)
+        if not dest:
+            try:
+                odoo_id = int(destination_id)
+            except (TypeError, ValueError):
+                odoo_id = 0
+            if odoo_id > 0:
+                candidate = self.env['print_gateway.destination'].browse(odoo_id)
+                dest = candidate.exists()
+            else:
+                dest = False
         job = self.env['print_gateway.print_job'].create({
             'branch_id': self.id,
             'gateway_job_id': j.get('jobId') or j.get('id'),
-            'destination_id': self.env['print_gateway.destination'].search([('gateway_destination_id', '=', destination_id)], limit=1).id or False,
+            'destination_id': dest.id if dest else False,
             'document_type': document_type,
             'printer_id': self.env['print_gateway.printer'].search([('gateway_printer_id', '=', j.get('printerId'))], limit=1).id or False,
             'status': j.get('status') or 'queued',

@@ -231,14 +231,11 @@ class IrActionsReport(models.Model):
                         pdf_content = pdf_content[0]
 
                     b64 = base64.b64encode(pdf_content).decode('ascii')
-                    # Honest type: pdf (or raw legacy) — gateway will enforce
-                    # capability (pdf only to spooler/IPP, never to raw thermal)
-                    payload_type = 'pdf' if desired_type in ('pdf', 'escpos') else 'raw'
-                    # raw is kept for backward compat but maps to same PDF bytes
-                    if desired_type == 'raw':
-                        payload_type = 'raw'
-                    else:
-                        payload_type = 'pdf'
+                    # Honest type: pdf default, raw only when the mapping
+                    # explicitly asks for legacy raw; gateway enforces
+                    # capability (pdf only to spooler/IPP, never raw thermal).
+                    # escpos raised above (no PDF->ESC/POS rasterizer).
+                    payload_type = 'raw' if desired_type == 'raw' else 'pdf'
                     return {
                         'type': payload_type,
                         'encoding': 'base64',

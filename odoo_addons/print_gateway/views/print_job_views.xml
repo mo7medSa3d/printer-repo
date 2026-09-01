@@ -6,19 +6,20 @@
         <field name="arch" type="xml">
             <form string="Print Job">
                 <header>
-                    <button name="action_sync_status" type="object" string="Sync Status"/>
+                    <button name="action_sync_status" type="object" string="Sync Status" class="oe_highlight"/>
                 </header>
                 <sheet>
-                    <group>
+                    <group string="Gateway">
                         <field name="gateway_job_id" readonly="1"/>
+                        <field name="status" widget="badge"/>
+                        <field name="last_sync_at" readonly="1"/>
+                    </group>
+                    <group string="Routing">
                         <field name="branch_id" readonly="1"/>
                         <field name="destination_id" readonly="1"/>
                         <field name="document_type" readonly="1"/>
                         <field name="printer_id" readonly="1"/>
-                        <field name="status"/>
-                        <field name="payload" readonly="1"/>
-                        <field name="error" readonly="1"/>
-                        <field name="last_sync_at" readonly="1"/>
+                        <field name="agent_id" readonly="1"/>
                     </group>
                     <group string="Odoo Report">
                         <field name="odoo_model" readonly="1"/>
@@ -27,9 +28,16 @@
                         <field name="report_name" readonly="1"/>
                         <field name="report_id" readonly="1"/>
                     </group>
-                    <group string="Agent">
-                        <field name="agent_id" readonly="1"/>
+                    <group string="Payload">
+                        <field name="payload" readonly="1"/>
                     </group>
+                    <group string="Result" attrs="{'invisible': [('status', 'not in', ['failed', 'expired'])]}">
+                        <field name="error" readonly="1"/>
+                    </group>
+                    <div class="alert alert-info" role="alert">
+                        Jobs are created by Odoo when a mapped report is printed and their status is synced back
+                        from the Gateway. Statuses: queued → claimed → printing → success / failed / expired.
+                    </div>
                 </sheet>
             </form>
         </field>
@@ -38,7 +46,12 @@
         <field name="name">print_gateway.print_job.tree</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <tree string="Print Jobs" decoration-success="status in ('success','completed')" decoration-danger="status=='failed'">
+            <tree string="Print Jobs"
+                  decoration-success="status in ('success','completed')"
+                  decoration-danger="status in ('failed','expired')"
+                  decoration-warning="status=='printing'"
+                  decoration-info="status=='claimed'"
+                  decoration-muted="status=='queued'">
                 <field name="gateway_job_id"/>
                 <field name="branch_id"/>
                 <field name="odoo_model"/>
@@ -47,7 +60,7 @@
                 <field name="destination_id"/>
                 <field name="document_type"/>
                 <field name="printer_id"/>
-                <field name="status"/>
+                <field name="status" widget="badge"/>
                 <field name="create_date"/>
             </tree>
         </field>
@@ -56,5 +69,14 @@
         <field name="name">Print Jobs</field>
         <field name="res_model">print_gateway.print_job</field>
         <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No print jobs yet — print a mapped report from Odoo to create one.
+            </p>
+            <p>
+                Print job history mirrors the Gateway queue. Errors and retries are visible per job;
+                failed jobs keep their original <b>Idempotency Key</b> so a retry never prints twice.
+            </p>
+        </field>
     </record>
 </odoo>

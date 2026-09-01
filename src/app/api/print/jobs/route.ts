@@ -92,7 +92,12 @@ async function createQueuedJob({
 
   try {
     await pushJobToAgentWithClaim({ id: jobId, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt });
-  } catch { }
+  } catch (e) {
+    // Best-effort push: the job row is durable and the agent's poll path
+    // (GET /api/agent/jobs) will claim it. Log instead of swallowing so a
+    // persistent push failure is visible in gateway logs.
+    console.warn(`[print/jobs] WS push failed for job ${jobId}:`, e);
+  }
 }
 
 export async function POST(req: Request) {
@@ -152,7 +157,9 @@ export async function POST(req: Request) {
       payloadType: (validatedPayload as any)?.type ?? null,
     });
     if (!resolved) {
-      return NextResponse.json({ error: "NO_PRINTER_FOUND: No printer binding matched branchId/destinationId/documentType" }, { status: 404 });
+      // resolvePrinterForJob no longer returns null; kept as a defensive
+      // guard so a regression can never surface as a fake 404.
+      return NextResponse.json({ error: "INTERNAL_ERROR: routing returned no result" }, { status: 500 });
     }
     if ("error" in resolved) {
       const code = (resolved as { error: string }).error;
@@ -165,6 +172,7 @@ export async function POST(req: Request) {
         PRINTER_DISABLED: 409,
         PRINTER_OFFLINE: 503,
         CAPABILITY_MISMATCH: 422,
+        INTERNAL_ERROR: 500,
       };
       const httpStatus = statusMap[code] ?? 400;
       return NextResponse.json({ error: `${code}: ${msg}`, code }, { status: httpStatus });

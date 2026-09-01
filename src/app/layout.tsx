@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { LayoutDashboard, MonitorPlay, Printer } from "lucide-react";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -7,38 +9,39 @@ export const metadata: Metadata = {
   description: "Cloud Print Gateway — Go Agent ↔ Gateway (WS) + Tauri Manager + Odoo (HTTPS)",
 };
 
-import { LayoutDashboard, MonitorPlay, Printer } from "lucide-react";
-import Link from "next/link";
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="antialiased bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-50 min-h-screen">
-        <nav className="border-b bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 sticky top-0 z-50">
-          <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+      <body className="antialiased bg-app text-ink min-h-screen">
+        <nav className="border-b border-edge bg-surface sticky top-0 z-50">
+          <div className="container mx-auto px-4 h-16 flex items-center justify-between gap-4">
             <div className="flex items-center gap-8">
-              <Link href="/" className="flex items-center gap-2 font-bold text-lg">
-                <Printer className="w-6 h-6 text-blue-600" />
-                Odoo Print Gateway
+              <Link href="/" className="flex items-center gap-2.5 group">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-700 text-white transition-colors group-hover:bg-brand-800">
+                  <Printer className="h-4.5 w-4.5" aria-hidden />
+                </span>
+                <span className="font-bold leading-tight">
+                  <span className="block text-sm text-ink">Print Gateway</span>
+                  <span className="block text-[11px] font-medium text-ink-3">Odoo Print</span>
+                </span>
               </Link>
-              <div className="hidden md:flex items-center gap-6 text-sm font-medium">
-                <Link href="/dashboard" className="flex items-center gap-2 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50">
-                  <LayoutDashboard className="w-4 h-4" />
+              <div className="hidden md:flex items-center gap-1 text-sm font-medium">
+                <Link href="/dashboard" className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors">
+                  <LayoutDashboard className="w-4 h-4" aria-hidden />
                   Console
                 </Link>
-                <Link href="/login" className="flex items-center gap-2 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50">
+                <Link href="/login" className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors">
                   Login
                 </Link>
-                <Link href="/simulator" className="flex items-center gap-2 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50">
+                <Link href="/simulator" className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors">
+                  <MonitorPlay className="w-4 h-4" aria-hidden />
                   Simulator
                 </Link>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <span className="text-xs px-2 py-1 bg-zinc-100 dark:bg-zinc-800 rounded text-zinc-500 uppercase font-bold tracking-tighter">
-                v1.0.0
-              </span>
-            </div>
+            <span className="rounded-md border border-edge bg-surface-2 px-2 py-1 font-mono text-[11px] font-medium text-ink-3">
+              v1.0.0
+            </span>
           </div>
         </nav>
         <main>{children}</main>

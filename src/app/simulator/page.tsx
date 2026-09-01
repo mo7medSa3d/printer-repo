@@ -2,14 +2,15 @@ import AgentSimulator from "./agent-simulator";
 
 export default function SimulatorPage() {
   return (
-    <div className="container mx-auto py-8 px-4">
-      <h1 className="text-3xl font-bold mb-4">Protocol Simulator</h1>
-      <p className="text-zinc-500 mb-8 max-w-2xl">
-        This TypeScript component simulates the Agent communication protocol over HTTPS.
-        It does <strong>not</strong> execute the native Go binaries. 
-        Use this to test server-side logic and pairing flows.
+    <div className="container mx-auto px-4 py-8">
+      <h1 className="text-2xl font-bold text-ink">Protocol simulator</h1>
+      <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-2">
+        Simulates the agent protocol over HTTPS against the real gateway API — pairing, heartbeat,
+        job polling and status updates. It does not execute the native Go binaries.
       </p>
-      <AgentSimulator />
+      <div className="mt-6">
+        <AgentSimulator />
+      </div>
     </div>
   );
 }

@@ -1,3 +1,0 @@
-Proposed CI update (could not be committed to .github/workflows/ from this
-connection — the GitHub App token needs the `workflows` permission). To apply:
-  cp scripts/build-windows.yml.proposed .github/workflows/build-windows.yml

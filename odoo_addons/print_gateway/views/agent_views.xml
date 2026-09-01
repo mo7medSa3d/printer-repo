@@ -6,19 +6,29 @@
         <field name="arch" type="xml">
             <form string="Agent">
                 <header>
-                    <button name="action_sync_status" type="object" string="Sync Status"/>
+                    <button name="action_sync_status" type="object" string="Sync Status" class="oe_highlight"/>
                 </header>
                 <sheet>
-                    <group>
-                        <field name="gateway_agent_id"/>
+                    <group string="Identity">
                         <field name="name"/>
+                        <field name="hostname" placeholder="e.g., WKS-CAIRO-01"/>
+                        <field name="os" placeholder="e.g., windows"/>
                         <field name="branch_id"/>
-                        <field name="status" readonly="1"/>
-                        <field name="last_seen_at" readonly="1"/>
-                        <field name="hostname"/>
-                        <field name="os"/>
                     </group>
-                    <field name="printer_ids" readonly="1"/>
+                    <group string="Gateway">
+                        <field name="gateway_agent_id"/>
+                        <field name="status" readonly="1" widget="badge"/>
+                        <field name="last_seen_at" readonly="1"/>
+                    </group>
+                    <notebook>
+                        <page string="Printers">
+                            <field name="printer_ids" readonly="1"/>
+                        </page>
+                    </notebook>
+                    <div class="alert alert-info" role="alert">
+                        Agent details and status are synced from the Gateway. Use <b>Sync Status</b> to refresh this record;
+                        the local agent maintains its own registration and heartbeat over the gateway protocol.
+                    </div>
                 </sheet>
             </form>
         </field>
@@ -27,10 +37,12 @@
         <field name="name">print_gateway.agent.tree</field>
         <field name="model">print_gateway.agent</field>
         <field name="arch" type="xml">
-            <tree string="Agents" decoration-success="status=='online'">
+            <tree string="Agents" decoration-success="status=='online'" decoration-danger="status=='offline'" decoration-muted="status=='unknown'">
                 <field name="name"/>
                 <field name="branch_id"/>
-                <field name="status"/>
+                <field name="status" widget="badge"/>
+                <field name="hostname" optional="show"/>
+                <field name="os" optional="show"/>
                 <field name="last_seen_at"/>
             </tree>
         </field>
@@ -39,5 +51,14 @@
         <field name="name">Agents</field>
         <field name="res_model">print_gateway.agent</field>
         <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No agents yet — agents register themselves from the Gateway.
+            </p>
+            <p>
+                Agents appear here after the first successful sync from the Gateway. A green row means the agent
+                heartbeat is recent; red means it has not reported since the configured timeout.
+            </p>
+        </field>
     </record>
 </odoo>

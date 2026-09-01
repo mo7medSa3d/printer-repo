@@ -77,25 +77,22 @@ class PrintGatewayPrinter(models.Model):
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
-                resp = requests.get(f"{base}/api/printers/{printer.gateway_printer_id}", headers=headers, timeout=10)
-                # Fallback to odoo printers endpoint if direct missing
-                if resp.status_code == 404:
-                    resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': branch.gateway_branch_id or branch.id}, headers=headers, timeout=10)
-                    if resp.status_code == 200:
-                        for pr in resp.json():
-                            if pr.get('id') == printer.gateway_printer_id:
-                                printer.write({
-                                    'status': pr.get('status') or 'unknown',
-                                    'enabled': pr.get('enabled', True),
-                                })
-                                break
-                        continue
+                # /api/printers/{id} is a manager-only endpoint; the Odoo
+                # addon authenticates with a branch-scoped Odoo API key, so it
+                # must use the documented /api/odoo/printers endpoint (which
+                # accepts the Odoo key) and filter by printer id locally.
+                resp = requests.get(
+                    f"{base}/api/odoo/printers",
+                    params={'branchId': str(branch.gateway_branch_id or branch.id)},
+                    headers=headers, timeout=10)
                 if resp.status_code == 200:
-                    data = resp.json()
-                    printer.write({
-                        'status': data.get('status') or 'unknown',
-                        'enabled': data.get('enabled', True),
-                    })
+                    for pr in resp.json():
+                        if pr.get('id') == printer.gateway_printer_id:
+                            printer.write({
+                                'status': pr.get('status') or 'unknown',
+                                'enabled': pr.get('enabled', True),
+                            })
+                            break
             except Exception as e:
                 _logger.warning("Printer sync failed for %s: %s", printer.name, str(e))
 

@@ -33,6 +33,6 @@ export async function GET(req: Request) {
         }).from(agents).orderBy(desc(agents.lastSeenAt));
     return NextResponse.json(rows);
   } catch {
-    return NextResponse.json([]);
+    return NextResponse.json({ error: "database error while listing agents" }, { status: 500 });
   }
 }

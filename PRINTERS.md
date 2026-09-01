@@ -6,9 +6,9 @@
 |---------------|--------|-----------|-------|
 | Network `raw` | ✅ Implemented | RAW TCP `ip:port` (usually 9100) | `NetworkPrinter.Print` `agent/internal/printer/network.go:13` — DialContext 5s + deadline 15s + short-write loop. |
 | Network `escpos` | ✅ Implemented | Same RAW TCP above | ESC/POS bytes are payload, not transport. `'\x1b\x40'` init, `'\x1d\x56\x01'` cut via `src/lib/payload.ts:18`. |
-| Network `ipp` | ❌ Not implemented (honest error) | — | `printer.New` returns error `ipp not implemented` (`factory.go`). IPP protocol accepted in registry but execution requires IPP client — returns `CAPABILITY_MISMATCH` at Gateway before queuing. |
+| Network `ipp`/`ipps` | ✅ Implemented | HTTP POST `application/ipp` (Print-Job) | `IPPPrinter` `agent/internal/printer/ipp.go:24` — URL normalization (`ipp://`/`http://`, bare `host:port`), `Get-Printer-Attributes`, context deadline. Gateway capability check allows raw/escpos/pdf → IPP. |
 | USB via Spooler | ✅ Implemented | Windows Spooler `winspool.drv` | USB printers installed as Windows printers use spooler path (`NewSpooler`); install USB via Windows → `type spooler` with `spooler_name`. See `PRINTERS.md` USB section. |
-| USB raw | Stub (honest error) | — | `printer.New` returns error with guidance to use spooler (`factory.go`); `Identify()` via SN→LOC→VIDPID exists (`usb_windows.go:30`) but direct raw USB needs spooler. |
+| USB raw | ✅ Implemented (device path) | `CreateFile(\?\usb#...)` + `WriteFile` | `USBPrinter.Print` `usb_windows.go:36` — real write loop; if no Windows device path was discovered it returns an explicit diagnostic error guiding installation as a Windows printer (spooler type). Non-Windows stub writes to `/tmp/printer-usb-*.prn` for CI. |
 | Windows Spooler | ✅ Implemented | `winspool.drv` `spooler_windows.go` / stub `spooler_stub.go` | `SpoolerPrinter.Print` `OpenPrinterW` → `StartDocPrinterW` (RAW) → `WritePrinter` loop → `EndDocPrinter`. Non-Windows stub writes to `/tmp/spooler_*.prn` for CI/test. `Status()` via `OpenPrinterW` probe. |
 
 ## Identity
@@ -39,7 +39,7 @@ Production flow does NOT depend on `printers: []` in YAML; `printers.json` regis
 
 Merges with `seen` map by stable ID + `NetworkAddress:Port`/`USB` dedup `discovery.go:57`; per-source `recover()` so one failing printer never crashes agent (`discovery.go:64`). Logs `[discovery] starting ...`, `[discovery] found ...`, `[discovery] duplicate merged`, `[discovery] discovery completed` (no secrets).
 
-Manual registration: `printer.RegisterManual` → `UpsertRegistry` → persisted atomically (`registry.go:102`). Supports `id`, `name`, `printerType`, `connectionType`, `endpoint`, `protocol`, `spoolerName`, `usbVid/pid/serial`, `capabilities`, `enabled` (`cli/main.go:240`, `helpers.go:84`). On Windows, manual `spooler` requires `spooler_name`/`endpoint`; for USB via spooler, set `type spooler` + spooler name. `tcp` alias `network` is canonicalized (`config.go: NormalizedType`). `ipp` manual persists but `printer.New` will reject printing with honest `ipp not implemented` error — never silent success. Network `192.168.1.10:9100` YAML continues working.
+Manual registration: `printer.RegisterManual` → `UpsertRegistry` → persisted atomically (`registry.go:102`). Supports `id`, `name`, `printerType`, `connectionType`, `endpoint`, `protocol`, `spoolerName`, `usbVid/pid/serial`, `capabilities`, `enabled` (`cli/main.go:240`, `helpers.go:84`). On Windows, manual `spooler` requires `spooler_name`/`endpoint`; for USB via spooler, set `type spooler` + spooler name. `tcp` alias `network` is canonicalized (`config.go: NormalizedType`). `ipp`/`ipps` creates a real `IPPPrinter` (`factory.go`). Network `192.168.1.10:9100` YAML continues working.
 
 ## Manual Registration Examples
 
@@ -53,9 +53,9 @@ odoo-agent-cli.exe printers add --name "Office Laser" --type spooler --spooler-n
 # USB with VID/PID (discovered but requires spooler queue for printing)
 odoo-agent-cli.exe printers add --name "Zebra Label" --type usb --vid 0A5F --pid 014E --serial 123456 --printer-type label --spooler-name "Zebra GK420d"
 
-# IPP (persisted but printing explicitly unsupported)
+# IPP (real IPP client; requires a running IPP server on the endpoint)
 odoo-agent-cli.exe printers add --name "Office IPP" --type ipp --endpoint ipp://192.168.1.60/ipp/print --protocol ipp
-# → printer.New returns "ipp is not implemented" on test/print; Gateway returns CAPABILITY_MISMATCH before queuing
+# → factory.New creates IPPPrinter; Print POSTs application/ipp Print-Job to the endpoint
 ```
 
 Registry `printers.json` beside `config.yaml` is canonical; `printers: []` YAML may be empty. `config.yaml` example with `server.url`, `agent.id/secret`, empty `printers: []` continues to parse and Agent stays alive with `INFO: no printers configured` (`agent.go:160`).
