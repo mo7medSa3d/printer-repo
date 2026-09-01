@@ -58,19 +58,23 @@ export function Button({
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "lg";
   loading?: boolean;
   icon?: React.ReactNode;
 }) {
   const sizes =
-    size === "sm" ? "h-8 px-3 text-xs gap-1.5" : "h-9 px-3.5 text-sm gap-2";
+    size === "sm"
+      ? "h-10 px-3.5 text-[13px] gap-1.5"
+      : size === "lg"
+      ? "h-12 px-5 text-[15px] gap-2.5"
+      : "h-11 px-4 text-sm gap-2";
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-md font-semibold transition-[background-color,border-color,color,box-shadow,filter] duration-150 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${buttonVariants[variant]} ${sizes} ${className}`}
+      className={`inline-flex items-center justify-center rounded-lg font-semibold transition-[background-color,border-color,color,box-shadow,filter] duration-150 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${buttonVariants[variant]} ${sizes} ${className}`}
       disabled={loading || props.disabled}
       {...props}
     >
-      {loading ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : icon}
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : icon}
       {children}
     </button>
   );
@@ -89,7 +93,7 @@ export function IconButton({
     <button
       aria-label={label}
       title={label}
-      className={`inline-flex items-center justify-center w-8 h-8 rounded-md text-ink-3 transition-colors duration-150 hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 ${className}`}
+      className={`inline-flex items-center justify-center h-10 w-10 rounded-lg text-ink-3 transition-colors duration-150 hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -103,7 +107,7 @@ export function StatusDot({ tone, pulse = false }: { tone: Tone; pulse?: boolean
   return (
     <span
       aria-hidden
-      className={`inline-block w-2 h-2 rounded-full ${toneDot[tone]} ${
+      className={`inline-block h-2.5 w-2.5 rounded-full ${toneDot[tone]} ${
         pulse ? "animate-pulse" : ""
       }`}
     />
@@ -123,7 +127,7 @@ export function StatusBadge({
 }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap ${toneBg[tone]} ${className}`}
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[13px] font-semibold whitespace-nowrap ${toneBg[tone]} ${className}`}
     >
       {icon ?? <StatusDot tone={tone} />}
       {label}
@@ -155,13 +159,13 @@ export function CardHeader({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3">
+    <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-4">
       <div className="min-w-0">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-ink">
+        <h2 className="flex items-center gap-2.5 text-[17px] font-semibold leading-tight tracking-[-0.01em] text-ink">
           {icon}
           {title}
         </h2>
-        {subtitle && <p className="mt-0.5 text-xs text-ink-3">{subtitle}</p>}
+        {subtitle && <p className="mt-1 text-[13px] text-ink-3">{subtitle}</p>}
       </div>
       {actions && (
         <div className="flex items-center gap-2 shrink-0">{actions}</div>
@@ -187,19 +191,19 @@ export function EmptyState({
 }) {
   return (
     <div
-      className={`flex flex-col items-center justify-center text-center px-6 py-14 ${className}`}
+      className={`flex flex-col items-center justify-center text-center px-8 py-20 ${className}`}
     >
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-edge-accent bg-surface-accent text-brand">
+      <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-edge-accent bg-surface-accent text-brand">
         {icon}
       </div>
-      <h3 className="mt-4 text-sm font-semibold text-ink">{title}</h3>
+      <h3 className="mt-5 text-[18px] font-semibold text-ink">{title}</h3>
       {description && (
-        <p className="mt-1 max-w-sm text-sm leading-relaxed text-ink-3">
+        <p className="mt-2 max-w-md text-sm leading-relaxed text-ink-3">
           {description}
         </p>
       )}
       {action && (
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           {action}
         </div>
       )}
@@ -221,12 +225,12 @@ export function ErrorState({
   return (
     <div
       role="alert"
-      className={`flex items-start gap-3 rounded-xl border border-bad-edge bg-bad-bg px-4 py-3.5 text-sm ${className}`}
+      className={`flex items-start gap-3.5 rounded-xl border border-bad-edge bg-bad-bg px-5 py-4 text-sm ${className}`}
     >
-      <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-bad" aria-hidden />
+      <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-bad" aria-hidden />
       <div className="min-w-0 flex-1">
-        <div className="font-semibold text-bad">{title}</div>
-        <p className="mt-0.5 break-words text-ink-2">{message}</p>
+        <div className="text-[15px] font-semibold text-bad">{title}</div>
+        <p className="mt-1 break-words leading-relaxed text-ink-2">{message}</p>
       </div>
       {retry && (
         <Button size="sm" variant="secondary" onClick={retry} className="shrink-0">
@@ -277,20 +281,20 @@ export function Field({
     <div className={className}>
       <label
         htmlFor={htmlFor}
-        className="label-caps block text-ink-2"
+        className="block text-[13px] font-semibold text-ink"
       >
         {label}
       </label>
-      <div className="mt-1.5">{children}</div>
+      <div className="mt-2">{children}</div>
       {hint && (
-        <p className="mt-1.5 text-xs leading-relaxed text-ink-3">{hint}</p>
+        <p className="mt-2 text-[13px] leading-relaxed text-ink-3">{hint}</p>
       )}
     </div>
   );
 }
 
 export const inputClass =
-  "w-full h-9 rounded-md border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
+  "w-full h-11 rounded-lg border border-edge bg-surface px-3.5 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
 
 export function Input({
   className = "",
@@ -371,23 +375,23 @@ export function Modal({
         aria-label={title}
         tabIndex={-1}
         className={`pg-rise-in relative w-full ${
-          wide ? "sm:max-w-2xl" : "sm:max-w-lg"
-        } max-h-[92vh] overflow-auto rounded-t-2xl sm:rounded-2xl border border-edge bg-surface shadow-xl outline-none`}
+          wide ? "sm:max-w-3xl" : "sm:max-w-xl"
+        } max-h-[92vh] overflow-auto rounded-t-2xl sm:rounded-panel border border-edge bg-surface shadow-xl outline-none`}
       >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-edge bg-surface px-5 py-4">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-edge bg-surface px-6 py-5">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink">{title}</h2>
+            <h2 className="text-[19px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
             {description && (
-              <p className="mt-0.5 text-xs text-ink-3">{description}</p>
+              <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>
             )}
           </div>
           <IconButton label="Close dialog" onClick={onClose}>
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </IconButton>
         </div>
-        <div className="px-5 py-5">{children}</div>
+        <div className="px-6 py-6">{children}</div>
         {footer && (
-          <div className="sticky bottom-0 flex justify-end gap-2 border-t border-edge bg-surface px-5 py-4">
+          <div className="sticky bottom-0 flex justify-end gap-3 border-t border-edge bg-surface px-6 py-4">
             {footer}
           </div>
         )}
@@ -426,20 +430,20 @@ export function Drawer({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className="pg-slide-in-right relative flex h-full w-full max-w-md flex-col border-l border-edge bg-surface shadow-xl outline-none"
+        className="pg-slide-in-right relative flex h-full w-full max-w-lg flex-col border-l border-edge bg-surface shadow-xl outline-none"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-edge px-5 py-4">
+        <div className="flex items-start justify-between gap-4 border-b border-edge px-6 py-5">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-ink">{title}</h2>
+            <h2 className="text-[19px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
             {description && (
-              <p className="mt-0.5 text-xs text-ink-3">{description}</p>
+              <p className="mt-1 truncate text-[13px] text-ink-3">{description}</p>
             )}
           </div>
           <IconButton label="Close panel" onClick={onClose}>
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </IconButton>
         </div>
-        <div className="flex-1 overflow-auto px-5 py-5">{children}</div>
+        <div className="flex-1 overflow-auto px-6 py-6">{children}</div>
       </div>
     </div>
   );
@@ -474,14 +478,14 @@ export function Tabs<T extends string>({
             role="tab"
             aria-selected={selected}
             onClick={() => onChange(t)}
-            className={`relative flex items-center gap-1.5 whitespace-nowrap px-3.5 py-2.5 text-sm font-medium transition-colors ${
+            className={`relative flex items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors ${
               selected ? "text-ink" : "text-ink-3 hover:text-ink-2"
             }`}
           >
             <span className="capitalize">{t}</span>
             {count !== undefined && (
               <span
-                className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
+                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
                   selected
                     ? "bg-brand-subtle text-brand-subtle-text"
                     : "bg-surface-2 text-ink-3"
@@ -527,7 +531,7 @@ export function CopyButton({
           /* clipboard unavailable inside WebView without focus; ignore */
         }
       }}
-      className={`inline-flex h-7 items-center gap-1 rounded-sm border border-edge bg-surface px-2 text-[11px] font-medium text-ink-2 transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${className}`}
+      className={`inline-flex h-8 items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${className}`}
     >
       <Copy className="h-3 w-3" aria-hidden />
       {label}
@@ -555,12 +559,12 @@ export function Toast({
   return (
     <div
       role="status"
-      className={`pg-toast-in fixed bottom-4 right-4 z-[60] flex max-w-sm items-start gap-3 rounded-xl border px-4 py-3 text-sm shadow-lg ${toneBg[tone]}`}
+      className={`pg-toast-in fixed bottom-6 right-6 z-[60] flex max-w-md items-start gap-3 rounded-xl border px-5 py-4 text-sm shadow-lg ${toneBg[tone]}`}
     >
       {toast.type === "success" ? (
-        <Check className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden />
+        <Check className="mt-0.5 h-5 w-5 flex-shrink-0" aria-hidden />
       ) : (
-        <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden />
+        <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0" aria-hidden />
       )}
       <span className="min-w-0 flex-1 break-words">{toast.text}</span>
       <button
@@ -584,7 +588,7 @@ export function Mono({
   className?: string;
 }) {
   return (
-    <code className={`font-mono text-[11px] text-ink-2 ${className}`}>
+    <code className={`font-mono text-[12px] text-ink-2 ${className}`}>
       {children}
     </code>
   );
@@ -598,9 +602,9 @@ export function MetaRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 py-1.5 text-sm">
-      <span className="text-ink-3">{label}</span>
-      <span className="min-w-0 text-right font-medium text-ink">{children}</span>
+    <div className="flex items-start justify-between gap-6 py-2.5 text-sm">
+      <span className="shrink-0 text-[13px] text-ink-3">{label}</span>
+      <span className="min-w-0 text-right text-[14px] font-semibold text-ink">{children}</span>
     </div>
   );
 }

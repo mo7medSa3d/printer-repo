@@ -7,7 +7,19 @@ export default defineConfig({
   plugins: [react()],
   base: "./",
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
-  build: { outDir: "../../dist-desktop", emptyOutDir: true },
+  // Pin the production entry: `preview.html` is a browser-only harness and
+  // must never end up inside the Windows installer.
+  build: {
+    outDir: "../../dist-desktop",
+    emptyOutDir: true,
+    rollupOptions: { input: path.resolve(__dirname, "src/desktop/index.html") },
+  },
   clearScreen: false,
-  server: { port: 1420, strictPort: true },
+  server: {
+    port: 1420,
+    strictPort: true,
+    // The dev server is sometimes reached through a proxied preview host
+    // (sandboxes, remote review) rather than plain localhost.
+    allowedHosts: true,
+  },
 });
