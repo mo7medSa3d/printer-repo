@@ -26,6 +26,7 @@ document and the code ever disagree, the code wins and the document is a bug.
 | [docs/DESKTOP.md](docs/DESKTOP.md) | The Tauri desktop manager |
 | [docs/SECURITY.md](docs/SECURITY.md) | Authentication domains, isolation, validation, command/file safety |
 | [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) | Visual identity and UI tokens (web, desktop, Odoo skin) |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Working on the code: toolchain, local setup, simulator, repo layout, how to add a route/column/backend, conventions |
 
 ## Operations
 

@@ -221,7 +221,7 @@ Added security.xml to manifest data list:
 
 ## Regression Test Suite
 
-**File**: `tests/test_security_regressions.py` (NEW)
+**File**: `odoo_addons/print_gateway/tests/test_security_regressions.py` (NEW)
 
 8 test classes with 20+ test methods validating all fixes:
 

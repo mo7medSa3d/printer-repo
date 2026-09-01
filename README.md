@@ -57,6 +57,10 @@ Sign in at `/login` with `MANAGER_USERNAME` / `MANAGER_PASSWORD`, create a branc
 agent to obtain a pairing code, pair the agent, run discovery, then create a destination,
 a document type and a printer binding.
 
+No printer at hand? `http://localhost:3000/simulator` is a browser-based agent (register →
+heartbeat → poll → report) that exercises the whole lifecycle. Developer workflows,
+repository layout and contribution conventions: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 Full instructions: [INSTALLATION.md](INSTALLATION.md) ·
 configuration reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
@@ -126,6 +130,7 @@ in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 [docs/WEBSOCKET_PROTOCOL.md](docs/WEBSOCKET_PROTOCOL.md) · [docs/AGENT.md](docs/AGENT.md) ·
 [docs/ODOO.md](docs/ODOO.md) · [docs/DESKTOP.md](docs/DESKTOP.md) ·
 [docs/SECURITY.md](docs/SECURITY.md) · [docs/DATABASE.md](docs/DATABASE.md) ·
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) ·
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) · [docs/TESTING.md](docs/TESTING.md) ·
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) ·
 [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md) ·
