@@ -92,23 +92,83 @@ func (r *recordingPDFPath) fn(_ context.Context, printerName, pdfPath string) er
 	return nil
 }
 
+// mockSpoolerPrinter is a test-only mock that records which methods are called
+// without depending on physical printers or OpenPrinterW.
+type mockSpoolerPrinter struct {
+	name              string
+	rawPrintCalls     int
+	pdfPrintCalls     int
+	pdfPrintFn        PDFPrintFunc
+	lastRawData       []byte
+	lastDocumentKind  string
+	supportedKinds    map[string]bool
+}
+
+func newMockSpoolerPrinter(name string) *mockSpoolerPrinter {
+	return &mockSpoolerPrinter{
+		name: name,
+		supportedKinds: map[string]bool{
+			KindRaw:    true,
+			KindESCPOS: true,
+			KindPDF:    true,
+		},
+	}
+}
+
+func (m *mockSpoolerPrinter) Print(ctx context.Context, data []byte) error {
+	m.rawPrintCalls++
+	m.lastRawData = append([]byte(nil), data...)
+	return nil
+}
+
+func (m *mockSpoolerPrinter) PrintDocument(ctx context.Context, doc Document) error {
+	m.lastDocumentKind = NormalizeKind(doc.Kind)
+	switch m.lastDocumentKind {
+	case KindPDF:
+		m.pdfPrintCalls++
+		if m.pdfPrintFn != nil {
+			return PrintPDF(ctx, m.name, doc, m.pdfPrintFn)
+		}
+		return PrintPDF(ctx, m.name, doc, func(ctx context.Context, name, path string) error {
+			return nil // no-op PDF printer
+		})
+	case KindRaw, KindESCPOS:
+		return m.Print(ctx, doc.Data)
+	default:
+		return CapabilityMismatchf("mock printer cannot render %s", m.lastDocumentKind)
+	}
+}
+
+func (m *mockSpoolerPrinter) SupportsKind(kind string) bool {
+	k := NormalizeKind(kind)
+	return m.supportedKinds[k]
+}
+
+func (m *mockSpoolerPrinter) Test(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSpoolerPrinter) Status() string {
+	return "online"
+}
+
 func TestPDFUsesPDFPrintPathOnPDFCapablePrinter(t *testing.T) {
 	rec := &recordingPDFPath{}
-	sp := NewSpooler("Office Laser", "Office Laser")
-	sp.PDFPrint = rec.fn
+	mockSp := newMockSpoolerPrinter("Test Printer")
+	mockSp.pdfPrintFn = rec.fn
 
-	if !SupportsKind(sp, KindPDF) {
-		t.Fatal("spooler backend must advertise PDF support")
+	if !SupportsKind(mockSp, KindPDF) {
+		t.Fatal("mock spooler backend must advertise PDF support")
 	}
 
 	doc := Document{Kind: KindPDF, Data: validPDF(), JobID: "job_pdf_1"}
-	if err := PrintDocument(context.Background(), sp, doc); err != nil {
+	if err := PrintDocument(context.Background(), mockSp, doc); err != nil {
 		t.Fatalf("PDF print failed: %v", err)
 	}
 	if rec.calls != 1 {
 		t.Fatalf("expected exactly 1 PDF submission, got %d", rec.calls)
 	}
-	if rec.printerName != "Office Laser" {
+	if rec.printerName != "Test Printer" {
 		t.Fatalf("PDF path got printer %q", rec.printerName)
 	}
 	if !strings.HasSuffix(strings.ToLower(rec.path), ".pdf") {
@@ -219,15 +279,23 @@ func TestESCPOSPayloadUsesByteStreamPathNotPDFPath(t *testing.T) {
 		t.Fatal("escpos bytes never reached the TCP printer")
 	}
 
-	// An ESC/POS job on a PDF-capable spooler must NOT take the PDF path.
+	// An ESC/POS job on a PDF-capable mock spooler must NOT take the PDF path.
+	// Use mock spooler to avoid OpenPrinterW dependency on unavailable "Office Laser".
 	rec := &recordingPDFPath{}
-	sp := NewSpooler("Office Laser", "Office Laser")
-	sp.PDFPrint = rec.fn
-	if err := PrintDocument(context.Background(), sp, Document{Kind: KindESCPOS, Data: escpos, JobID: "job_escpos_2"}); err != nil {
-		t.Fatalf("escpos on spooler failed: %v", err)
+	mockSp := newMockSpoolerPrinter("Mock Spooler")
+	mockSp.pdfPrintFn = rec.fn
+
+	if err := PrintDocument(context.Background(), mockSp, Document{Kind: KindESCPOS, Data: escpos, JobID: "job_escpos_2"}); err != nil {
+		t.Fatalf("escpos on mock spooler failed: %v", err)
 	}
 	if rec.calls != 0 {
 		t.Fatalf("ESC/POS payload must not use the PDF path (got %d PDF submissions)", rec.calls)
+	}
+	if mockSp.rawPrintCalls != 1 {
+		t.Fatalf("ESC/POS payload must use the RAW path (got %d raw submissions)", mockSp.rawPrintCalls)
+	}
+	if !bytes.Equal(mockSp.lastRawData, escpos) {
+		t.Fatalf("ESC/POS data altered: got %q", mockSp.lastRawData)
 	}
 }
 
@@ -235,8 +303,8 @@ func TestESCPOSPayloadUsesByteStreamPathNotPDFPath(t *testing.T) {
 
 func TestTempPDFFileRemovedAfterSuccess(t *testing.T) {
 	var captured string
-	sp := NewSpooler("Office Laser", "Office Laser")
-	sp.PDFPrint = func(_ context.Context, _ string, path string) error {
+	mockSp := newMockSpoolerPrinter("Mock Printer for Cleanup")
+	mockSp.pdfPrintFn = func(_ context.Context, _ string, path string) error {
 		captured = path
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("temp PDF missing during print: %v", err)
@@ -244,7 +312,7 @@ func TestTempPDFFileRemovedAfterSuccess(t *testing.T) {
 		return nil
 	}
 
-	if err := PrintDocument(context.Background(), sp, Document{Kind: KindPDF, Data: validPDF(), JobID: "job_cleanup_ok"}); err != nil {
+	if err := PrintDocument(context.Background(), mockSp, Document{Kind: KindPDF, Data: validPDF(), JobID: "job_cleanup_ok"}); err != nil {
 		t.Fatalf("PDF print failed: %v", err)
 	}
 	if captured == "" {
@@ -260,13 +328,13 @@ func TestTempPDFFileRemovedAfterSuccess(t *testing.T) {
 
 func TestTempPDFFileRemovedAfterFailure(t *testing.T) {
 	var captured string
-	sp := NewSpooler("Office Laser", "Office Laser")
-	sp.PDFPrint = func(_ context.Context, _ string, path string) error {
+	mockSp := newMockSpoolerPrinter("Mock Printer for Error Cleanup")
+	mockSp.pdfPrintFn = func(_ context.Context, _ string, path string) error {
 		captured = path
 		return errors.New("printer jammed")
 	}
 
-	err := PrintDocument(context.Background(), sp, Document{Kind: KindPDF, Data: validPDF(), JobID: "job_cleanup_fail"})
+	err := PrintDocument(context.Background(), mockSp, Document{Kind: KindPDF, Data: validPDF(), JobID: "job_cleanup_fail"})
 	if err == nil {
 		t.Fatal("failing PDF submission must return an error")
 	}
@@ -297,12 +365,12 @@ func TestPrinterNameCannotInjectCommands(t *testing.T) {
 		if err := ValidatePDFPrinterName(name); err == nil {
 			t.Fatalf("malicious printer name accepted: %q", name)
 		}
-		sp := NewSpooler(name, name)
-		sp.PDFPrint = func(_ context.Context, _ string, _ string) error {
+		mockSp := newMockSpoolerPrinter(name)
+		mockSp.pdfPrintFn = func(_ context.Context, _ string, _ string) error {
 			t.Fatalf("PDF submission must never run for printer name %q", name)
 			return nil
 		}
-		if err := PrintDocument(context.Background(), sp, Document{Kind: KindPDF, Data: validPDF(), JobID: "job_inject"}); err == nil {
+		if err := PrintDocument(context.Background(), mockSp, Document{Kind: KindPDF, Data: validPDF(), JobID: "job_inject"}); err == nil {
 			t.Fatalf("PDF print with malicious printer name %q must fail", name)
 		}
 	}
@@ -366,7 +434,7 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 		kinds []string
 	}{
 		{"raw tcp", &NetworkPrinter{Address: "127.0.0.1:9100"}, []string{KindRaw, KindESCPOS}},
-		{"spooler", NewSpooler("Office Laser", "Office Laser"), []string{KindRaw, KindESCPOS, KindPDF}},
+		{"mock spooler", newMockSpoolerPrinter("Test"), []string{KindRaw, KindESCPOS, KindPDF}},
 		{"usb", &USBPrinter{ID: "u", Name: "USB"}, []string{KindRaw, KindESCPOS}},
 	}
 	for _, c := range cases {
