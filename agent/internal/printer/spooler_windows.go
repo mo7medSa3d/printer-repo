@@ -263,6 +263,7 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		enabled := pi.Attributes&0x00000400 == 0 // WORK_OFFLINE bit not set
 
 		printerType, connType := classifySpoolerPrinter(portName, driverName, name)
+		isVirtual := isVirtualSpooler(portName, driverName, name)
 		if isVirtual {
 			printerType = "virtual"
 		}
