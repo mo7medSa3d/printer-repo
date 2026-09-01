@@ -8,7 +8,12 @@ import (
 )
 
 func TestNetworkPrinterPrintSuccessAndOffline(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// Static TEST port (not net.Listen(":0")): after we close the listener the
+	// freed ephemeral port could otherwise be stolen by another package's
+	// net.Listen(":0") running in parallel under `go test ./...`, which would
+	// make the "offline" assertion below flaky. See failure_test.go for the
+	// same rationale.
+	ln, err := net.Listen("tcp", "127.0.0.1:19996")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -49,7 +54,8 @@ func TestNetworkPrinterPrintSuccessAndOffline(t *testing.T) {
 	}
 
 	ln.Close()
-	time.Sleep(100 * time.Millisecond)
+	// Give the OS a moment to release the socket before asserting offline.
+	time.Sleep(200 * time.Millisecond)
 	// dial to closed port should be offline
 	p2 := &NetworkPrinter{Address: addr}
 	if s := p2.Status(); s != "offline" {
@@ -69,9 +75,12 @@ func TestNetworkPrinterPrintEmptyAndOversized(t *testing.T) {
 }
 
 func TestNetworkPrinterDialFailure(t *testing.T) {
-	// assuming nothing on 1.2.3.4:1 with short timeout
-	p := &NetworkPrinter{Address: "192.0.2.1:1"} // TEST-NET-1, should not route
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// Static TEST port with nothing listening -> deterministic ECONNREFUSED on
+	// any network. A routable TEST-NET address (192.0.2.1) depends on the
+	// runner's routing: some CI networks time out (slow but passing) while a
+	// misconfigured route would even dial successfully, flipping the test.
+	p := &NetworkPrinter{Address: "127.0.0.1:19998"}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	err := p.Print(ctx, []byte("hi"))
 	if err == nil {

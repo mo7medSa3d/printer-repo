@@ -20,12 +20,34 @@ func dispatchTestJob(id, printerID string) map[string]interface{} {
 // The gateway delivers the same job over WS and the poll fallback; while the
 // first copy is still printing, the second delivery must be dropped instead
 // of queueing another print.
+//
+// The first print is kept provably in-flight when the duplicate arrives:
+// fakePrinter parks on `blocked` once it has signalled `startedCh`, so the
+// test genuinely exercises the in-flight dedup layer without depending on
+// wall-clock pacing (which flakes on loaded Windows CI runners). Without this
+// barrier the first job can finish before the second delivery is considered
+// and the in-flight path is never actually exercised.
 func TestDispatchDeduplicatesInFlightJobs(t *testing.T) {
-	p := &fakePrinter{}
+	p := &fakePrinter{
+		blocked:   make(chan struct{}),
+		startedCh: make(chan string, 1),
+	}
 	ag := newTestAgent(t, "p1", p)
 
 	ag.dispatchJob(context.Background(), dispatchTestJob("dup_ws_poll", "p1"))
+
+	select {
+	case <-p.startedCh:
+		// First copy is now physically printing and parked on `blocked`.
+	case <-time.After(10 * time.Second):
+		t.Fatal("first print never started")
+	}
+
+	// Second delivery of the same job arrives while the first is in flight:
+	// it MUST be dropped by dispatchJob's in-flight dedup immediately.
 	ag.dispatchJob(context.Background(), dispatchTestJob("dup_ws_poll", "p1"))
+
+	close(p.blocked) // release the first print
 
 	ag.waitForJobs()
 	if p.calls != 1 {
@@ -49,7 +71,12 @@ func TestDispatchBoundedAndDrained(t *testing.T) {
 	ag.waitForJobs()
 	elapsed := time.Since(start)
 
-	if elapsed > 10*time.Second {
+	// The real invariant is "all jobs drained well below the 25s shutdown
+	// grace". The exact wall-clock figure is load-proportional (SQLite temp
+	// DBs + loopback HTTP on 2-vCPU Windows runners), so keep 20s as a safety
+	// bound instead of a house number — a drain that is merely slow must not
+	// fail the build.
+	if elapsed > 20*time.Second {
 		t.Fatalf("drain took unexpectedly long: %v", elapsed)
 	}
 	if p.calls != n {

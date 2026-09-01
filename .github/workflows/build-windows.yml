@@ -121,15 +121,21 @@ jobs:
         shell: pwsh
         run: go vet ./...
 
+      # -count=1 forces a fresh run: with setup-go restoring the Go build cache,
+      # cached results would otherwise mask (or replay) flaky test outcomes.
+      # -p 2 bounds package parallelism to the 2 vCPUs of windows-latest; the
+      # concurrency tests in internal/agent spawn many goroutines and SQLite
+      # temp DBs, so running many packages at once starves them and makes
+      # timing-sensitive tests flake.
       - name: Go tests
         working-directory: agent
         shell: pwsh
-        run: go test ./...
+        run: go test -count=1 -p 2 ./...
 
       - name: Go race tests
         working-directory: agent
         shell: pwsh
-        run: go test -race ./...
+        run: go test -count=1 -race -p 2 ./...
 
       # ============================================================
       # Build Go Agent + CLI
