@@ -76,9 +76,12 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   // Best-effort WS push (polling fallback covers offline agent). A delivered
   // push also claims the job so the agent's PATCHes pass the claimed→… check.
   try {
-
     await pushJobToAgentWithClaim({ id, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt: row.expiresAt });
-  } catch { }
+  } catch (e) {
+    // Best-effort push; the durable row + agent polling is the fallback.
+    // Log instead of swallowing so persistent push failures are visible.
+    console.warn(`[actions] WS push failed for job ${id}:`, e);
+  }
 
   revalidatePath("/dashboard");
   return { id };

@@ -26,8 +26,6 @@ pub struct AgentStatus {
     pub service: String,
     pub version: String,
     pub hostname: String,
-    pub last_heartbeat: Option<String>,
-    pub ws_connected: bool,
     pub note: String,
 }
 
@@ -41,16 +39,18 @@ pub async fn get_agent_status(app: tauri::AppHandle) -> AgentStatus {
         service: "OdooPrintAgent".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         hostname,
-        last_heartbeat: None,
-        ws_connected: false,
         note: String::new(),
     };
     // `sc query` + `tasklist` are fast but still subprocess I/O; keep them off
     // the UI thread for consistency with the rest of the command surface.
+    //
+    // Only LOCAL process/service state is reported here. The agent's gateway
+    // WS-connection state and last heartbeat live on the Gateway (the desktop
+    // has no manager credential to query them), so they are deliberately NOT
+    // included — no invented values.
     match tauri::async_runtime::spawn_blocking(move || agent::status(&app)).await {
         Ok((running, _service_running, note)) => AgentStatus {
             running,
-            ws_connected: running,
             note,
             ..base
         },
@@ -250,17 +250,29 @@ pub fn get_app_version() -> String {
 pub struct PrinterInfo {
     pub id: String,
     pub name: String,
+    #[serde(rename = "displayName", alias = "display_name")]
     pub display_name: Option<String>,
+    #[serde(rename = "printerType", alias = "printer_type")]
     pub printer_type: Option<String>,
+    #[serde(rename = "connectionType", alias = "connection_type")]
     pub connection_type: Option<String>,
     pub protocol: Option<String>,
     pub endpoint: Option<String>,
+    #[serde(rename = "spoolerName", alias = "spooler_name")]
     pub spooler_name: Option<String>,
+    #[serde(rename = "networkAddress", alias = "network_address")]
     pub network_address: Option<String>,
     pub port: Option<i32>,
     pub status: String,
     pub enabled: bool,
+    #[serde(rename = "isVirtual", alias = "is_virtual")]
     pub isVirtual: Option<bool>,
+    #[serde(rename = "usbVid")]
+    pub usb_vid: Option<String>,
+    #[serde(rename = "usbPid")]
+    pub usb_pid: Option<String>,
+    #[serde(rename = "usbSerial")]
+    pub usb_serial: Option<String>,
     pub capabilities: Option<serde_json::Value>,
 }
 

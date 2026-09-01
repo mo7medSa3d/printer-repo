@@ -335,8 +335,8 @@ No secrets logged.
 
 ## 8. Known Limitations (genuine, not unfinished required work)
 
-- IPP: protocol field accepted, manual registration stored, but execution returns honest error `IPP not implemented` — no fake success. Office lasers via IPP need future IPP client.
-- USB raw: without Windows spooler name, returns error with guidance to install via Windows and use spooler type. USB printers installed as Windows printers are handled via spooler path.
+- IPP/IPPS: real `IPPPrinter` client (`ipp.go`) — `POST application/ipp` Print-Job, URL normalization, capabilities via `Get-Printer-Attributes`. Verified against an `httptest` mock; real hardware IPP still requires a physical printer to confirm driver-level behavior.
+- USB raw: `usb_windows.go` prints via discovered device path (`CreateFile` + `WriteFile`); when no device path was discovered, Print returns an explicit diagnostic error guiding the admin to install the printer as a Windows printer and use type `spooler`. USB printers installed as Windows printers are handled via the spooler path.
 - Discovery on non-Windows (CI/Linux) returns empty spooler list; real spooler enumeration requires Windows host with `winspool.drv`.
 - Desktop `cargo tauri build` requires Windows host with Rust stable + tauri-cli; verified via `desktop:vite:build` on Linux host.
 ```

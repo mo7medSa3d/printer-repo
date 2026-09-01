@@ -48,6 +48,10 @@ type Agent struct {
 	configPath     string
 	registryPath   string
 	client         *http.Client
+	// printersMu protects printers and printerConfigs: the async discovery
+	// goroutine and Discover/RegisterManual mutate them while heartbeat
+	// payloads and job dispatch read them concurrently.
+	printersMu     sync.RWMutex
 	printers       map[string]printer.Printer
 	printerConfigs map[string]config.PrinterConfig
 	queue          *queue.Queue
@@ -75,6 +79,34 @@ type Agent struct {
 
 	wsMu   sync.RWMutex
 	wsConn *websocket.Conn
+}
+
+// Printer map accessors. The printer map is mutated by the async discovery
+// goroutine started in New and by Discover/RegisterManual, while heartbeat
+// status payloads and job dispatch read it concurrently — all access must go
+// through these helpers.
+func (a *Agent) addPrinter(id string, p printer.Printer, pc config.PrinterConfig) bool {
+	a.printersMu.Lock()
+	defer a.printersMu.Unlock()
+	if _, exists := a.printers[id]; exists {
+		return false
+	}
+	a.printers[id] = p
+	a.printerConfigs[id] = pc
+	return true
+}
+
+func (a *Agent) getPrinter(id string) (printer.Printer, bool) {
+	a.printersMu.RLock()
+	defer a.printersMu.RUnlock()
+	p, ok := a.printers[id]
+	return p, ok
+}
+
+func (a *Agent) printerCount() int {
+	a.printersMu.RLock()
+	defer a.printersMu.RUnlock()
+	return len(a.printers)
 }
 
 // New builds the agent and initializes every configured printer backend.
@@ -115,8 +147,7 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 			log.Printf("WARNING: printer %q (%s) not initialized: %v", pc.ID, pc.Name, err)
 			continue
 		}
-		a.printers[pc.ID] = p
-		a.printerConfigs[pc.ID] = pc
+		a.addPrinter(pc.ID, p, pc)
 	}
 
 	// 2. Merge registry printers (discovered + manually registered) — idempotent.
@@ -131,7 +162,7 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 	if len(quick.Printers) > 0 {
 		if merged, err := printer.UpsertRegistry(registryPath, quick.Printers); err == nil {
 			for _, di := range merged {
-				if _, exists := a.printers[di.ID]; exists {
+				if _, exists := a.getPrinter(di.ID); exists {
 					continue
 				}
 				pc := config.PrinterConfig{
@@ -155,8 +186,7 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 					log.Printf("WARNING: registry printer %q (%s) not initialized: %v", di.ID, di.Name, err)
 					continue
 				}
-				a.printers[di.ID] = p
-				a.printerConfigs[di.ID] = pc
+				a.addPrinter(di.ID, p, pc)
 			}
 		} else {
 			log.Printf("WARNING: failed to persist discovery registry: %v", err)
@@ -182,7 +212,7 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 			log.Printf("[discovery] async discovery found %d printers (quick had %d), updating registry", len(full.Printers), len(quick.Printers))
 			if merged, err := printer.UpsertRegistry(registryPath, full.Printers); err == nil {
 				for _, di := range merged {
-					if _, exists := a.printers[di.ID]; exists {
+					if _, exists := a.getPrinter(di.ID); exists {
 						continue
 					}
 					pc := config.PrinterConfig{
@@ -206,9 +236,9 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 						log.Printf("WARNING: async printer %q (%s) not initialized: %v", di.ID, di.Name, err)
 						continue
 					}
-					a.printers[di.ID] = p
-					a.printerConfigs[di.ID] = pc
-					log.Printf("[discovery] async added printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
+					if a.addPrinter(di.ID, p, pc) {
+						log.Printf("[discovery] async added printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
+					}
 				}
 			}
 		} else {
@@ -216,10 +246,10 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		}
 	}()
 
-	if len(a.printers) == 0 {
+	if a.printerCount() == 0 {
 		log.Printf("INFO: no printers configured yet; run discovery or add manually. Jobs will be queued until a printer is available.")
 	} else {
-		log.Printf("Agent initialized with %d printer(s) (config + registry)", len(a.printers))
+		log.Printf("Agent initialized with %d printer(s) (config + registry)", a.printerCount())
 	}
 
 	return a, nil
@@ -238,7 +268,7 @@ func (a *Agent) Discover() printer.DiscoveryResult {
 		if merged, err := printer.UpsertRegistry(a.registryPath, result.Printers); err == nil {
 			// Refresh in-memory printers with merged registry
 			for _, di := range merged {
-				if _, exists := a.printers[di.ID]; exists {
+				if _, exists := a.getPrinter(di.ID); exists {
 					continue
 				}
 				pc := config.PrinterConfig{
@@ -255,8 +285,9 @@ func (a *Agent) Discover() printer.DiscoveryResult {
 					Capabilities: di.Capabilities,
 				}
 				if p, err := printer.New(pc); err == nil {
-					a.printers[di.ID] = p
-					a.printerConfigs[di.ID] = pc
+					a.addPrinter(di.ID, p, pc)
+				} else {
+					log.Printf("WARNING: discovered printer %q (%s) not initialized: %v", di.ID, di.Name, err)
 				}
 			}
 			result.Printers = merged
@@ -269,7 +300,7 @@ func (a *Agent) Discover() printer.DiscoveryResult {
 // RegisterManual adds a manually configured printer (for when discovery cannot identify correctly).
 func (a *Agent) RegisterManual(info printer.DeviceInfo) error {
 	if info.ID != "" {
-		if _, exists := a.printers[info.ID]; exists {
+		if _, exists := a.getPrinter(info.ID); exists {
 			return fmt.Errorf("printer ID %q already exists", info.ID)
 		}
 	}
@@ -294,8 +325,9 @@ func (a *Agent) RegisterManual(info printer.DeviceInfo) error {
 	if err != nil {
 		return err
 	}
-	a.printers[info.ID] = p
-	a.printerConfigs[info.ID] = pc
+	if !a.addPrinter(info.ID, p, pc) {
+		return fmt.Errorf("printer ID %q already exists", info.ID)
+	}
 	log.Printf("Manual printer registered: %s (%s)", info.ID, info.Name)
 	return nil
 }
@@ -335,7 +367,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("Agent %s starting (ID: %s, %d printer(s) configured)", a.cfg.Agent.Name, a.cfg.Agent.ID, len(a.printers))
+	log.Printf("Agent %s starting (ID: %s, %d printer(s) configured)", a.cfg.Agent.Name, a.cfg.Agent.ID, a.printerCount())
 
 	go a.connectWebSocket(ctx)
 
@@ -596,10 +628,22 @@ func (a *Agent) pollJobsGuarded(ctx context.Context) {
 // spooler_name, etc., so Gateway can store canonical printer registry and
 // route jobs by branch/destination/documentType without relying on YAML.
 func (a *Agent) printerStatusPayload() []map[string]interface{} {
+	// Snapshot the printer map under the read lock: the async discovery
+	// goroutine may add printers while heartbeats probe statuses.
+	a.printersMu.RLock()
 	ids := make([]string, 0, len(a.printers))
 	for id := range a.printers {
 		ids = append(ids, id)
 	}
+	printerByID := make(map[string]printer.Printer, len(a.printers))
+	configByID := make(map[string]config.PrinterConfig, len(a.printerConfigs))
+	for id, p := range a.printers {
+		printerByID[id] = p
+	}
+	for id, pc := range a.printerConfigs {
+		configByID[id] = pc
+	}
+	a.printersMu.RUnlock()
 	sort.Strings(ids) // deterministic order aids gateway-side diffing
 
 	statuses := make([]string, len(ids))
@@ -615,13 +659,13 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 				}
 			}()
 			statuses[i] = p.Status()
-		}(i, id, a.printers[id])
+		}(i, id, printerByID[id])
 	}
 	probeWg.Wait()
 
 	result := make([]map[string]interface{}, 0, len(ids))
 	for i, id := range ids {
-		pc := a.printerConfigs[id]
+		pc := configByID[id]
 		nt := pc.NormalizedType()
 		proto := pc.NormalizedProtocol()
 		if proto == "" {
@@ -881,7 +925,7 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		return
 	}
 
-	p, ok := a.printers[printerID]
+	p, ok := a.getPrinter(printerID)
 	if !ok {
 		log.Printf("Job %s references printer %s which is not configured on this agent", jobID, printerID)
 		a.updateJobStatus(jobID, "failed", fmt.Sprintf("printer %s is not configured on this agent", printerID))

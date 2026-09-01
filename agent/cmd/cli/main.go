@@ -182,14 +182,14 @@ func handlePrintersList(configPath string, jsonOutput bool) {
 	if err != nil {
 		log.Fatalf("List failed: %v", err)
 	}
-	if len(infos) == 0 {
-		fmt.Println("No printers discovered. Run 'printers discover' or 'printers add'.")
-		fmt.Println("Note: YAML printers: [] is not required; discovery and manual registration are the production paths.")
-		return
-	}
 	if jsonOutput {
 		out, _ := json.Marshal(infos)
 		fmt.Println(string(out))
+		return
+	}
+	if len(infos) == 0 {
+		fmt.Println("No printers discovered. Run 'printers discover' or 'printers add'.")
+		fmt.Println("Note: YAML printers: [] is not required; discovery and manual registration are the production paths.")
 		return
 	}
 	fmt.Printf("%-32s %-24s %-12s %-10s %-8s %-7s %s\n", "ID", "NAME", "TYPE", "PROTO", "STATUS", "ENABLED", "ENDPOINT/SPOOLER")
@@ -217,21 +217,20 @@ func handlePrintersList(configPath string, jsonOutput bool) {
 func handlePrintersDiscover(configPath string, jsonOutput bool) {
 	loaded := loadConfigForCLI(configPath)
 	registryPath := config.RegistryPath(loaded.path)
-	result := discoverHelper(loaded.cfg, registryPath)
+	printers := discoverHelper(loaded.cfg, registryPath, jsonOutput)
 	if jsonOutput {
-		fmt.Printf("{\"printers\": %d}\n", len(result))
-		for _, p := range result {
-			fmt.Printf("  %s: %s (%s/%s) status=%s\n", p, p, p, p, p)
+		out, err := json.Marshal(printers)
+		if err != nil {
+			log.Fatalf("failed to encode discovery result: %v", err)
 		}
+		fmt.Println(string(out))
 		return
 	}
-	// Persist discovered printers idempotently
-	_ = registryPath
-	fmt.Printf("Discovery completed: %d printers found\n", len(result))
-	for _, id := range result {
-		fmt.Printf("  - %s\n", id)
+	fmt.Printf("Discovery completed: %d printers found\n", len(printers))
+	for _, d := range printers {
+		fmt.Printf("  - %s\n", d.ID)
 	}
-	if len(result) == 0 {
+	if len(printers) == 0 {
 		fmt.Println("No printers discovered. Try manual registration:")
 		fmt.Println("  odoo-agent-cli.exe printers add --name \"My Printer\" --type spooler --spooler-name \"HP LaserJet\"")
 	}
@@ -347,12 +346,3 @@ func handlePrintersRemove(configPath, printerID string) {
 func parseCapabilitiesJSON(s string, out *map[string]interface{}) error {
 	return json.Unmarshal([]byte(s), out)
 }
-
-// Helpers that delegate to printer package to avoid import cycles in this file's logic.
-// They are implemented in cli_helpers.go next to this file.
-
-//go:generate placeholder
-var (
-	_ = fmt.Sprintf
-	_ = log.Printf
-)

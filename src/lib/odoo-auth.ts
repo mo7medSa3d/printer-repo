@@ -32,10 +32,14 @@ export function hashOdooKey(raw: string): string {
 /**
  * Odoo authenticates via Authorization: Bearer odoo_xxx  or  X-Api-Key: odoo_xxx
  * Separate from agent Bearer agt:secret. Never logs raw key.
+ *
+ * The Odoo addon historically sent Odoo record ids (ints) as branchId; the
+ * Gateway stores ids as text and compares them. Normalize both sides to
+ * strings so a scoped key still matches (no int/char drift breaking auth).
  */
 export function isBranchScopedKeyAllowed(keyBranchId: string | null | undefined, expectedBranchId?: string | null): boolean {
   if (!expectedBranchId) return true;
-  return !keyBranchId || keyBranchId === expectedBranchId;
+  return !keyBranchId || String(keyBranchId) === String(expectedBranchId);
 }
 
 export function isOdooKeyAllowedForDocumentType(

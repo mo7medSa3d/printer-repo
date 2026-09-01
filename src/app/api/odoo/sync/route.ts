@@ -182,7 +182,11 @@ export async function GET(req: Request) {
       printerRows = await db.select().from(printers).orderBy(desc(printers.updatedAt)).limit(20);
       jobRows = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(20);
     }
-  } catch { }
+  } catch (e) {
+    // Do not mask DB failures as an empty-but-successful status payload;
+    // Odoo would wrongly conclude "nothing changed" instead of retrying.
+    return NextResponse.json({ error: "database error while loading sync status" }, { status: 500 });
+  }
 
   // Strip secrets
   const safeAgents = agentRows.map((a: any) => {

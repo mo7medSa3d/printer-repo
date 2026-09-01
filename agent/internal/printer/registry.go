@@ -120,6 +120,9 @@ func UpsertRegistry(registryPath string, discovered []DeviceInfo) ([]DeviceInfo,
 
 // RegisterManual adds or updates a manually configured printer.
 // Manual registration must support tcp/usb/spooler/ipp as per spec.
+// The caller's Enabled value is preserved (CLI --enabled false must not be
+// silently overridden); callers that want the default must set it themselves
+// (CLI defaults --enabled to true).
 func RegisterManual(registryPath string, info DeviceInfo) ([]DeviceInfo, error) {
 	if info.ID == "" {
 		info.ID = StableIDForDevice(info)
@@ -127,7 +130,6 @@ func RegisterManual(registryPath string, info DeviceInfo) ([]DeviceInfo, error) 
 	if info.Status == "" {
 		info.Status = "unknown"
 	}
-	info.Enabled = true
 	if info.ConnectionType == "" {
 		info.ConnectionType = "network"
 	}

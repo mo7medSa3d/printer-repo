@@ -9,68 +9,15 @@ import (
 	"github.com/odoo-print-agent/agent/internal/printer"
 )
 
-func listPrintersHelper(cfg *config.Config, registryPath string) ([]interface{}, error) {
-	infos, err := printer.ListPrinters(cfg, registryPath)
-	if err != nil {
-		return nil, err
-	}
-	if len(infos) == 0 {
-		return []interface{}{}, nil
-	}
-	fmt.Printf("%-32s %-24s %-12s %-10s %-8s %-7s %s\n", "ID", "NAME", "TYPE", "PROTO", "STATUS", "ENABLED", "ENDPOINT/SPOOLER")
-	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------")
-	for _, d := range infos {
-		endpoint := d.Endpoint
-		if d.SpoolerName != "" {
-			endpoint = d.SpoolerName
-		}
-		if endpoint == "" && d.NetworkAddress != "" {
-			if d.Port != 0 {
-				endpoint = fmt.Sprintf("%s:%d", d.NetworkAddress, d.Port)
-			} else {
-				endpoint = d.NetworkAddress
-			}
-		}
-		enabledStr := "true"
-		if !d.Enabled {
-			enabledStr = "false"
-		}
-		fmt.Printf("%-32s %-24s %-12s %-10s %-8s %-7s %s\n", d.ID, d.Name, d.ConnectionType, d.Protocol, d.Status, enabledStr, endpoint)
-		// Extended fields
-		if d.SpoolerName != "" && d.SpoolerName != endpoint {
-			fmt.Printf("    spooler=%s\n", d.SpoolerName)
-		}
-		if d.NetworkAddress != "" {
-			fmt.Printf("    network=%s:%d\n", d.NetworkAddress, d.Port)
-		}
-		if d.USBVID != "" || d.USBPID != "" || d.USBSerial != "" {
-			fmt.Printf("    usb vid=%s pid=%s serial=%s\n", d.USBVID, d.USBPID, d.USBSerial)
-		}
-		if d.PrinterType != "" && d.PrinterType != "unknown" {
-			fmt.Printf("    printerType=%s\n", d.PrinterType)
-		}
-		if len(d.Capabilities) > 0 {
-			if b, err := json.Marshal(d.Capabilities); err == nil {
-				fmt.Printf("    caps=%s\n", string(b))
-			}
-		}
-		if d.ConnectionType == "usb" && d.SpoolerName == "" {
-			fmt.Printf("    ! USB device requires Windows spooler queue for printing\n")
-		}
-	}
-	out := make([]interface{}, len(infos))
-	for i, v := range infos {
-		out[i] = v
-	}
-	return out, nil
-}
-
-func discoverHelper(cfg *config.Config, registryPath string) []string {
+func discoverHelper(cfg *config.Config, registryPath string, jsonOutput bool) []printer.DeviceInfo {
 	result := printer.Discover(cfg, registryPath)
 	if len(result.Printers) > 0 {
 		if _, err := printer.UpsertRegistry(registryPath, result.Printers); err != nil {
 			log.Printf("Failed to persist discovery: %v", err)
 		}
+	}
+	if jsonOutput {
+		return result.Printers
 	}
 	fmt.Printf("%-32s %-24s %-12s %-10s %-8s %-7s %s\n", "ID", "NAME", "TYPE", "PROTO", "STATUS", "ENABLED", "ENDPOINT/SPOOLER")
 	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------")
@@ -109,11 +56,7 @@ func discoverHelper(cfg *config.Config, registryPath string) []string {
 			fmt.Printf("  ! %s\n", e)
 		}
 	}
-	ids := make([]string, len(result.Printers))
-	for i, p := range result.Printers {
-		ids[i] = p.ID
-	}
-	return ids
+	return result.Printers
 }
 
 func testPrinterHelper(cfg *config.Config, registryPath, printerID string) error {

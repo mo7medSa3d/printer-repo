@@ -12,8 +12,9 @@ import (
 //   - type "network"/"tcp" with protocol "raw" or "escpos": RAW TCP (9100)
 //   - type "spooler": Windows Print Spooler via winspool.drv (or stub on non-Windows)
 //   - type "usb": USB printers exposed via Windows spooler fall back to spooler backend;
-//     raw USB transport is used only when spooler name is not available.
-//   - type "ipp": gracefully rejected (requires IPP client) — no fake success.
+//     raw USB transport (CreateFile + WriteFile) is used when no spooler queue
+//     is available but a Windows device path was discovered.
+//   - type "ipp"/"ipps" and network:ipp protocol: real IPP client (IPPPrinter).
 func New(cfg config.PrinterConfig) (Printer, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("printer config is missing an id")
@@ -56,12 +57,11 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 			// Endpoint is spooler name for USB-via-spooler (e.g., "HP LaserJet")
 			return NewSpooler(cfg.Endpoint, cfg.Name), nil
 		}
-		// CASE B: USB device exists as raw USB without spooler queue.
-		// Direct USB printing is not reliably implemented without a spooler queue
-		// on Windows (requires WinUSB/libusb and raw endpoint). We expose the
-		// discovered device via a USBPrinter that reports explicit error on Print,
-		// so Gateway inventory shows it as discovered but not printable, with
-		// diagnostic guiding to install as Windows printer.
+		// CASE B: USB device exists as raw USB without a spooler queue.
+		// USBPrinter.Print uses the discovered Windows device path via
+		// CreateFile + WriteFile (see usb_windows.go). If no device path was
+		// discovered, Print returns an explicit diagnostic error telling the
+		// admin to install the printer as a Windows printer and use spooler.
 		vid := parseHex16(cfg.USBVID)
 		pid := parseHex16(cfg.USBPID)
 		return &USBPrinter{

@@ -19,8 +19,9 @@ export async function GET(req: Request) {
       ? await db.select().from(printers).where(eq(printers.branchId, filter)).orderBy(desc(printers.updatedAt))
       : await db.select().from(printers).orderBy(desc(printers.updatedAt));
     return NextResponse.json(rows);
-  } catch {
-    const rows = await db.select().from(printers).orderBy(desc(printers.updatedAt));
-    return NextResponse.json(rows);
+  } catch (e) {
+    // Never fall back to all rows: an unscoped dump would leak printers that
+    // belong to other branches to a branch-scoped key holder.
+    return NextResponse.json({ error: "database error while listing printers" }, { status: 500 });
   }
 }

@@ -106,7 +106,8 @@ export type ResolveErrorCode =
   | "NO_PRINTER_FOUND"
   | "PRINTER_DISABLED"
   | "PRINTER_OFFLINE"
-  | "CAPABILITY_MISMATCH";
+  | "CAPABILITY_MISMATCH"
+  | "INTERNAL_ERROR";
 
 export async function resolvePrinterForJob({
   branchId,
@@ -224,8 +225,10 @@ export async function resolvePrinterForJob({
     }
     return { error: "NO_PRINTER_FOUND", message: `No available printer after evaluating ${candidates.length} bindings` };
   } catch (e) {
-    // Schema not backfilled yet; interface remains backward compatible until the
-    // migration is applied in the target deployment.
-    return null;
+    // A DB failure here is NOT "no printer found" — mapping it to 404 would
+    // hide a real outage as a routing miss and make Odoo treat the job as
+    // misconfigured. Report it distinctly; the API layer maps it to 500.
+    const message = e instanceof Error ? e.message : "unexpected routing error";
+    return { error: "INTERNAL_ERROR", message: `routing failed: ${message}` };
   }
 }

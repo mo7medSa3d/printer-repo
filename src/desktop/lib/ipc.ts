@@ -16,8 +16,6 @@ export interface AgentStatus {
   service: string;
   version: string;
   hostname: string;
-  last_heartbeat: string | null;
-  ws_connected: boolean;
   note: string;
 }
 
@@ -175,13 +173,18 @@ export async function fetchGatewayJobs(
 ): Promise<Record<string, unknown>[]> {
   const base = gatewayUrl.replace(/\/$/, "");
   const res = await fetch(`${base}/api/jobs?limit=50`, {
-    // Desktop manager uses manager session if available; otherwise try unauth (will 401)
+    // A manager session cookie is required by /api/jobs. The desktop Manager
+    // has no gateway session, so this 401s until the user signs in at the
+    // gateway dashboard — surfaced to the UI, never silently swallowed.
     credentials: "include",
   });
   if (!res.ok) {
-    // Try without credentials as fallback for public health-style endpoint
     const txt = await res.text().catch(() => "");
-    throw new Error(txt || `jobs fetch failed ${res.status}`);
+    const err: Error & { status?: number } = new Error(
+      txt || `jobs fetch failed ${res.status}`
+    );
+    err.status = res.status;
+    throw err;
   }
   return (await res.json()) as Record<string, unknown>[];
 }
