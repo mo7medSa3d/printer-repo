@@ -35,7 +35,7 @@ func TestCIPackageDiagnostics(t *testing.T) {
 		out, err := exec.Command("go", "test", "-count=1", pkg).CombinedOutput()
 		if err != nil {
 			failed++
-			text := compact(string(out), 6000)
+			text := compact(string(out), 12000)
 			// Annotate in chunks so nothing is silently truncated away.
 			for i := 0; i < len(text); i += 1500 {
 				end := i + 1500
@@ -72,12 +72,15 @@ func emitError(msg string) {
 
 func compact(s string, limit int) string {
 	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(s, "\r", "")), "\n")
-	if len(lines) > 40 {
-		lines = lines[len(lines)-40:]
+	if len(lines) > 80 {
+		lines = lines[len(lines)-80:]
 	}
 	out := strings.Join(lines, "\n")
 	if len(out) > limit {
-		out = out[:limit]
+		// Cut at the START of the tail so the END (the FAIL block + last test
+		// output) is always preserved — that is where the failing test is
+		// identified.
+		out = out[len(out)-limit:]
 	}
 	return out
 }

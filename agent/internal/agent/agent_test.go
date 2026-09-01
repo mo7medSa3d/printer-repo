@@ -222,9 +222,22 @@ func TestPerPrinterSerialization(t *testing.T) {
 }
 
 func TestDifferentPrintersConcurrent(t *testing.T) {
+	// Provably-concurrent cross-printer execution WITHOUT wall-clock assertions.
+	//
+	// Both printers park on the SAME `barrier` channel inside Print() — but only
+	// AFTER each has signalled on its own `startedCh`. The moment both startedCh
+	// signals have been received by this test, both Print calls are guaranteed
+	// to be in flight at the same time: each is blocked inside `barrier` while
+	// the other is printing. No time.Now() comparison is needed.
+	//
+	// (The previous implementation asserted span overlap via time.Now() deltas.
+	// On 2-vCPU Windows runners Go can hand two goroutines the same wall-clock
+	// tick, so two genuinely-concurrent prints recorded BIT-IDENTICAL spans and
+	// spansOverlap()'s strict `Before` comparisons returned false — making the
+	// build fail even though the behaviour under test was correct.)
 	barrier := make(chan struct{})
-	p1 := &fakePrinter{blocked: barrier, startedCh: make(chan string, 2)}
-	p2 := &fakePrinter{blocked: barrier, startedCh: make(chan string, 2)}
+	p1 := &fakePrinter{blocked: barrier, startedCh: make(chan string, 1)}
+	p2 := &fakePrinter{blocked: barrier, startedCh: make(chan string, 1)}
 	server := newStatusTestServer(t)
 	defer server.Close()
 	cfg := &config.Config{}
@@ -257,18 +270,24 @@ func TestDifferentPrintersConcurrent(t *testing.T) {
 		ag.processJob(ctx, map[string]interface{}{"id": "j2", "printerId": "p2", "payload": makeJobPayload("j2"), "expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339)})
 	}()
 	close(start)
-	<-p1.startedCh
-	<-p2.startedCh
+
+	waitStarted := func(p *fakePrinter, name string) {
+		t.Helper()
+		select {
+		case <-p.startedCh:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s never started printing", name)
+		}
+	}
+	waitStarted(p1, "p1")
+	waitStarted(p2, "p2")
+	// Both prints are parked behind the barrier RIGHT NOW -> provably concurrent.
 	close(barrier)
 	wg.Wait()
 	ag.waitForJobs()
 	assertNoInFlight(t, ag)
-	s1, s2 := p1.Spans(), p2.Spans()
-	if len(s1) != 1 || len(s2) != 1 {
-		t.Fatalf("expected one span per printer, got %d/%d", len(s1), len(s2))
-	}
-	if !spansOverlap(s1[0], s2[0]) {
-		t.Fatalf("expected concurrent execution, spans do not overlap: %v vs %v", s1[0], s2[0])
+	if len(p1.Spans()) != 1 || len(p2.Spans()) != 1 {
+		t.Fatalf("expected one span per printer, got %d/%d", len(p1.Spans()), len(p2.Spans()))
 	}
 }
 
