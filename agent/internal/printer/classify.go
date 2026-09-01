@@ -29,6 +29,53 @@ func isPrinterUSBDevice(hwIDs, compatIDs []string, classVal string) bool {
 	return false
 }
 
+func isValidSpoolerPrinter(portName, driverName, printerName string) bool {
+	if strings.TrimSpace(printerName) == "" {
+		return false
+	}
+	lowerName := spoolerToLowerTrim(printerName)
+	lowerDriver := spoolerToLowerTrim(driverName)
+	// Generic PnP / non-printer devices must never be surfaced as spooler printers,
+	// even if EnumPrintersW somehow enumerates them or they were persisted in registry.
+	genericSubstrings := []string{
+		"usb input device",
+		"usb composite device",
+		"hid-compliant",
+		"hid compliant",
+		"standard system devices",
+		"standard usb host controller",
+		"intel(r) wireless bluetooth",
+		"wireless bluetooth",
+		"bluetooth adapter",
+		"fingerprint sensor",
+		"touch fingerprint",
+		"synaptics",
+		"vfs7552",
+		"hd camera",
+		"hp hd camera",
+		"camera",
+		"usb hub",
+		"generic usb hub",
+	}
+	for _, g := range genericSubstrings {
+		if strings.Contains(lowerName, g) || strings.Contains(lowerDriver, g) {
+			// If driver explicitly indicates printer (printer/laser/inkjet/thermal etc.), keep it;
+			// otherwise it's not a printer queue. Note: check "printer" not just "print"
+			// to avoid false positive on "fingerprint" containing "print".
+			if !strings.Contains(lowerDriver, "printer") && !strings.Contains(lowerDriver, "laser") && !strings.Contains(lowerDriver, "inkjet") && !strings.Contains(lowerDriver, "thermal") && !strings.Contains(lowerDriver, "label") && !strings.Contains(lowerDriver, "zebra") && !strings.Contains(lowerName, "printer") {
+				return false
+			}
+		}
+	}
+	// Also reject if driver is empty and name is generic USB device without printer keywords
+	if strings.TrimSpace(driverName) == "" && strings.Contains(lowerName, "usb") && strings.Contains(lowerName, "device") {
+		if !strings.Contains(lowerName, "printer") && !strings.Contains(lowerName, "print") {
+			return false
+		}
+	}
+	return true
+}
+
 func isVirtualSpooler(portName, driverName, printerName string) bool {
 	portLower := spoolerToLowerTrim(portName)
 	driverLower := spoolerToLowerTrim(driverName)

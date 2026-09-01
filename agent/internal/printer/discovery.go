@@ -13,6 +13,110 @@ import (
 	"github.com/odoo-print-agent/agent/internal/config"
 )
 
+func isValidDiscoveredPrinter(d DeviceInfo) bool {
+	// Virtual printers are always valid where they are expected
+	if d.IsVirtual {
+		return true
+	}
+	nameLower := strings.ToLower(d.Name + " " + d.DisplayName)
+	// Generic PnP / system devices must never be surfaced as printers
+	genericSubstrings := []string{
+		"usb input device",
+		"usb composite device",
+		"hid-compliant",
+		"hid compliant",
+		"standard system devices",
+		"standard usb host controller",
+		"intel(r) wireless bluetooth",
+		"wireless bluetooth",
+		"bluetooth adapter",
+		"fingerprint sensor",
+		"touch fingerprint",
+		"synaptics",
+		"vfs7552",
+		"hd camera",
+		"hp hd camera",
+		"camera",
+		"usb hub",
+		"generic usb hub",
+	}
+	for _, g := range genericSubstrings {
+		if strings.Contains(nameLower, g) {
+			// If driver or name explicitly says printer, keep it (check "printer" not "print" to avoid fingerprint false positive)
+			capsLower := ""
+			if d.Capabilities != nil {
+				if v, ok := d.Capabilities["driver_name"]; ok {
+					capsLower += strings.ToLower(fmt.Sprint(v)) + " "
+				}
+				if v, ok := d.Capabilities["port_name"]; ok {
+					capsLower += strings.ToLower(fmt.Sprint(v)) + " "
+				}
+			}
+			combined := nameLower + " " + capsLower + strings.ToLower(d.PrinterType)
+			if strings.Contains(combined, "printer") || strings.Contains(combined, "laser") || strings.Contains(combined, "inkjet") || strings.Contains(combined, "thermal") || strings.Contains(combined, "label") || strings.Contains(combined, "zebra") {
+				continue
+			}
+			return false
+		}
+	}
+	// For spooler-discovered devices, apply strict spooler validation if we have port/driver caps
+	if d.ConnectionType == "spooler" || d.Protocol == "spooler" {
+		portName := ""
+		driverName := ""
+		if d.Capabilities != nil {
+			if v, ok := d.Capabilities["port_name"]; ok {
+				portName = fmt.Sprint(v)
+			}
+			if v, ok := d.Capabilities["driver_name"]; ok {
+				driverName = fmt.Sprint(v)
+			}
+		}
+		// If we have port/driver, validate; if not, rely on name check above
+		if portName != "" || driverName != "" {
+			if !isValidSpoolerPrinter(portName, driverName, d.Name) {
+				return false
+			}
+		}
+	}
+	// For USB, require printer evidence if we have hardware_ids in caps
+	if d.ConnectionType == "usb" {
+		if d.Capabilities != nil {
+			var hwIDs, compatIDs []string
+			if v, ok := d.Capabilities["hardware_ids"]; ok {
+				switch vv := v.(type) {
+				case []string:
+					hwIDs = vv
+				case []interface{}:
+					for _, x := range vv {
+						hwIDs = append(hwIDs, fmt.Sprint(x))
+					}
+				}
+			}
+			if v, ok := d.Capabilities["compatible_ids"]; ok {
+				switch vv := v.(type) {
+				case []string:
+					compatIDs = vv
+				case []interface{}:
+					for _, x := range vv {
+						compatIDs = append(compatIDs, fmt.Sprint(x))
+					}
+				}
+			}
+			classVal := ""
+			if v, ok := d.Capabilities["class"]; ok {
+				classVal = fmt.Sprint(v)
+			}
+			// If we have hardware IDs, enforce printer check; if no IDs (e.g., manual USB), allow
+			if len(hwIDs) > 0 || len(compatIDs) > 0 {
+				if !isPrinterUSBDevice(hwIDs, compatIDs, classVal) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 // DiscoveryResult is the outcome of enumerating all sources.
 type DiscoveryResult struct {
 	Printers []DeviceInfo `json:"printers"`
@@ -36,6 +140,10 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 		for _, d := range infos {
 			if d.ID == "" {
 				d.ID = StableIDForDevice(d)
+			}
+			if !isValidDiscoveredPrinter(d) {
+				log.Printf("[discovery] filtered non-printer device: %q type=%q conn=%q", d.Name, d.PrinterType, d.ConnectionType)
+				continue
 			}
 			if seen[d.ID] {
 				for i, existing := range all {
@@ -132,6 +240,10 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 		for _, d := range infos {
 			if d.ID == "" {
 				d.ID = StableIDForDevice(d)
+			}
+			if !isValidDiscoveredPrinter(d) {
+				log.Printf("[discovery] filtered non-printer device: %q type=%q conn=%q", d.Name, d.PrinterType, d.ConnectionType)
+				continue
 			}
 			// Deduplicate by stable ID
 			if seen[d.ID] {

@@ -373,6 +373,56 @@ func TestIsVirtualSpooler(t *testing.T) {
 	}
 }
 
+func TestIsValidSpoolerPrinter(t *testing.T) {
+	cases := []struct {
+		port, driver, name string
+		want               bool
+	}{
+		{"USB001", "HP LaserJet", "HP LaserJet", true},
+		{"WSD-123", "Generic Laser", "Office Printer", true},
+		{"IP_192.168.1.10", "HP LaserJet", "HP LaserJet", true},
+		{"PORTPROMPT:", "Microsoft Print to PDF", "Microsoft Print to PDF", true}, // virtual but valid
+		{"XPSPort:", "Microsoft XPS Document Writer", "Microsoft XPS Document Writer", true},
+		{"USB001", "USB Input Device", "(Standard system devices) USB Input Device", false},
+		{"", "USB Composite Device", "(Standard USB Host Controller) USB Composite Device", false},
+		{"", "Intel Bluetooth", "Intel(R) Wireless Bluetooth(R)", false},
+		{"", "HID-compliant mouse", "Microsoft HID-compliant mouse", false},
+		{"", "HD Camera", "Microsoft HP HD Camera", false},
+		{"", "Fingerprint Sensor", "Synaptics VFS7552 Touch Fingerprint Sensor", false},
+		{"", "", "USB Input Device", false},
+		{"USB001", "", "USB Input Device", false},
+	}
+	for _, tc := range cases {
+		got := isValidSpoolerPrinter(tc.port, tc.driver, tc.name)
+		if got != tc.want {
+			t.Errorf("isValidSpoolerPrinter port=%q driver=%q name=%q: got %v want %v", tc.port, tc.driver, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestIsValidDiscoveredPrinterFiltersGeneric(t *testing.T) {
+	cases := []struct {
+		name  string
+		di    DeviceInfo
+		valid bool
+	}{
+		{"mouse usb", DeviceInfo{Name: "(Standard system devices) USB Input Device", ConnectionType: "usb", PrinterType: "unknown"}, false},
+		{"composite", DeviceInfo{Name: "(Standard USB Host Controller) USB Composite Device", ConnectionType: "usb", PrinterType: "unknown"}, false},
+		{"bluetooth", DeviceInfo{Name: "Intel(R) Wireless Bluetooth(R)", ConnectionType: "usb", PrinterType: "unknown"}, false},
+		{"camera", DeviceInfo{Name: "Microsoft HP HD Camera", ConnectionType: "usb", PrinterType: "unknown"}, false},
+		{"fingerprint", DeviceInfo{Name: "Synaptics VFS7552 Touch Fingerprint Sensor", ConnectionType: "usb", PrinterType: "unknown"}, false},
+		{"hid mouse", DeviceInfo{Name: "Microsoft HID-compliant mouse", ConnectionType: "usb", PrinterType: "unknown"}, false},
+		{"virtual pdf", DeviceInfo{Name: "Microsoft Print to PDF", ConnectionType: "spooler", PrinterType: "virtual", IsVirtual: true}, true},
+		{"physical hp", DeviceInfo{Name: "HP LaserJet", ConnectionType: "usb", PrinterType: "unknown", USBVID: "03f0", USBPID: "0c17", Capabilities: map[string]interface{}{"hardware_ids": []string{"USBPRINT\\HP"}, "compatible_ids": []string{"USBPRINT"}}}, true},
+	}
+	for _, tc := range cases {
+		got := isValidDiscoveredPrinter(tc.di)
+		if got != tc.valid {
+			t.Errorf("%s: got %v want %v di=%+v", tc.name, got, tc.valid, tc.di)
+		}
+	}
+}
+
 func TestCapabilityNormalization(t *testing.T) {
 	pc := config.PrinterConfig{ID: "p1", Name: "Test", Type: "spooler", Endpoint: "HP Laser", PrinterType: "thermal", Capabilities: map[string]interface{}{"paper_widths": []int{58}}}
 	if pc.PrinterType != "thermal" {

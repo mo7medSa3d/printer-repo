@@ -27,6 +27,8 @@ func NewRegistry(configPath string) *Registry {
 }
 
 // loadRegistryPrinters reads the registry file and returns DeviceInfos.
+// It filters out stale generic PnP entries that were persisted by old buggy
+// discovery (USB Input Device, etc.) and rewrites the file to clean it.
 // If file does not exist, returns nil slice (not error).
 func loadRegistryPrinters(registryPath string) ([]DeviceInfo, error) {
 	if registryPath == "" {
@@ -43,7 +45,21 @@ func loadRegistryPrinters(registryPath string) ([]DeviceInfo, error) {
 	if err := json.Unmarshal(data, &infos); err != nil {
 		return nil, fmt.Errorf("parse registry %s: %w", registryPath, err)
 	}
-	return infos, nil
+	// Filter out stale generic devices that are not valid printers.
+	filtered := make([]DeviceInfo, 0, len(infos))
+	removed := 0
+	for _, d := range infos {
+		if !isValidDiscoveredPrinter(d) {
+			removed++
+			continue
+		}
+		filtered = append(filtered, d)
+	}
+	if removed > 0 {
+		// Rewrite cleaned registry asynchronously - best effort, not fatal
+		_ = SaveRegistry(registryPath, filtered)
+	}
+	return filtered, nil
 }
 
 // Save persists the given DeviceInfos atomically to the registry path.
@@ -84,6 +100,9 @@ func UpsertRegistry(registryPath string, discovered []DeviceInfo) ([]DeviceInfo,
 	for _, d := range discovered {
 		if d.ID == "" {
 			d.ID = StableIDForDevice(d)
+		}
+		if !isValidDiscoveredPrinter(d) {
+			continue
 		}
 		if idx, ok := byID[d.ID]; ok {
 			// Update existing

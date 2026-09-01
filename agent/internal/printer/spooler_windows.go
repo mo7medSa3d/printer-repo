@@ -249,11 +249,19 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		location := utf16PtrToString(pi.pLocation)
 		// serverName := utf16PtrToString(pi.pServerName) // usually nil for local
 
+		// Strict spooler queue validation: only actual print queues must be returned.
+		// Generic PnP devices (USB Input, Composite, HID, Bluetooth, Camera, Fingerprint)
+		// must never be surfaced as spooler printers, even if EnumPrintersW somehow
+		// returns them or they were persisted in registry.
+		if !isValidSpoolerPrinter(portName, driverName, name) {
+			log.Printf("[discovery] skipping non-printer spooler entry %d: name=%q port=%q driver=%q", i, name, portName, driverName)
+			continue
+		}
+
 		// Map Windows status/attributes to our status (do not hardcode online)
 		status := mapWindowsStatus(pi.Status, pi.Attributes)
 		enabled := pi.Attributes&0x00000400 == 0 // WORK_OFFLINE bit not set
 
-		isVirtual := isVirtualSpooler(portName, driverName, name)
 		printerType, connType := classifySpoolerPrinter(portName, driverName, name)
 		if isVirtual {
 			printerType = "virtual"

@@ -140,14 +140,20 @@ fn run_pairing(app: tauri::AppHandle, code: &str, gateway_url: &str) -> Result<S
         .map_err(|e| format!("create agent data dir: {e}"))?;
 
     logging::info(&format!("pairing agent (server={gateway_url})"));
-    let out = Command::new(&cli)
-        .arg("-pair")
+    let mut cmd = Command::new(&cli);
+    cmd.arg("-pair")
         .arg(code)
         .arg("-server")
         .arg(gateway_url)
         .arg("-config")
         .arg(&config)
-        .env("ODOO_PRINT_AGENT_DATA_DIR", paths::agent_data_root())
+        .env("ODOO_PRINT_AGENT_DATA_DIR", paths::agent_data_root());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd
         .output()
         .map_err(|e| format!("failed to run odoo-agent-cli.exe: {e}"))?;
 
@@ -264,6 +270,48 @@ pub struct DiscoverResult {
     pub errors: Vec<String>,
 }
 
+fn is_valid_printer_for_ui(p: &PrinterInfo) -> bool {
+    if p.isVirtual.unwrap_or(false) {
+        return true;
+    }
+    let name_lower = p.name.to_lowercase();
+    let driver_lower = p.capabilities.as_ref()
+        .and_then(|v| v.get("driver_name").and_then(|x| x.as_str()))
+        .unwrap_or("")
+        .to_lowercase();
+    let combined = format!("{} {}", name_lower, driver_lower);
+    let generic = [
+        "usb input device",
+        "usb composite device",
+        "hid-compliant",
+        "hid compliant",
+        "standard system devices",
+        "standard usb host controller",
+        "intel(r) wireless bluetooth",
+        "wireless bluetooth",
+        "bluetooth adapter",
+        "fingerprint sensor",
+        "touch fingerprint",
+        "synaptics",
+        "vfs7552",
+        "hd camera",
+        "hp hd camera",
+        "camera",
+        "usb hub",
+        "generic usb hub",
+    ];
+    for g in generic {
+        if combined.contains(g) {
+            // Allow if driver explicitly says printer (check "printer" not "print" to avoid fingerprint)
+            if driver_lower.contains("printer") || driver_lower.contains("laser") || driver_lower.contains("inkjet") || driver_lower.contains("thermal") || driver_lower.contains("label") || driver_lower.contains("zebra") {
+                continue;
+            }
+            return false;
+        }
+    }
+    true
+}
+
 #[tauri::command]
 pub async fn get_printers(app: tauri::AppHandle) -> Result<Vec<PrinterInfo>, String> {
     run_blocking(move || {
@@ -276,7 +324,8 @@ pub async fn get_printers(app: tauri::AppHandle) -> Result<Vec<PrinterInfo>, Str
             return Ok(vec![]);
         }
         let v: Vec<PrinterInfo> = serde_json::from_str(&raw).map_err(|e| format!("parse {}: {}", path.display(), e))?;
-        Ok(v)
+        let filtered: Vec<PrinterInfo> = v.into_iter().filter(|p| is_valid_printer_for_ui(p)).collect();
+        Ok(filtered)
     })
     .await
 }
@@ -288,13 +337,20 @@ pub async fn discover_printers(app: tauri::AppHandle) -> Result<DiscoverResult, 
         let config = paths::agent_config_path();
         let root = paths::agent_data_root();
         let _ = paths::ensure_agent_data_root().map_err(|e| format!("create agent data dir: {}", e))?;
-        let out = std::process::Command::new(&cli)
+        let mut discover_cmd = std::process::Command::new(&cli);
+        discover_cmd
             .arg("printers")
             .arg("discover")
             .arg("--json")
             .arg("-config")
             .arg(&config)
-            .env("ODOO_PRINT_AGENT_DATA_DIR", &root)
+            .env("ODOO_PRINT_AGENT_DATA_DIR", &root);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            discover_cmd.creation_flags(0x0800_0000);
+        }
+        let out = discover_cmd
             .output()
             .map_err(|e| format!("failed to run discover: {}", e))?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -308,7 +364,8 @@ pub async fn discover_printers(app: tauri::AppHandle) -> Result<DiscoverResult, 
             let p = root.join("printers.json");
             if p.exists() {
                 let raw = std::fs::read_to_string(&p).unwrap_or_default();
-                serde_json::from_str::<Vec<PrinterInfo>>(&raw).unwrap_or_default()
+                let v: Vec<PrinterInfo> = serde_json::from_str::<Vec<PrinterInfo>>(&raw).unwrap_or_default();
+                v.into_iter().filter(|x| is_valid_printer_for_ui(x)).collect::<Vec<_>>()
             } else {
                 vec![]
             }
@@ -328,13 +385,20 @@ pub async fn test_printer(printer_id: String, app: tauri::AppHandle) -> Result<S
         let cli = agent::cli_path(&app)?;
         let config = paths::agent_config_path();
         let root = paths::agent_data_root();
-        let out = std::process::Command::new(&cli)
+        let mut test_cmd = std::process::Command::new(&cli);
+        test_cmd
             .arg("printers")
             .arg("test")
             .arg(&pid)
             .arg("-config")
             .arg(&config)
-            .env("ODOO_PRINT_AGENT_DATA_DIR", &root)
+            .env("ODOO_PRINT_AGENT_DATA_DIR", &root);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            test_cmd.creation_flags(0x0800_0000);
+        }
+        let out = test_cmd
             .output()
             .map_err(|e| format!("failed to run test: {}", e))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -409,6 +473,11 @@ pub async fn register_printer(request: RegisterPrinterRequest, app: tauri::AppHa
         }
         cmd.arg("-config").arg(&config);
         cmd.env("ODOO_PRINT_AGENT_DATA_DIR", &root);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
         let out = cmd.output().map_err(|e| format!("failed to run register: {}", e))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();

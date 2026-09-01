@@ -1,5 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import appIconRaw from "../../src-tauri/icons/icon.png";
+const appIcon = appIconRaw as unknown as string;
 import { createRoot } from "react-dom/client";
 import {
   LayoutDashboard,
@@ -469,7 +471,8 @@ export default function App() {
     <div className="min-h-screen bg-zinc-50 text-zinc-900 flex">
       <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-zinc-200 flex flex-col ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"} transition-transform`}>
         <div className="h-16 px-5 flex items-center gap-3 border-b border-zinc-200">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#714B67] to-[#8a6a7e] flex items-center justify-center text-white font-black text-sm">O</div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={appIcon} alt="Odoo Print Manager" className="w-8 h-8 rounded-xl object-contain bg-white border border-zinc-200 shadow-sm" />
           <div>
             <div className="font-black text-sm leading-none">Odoo Print</div>
             <div className="text-xs text-zinc-500">Manager • v{version || "1.0.0"}</div>

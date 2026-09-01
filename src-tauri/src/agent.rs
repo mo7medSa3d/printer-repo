@@ -56,7 +56,13 @@ fn resolve_executable(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, Str
 
 #[cfg(windows)]
 fn sc_query() -> Option<String> {
-    let out = Command::new("sc").args(["query", SERVICE_NAME]).output().ok()?;
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = Command::new("sc")
+        .args(["query", SERVICE_NAME])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
@@ -82,8 +88,11 @@ fn is_running(_app: &tauri::AppHandle) -> bool {
 
 #[cfg(windows)]
 fn is_process_running(_app: &tauri::AppHandle) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq OdooPrintAgent.exe", "/FO", "CSV", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
         Ok(o) => String::from_utf8_lossy(&o.stdout).contains("OdooPrintAgent.exe"),
@@ -98,8 +107,11 @@ fn is_process_running(_app: &tauri::AppHandle) -> bool {
 
 #[cfg(windows)]
 fn run_net(action: &str) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = Command::new("net")
         .args([action, SERVICE_NAME])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("failed to execute net {action} {SERVICE_NAME}: {e}"))?;
     if !out.status.success() {
@@ -181,8 +193,11 @@ pub fn stop(app: &tauri::AppHandle) -> Result<(), String> {
         } else {
             #[cfg(windows)]
             {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                 let out = Command::new("taskkill")
                     .args(["/F", "/IM", "OdooPrintAgent.exe"])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .output()
                     .map_err(|e| format!("taskkill failed: {e}"))?;
                 if !out.status.success() {
@@ -225,23 +240,49 @@ pub fn control_service(action: &str, app: &tauri::AppHandle) -> Result<String, S
             let config = paths::agent_config_path();
             let _ = paths::ensure_agent_data_root()
                 .map_err(|e| format!("create agent data dir: {e}"))?;
-            let out = Command::new(&path)
-                .args(["-service", action, "-config"])
-                .arg(&config)
-                .env("ODOO_PRINT_AGENT_DATA_DIR", paths::agent_data_root())
-                .output()
-                .map_err(|e| format!("failed to run {} -service {action}: {e}", path.display()))?;
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if !out.status.success() {
-                let msg = if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
-                return Err(format!(
-                    "service action {action} failed (administrator may be required): {msg}"
-                ));
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                let out = Command::new(&path)
+                    .args(["-service", action, "-config"])
+                    .arg(&config)
+                    .env("ODOO_PRINT_AGENT_DATA_DIR", paths::agent_data_root())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+                    .map_err(|e| format!("failed to run {} -service {action}: {e}", path.display()))?;
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if !out.status.success() {
+                    let msg = if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
+                    return Err(format!(
+                        "service action {action} failed (administrator may be required): {msg}"
+                    ));
+                }
+                let msg = if !stdout.is_empty() { stdout } else { format!("service action {action} completed") };
+                logging::info(&format!("service control {action}: {msg}"));
+                return Ok(msg);
             }
-            let msg = if !stdout.is_empty() { stdout } else { format!("service action {action} completed") };
-            logging::info(&format!("service control {action}: {msg}"));
-            Ok(msg)
+            #[cfg(not(windows))]
+            {
+                let out = Command::new(&path)
+                    .args(["-service", action, "-config"])
+                    .arg(&config)
+                    .env("ODOO_PRINT_AGENT_DATA_DIR", paths::agent_data_root())
+                    .output()
+                    .map_err(|e| format!("failed to run {} -service {action}: {e}", path.display()))?;
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if !out.status.success() {
+                    let msg = if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
+                    return Err(format!(
+                        "service action {action} failed (administrator may be required): {msg}"
+                    ));
+                }
+                let msg = if !stdout.is_empty() { stdout } else { format!("service action {action} completed") };
+                logging::info(&format!("service control {action}: {msg}"));
+                return Ok(msg);
+            }
         }
         _ => Err(format!("invalid service action {:?}", action)),
     }
