@@ -4,7 +4,7 @@
         <field name="name">print_gateway.branch.form</field>
         <field name="model">print_gateway.branch</field>
         <field name="arch" type="xml">
-            <form string="Print Branch">
+            <form string="Print Branch" class="o_pg_view o_pg_form">
                 <header>
                     <button name="action_test_connection" type="object" string="Test Connection" class="oe_highlight"/>
                     <button name="action_sync_from_gateway" type="object" string="Sync From Gateway"/>
@@ -59,7 +59,7 @@
         <field name="name">print_gateway.branch.tree</field>
         <field name="model">print_gateway.branch</field>
         <field name="arch" type="xml">
-            <tree string="Branches" decoration-success="enabled" decoration-muted="not enabled">
+            <tree string="Branches" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="name"/>
                 <field name="gateway_url"/>
                 <field name="enabled" widget="boolean_toggle"/>

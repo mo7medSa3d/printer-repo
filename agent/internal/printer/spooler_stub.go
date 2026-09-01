@@ -19,6 +19,10 @@ import (
 type SpoolerPrinter struct {
 	Name        string
 	SpoolerName string
+	// PDFPrint overrides the PDF submission step. When set, the real PDF
+	// pipeline (validation + secure temp file + submission + cleanup) runs
+	// exactly as it does on Windows.
+	PDFPrint PDFPrintFunc
 }
 
 // NewSpooler creates a SpoolerPrinter for the given spooler name.
@@ -55,6 +59,47 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	}
 	log.Printf("Spooler stub printed %d bytes for %s to %s", len(data), p.SpoolerName, fpath)
 	return nil
+}
+
+// SupportsKind mirrors the Windows spooler backend so routing behaves
+// identically in CI and on a real Windows host.
+func (p *SpoolerPrinter) SupportsKind(kind string) bool {
+	switch NormalizeKind(kind) {
+	case KindRaw, KindESCPOS, KindPDF:
+		return true
+	default:
+		return false
+	}
+}
+
+// PrintDocument runs the real PDF pipeline when a submission function is
+// configured. Without one there is no Windows print subsystem here, so the
+// non-Windows build keeps its documented simulation behaviour: the validated
+// PDF is written out as a .pdf file (never re-labelled as RAW/ESC-POS bytes)
+// and the simulation is logged explicitly.
+func (p *SpoolerPrinter) PrintDocument(ctx context.Context, doc Document) error {
+	switch NormalizeKind(doc.Kind) {
+	case KindPDF:
+		if p.PDFPrint != nil {
+			return PrintPDF(ctx, p.SpoolerName, doc, p.PDFPrint)
+		}
+		if err := ValidatePDF(doc.Data); err != nil {
+			return err
+		}
+		if err := ValidatePDFPrinterName(p.SpoolerName); err != nil {
+			return fmt.Errorf("refusing to print PDF: %w", err)
+		}
+		fpath := filepath.Join(os.TempDir(), fmt.Sprintf("spooler_%s_%d.pdf", sanitizeFilename(p.SpoolerName), time.Now().UnixNano()))
+		if err := os.WriteFile(fpath, doc.Data, 0600); err != nil {
+			return fmt.Errorf("spooler stub PDF write failed: %w", err)
+		}
+		log.Printf("Spooler stub SIMULATED a PDF print of %d bytes for %s to %s (no Windows print subsystem on this OS)", len(doc.Data), p.SpoolerName, fpath)
+		return nil
+	case KindRaw, KindESCPOS:
+		return p.Print(ctx, doc.Data)
+	default:
+		return CapabilityMismatchf("spooler printer %q cannot render %s payloads", p.SpoolerName, NormalizeKind(doc.Kind))
+	}
 }
 
 func (p *SpoolerPrinter) Test(ctx context.Context) error {

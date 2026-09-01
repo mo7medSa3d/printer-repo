@@ -4,7 +4,7 @@
         <field name="name">print_gateway.print_job.form</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <form string="Print Job">
+            <form string="Print Job" class="o_pg_view o_pg_form">
                 <header>
                     <button name="action_sync_status" type="object" string="Sync Status" class="oe_highlight"/>
                 </header>
@@ -46,7 +46,7 @@
         <field name="name">print_gateway.print_job.tree</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <tree string="Print Jobs"
+            <tree string="Print Jobs" class="o_pg_view o_pg_list"
                   decoration-success="status in ('success','completed')"
                   decoration-danger="status in ('failed','expired')"
                   decoration-warning="status=='printing'"

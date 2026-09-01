@@ -1,91 +1,253 @@
-# Printers — Supported, Semantics, Truth
+# Printers — backends, payload semantics, discovery
 
-## Supported
+Source: `agent/internal/printer/*.go`, `src/lib/routing.ts`, `src/lib/payload.ts`.
 
-| Type/Protocol | Status | Transport | Notes |
-|---------------|--------|-----------|-------|
-| Network `raw` | ✅ Implemented | RAW TCP `ip:port` (usually 9100) | `NetworkPrinter.Print` `agent/internal/printer/network.go:13` — DialContext 5s + deadline 15s + short-write loop. |
-| Network `escpos` | ✅ Implemented | Same RAW TCP above | ESC/POS bytes are payload, not transport. `'\x1b\x40'` init, `'\x1d\x56\x01'` cut via `src/lib/payload.ts:18`. |
-| Network `ipp`/`ipps` | ✅ Implemented | HTTP POST `application/ipp` (Print-Job) | `IPPPrinter` `agent/internal/printer/ipp.go:24` — URL normalization (`ipp://`/`http://`, bare `host:port`), `Get-Printer-Attributes`, context deadline. Gateway capability check allows raw/escpos/pdf → IPP. |
-| USB via Spooler | ✅ Implemented | Windows Spooler `winspool.drv` | USB printers installed as Windows printers use spooler path (`NewSpooler`); install USB via Windows → `type spooler` with `spooler_name`. See `PRINTERS.md` USB section. |
-| USB raw | ✅ Implemented (device path) | `CreateFile(\?\usb#...)` + `WriteFile` | `USBPrinter.Print` `usb_windows.go:36` — real write loop; if no Windows device path was discovered it returns an explicit diagnostic error guiding installation as a Windows printer (spooler type). Non-Windows stub writes to `/tmp/printer-usb-*.prn` for CI. |
-| Windows Spooler | ✅ Implemented | `winspool.drv` `spooler_windows.go` / stub `spooler_stub.go` | `SpoolerPrinter.Print` `OpenPrinterW` → `StartDocPrinterW` (RAW) → `WritePrinter` loop → `EndDocPrinter`. Non-Windows stub writes to `/tmp/spooler_*.prn` for CI/test. `Status()` via `OpenPrinterW` probe. |
+Verification labels used below:
+**VERIFIED** = executed in this repository's automated tests ·
+**COMPILE VERIFIED** = builds and vets for the target platform but was never executed ·
+**SIMULATED** = a non-Windows development stand-in ·
+**NOT VERIFIED** = requires hardware nobody has exercised here.
 
-## Identity
+## 1. Payload types
 
-Stable `printer.id` (`printer_...`), not IP. Deterministic derivation (`printer/stable_id.go`):
-  - Spooler: `spooler:<normalized spooler_name>` → hash `printer_spooler_<hex>`
-  - USB: `usb-sn:<serial>` → `usb-loc:<location>` → `usb-vidpid:<vid>:<pid>` → `printer_usb_<hex>`
-  - Network: `net:<ip>:<port>` → `printer_net_<hex>`; fallback `endpoint:<str>` → `printer_ep_<hex>`
-Repeated discovery updates existing record by ID, never creates duplicates (`printer/registry.go: UpsertRegistry`, `discovery.go: seen map`). Discovery is idempotent.
+The job payload is one of three non-interchangeable kinds
+(`agent/internal/printer/document.go`):
 
-USB `Identify()` `usb_windows.go:30`: `SerialNumber` (L1) → `USBLocation` (L2) → `VID:PID` (L3).
+| type | meaning | agent path |
+|---|---|---|
+| `raw` | opaque printer-native byte stream | written verbatim to the transport |
+| `escpos` | ESC/POS command stream (`ESC @` init … `GS V` cut) | written verbatim to the transport (ESC/POS is a payload dialect, not a transport) |
+| `pdf` | a real PDF document | PDF pipeline: validate → secure temp file → PDF-aware submission → wait → delete temp file |
 
-CLI:
-  - `odoo-agent-cli.exe printers list` — enumerate aggregated view (config + spooler + registry)
-  - `odoo-agent-cli.exe printers discover` — enumerate and persist to `printers.json` (beside `config.yaml`), idempotent
-  - `odoo-agent-cli.exe printers test <printer-id>` — real `SpoolerPrinter.Test` / `NetworkPrinter.Test` via same backend as jobs
-  - `odoo-agent-cli.exe printers add --name ... --type spooler --spooler-name "HP LaserJet" [--protocol spooler]` — manual registration when discovery insufficient (supports tcp/usb/spooler/ipp)
-Production flow does NOT depend on `printers: []` in YAML; `printers.json` registry + Gateway DB is canonical (`discovery.go`, `registry.go`).
+**A PDF is never converted into RAW printer bytes, never renamed, and never "assumed
+supported because the printer accepts raw".** Sending PDF bytes to an ESC/POS byte-stream
+printer produces pages of garbage, so it is refused with `CAPABILITY_MISMATCH`.
 
-## Discovery Sources (isolated, never crash agent, additive)
+## 2. Backend / payload matrix
 
-- `discoverFromConfig` (YAML legacy, backward compat) `discovery.go:140`
-- `discoverSpoolerPrinters` (Windows `EnumPrintersW` level 2 with correct `PRINTER_INFO_2W` parsing via `unsafe.Sizeof` `spooler_windows.go:143`, stub on non-Windows `spooler_stub.go`) — extracts `pPrinterName`, `pPortName`, `pDriverName`, `pShareName`, `pLocation`, `pComment`, `Attributes`, `Status` → maps to `DeviceInfo` with `printerType`/`connectionType` classification `classify.go:3` and `mapWindowsStatus` `classify.go:51`
-- `loadRegistryPrinters` (`printers.json` previously discovered/manual) `registry.go:31`
-- `discoverNetworkPrinters` (active LAN TCP 9100 scan) `network_discovery.go:9` — enumerates private IPv4 subnets via `net.Interfaces`, clamps `/16`/`/8` to `/24`, bounded 32 workers, per-host 500ms, global 8s timeout, respects `context` cancellation, logs `found TCP printer` and dedup via `StableIDFromNetwork`
-- `discoverUSBPrinters` (Windows `SetupDiGetClassDevsW` `DIGCF_PRESENT|ALLCLASSES`) `usb_windows.go:34` — enumerates `USB\VID_&PID_`/`USBPRINT` devices, parses VID/PID/serial via `parseVIDPIDSerial`, friendly name via `SPDRP_FRIENDLYNAME`, `SPDRP_MFG`, `SPDRP_LOCATION_INFORMATION`, builds `DeviceInfo` with `usbVid/pid/serial` and `requires_spooler` diagnostic
-- `mDNS` (`_ipp._tcp`, `_printer._tcp`), `SNMP` (`1.3.6.1.2.1.43`), `WSD` currently stub-logged as `not yet implemented` `network_discovery.go:52` — additive, not replacing spooler; discovery is idempotent via `seen` map by stable ID + cross-source dedup by `NetworkAddress:Port` and `USB VID:PID:serial` `discovery.go:37`
+| Backend | Implementation | `raw` | `escpos` | `pdf` | Physical verification |
+|---|---|---|---|---|---|
+| Network RAW TCP (usually :9100) | `network.go` | ✅ | ✅ | ❌ `CAPABILITY_MISMATCH` (a 9100 byte stream has no renderer) | **NOT VERIFIED** (tested against a local mock listener — VERIFIED at socket level) |
+| Windows spooler | `spooler_windows.go` | ✅ RAW datatype (`StartDocPrinterW`) | ✅ RAW datatype | ✅ PDF pipeline (§4) | **COMPILE VERIFIED** only |
+| Windows spooler (non-Windows build) | `spooler_stub.go` | writes `<tmp>/spooler_*.prn` | same | validates the PDF and writes `<tmp>/spooler_*.pdf`, logged as SIMULATED | **SIMULATED** |
+| IPP / IPPS | `ipp.go` | ✅ `application/octet-stream` | ✅ `application/octet-stream` | ✅ `application/pdf` | **NOT VERIFIED** against a real IPP printer (`httptest` coverage only) |
+| USB raw (`CreateFile` + `WriteFile`) | `usb_windows.go` | ✅ | ✅ | ❌ `CAPABILITY_MISMATCH` — install the device as a Windows printer and route to the spooler queue | **COMPILE VERIFIED** only |
+| USB raw (non-Windows build) | `usb_other.go` | simulated file write | same | ❌ | **SIMULATED** |
 
-Merges with `seen` map by stable ID + `NetworkAddress:Port`/`USB` dedup `discovery.go:57`; per-source `recover()` so one failing printer never crashes agent (`discovery.go:64`). Logs `[discovery] starting ...`, `[discovery] found ...`, `[discovery] duplicate merged`, `[discovery] discovery completed` (no secrets).
+Each backend declares what it accepts through `SupportsKind`, and
+`printer.SupportedKinds()` is reported to the gateway in the heartbeat as
+`capabilities.supported_protocols`, so routing can refuse an incompatible job **before** it
+is queued. An explicitly configured `supported_protocols` list is never overwritten.
 
-Manual registration: `printer.RegisterManual` → `UpsertRegistry` → persisted atomically (`registry.go:102`). Supports `id`, `name`, `printerType`, `connectionType`, `endpoint`, `protocol`, `spoolerName`, `usbVid/pid/serial`, `capabilities`, `enabled` (`cli/main.go:240`, `helpers.go:84`). On Windows, manual `spooler` requires `spooler_name`/`endpoint`; for USB via spooler, set `type spooler` + spooler name. `tcp` alias `network` is canonicalized (`config.go: NormalizedType`). `ipp`/`ipps` creates a real `IPPPrinter` (`factory.go`). Network `192.168.1.10:9100` YAML continues working.
+## 3. Capability enforcement (two layers)
 
-## Manual Registration Examples
+**Gateway** (`validatePayloadForPrinter` in `src/lib/routing.ts`):
+
+* if the printer declares `capabilities.supported_protocols`, that list is authoritative;
+  `raw`/`escpos` may additionally travel over any byte-stream transport (spooler), but
+  **`pdf` is never inferred from `raw` support**;
+* without a declared list the transport decides: `pdf` requires a spooler or IPP/IPPS
+  printer and is refused for raw-TCP/USB devices; `raw`/`escpos` are accepted by raw,
+  escpos, spooler and IPP transports.
+
+A mismatch is `CAPABILITY_MISMATCH` → HTTP **422** at job creation, and the routing layer
+tries the next binding by priority before giving up.
+
+**Agent** (`processJob` in `agent/internal/agent/agent.go`): re-checks `SupportsKind`
+before anything is written anywhere and fails the job with
+`CAPABILITY_MISMATCH: printer <id> cannot print <kind> payloads`, which the gateway stores
+in `job.error` with `job.status = failed`.
+
+## 4. Windows PDF printing (real, not RAW passthrough)
+
+`agent/internal/printer/pdf.go` + `pdf_windows.go`:
+
+1. **Validate** — must actually be a PDF: `%PDF-` inside the first 64 bytes, `%%EOF` inside
+   the last 4 KiB, non-empty, ≤ 5 MiB (the shared payload limit is preserved).
+2. **Materialise securely** — `os.MkdirTemp` (0700 directory) + `os.CreateTemp` (0600 file).
+   Both names come from the OS random-name APIs; nothing from the job id, printer name or
+   payload metadata influences the path.
+3. **Submit through a PDF-aware mechanism**
+   * configured helper (any OS, first choice when set): `agent.pdf_print_command`, e.g.
+     `["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]`.
+     `{printer}` and `{file}` are substituted as **whole argv elements** and executed with
+     `exec.CommandContext` — no shell, no string concatenation;
+   * Windows default: `ShellExecuteExW` with the `printto` verb, i.e. the registered PDF
+     handler renders the document through the printer's Windows driver;
+   * any other OS without a helper: an explicit "not supported" error. **Never a RAW
+     fallback.**
+4. **Wait for the outcome** — `SEE_MASK_NOCLOSEPROCESS` + `WaitForSingleObject` +
+   `GetExitCodeProcess` (or `cmd.Run()` for the helper), 120 s default timeout. A non-zero
+   exit, a timeout, or a missing handler is a real error reported to the gateway.
+5. **Clean up** — the temp directory is removed on every exit path (success, failure, panic).
+
+Printer names are validated before use (`ValidatePDFPrinterName`): no control characters, no
+quote characters, ≤ 220 bytes. A rejected name fails the job instead of being silently
+"sanitised" into a different printer.
+
+Status: the pipeline's validation, temp-file lifecycle, argument construction and error
+propagation are **VERIFIED** by `agent/internal/printer/pdf_test.go`; the Windows
+`ShellExecuteExW` submission itself is **COMPILE VERIFIED** (`GOOS=windows go build/vet`)
+and **NOT VERIFIED** on hardware — see [WINDOWS_PHYSICAL_E2E.md](WINDOWS_PHYSICAL_E2E.md).
+
+## 5. Backend reference (one section per implemented backend)
+
+Each backend implements `Printer` (`Print`, `Test`, `Status`) and, where it matters,
+`SupportsKind` / `PrintDocument` from `agent/internal/printer/document.go`. The factory that
+maps configuration to a backend is `agent/internal/printer/factory.go`.
+
+### 5.1 Network RAW TCP — `NetworkPrinter` (`network.go`)
+
+| Aspect | Detail |
+|---|---|
+| Protocol | Raw byte stream over TCP, normally port 9100 (JetDirect/AppSocket). No document model, no acknowledgement |
+| Document kinds | `raw` ✅ · `escpos` ✅ · `pdf` ❌ → `CAPABILITY_MISMATCH` |
+| Configuration | `type: network` (alias `tcp`), `endpoint: <ip>:<port>`, `protocol: raw` or `escpos` |
+| Capability reporting | Heartbeat reports `supported_protocols: [raw, escpos]` unless the operator pinned a list |
+| Error handling | `DialContext` with a 5 s dial timeout, deadline from the job context (else 15 s), short-write loop, refuses empty and > 5 MiB payloads. Dial/write errors are returned verbatim to the gateway |
+| Status probe | 2 s TCP dial → `online` / `offline` (a successful handshake, not paper) |
+| Platform limits | None — identical on Windows/Linux/macOS |
+| Discovery | Active TCP 9100 scan of private IPv4 subnets (`network_discovery.go`) |
+| Physical verification | **NOT VERIFIED** on a real device. Byte-for-byte transmission is **VERIFIED** against a local mock listener (`network_test.go`, `pdf_test.go`, `internal/integration/mock_e2e_test.go`) |
+
+### 5.2 Windows print spooler — `SpoolerPrinter` (`spooler_windows.go`)
+
+| Aspect | Detail |
+|---|---|
+| Protocol | Win32 spooler API: `OpenPrinterW` → `StartDocPrinterW` (DOC_INFO_1, datatype `RAW`) → `StartPagePrinter` → `WritePrinter` loop → `EndPagePrinter` → `EndDocPrinter`. PDF jobs take the PDF pipeline instead (§4) |
+| Document kinds | `raw` ✅ · `escpos` ✅ · `pdf` ✅ (through the PDF pipeline, never the RAW datatype) |
+| Configuration | `type: spooler` plus `spooler_name` (falls back to `endpoint`). A USB printer installed as a Windows printer is configured this way |
+| Capability reporting | `supported_protocols: [raw, escpos, pdf]` |
+| Error handling | Every Win32 call is checked and the last error is wrapped into the job error (`OpenPrinterW`, `StartDocPrinterW`, `StartPagePrinter`, `WritePrinter`, 0-byte writes). `EndDocPrinter`/`EndPagePrinter` run through `defer` even after a failure. Context cancellation is honoured between chunks |
+| Status probe | `OpenPrinterW` → `online`, failure → `offline` |
+| Platform limits | Windows only. The `!windows` build is a simulation (§5.3) |
+| Discovery | `EnumPrintersW` level 2 with correct `PRINTER_INFO_2W` parsing; non-printer PnP entries are filtered out (`isValidSpoolerPrinter`), status/attributes mapped by `classify.go` |
+| Physical verification | **COMPILE VERIFIED** only (`GOOS=windows go build/vet`). No paper has been produced in CI |
+
+### 5.3 Spooler stub for non-Windows builds (`spooler_stub.go`)
+
+| Aspect | Detail |
+|---|---|
+| Purpose | Lets the full agent pipeline run in CI and on developer machines without a Windows spooler |
+| Behaviour | `raw`/`escpos` are written to `<tmp>/spooler_<name>_<ts>.prn`; `pdf` is **validated first** and written to `<tmp>/spooler_<name>_<ts>.pdf`, and the log line says the print was SIMULATED |
+| Document kinds | Same matrix as the real spooler, so routing behaves identically in CI |
+| Status probe | Always `online` (documented simulation, not a probe) |
+| Physical verification | **SIMULATED** — never counts as evidence of printing |
+
+### 5.4 IPP / IPPS — `IPPPrinter` (`ipp.go`)
+
+| Aspect | Detail |
+|---|---|
+| Protocol | IPP 2.0 `Print-Job` (0x0002) over HTTP POST `application/ipp`, with `attributes-charset`, `attributes-natural-language`, `printer-uri`, `requesting-user-name`, `document-format`, `job-name` |
+| Document kinds | `raw` ✅ and `escpos` ✅ as `application/octet-stream` · `pdf` ✅ as `application/pdf` (the PDF bytes are validated before they are sent) |
+| Configuration | `type: ipp` or `ipps` (also `type: network` with `protocol: ipp`), `endpoint:` an `ipp://`, `ipps://`, `http://` URL or a bare `host:port` — normalised by `normalizeIPPURL` |
+| Capability reporting | `supported_protocols: [raw, escpos, pdf]` |
+| Error handling | Non-2xx HTTP and any IPP status other than `0x0000` become job errors with the decoded IPP status text; 15 s client timeout, shortened to the job deadline when smaller |
+| Status probe | `Get-Printer-Attributes` (5 s): `printer-state` 3/4/5 → `online`/`busy`/`offline`; `printer-state-reasons` containing `offline`/`shutdown` → `offline`, `media-needed`/`toner-empty` → `error`; unreachable → `offline` |
+| Platform limits | None |
+| Discovery | TCP 631 scan (`ipp_discovery.go`); the mDNS helper is a stub that returns nothing |
+| Physical verification | **NOT VERIFIED** against a real IPP printer. Request construction and status parsing are **VERIFIED** with `httptest` (`ipp_test.go`) |
+
+### 5.5 Direct USB — `USBPrinter` (`usb_windows.go`)
+
+| Aspect | Detail |
+|---|---|
+| Protocol | `CreateFile` on the discovered `\\?\usb#…` device interface path + `WriteFile` loop |
+| Document kinds | `raw` ✅ · `escpos` ✅ · `pdf` ❌ → `CAPABILITY_MISMATCH` (there is no renderer; install the device as a Windows printer and route to the spooler queue) |
+| Configuration | `type: usb` with `usb_vid`/`usb_pid`/`usb_serial`, and `endpoint` as the device path. When `spooler_name` (or a non-network `endpoint`) is present the factory builds a **spooler** backend instead — that is the recommended setup |
+| Capability reporting | `supported_protocols: [raw, escpos]` |
+| Error handling | Without a device path the job fails with an explicit diagnostic telling the administrator to install the printer as a Windows printer and use `type: spooler`; `CreateFile`/`WriteFile` errors are wrapped with the device identity |
+| Identity | `Identify()` prefers serial → USB location → `VID:PID` |
+| Platform limits | Windows only. On other platforms the backend writes to a `/tmp` or `/var` path when one was configured (**SIMULATED**) and otherwise returns an explicit "only available on Windows" error; `Status()` is `unknown` |
+| Discovery | `SetupDiGetClassDevsW` (`DIGCF_PRESENT|ALLCLASSES`) with VID/PID/serial parsing and a device-interface path map; not available on non-Windows |
+| Physical verification | **COMPILE VERIFIED** only |
+
+### 5.6 ESC/POS
+
+ESC/POS is **not a backend** — it is a payload dialect (`ESC @` initialise … `GS V` cut) carried
+by whichever byte-stream transport the printer uses: RAW TCP, the Windows spooler in RAW mode,
+direct USB, or IPP as `application/octet-stream`. The agent never generates or rewrites ESC/POS
+for a job; the only ESC/POS the gateway produces itself is the test-print payload
+(`buildTestPrintPayload` in `src/lib/payload.ts`).
+
+## 6. Printer identity
+
+Stable ids are derived deterministically (`stable_id.go`), never from the current IP alone:
+
+* spooler: `spooler:<normalised name>` → `printer_spooler_<hex>`
+* USB: `usb-sn:<serial>` → `usb-loc:<location>` → `usb-vidpid:<vid>:<pid>` → `printer_usb_<hex>`
+* network/IPP: `net:<host>:<port>` (URLs parsed) → `printer_net_<hex>`; fallback
+  `endpoint:<string>` → `printer_ep_<hex>`
+
+Repeated discovery updates the existing record (`registry.go: UpsertRegistry`, `seen` map in
+`discovery.go`) — discovery is idempotent. The heartbeat upsert is scoped to the reporting
+agent, so one agent can never overwrite another agent's printer row.
+
+## 7. Discovery sources
+
+| Source | Status |
+|---|---|
+| `discoverFromConfig` — printers listed in `config.yaml` | implemented (legacy, still supported) |
+| `discoverSpoolerPrinters` — `EnumPrintersW` level 2, correct `PRINTER_INFO_2W` parsing, non-printer PnP entries filtered out | implemented (Windows); **COMPILE VERIFIED** |
+| `loadRegistryPrinters` — `printers.json` next to `config.yaml` | implemented, atomic writes |
+| `discoverNetworkPrinters` — active TCP 9100 scan of private IPv4 subnets, `/16`+ clamped to `/24`, 32 workers, 500 ms per host, 8 s global budget | implemented |
+| `discoverUSBPrinters` — `SetupDiGetClassDevsW`, VID/PID/serial parsing, device-interface path map | implemented (Windows); **COMPILE VERIFIED** |
+| `discoverIPPPrinters` — TCP 631 scan (+ best-effort name lookup) | implemented |
+| mDNS (`_ipp._tcp`, `_printer._tcp`), SNMP (`1.3.6.1.2.1.43`), WSD | **NOT IMPLEMENTED** — they only log "not yet implemented" and return nothing (`network_discovery.go`, `ipp_discovery.go`) |
+
+`DiscoverQuick` (config + spooler + registry) runs synchronously at startup so the agent is
+usable immediately; the full scan (network + USB + IPP) runs asynchronously ~2 s later.
+Every source is isolated with `recover()`, so one failing source can never crash the agent,
+and results are de-duplicated by stable id, `address:port` and `VID:PID:serial`.
+
+## 8. Manual registration
 
 ```powershell
 # Network RAW 9100 (thermal ESC/POS)
 odoo-agent-cli.exe printers add --name "Kitchen 9100" --type network --endpoint 192.168.1.50:9100 --protocol escpos --printer-type thermal
 
-# Windows spooler (local or network share, USB installed as Windows printer)
+# Windows spooler queue (local, shared, or a USB printer installed as a Windows printer)
 odoo-agent-cli.exe printers add --name "Office Laser" --type spooler --spooler-name "HP LaserJet M402" --printer-type laser
 
-# USB with VID/PID (discovered but requires spooler queue for printing)
+# USB with VID/PID (still needs a spooler queue for PDF work)
 odoo-agent-cli.exe printers add --name "Zebra Label" --type usb --vid 0A5F --pid 014E --serial 123456 --printer-type label --spooler-name "Zebra GK420d"
 
-# IPP (real IPP client; requires a running IPP server on the endpoint)
+# IPP
 odoo-agent-cli.exe printers add --name "Office IPP" --type ipp --endpoint ipp://192.168.1.60/ipp/print --protocol ipp
-# → factory.New creates IPPPrinter; Print POSTs application/ipp Print-Job to the endpoint
 ```
 
-Registry `printers.json` beside `config.yaml` is canonical; `printers: []` YAML may be empty. `config.yaml` example with `server.url`, `agent.id/secret`, empty `printers: []` continues to parse and Agent stays alive with `INFO: no printers configured` (`agent.go:160`).
+Other CLI verbs: `printers list`, `printers discover`, `printers test <id>`,
+`printers remove <id>`, plus `-config <path>` and `--json`.
+`printers.json` is canonical; `printers: []` in `config.yaml` is fine.
 
-## Firewall / Windows Permissions
+## 9. Diagnostics
 
-- Agent requires outbound `HTTPS/WSS` to Gateway (no inbound ports).
-- Network discovery probes `TCP 9100` outbound on private subnets; Windows Firewall may block 9100 outbound — allow.
-- mDNS uses UDP 5353 multicast 224.0.0.251 (currently stub, future).
-- SNMP uses UDP 161 (stub).
-- WSD uses WS-Discovery multicast (stub).
-- Spooler enumeration requires no elevation; reading `printers.json`/`config.yaml` under `%PROGRAMDATA%\OdooPrintAgent` requires ACL `SYSTEM:F, Administrators:F` (installer creates). Running CLI non-elevated falls back to `%LOCALAPPDATA%`.
-- `SetupDi` USB enumeration requires no elevation for present devices; reading device instance IDs is allowed for standard users.
+* `POST /api/printers/:id/test-connection` — **no job is created**. Returns the cached
+  heartbeat reachability (`latencyMs` is always `null`; the gateway cannot dial the LAN and
+  a live agent probe is not implemented).
+* `POST /api/printers/:id/test-print` — **a real job** through the normal pipeline
+  (`queued → claimed → delivery → printing → success|failed`), using an ESC/POS test payload.
 
-## Diagnostics (split)
+## 10. Success semantics (honest)
 
-- `POST /api/printers/:id/test-connection` — **RPC, no job** `test-connection/route.ts`. Returns `{reachable,status,agentOnline}` = last heartbeat `printer.status` + agent freshness. Gateway does NOT dial LAN.
-- `POST /api/printers/:id/test-print` — **real job** `queued→claimed→printing→success/failed` (Gateway PG) and local `queued→printing→success/failed` (Agent WAL). `success` = socket write OK (`Print` loop completed), **NOT** `paper physically out`. Dashboard shows helper text.
+* RAW TCP success = the kernel accepted the bytes on the socket. POS printers rarely
+  acknowledge paper.
+* Spooler success = `WritePrinter`/`EndDocPrinter` returned success, i.e. the job was
+  accepted by the Windows spooler.
+* PDF success = the PDF handler exited 0 after being handed the document for that printer.
+* IPP success = the printer answered IPP status `0x0000`.
 
-## Success Semantics (honest)
+None of these prove that a physical page came out. Bidirectional paper-level status is not
+implemented.
 
-`NetworkPrinter.Print` success means kernel accepted bytes on TCP; POS printers rarely ack paper. Do not claim paper-out without bidirectional status polling (not implemented). Retry on dial/write error only; `failed` after `retries>=5` and stale 90s reclaim.
+## 11. Limits and known behaviour
 
-## Limits
-
-- Payload 5 MiB `agent/internal/payload/payload.go:31` + `src/lib/payload.ts:6` (base64 pre-check).
-- `NetworkPrinter.Print` refuses empty and >5 MiB; rejects non-`ip:port` at `ValidatePrinterConfig` `config.go:138`.
-- Per-printer `sync.Mutex` `agent.go:341` — same printer serial, different printers concurrent (`agent_test.go`).
-
-## Error Handling
-
-- Dial 5s, total deadline 15s or context deadline, write loop handles short writes.
-- Agent crash window: `queued→printing` in SQLite but crash before `PATCH success` → Gateway reclaim after 90s may cause duplicate physical print if printer already received bytes — documented as at-least-once over socket during crash window, not exactly-once.
+* Payload: 1 B … 5 MiB decoded, enforced on both sides (`payload.go`, `payload.ts`).
+* One `sync.Mutex` per printer: jobs for the same printer are serialised, different
+  printers run concurrently (max 8 executing, 64 accepted — `agent.go`).
+* Physical print timeout: 20 s context per job (PDF submission has its own 120 s bound).
+* Crash window: a job that was printing when the agent stopped has an unknown physical
+  outcome. The agent now reports it explicitly (`AGENT_RESTART_DURING_PRINT`) and
+  `agent.reprint_after_crash` decides whether it may be printed again. This is
+  **at-least-once** delivery made visible — not exactly-once printing. See
+  [docs/JOB_LIFECYCLE.md](docs/JOB_LIFECYCLE.md) §9.

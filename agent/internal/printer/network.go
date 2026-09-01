@@ -57,6 +57,28 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	return nil
 }
 
+// SupportsKind: a RAW TCP socket (port 9100) carries an opaque byte stream.
+// It has no renderer, so a PDF must never be written to it.
+func (p *NetworkPrinter) SupportsKind(kind string) bool {
+	switch NormalizeKind(kind) {
+	case KindRaw, KindESCPOS:
+		return true
+	default:
+		return false
+	}
+}
+
+// PrintDocument enforces the byte-stream contract: raw/escpos are written as
+// bytes, anything else (pdf) is refused with CAPABILITY_MISMATCH instead of
+// being sent as unrenderable data.
+func (p *NetworkPrinter) PrintDocument(ctx context.Context, doc Document) error {
+	kind := NormalizeKind(doc.Kind)
+	if !p.SupportsKind(kind) {
+		return CapabilityMismatchf("raw TCP printer %s cannot render %s payloads (no renderer on a 9100 byte stream)", p.Address, kind)
+	}
+	return p.Print(ctx, doc.Data)
+}
+
 func (p *NetworkPrinter) Test(ctx context.Context) error {
 	// Simple ESC/POS test print — uses same transport as real jobs
 	testData := []byte("\x1b\x40Hello from Odoo Agent!\n\n\x1d\x56\x01")

@@ -531,3 +531,23 @@ func parseVIDPIDSerial(instanceID string) (vid uint16, pid uint16, serial string
 	}
 	return
 }
+
+// SupportsKind: a raw USB endpoint is a byte stream with no renderer, exactly
+// like RAW TCP — PDF documents must not be written to it.
+func (p *USBPrinter) SupportsKind(kind string) bool {
+	switch NormalizeKind(kind) {
+	case KindRaw, KindESCPOS:
+		return true
+	default:
+		return false
+	}
+}
+
+// PrintDocument refuses non byte-stream documents instead of writing
+// unrenderable bytes to the device.
+func (p *USBPrinter) PrintDocument(ctx context.Context, doc Document) error {
+	if !p.SupportsKind(doc.Kind) {
+		return CapabilityMismatchf("USB printer %s cannot render %s payloads; install it as a Windows printer and route the job to the spooler queue", p.Name, NormalizeKind(doc.Kind))
+	}
+	return p.Print(ctx, doc.Data)
+}

@@ -1,4 +1,11 @@
-# Print Gateway Security Audit & Hardening Report
+# Print Gateway Security Audit & Hardening Report (Odoo add-on)
+
+> **Historical record.** This is the point-in-time audit of the Odoo add-on's access rules
+> and record rules. The current, whole-system security model — including the gateway,
+> the agent, PDF/temp-file handling and command-execution safety — is documented in
+> [../../docs/SECURITY.md](../../docs/SECURITY.md). Where the two differ, docs/SECURITY.md
+> and the source code are authoritative.
+
 
 **Status**: IMPLEMENTATION COMPLETE  
 **Date**: 2025-01-15  
@@ -214,7 +221,7 @@ Added security.xml to manifest data list:
 
 ## Regression Test Suite
 
-**File**: `tests/test_security_regressions.py` (NEW)
+**File**: `odoo_addons/print_gateway/tests/test_security_regressions.py` (NEW)
 
 8 test classes with 20+ test methods validating all fixes:
 
@@ -392,4 +399,6 @@ All 4 layers must fail for a breach to succeed (very unlikely).
 
 **End of Security Audit Report**
 
-For PostgreSQL Gateway security audit, please see separate POSTGRES_SECURITY_AUDIT.md (to follow after Odoo phase complete).
+The gateway-side security model (authentication domains, branch isolation, input
+validation, command/temp-file safety, replay protection and known limitations) is
+documented in [../../docs/SECURITY.md](../../docs/SECURITY.md).

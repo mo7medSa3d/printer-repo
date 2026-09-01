@@ -4,7 +4,7 @@ import { printJobs, printers } from "@/db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
 import { validatePrintJobPayload } from "@/lib/payload";
 import { resolvePrinterForJob, validatePayloadForPrinter } from "@/lib/routing";
-import { pushJobToAgentWithClaim } from "@/server/ws";
+import { claimAndPushJobToAgent } from "@/server/ws";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -55,7 +55,7 @@ async function createQueuedJob({
   documentType?: string | null;
   requestedBy?: string | null;
   idempotencyKey?: string | null;
-}) {
+}): Promise<"queued" | "claimed"> {
   try {
     const effectiveBranchId = branchId ?? (printer as any).branchId ?? "default";
     await db.insert(printJobs).values({
@@ -90,13 +90,23 @@ async function createQueuedJob({
     throw e;
   }
 
+  // Claim-before-delivery: the job is only handed to the agent after the
+  // gateway has atomically taken ownership of it (queued -> claimed). A
+  // disconnected agent, a lost socket or a concurrent claim all leave the row
+  // durable and recoverable through the poll path — never delivered-but-queued.
   try {
-    await pushJobToAgentWithClaim({ id: jobId, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt });
+    const outcome = await claimAndPushJobToAgent({ id: jobId, agentId: printer.agentId });
+    if (outcome === "delivered") return "claimed";
+    if (outcome === "failed") {
+      console.warn(`[print/jobs] job ${jobId} could not be delivered over WS and exhausted its delivery budget`);
+    }
+    return "queued";
   } catch (e) {
     // Best-effort push: the job row is durable and the agent's poll path
     // (GET /api/agent/jobs) will claim it. Log instead of swallowing so a
     // persistent push failure is visible in gateway logs.
     console.warn(`[print/jobs] WS push failed for job ${jobId}:`, e);
+    return "queued";
   }
 }
 
@@ -178,8 +188,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `${code}: ${msg}`, code }, { status: httpStatus });
     }
 
+    let effectiveStatus: "queued" | "claimed" = "queued";
     try {
-      await createQueuedJob({
+      effectiveStatus = await createQueuedJob({
         jobId,
         printer: resolved.printer,
         validatedPayload,
@@ -219,7 +230,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       jobId,
-      status: "queued",
+      // Real DB status: a WS-connected agent already owns the job (claimed)
+      // because the gateway claims BEFORE it delivers. Never report a status
+      // the row does not actually have.
+      status: effectiveStatus,
       printerId: resolved.printer.id,
       agentId: resolved.printer.agentId,
       branchId: parsed.branchId,
@@ -291,8 +305,9 @@ export async function POST(req: Request) {
       jobId = `job_${nanoid(12)}`;
     }
 
+    let legacyStatus: "queued" | "claimed" = "queued";
     try {
-      await createQueuedJob({
+      legacyStatus = await createQueuedJob({
         jobId,
         printer,
         validatedPayload,
@@ -316,7 +331,7 @@ export async function POST(req: Request) {
       throw e;
     }
 
-    return NextResponse.json({ jobId, status: "queued", printerId: printer.id, agentId: printer.agentId }, { status: 201 });
+    return NextResponse.json({ jobId, status: legacyStatus, printerId: printer.id, agentId: printer.agentId }, { status: 201 });
   }
 
   return NextResponse.json({ error: "Invalid body. Expected either legacy printerId or branch/destination/documentType request" }, { status: 400 });

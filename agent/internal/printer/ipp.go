@@ -89,7 +89,58 @@ func (p *IPPPrinter) Print(ctx context.Context, data []byte) error {
 	default:
 	}
 
-	ippReq := buildIPPPrintJob(p.URL, data)
+	return p.printDocument(ctx, data, ippFormatOctetStream)
+}
+
+// PrintDocument sends the document with the IPP document-format that matches
+// the payload kind: application/pdf for PDF (so the printer renders it) and
+// application/octet-stream for raw/ESC-POS byte streams.
+func (p *IPPPrinter) PrintDocument(ctx context.Context, doc Document) error {
+	kind := NormalizeKind(doc.Kind)
+	format, ok := ippDocumentFormatFor(kind)
+	if !ok {
+		return CapabilityMismatchf("IPP printer %s cannot render %s payloads", p.URL, kind)
+	}
+	if kind == KindPDF {
+		if err := ValidatePDF(doc.Data); err != nil {
+			return err
+		}
+	}
+	if len(doc.Data) == 0 {
+		return fmt.Errorf("refusing to print empty payload")
+	}
+	if len(doc.Data) > maxPrintBytes {
+		return fmt.Errorf("payload %d exceeds %d limit", len(doc.Data), maxPrintBytes)
+	}
+	return p.printDocument(ctx, doc.Data, format)
+}
+
+// SupportsKind: IPP carries a typed document, so raw/escpos byte streams and
+// real PDF documents are all valid.
+func (p *IPPPrinter) SupportsKind(kind string) bool {
+	_, ok := ippDocumentFormatFor(NormalizeKind(kind))
+	return ok
+}
+
+func ippDocumentFormatFor(kind string) (string, bool) {
+	switch kind {
+	case KindPDF:
+		return ippFormatPDF, true
+	case KindRaw, KindESCPOS:
+		return ippFormatOctetStream, true
+	default:
+		return "", false
+	}
+}
+
+func (p *IPPPrinter) printDocument(ctx context.Context, data []byte, documentFormat string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	ippReq := buildIPPPrintJobWithFormat(p.URL, data, documentFormat)
 	req, err := http.NewRequestWithContext(ctx, "POST", p.URL, bytes.NewReader(ippReq))
 	if err != nil {
 		return fmt.Errorf("IPP create request for %s: %w", p.URL, err)
@@ -196,7 +247,16 @@ func (p *IPPPrinter) getPrinterAttributes(ctx context.Context) (map[string]strin
 
 // IPP encoding helpers
 
+const (
+	ippFormatOctetStream = "application/octet-stream"
+	ippFormatPDF         = "application/pdf"
+)
+
 func buildIPPPrintJob(printerURI string, document []byte) []byte {
+	return buildIPPPrintJobWithFormat(printerURI, document, ippFormatOctetStream)
+}
+
+func buildIPPPrintJobWithFormat(printerURI string, document []byte, documentFormat string) []byte {
 	var buf bytes.Buffer
 	// Version 2.0
 	buf.Write([]byte{0x02, 0x00})
@@ -210,7 +270,7 @@ func buildIPPPrintJob(printerURI string, document []byte) []byte {
 	writeIPPAttribute(&buf, 0x48, "attributes-natural-language", "en")
 	writeIPPAttribute(&buf, 0x45, "printer-uri", printerURI)
 	writeIPPAttribute(&buf, 0x42, "requesting-user-name", "odoo-agent")
-	writeIPPAttribute(&buf, 0x49, "document-format", "application/octet-stream")
+	writeIPPAttribute(&buf, 0x49, "document-format", documentFormat)
 	writeIPPAttribute(&buf, 0x42, "job-name", "Odoo Print Job")
 	// End of attributes
 	buf.WriteByte(0x03)

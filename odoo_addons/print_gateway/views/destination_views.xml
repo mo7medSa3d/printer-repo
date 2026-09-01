@@ -4,7 +4,7 @@
         <field name="name">print_gateway.destination.form</field>
         <field name="model">print_gateway.destination</field>
         <field name="arch" type="xml">
-            <form string="Destination">
+            <form string="Destination" class="o_pg_view o_pg_form">
                 <sheet>
                     <group string="Identity">
                         <field name="name" placeholder="e.g., POS Receipt"/>
@@ -30,7 +30,7 @@
         <field name="name">print_gateway.destination.tree</field>
         <field name="model">print_gateway.destination</field>
         <field name="arch" type="xml">
-            <tree string="Destinations" decoration-success="enabled" decoration-muted="not enabled">
+            <tree string="Destinations" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="destination_type"/>

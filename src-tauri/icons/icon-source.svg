@@ -1,122 +1,59 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<!--
+  Print Gateway — product mark
+  Calm, premium, enterprise. Brand blue tile (#2563EB → #1D4ED8, an
+  intentionally near-flat gradient), white device geometry, cool-neutral
+  paper. No neon, no glow, no multi-hue accents.
+-->
 <defs>
-  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-    <stop offset="0%" stop-color="#0F172A"/>
-    <stop offset="35%" stop-color="#1E1B4B"/>
-    <stop offset="70%" stop-color="#4F46E5"/>
-    <stop offset="100%" stop-color="#06B6D4"/>
+  <linearGradient id="tile" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#2563EB"/>
+    <stop offset="100%" stop-color="#1D4ED8"/>
   </linearGradient>
-  <linearGradient id="badgeBg" x1="0%" y1="0%" x2="100%" y2="100%">
-    <stop offset="0%" stop-color="#06B6D4"/>
-    <stop offset="50%" stop-color="#3B82F6"/>
-    <stop offset="100%" stop-color="#7C3AED"/>
+  <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.14"/>
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
   </linearGradient>
-  <linearGradient id="paperGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-    <stop offset="0%" stop-color="#FFFFFF"/>
-    <stop offset="100%" stop-color="#F8FAFC"/>
-  </linearGradient>
-  <linearGradient id="highlight" x1="0%" y1="0%" x2="0%" y2="100%">
-    <stop offset="0%" stop-color="white" stop-opacity="0.25"/>
-    <stop offset="40%" stop-color="white" stop-opacity="0"/>
-  </linearGradient>
-  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-    <feDropShadow dx="0" dy="28" stdDeviation="36" flood-color="#000000" flood-opacity="0.45"/>
-  </filter>
-  <filter id="badgeShadow" x="-20%" y="-20%" width="140%" height="140%">
-    <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#000000" flood-opacity="0.35"/>
-  </filter>
 </defs>
 
-<!-- Background squircle -->
-<rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+<!-- Brand tile -->
+<rect width="1024" height="1024" rx="232" fill="url(#tile)"/>
+<rect width="1024" height="620" rx="232" fill="url(#sheen)"/>
 
-<!-- Subtle geometric pattern for depth -->
-<g opacity="0.07">
-  <circle cx="180" cy="180" r="140" fill="white"/>
-  <circle cx="860" cy="200" r="90" fill="white"/>
-  <circle cx="750" cy="850" r="160" fill="white" opacity="0.5"/>
+<!-- Quiet geometric depth: two very low-opacity rings -->
+<g fill="none" stroke="#FFFFFF" stroke-opacity="0.10">
+  <circle cx="836" cy="196" r="150" stroke-width="26"/>
+  <circle cx="188" cy="880" r="118" stroke-width="20"/>
 </g>
 
-<!-- Highlight glass top -->
-<rect width="1024" height="520" rx="220" fill="url(#highlight)"/>
+<!-- Document entering the device -->
+<rect x="336" y="236" width="352" height="248" rx="24" fill="#FFFFFF"/>
+<rect x="384" y="296" width="256" height="18" rx="9" fill="#93C5FD"/>
+<rect x="384" y="340" width="256" height="18" rx="9" fill="#DBEAFE"/>
+<rect x="384" y="384" width="176" height="18" rx="9" fill="#DBEAFE"/>
 
-<!-- Printer group with shadow -->
-<g filter="url(#shadow)">
-  <!-- Printer main body - strong white block -->
-  <rect x="204" y="452" width="616" height="352" rx="48" fill="white"/>
-  <!-- Bottom depth line -->
-  <rect x="204" y="764" width="616" height="18" rx="9" fill="#E2E8F0"/>
-  
-  <!-- Top dark slot where paper emerges -->
-  <rect x="254" y="410" width="516" height="86" rx="18" fill="#0F172A"/>
-  <rect x="270" y="426" width="484" height="14" rx="7" fill="#1E293B"/>
-  
-  <!-- Paper emerging from top - premium white with rounded -->
-  <rect x="308" y="262" width="408" height="256" rx="22" fill="url(#paperGrad)" stroke="white" stroke-width="4"/>
-  <!-- Paper subtle interior shadow -->
-  <rect x="320" y="476" width="384" height="24" rx="6" fill="#0F172A" opacity="0.08"/>
-  <!-- Paper content lines - modern colorful -->
-  <rect x="348" y="308" width="328" height="14" rx="7" fill="#06B6D4"/>
-  <rect x="348" y="340" width="328" height="14" rx="7" fill="#06B6D4" opacity="0.75"/>
-  <rect x="348" y="372" width="240" height="14" rx="7" fill="#7C3AED" opacity="0.85"/>
-  <rect x="348" y="404" width="288" height="14" rx="7" fill="#CBD5E1"/>
-  <rect x="348" y="436" width="200" height="14" rx="7" fill="#E2E8F0"/>
-  
-  <!-- Printer front panel - dark premium -->
-  <rect x="254" y="500" width="516" height="128" rx="24" fill="#0F172A"/>
-  <!-- Inner panel highlight -->
-  <rect x="254" y="500" width="516" height="4" rx="2" fill="white" opacity="0.08"/>
-  
-  <!-- Small display screen - cyan active -->
-  <rect x="294" y="532" width="192" height="64" rx="14" fill="#0F172A" stroke="#334155" stroke-width="2"/>
-  <rect x="304" y="544" width="172" height="40" rx="8" fill="#06B6D4"/>
-  <!-- Screen UI mock -->
-  <rect x="316" y="556" width="42" height="8" rx="4" fill="white"/>
-  <rect x="366" y="556" width="68" height="8" rx="4" fill="white" opacity="0.7"/>
-  <rect x="316" y="572" width="98" height="6" rx="3" fill="white" opacity="0.55"/>
-  
-  <!-- Control buttons - modern dots -->
-  <circle cx="550" cy="564" r="16" fill="#1E293B" stroke="#334155" stroke-width="2"/>
-  <circle cx="596" cy="564" r="16" fill="#06B6D4"/>
-  <circle cx="642" cy="564" r="16" fill="#7C3AED"/>
-  <circle cx="688" cy="564" r="16" fill="#10B981"/>
-  <!-- Button highlights -->
-  <circle cx="592" cy="558" r="4" fill="white" opacity="0.5"/>
-  <circle cx="638" cy="558" r="4" fill="white" opacity="0.5"/>
-  
-  <!-- Front output slot -->
-  <rect x="354" y="652" width="316" height="36" rx="10" fill="#020617"/>
-  <rect x="362" y="660" width="300" height="6" rx="3" fill="#1E293B"/>
-  
-  <!-- Paper exiting front - white premium -->
-  <rect x="336" y="688" width="352" height="88" rx="16" fill="white" stroke="#F1F5F9" stroke-width="3"/>
-  <!-- Output paper lines subtle -->
-  <rect x="366" y="714" width="292" height="8" rx="4" fill="#E2E8F0"/>
-  <rect x="366" y="734" width="210" height="8" rx="4" fill="#E2E8F0" opacity="0.7"/>
-  <rect x="366" y="754" width="160" height="6" rx="3" fill="#06B6D4" opacity="0.4"/>
-</g>
+<!-- Device body -->
+<rect x="232" y="456" width="560" height="300" rx="48" fill="#FFFFFF"/>
+<!-- Intake slot -->
+<rect x="304" y="424" width="416" height="64" rx="24" fill="#0F172A"/>
+<rect x="328" y="444" width="368" height="10" rx="5" fill="#334155"/>
 
-<!-- Cloud success badge - bottom right, strong modern -->
-<g filter="url(#badgeShadow)">
-  <!-- Outer ring -->
-  <circle cx="822" cy="822" r="148" fill="white" opacity="0.18"/>
-  <circle cx="822" cy="822" r="132" fill="url(#badgeBg)" stroke="white" stroke-width="10"/>
-  <!-- Inner highlight -->
-  <circle cx="802" cy="802" r="22" fill="white" opacity="0.28"/>
-  <!-- Cloud shape - white, bold -->
-  <path d="M 758 822 C 758 792 784 768 814 768 C 830 738 876 730 894 768 C 922 774 934 796 928 820 C 918 850 886 862 858 850 C 838 860 768 854 758 822 Z" fill="white"/>
-  <!-- Cloud detail shadow -->
-  <ellipse cx="822" cy="848" rx="58" ry="10" fill="#0F172A" opacity="0.12"/>
-  <!-- Success check - bold white with dark outline for contrast -->
-  <circle cx="822" cy="894" r="32" fill="white"/>
-  <circle cx="822" cy="894" r="30" fill="#10B981" stroke="white" stroke-width="3"/>
-  <path d="M 806 894 L 818 906 L 838 882" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M 806 894 L 818 906 L 838 882" stroke="#065F46" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9"/>
-</g>
+<!-- Control face -->
+<rect x="288" y="516" width="448" height="112" rx="28" fill="#0F172A"/>
+<rect x="320" y="548" width="200" height="48" rx="14" fill="#1D4ED8"/>
+<rect x="340" y="564" width="72" height="10" rx="5" fill="#DBEAFE"/>
+<rect x="340" y="582" width="120" height="8" rx="4" fill="#93C5FD" fill-opacity="0.75"/>
+<circle cx="600" cy="572" r="18" fill="#1E293B"/>
+<circle cx="656" cy="572" r="18" fill="#1E293B"/>
+<circle cx="712" cy="572" r="18" fill="#60A5FA"/>
 
-<!-- Outer stroke for definition on light backgrounds -->
-<rect width="1024" height="1024" rx="220" fill="none" stroke="white" stroke-width="6" opacity="0.10"/>
-<rect width="1024" height="1024" rx="220" fill="none" stroke="black" stroke-width="4" opacity="0.06"/>
+<!-- Output -->
+<rect x="376" y="676" width="272" height="30" rx="12" fill="#0F172A" fill-opacity="0.9"/>
+<rect x="356" y="706" width="312" height="118" rx="22" fill="#FFFFFF"/>
+<rect x="400" y="742" width="224" height="14" rx="7" fill="#E2E8F0"/>
+<rect x="400" y="774" width="160" height="14" rx="7" fill="#E2E8F0"/>
 
+<!-- Definition edge for light backgrounds -->
+<rect x="3" y="3" width="1018" height="1018" rx="230" fill="none" stroke="#0F172A" stroke-opacity="0.08" stroke-width="6"/>
 </svg>

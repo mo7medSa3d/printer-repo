@@ -48,16 +48,25 @@ export function validatePayloadForPrinter(
   const proto = (printer.protocol ?? "").toLowerCase();
   const conn = (printer.connectionType ?? "").toLowerCase();
 
-  // If printer explicitly lists supported protocols, enforce it strictly
+  // If the printer explicitly lists supported protocols, enforce it strictly.
   const supported = printer.capabilities?.supported_protocols?.map((s) => s.toLowerCase());
   if (supported && supported.length > 0) {
-    if (!supported.includes(pt) && !supported.includes("raw") && !(pt === "escpos" && supported.includes("escpos"))) {
-      // spooler is a special case: it can handle raw/escpos via RAW spooler mode
-      if (!(conn === "spooler" && (pt === "raw" || pt === "escpos"))) {
-        return { ok: false, reason: `CAPABILITY_MISMATCH: payload type ${pt} not in printer supported_protocols [${supported.join(",")}]` };
+    if (supported.includes(pt)) return { ok: true };
+    // A byte-stream payload (raw/escpos) may go to any byte-stream transport:
+    // spooler RAW mode and ESC/POS devices both accept an opaque byte stream.
+    if (pt === "raw" || pt === "escpos") {
+      if (supported.includes("raw") || supported.includes("escpos") || conn === "spooler" || proto === "spooler") {
+        return { ok: true };
       }
+      return { ok: false, reason: `CAPABILITY_MISMATCH: payload type ${pt} not in printer supported_protocols [${supported.join(",")}]` };
     }
-    return { ok: true };
+    // PDF is NEVER inferred from "raw" support: a PDF handed to an ESC/POS
+    // byte-stream printer prints garbage. A printer must declare pdf (or an
+    // IPP transport that carries application/pdf) to receive PDF jobs.
+    return {
+      ok: false,
+      reason: `CAPABILITY_MISMATCH: payload type ${pt} not in printer supported_protocols [${supported.join(",")}]`,
+    };
   }
 
   // IPP is now a first-class transport with real IPP client (ipp.go).
@@ -152,6 +161,7 @@ export async function resolvePrinterForJob({
 
     const fallbackChain: string[] = [];
     let lastOfflinePrinter: string | null = null;
+    let lastDisabledPrinter: string | null = null;
     let lastCapabilityReason: string | null = null;
 
     for (let idx = 0; idx < candidates.length; idx++) {
@@ -173,9 +183,12 @@ export async function resolvePrinterForJob({
         continue;
       }
 
-      // Enabled check
+      // Enabled check. An administratively disabled printer is a distinct,
+      // non-transient condition from an offline one: it is reported as
+      // PRINTER_DISABLED (409, fix it in configuration) instead of
+      // PRINTER_OFFLINE (503, retry later).
       if (printer.enabled === false) {
-        if (idx === 0) lastOfflinePrinter = printer.id;
+        lastDisabledPrinter = printer.id;
         continue; // try fallback
       }
 
@@ -221,7 +234,13 @@ export async function resolvePrinterForJob({
       return { error: "CAPABILITY_MISMATCH", message: lastCapabilityReason };
     }
     if (lastOfflinePrinter) {
+      // Offline is preferred over disabled when both occurred: an offline
+      // printer may come back on its own, so the caller should retry (503)
+      // rather than be told to change configuration.
       return { error: "PRINTER_OFFLINE", message: `All candidate printers offline (last tried ${lastOfflinePrinter})` };
+    }
+    if (lastDisabledPrinter) {
+      return { error: "PRINTER_DISABLED", message: `All candidate printers are disabled (last tried ${lastDisabledPrinter})` };
     }
     return { error: "NO_PRINTER_FOUND", message: `No available printer after evaluating ${candidates.length} bindings` };
   } catch (e) {

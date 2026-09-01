@@ -170,18 +170,18 @@ function JobTimeline({ status }: { status: string }) {
     return { label: step, state: current && !done && !failed ? "current" : isReached ? "done" : "todo" } as { label: string; state: string };
   });
   return (
-    <div className="rounded-xl border border-edge bg-surface-2/50 px-4 py-3.5" role="img" aria-label={`Job pipeline: ${labelJob(status)}`}>
+    <div className="rounded-xl border border-edge-accent bg-surface-accent px-4 py-3.5" role="img" aria-label={`Job pipeline: ${labelJob(status)}`}>
       <ol className="flex items-start">
         {steps.map((step, i) => (
           <li key={step.label} className={`flex items-start flex-1 ${i === 0 ? "" : ""}`}>
             {i > 0 && (
-              <span aria-hidden className={`mt-2 h-px flex-1 ${idx >= i || done || failed ? "bg-ok/50" : "bg-edge-strong"}`} />
+              <span aria-hidden className={`mt-2 h-px flex-1 ${idx >= i || done || failed ? "bg-ok-solid/60" : "bg-edge-strong"}`} />
             )}
             <span className="flex flex-col items-center gap-1.5 px-0.5" aria-hidden>
               <span className={`flex h-4 w-4 items-center justify-center rounded-full border text-[8px] font-bold transition-colors ${
-                step.state === "current" ? "border-brand-500 bg-brand-100 text-brand-800 dark:bg-brand-900 dark:text-brand-200 ring-2 ring-brand-500/25"
-                : step.state === "done" ? "border-ok-edge bg-ok text-surface"
-                : "border-edge-strong bg-surface text-ink-3"
+                step.state === "current" ? "border-brand bg-brand text-brand-contrast shadow-[var(--focus-ring-shadow)]"
+                : step.state === "done" ? "border-ok-edge bg-ok-solid text-on-solid"
+                : "border-edge-strong bg-surface text-ink-4"
               }`}>
                 {step.state === "done" ? "✓" : step.state === "current" ? "●" : ""}
               </span>
@@ -192,10 +192,10 @@ function JobTimeline({ status }: { status: string }) {
           </li>
         ))}
         <li className="flex items-start flex-1">
-          <span aria-hidden className={`mt-2 h-px flex-1 ${done || failed ? "bg-ok/50" : "bg-edge-strong"}`} />
+          <span aria-hidden className={`mt-2 h-px flex-1 ${done || failed ? "bg-ok-solid/60" : "bg-edge-strong"}`} />
           <span className="flex flex-col items-center gap-1.5 px-0.5" aria-hidden>
             <span className={`flex h-4 w-4 items-center justify-center rounded-full border text-[8px] font-bold transition-colors ${
-              done ? "border-ok-edge bg-ok text-surface" : failed ? "border-bad-edge bg-bad text-surface" : "border-edge-strong bg-surface text-ink-3"
+              done ? "border-ok-edge bg-ok-solid text-on-solid" : failed ? "border-bad-edge bg-bad-solid text-on-solid" : "border-edge-strong bg-surface text-ink-4"
             }`}>
               {done ? "✓" : failed ? "✕" : ""}
             </span>
@@ -588,20 +588,20 @@ export default function App() {
   return (
     <div className="min-h-screen bg-app text-ink">
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-60 ${collapsed ? "lg:w-16" : "lg:w-60"} bg-surface border-r border-edge flex flex-col transition-all duration-200 ease-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+      <aside className={`fixed inset-y-0 left-0 z-40 w-60 ${collapsed ? "lg:w-16" : "lg:w-60"} bg-surface border-r border-edge flex flex-col shadow-xs transition-all duration-200 ease-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
         <div className={`h-16 flex items-center gap-2.5 border-b border-edge ${collapsed ? "lg:justify-center px-0" : "px-4"}`}>
-          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-edge bg-surface-2 overflow-hidden">
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-edge-accent bg-brand-subtle">
             {/* Tauri desktop app: next/image is not available; asset is bundled locally */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={appIcon} alt="" className="h-7 w-7 object-contain" />
           </div>
           {!collapsed && (
             <div className="min-w-0">
-              <div className="text-sm font-bold leading-tight text-ink">Print Gateway</div>
-              <div className="text-[11px] text-ink-3 leading-tight">Odoo Print Manager</div>
+              <div className="truncate text-sm font-semibold leading-tight tracking-[-0.01em] text-ink">Print Gateway</div>
+              <div className="truncate text-[11px] font-medium leading-tight text-ink-3">Desktop Manager</div>
             </div>
           )}
-          <button onClick={() => { setCollapsed(false); setSidebarOpen(false); }} className="lg:hidden ml-auto p-1.5 rounded-lg text-ink-3 hover:bg-surface-2" aria-label="Close navigation">
+          <button onClick={() => { setCollapsed(false); setSidebarOpen(false); }} className="ml-auto rounded-md p-1.5 text-ink-3 transition-colors hover:bg-surface-2 lg:hidden" aria-label="Close navigation">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -615,21 +615,23 @@ export default function App() {
                 aria-current={active ? "page" : undefined}
                 aria-label={collapsed ? item.label : undefined}
                 title={collapsed ? item.label : undefined}
-                className={`w-full flex items-center gap-2.5 rounded-lg text-sm font-medium transition-colors ${collapsed ? "lg:justify-center px-2 py-2" : "px-2.5 py-2"} ${
-                  active ? "bg-brand-50 text-brand-800 dark:bg-brand-900/60 dark:text-brand-200" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
+                className={`relative w-full flex items-center gap-2.5 rounded-md text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${collapsed ? "lg:justify-center px-2 py-2" : "px-2.5 py-2"} ${
+                  active
+                    ? "bg-brand-subtle text-brand-subtle-text font-semibold before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-brand"
+                    : "text-ink-2 hover:bg-surface-2 hover:text-ink"
                 }`}
               >
                 <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden />
                 {!collapsed && <span className="flex-1 text-left">{item.label}</span>}
-                {!collapsed && <span className={`text-[11px] tabular-nums ${active ? "text-brand-700/70 dark:text-brand-300/80" : "text-ink-3"}`}>{item.desc}</span>}
+                {!collapsed && <span className={`text-[11px] tabular-nums ${active ? "text-brand-subtle-text/80" : "text-ink-4"}`}>{item.desc}</span>}
               </button>
             );
           })}
         </nav>
-        <div className="border-t border-edge px-2.5 py-2 space-y-2">
+        <div className="border-t border-edge bg-surface-2/60 px-2.5 py-2 space-y-2">
           <button
             onClick={() => setCollapsed(c => !c)}
-            className="hidden lg:inline-flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-ink-3 hover:bg-surface-2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500"
+            className="hidden lg:inline-flex w-full items-center justify-center rounded-md px-2 py-1.5 text-ink-3 transition-colors duration-150 hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)]"
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
@@ -658,23 +660,23 @@ export default function App() {
           </div>
         </div>
       </aside>
-      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/35 lg:hidden" style={{ backgroundColor: "var(--overlay)" }} onClick={() => setSidebarOpen(false)} aria-hidden />}
+      {sidebarOpen && <div className="fixed inset-0 z-30 lg:hidden" style={{ backgroundColor: "var(--overlay)" }} onClick={() => setSidebarOpen(false)} aria-hidden />}
 
       {/* Main */}
       <div className={`flex min-h-screen min-w-0 flex-col ${collapsed ? "lg:pl-16" : "lg:pl-60"}`}>
-        <header className="sticky top-0 z-20 border-b border-edge bg-surface/90 backdrop-blur px-4 lg:px-8 py-3 flex items-center gap-3">
-          <button onClick={() => { setCollapsed(false); setSidebarOpen(true); }} className="lg:hidden p-2 rounded-lg text-ink-2 hover:bg-surface-2" aria-label="Open navigation">
+        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-edge bg-surface/85 px-4 py-3 backdrop-blur-md lg:px-8">
+          <button onClick={() => { setCollapsed(false); setSidebarOpen(true); }} className="rounded-md p-2 text-ink-2 transition-colors hover:bg-surface-2 lg:hidden" aria-label="Open navigation">
             <Menu className="h-5 w-5" />
           </button>
           <div className="min-w-0 flex-1">
-            <h1 className="text-base font-bold text-ink leading-tight">{pageMeta[page].title}</h1>
+            <h1 className="text-base font-semibold leading-tight tracking-[-0.01em] text-ink">{pageMeta[page].title}</h1>
             <p className="hidden sm:block text-xs text-ink-3 truncate">{pageMeta[page].subtitle}</p>
           </div>
           <div className="flex items-center gap-2">
             <StatusBadge tone={isOnline ? "ok" : "bad"} label={isOnline ? "Agent online" : "Agent offline"} />
             <button
               onClick={() => { refreshStatus(); refreshPrinters(); if (gatewayUrl) refreshJobs(); }}
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-edge bg-surface px-2.5 h-8 text-xs font-medium text-ink-2 hover:bg-surface-2 transition-colors"
+              className="hidden h-8 items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-xs font-medium text-ink-2 shadow-xs transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] sm:inline-flex"
               aria-label="Refresh all"
             >
               <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Refresh
@@ -686,7 +688,7 @@ export default function App() {
           {page === "dashboard" && (
             <>
               {allGood ? (
-                <div className="flex items-start gap-3 rounded-xl border border-ok-edge bg-ok-bg px-4 py-3.5">
+                <div className="flex items-start gap-3 rounded-lg border border-ok-edge bg-ok-bg px-4 py-3.5">
                   <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-ok" aria-hidden />
                   <div>
                     <div className="text-sm font-semibold text-ok">Everything is running normally</div>
@@ -696,7 +698,7 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="flex items-start gap-3 rounded-xl border border-warn-edge bg-warn-bg px-4 py-3.5">
+                <div className="flex items-start gap-3 rounded-lg border border-warn-edge bg-warn-bg px-4 py-3.5">
                   <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-warn" aria-hidden />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold text-warn">Needs attention</div>
@@ -719,8 +721,8 @@ export default function App() {
                 ].map(s => (
                   <Card key={s.label} className="p-4">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{s.label}</span>
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-surface-2 text-ink-2">{s.icon}</span>
+                      <span className="label-caps">{s.label}</span>
+                      <span className="flex h-7 w-7 items-center justify-center rounded-md border border-edge-accent bg-brand-subtle text-brand">{s.icon}</span>
                     </div>
                     <div className="mt-2 flex items-center gap-2">
                       <StatusDot tone={s.tone} pulse={s.tone === "ok" && s.label !== "Print jobs"} />
@@ -736,7 +738,7 @@ export default function App() {
                   <CardHeader
                     title="Printers"
                     subtitle={`${onlinePrinters} of ${totalPrinters} online`}
-                    icon={<Printer className="h-4 w-4 text-brand-600" aria-hidden />}
+                    icon={<Printer className="h-4 w-4 text-brand" aria-hidden />}
                     actions={<Button size="sm" variant="ghost" onClick={refreshPrinters} icon={<RefreshCw className="h-3.5 w-3.5" />}>Refresh</Button>}
                   />
                   <div className="px-5 pb-5">
@@ -753,8 +755,8 @@ export default function App() {
                     ) : (
                       <div className="space-y-2">
                         {printers.slice(0, 4).map(p => (
-                          <button key={p.id} onClick={() => setSelectedPrinter(p)} className="w-full flex items-center gap-3 rounded-xl border border-edge bg-surface px-3 py-2.5 text-left transition-colors hover:border-edge-strong hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500">
-                            <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-surface-3 text-xs font-bold text-ink-2">
+                          <button key={p.id} onClick={() => setSelectedPrinter(p)} className="w-full flex items-center gap-3 rounded-lg border border-edge bg-surface px-3 py-2.5 text-left transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)]">
+                            <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-edge-accent bg-brand-subtle text-xs font-semibold text-brand-subtle-text">
                               {p.name.slice(0, 2).toUpperCase()}
                             </span>
                             <span className="min-w-0 flex-1">
@@ -779,7 +781,7 @@ export default function App() {
                     <MetaRow label="Gateway"><span className="truncate">{gatewayUrl || "—"}</span></MetaRow>
                     <MetaRow label="Agent"><span>{isOnline ? "Running" : "Stopped"}</span></MetaRow>
                     <div className="pt-4">
-                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">Quick actions</div>
+                      <div className="mb-2 label-caps">Quick actions</div>
                       <div className="grid grid-cols-2 gap-2">
                         <Button variant="primary" size="sm" onClick={refreshStatus} icon={<RefreshCw className="h-3.5 w-3.5" />}>Refresh</Button>
                         <Button variant="secondary" size="sm" onClick={checkHealth} icon={<Activity className="h-3.5 w-3.5" />}>Check gateway</Button>
@@ -793,7 +795,7 @@ export default function App() {
                 <CardHeader
                   title="Recent jobs"
                   subtitle={`${pendingJobs} pending · ${failedJobs} failed`}
-                  icon={<ClipboardList className="h-4 w-4 text-brand-600" aria-hidden />}
+                  icon={<ClipboardList className="h-4 w-4 text-brand" aria-hidden />}
                   actions={<Button size="sm" variant="ghost" onClick={() => navigate("jobs")}>View all <ChevronRight className="h-3.5 w-3.5" aria-hidden /></Button>}
                 />
                 {jobsLoading ? (
@@ -806,7 +808,7 @@ export default function App() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-y border-edge bg-surface-2/60 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                        <tr className="border-y border-edge table-head text-left">
                           <th className="px-5 py-2.5">Document</th>
                           <th className="px-3 py-2.5">Printer</th>
                           <th className="px-3 py-2.5">Status</th>
@@ -815,7 +817,7 @@ export default function App() {
                       </thead>
                       <tbody>
                         {jobs.slice(0, 5).map((j: any) => (
-                          <tr key={String(j.id || j.jobId)} className="border-b border-edge last:border-0 hover:bg-surface-2/40">
+                          <tr key={String(j.id || j.jobId)} className="border-b border-edge last:border-0 row-hover">
                             <td className="px-5 py-2.5 text-xs font-medium text-ink">{String(j.documentType || j.document_type || "Document")}</td>
                             <td className="px-3 py-2.5 text-xs text-ink-2">{String(printers.find(p => p.id === j.printerId)?.name || j.printerId || "—")}</td>
                             <td className="px-3 py-2.5"><StatusBadge tone={jobTone(String(j.status))} label={labelJob(String(j.status))} /></td>
@@ -871,7 +873,7 @@ export default function App() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b border-edge bg-surface-2/60 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                        <tr className="border-b border-edge table-head text-left">
                           <th className="px-5 py-3">Printer</th>
                           <th className="px-3 py-3">Type</th>
                           <th className="px-3 py-3">Connection</th>
@@ -881,10 +883,10 @@ export default function App() {
                       </thead>
                       <tbody>
                         {filteredPrinters.map(p => (
-                          <tr key={p.id} className="border-b border-edge last:border-0 hover:bg-surface-2/40">
+                          <tr key={p.id} className="border-b border-edge last:border-0 row-hover">
                             <td className="px-5 py-3">
                               <div className="flex items-center gap-2.5">
-                                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-3 text-[10px] font-bold text-ink-2">{p.name.slice(0, 2).toUpperCase()}</span>
+                                <span className="flex h-8 w-8 items-center justify-center rounded-md border border-edge-accent bg-brand-subtle text-[10px] font-semibold text-brand-subtle-text">{p.name.slice(0, 2).toUpperCase()}</span>
                                 <div className="min-w-0">
                                   <div className="truncate font-medium text-ink">{p.name} {(p as any).isVirtual && <span className="ml-1 text-[10px] font-semibold uppercase text-ink-3">Virtual</span>}</div>
                                   <div className="truncate text-xs text-ink-3 font-mono">{printerEndpoint(p)}</div>
@@ -928,7 +930,7 @@ export default function App() {
                 </div>
                 {jobPrinterFilter && (
                   <div className="flex items-center gap-2 px-3 pb-3">
-                    <span className="inline-flex items-center gap-1.5 rounded-md border border-brand-300 bg-brand-50 px-2 py-1 text-[11px] font-medium text-brand-800 dark:border-brand-800 dark:bg-brand-900/50 dark:text-brand-200">
+                    <span className="inline-flex items-center gap-1.5 rounded-sm border border-edge-accent bg-brand-subtle px-2 py-1 text-[11px] font-medium text-brand-subtle-text">
                       <Printer className="h-3 w-3" aria-hidden />
                       Filtered to <Mono className="text-inherit">{printerFilterName}</Mono>
                       <button onClick={() => setJobPrinterFilter(null)} aria-label={`Clear printer filter ${printerFilterName}`} className="ml-0.5 rounded p-0.5 hover:bg-surface-2">
@@ -954,7 +956,7 @@ export default function App() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b border-edge bg-surface-2/60 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                        <tr className="border-b border-edge table-head text-left">
                           <th className="px-5 py-3">Document</th>
                           <th className="px-3 py-3">Printer</th>
                           <th className="px-3 py-3">Status</th>
@@ -964,7 +966,7 @@ export default function App() {
                       </thead>
                       <tbody>
                         {jobsFiltered.map((j: any) => (
-                          <tr key={String(j.id || j.jobId)} className="border-b border-edge last:border-0 hover:bg-surface-2/40">
+                          <tr key={String(j.id || j.jobId)} className="border-b border-edge last:border-0 row-hover">
                             <td className="px-5 py-3">
                               <div className="font-medium text-xs text-ink">{String(j.documentType || j.document_type || "Document")}</div>
                               <div className="font-mono text-[10px] text-ink-3">{String(j.id || j.jobId)}</div>
@@ -991,11 +993,11 @@ export default function App() {
                 <CardHeader
                   title="This PC agent"
                   subtitle="The agent this desktop app supervises"
-                  icon={<Cpu className="h-4 w-4 text-brand-600" aria-hidden />}
+                  icon={<Cpu className="h-4 w-4 text-brand" aria-hidden />}
                   actions={<Button size="sm" variant="ghost" onClick={refreshStatus} icon={<RefreshCw className="h-3.5 w-3.5" />}>Refresh</Button>}
                 />
                 <div className="px-5 pb-5 space-y-4">
-                  <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+                  <div className="flex items-center gap-3 rounded-lg border border-edge-accent bg-surface-accent px-3.5 py-3">
                     <StatusDot tone={isOnline ? "ok" : "bad"} pulse={isOnline} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-semibold text-ink">{isOnline ? "Agent running" : "Agent stopped"}</div>
@@ -1015,7 +1017,7 @@ export default function App() {
                     <MetaRow label="Printers on this PC"><span className="tabular-nums">{onlinePrinters}/{totalPrinters} online · {offlinePrinters} attention</span></MetaRow>
                   </div>
                   {(agentStatus as any)?.note && (
-                    <p className="rounded-lg border border-edge bg-surface-2/60 px-3 py-2 text-xs leading-relaxed text-ink-2">{String((agentStatus as any).note)}</p>
+                    <p className="rounded-lg border border-edge bg-surface-2 px-3 py-2 text-xs leading-relaxed text-ink-2">{String((agentStatus as any).note)}</p>
                   )}
                   {(agentStatus as any)?.error && (
                     <ErrorState title="Agent status unavailable" message={String((agentStatus as any).error)} retry={refreshStatus} />
@@ -1027,7 +1029,7 @@ export default function App() {
                 <CardHeader
                   title="Gateway fleet"
                   subtitle={`Agents registered with ${gatewayUrl ? "the gateway" : "no gateway configured"}`}
-                  icon={<Server className="h-4 w-4 text-brand-600" aria-hidden />}
+                  icon={<Server className="h-4 w-4 text-brand" aria-hidden />}
                   actions={gatewayUrl ? <Button size="sm" variant="ghost" onClick={checkHealth} icon={<Activity className="h-3.5 w-3.5" />}>Check</Button> : undefined}
                 />
                 <div className="px-5 pb-5 space-y-4">
@@ -1043,12 +1045,12 @@ export default function App() {
                   ) : fleetTotal > 0 ? (
                     <>
                       <div className="grid grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-edge bg-surface px-3.5 py-3">
-                          <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Total agents</div>
+                        <div className="rounded-lg border border-edge bg-surface px-3.5 py-3">
+                          <div className="label-caps">Total agents</div>
                           <div className="mt-1 text-2xl font-bold tabular-nums text-ink">{fleetTotal}</div>
                         </div>
-                        <div className="rounded-xl border border-edge bg-surface px-3.5 py-3">
-                          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">Online <StatusDot tone={fleetOnline > 0 ? "ok" : "bad"} /></div>
+                        <div className="rounded-lg border border-edge bg-surface px-3.5 py-3">
+                          <div className="flex items-center gap-2 label-caps">Online <StatusDot tone={fleetOnline > 0 ? "ok" : "bad"} /></div>
                           <div className="mt-1 flex items-baseline gap-1.5">
                             <span className="text-2xl font-bold tabular-nums text-ink">{fleetOnline}</span>
                             <span className="text-xs text-ink-3">of {fleetTotal}</span>
@@ -1059,7 +1061,7 @@ export default function App() {
                         Fleet counts come from the gateway health endpoint. Full per-agent management — pairing codes,
                         per-agent printers and status history — is available in the gateway dashboard with a manager session.
                       </p>
-                      <div className="flex items-center gap-2 rounded-lg border border-edge bg-surface-2/60 px-3 py-2">
+                      <div className="flex items-center gap-2 rounded-lg border border-edge bg-surface-2 px-3 py-2">
                         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-3">{gatewayUrl}</span>
                         <CopyButton value={gatewayUrl} label="Copy" onCopied={() => setMsg({ text: "Gateway URL copied", type: "success" })} />
                       </div>
@@ -1076,7 +1078,7 @@ export default function App() {
               </Card>
 
               <Card className="xl:col-span-2 overflow-hidden">
-                <CardHeader title="How agents work" subtitle="One agent per machine, many printers per agent" icon={<ShieldCheck className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <CardHeader title="How agents work" subtitle="One agent per machine, many printers per agent" icon={<ShieldCheck className="h-4 w-4 text-brand" aria-hidden />} />
                 <div className="px-5 pb-5 grid gap-4 md:grid-cols-3 text-xs leading-relaxed text-ink-2">
                   <div className="rounded-xl border border-edge p-3.5">
                     <div className="mb-1.5 font-semibold text-ink">Pair once</div>
@@ -1098,9 +1100,9 @@ export default function App() {
           {page === "settings" && (
             <div className="grid gap-6 xl:grid-cols-2 max-w-5xl">
               <Card className="overflow-hidden">
-                <CardHeader title="Gateway connection" subtitle="Where the agent reports and receives jobs" icon={<Link2 className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <CardHeader title="Gateway connection" subtitle="Where the agent reports and receives jobs" icon={<Link2 className="h-4 w-4 text-brand" aria-hidden />} />
                 <div className="px-5 pb-5 space-y-4">
-                  <div className="flex items-center gap-2.5 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+                  <div className="flex items-center gap-2.5 rounded-lg border border-edge-accent bg-surface-accent px-3.5 py-3">
                     <StatusDot tone={gatewayConnected ? "ok" : gatewayUrl ? "bad" : "neutral"} pulse={gatewayConnected} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-semibold text-ink">{gatewayConnected ? "Connected" : gatewayUrl ? "Not reachable" : "Not configured"}</div>
@@ -1119,9 +1121,9 @@ export default function App() {
               </Card>
 
               <Card className="overflow-hidden">
-                <CardHeader title="Local agent" subtitle="The Windows service that talks to printers on this PC" icon={<Server className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <CardHeader title="Local agent" subtitle="The Windows service that talks to printers on this PC" icon={<Server className="h-4 w-4 text-brand" aria-hidden />} />
                 <div className="px-5 pb-5 space-y-4">
-                  <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+                  <div className="flex items-center gap-3 rounded-lg border border-edge-accent bg-surface-accent px-3.5 py-3">
                     <StatusDot tone={isOnline ? "ok" : "bad"} pulse={isOnline} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-semibold text-ink">{isOnline ? "Agent online" : "Agent stopped"}</div>
@@ -1146,7 +1148,7 @@ export default function App() {
                       aria-checked={!!autostart}
                       aria-label="Start agent with Windows"
                       onClick={async () => { if (autostart === null) return; const res = await setAutostart(!autostart); setMsg({ text: res, type: "success" }); const s = await getAutostart(); setAutostartState(s.enabled); }}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${autostart ? "bg-brand-700" : "bg-surface-3"}`}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${autostart ? "bg-brand" : "bg-surface-3"}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-surface transition-transform ${autostart ? "translate-x-6" : "translate-x-1"}`} />
                     </button>
@@ -1155,12 +1157,12 @@ export default function App() {
               </Card>
 
               <Card className="xl:col-span-2 overflow-hidden">
-                <CardHeader title="Pair agent" subtitle="Connect this PC to the gateway as a print agent" icon={<KeyRound className="h-4 w-4 text-brand-600" aria-hidden />} />
+                <CardHeader title="Pair agent" subtitle="Connect this PC to the gateway as a print agent" icon={<KeyRound className="h-4 w-4 text-brand" aria-hidden />} />
                 <div className="px-5 pb-5 grid gap-4 lg:grid-cols-[1fr_auto] items-end">
                   <div className="space-y-2 text-xs text-ink-2">
-                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800 dark:bg-brand-900 dark:text-brand-200">1</span> Save the gateway URL above.</div>
-                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800 dark:bg-brand-900 dark:text-brand-200">2</span> Generate a pairing code on the gateway dashboard.</div>
-                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800 dark:bg-brand-900 dark:text-brand-200">3</span> Enter it here — the agent registers and stays paired.</div>
+                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-brand-contrast">1</span> Save the gateway URL above.</div>
+                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-brand-contrast">2</span> Generate a pairing code on the gateway dashboard.</div>
+                    <div className="flex items-center gap-2"><span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-brand-contrast">3</span> Enter it here — the agent registers and stays paired.</div>
                   </div>
                   <div className="flex w-full max-w-sm items-end gap-2">
                     <Field label="Pairing code" htmlFor="pair-code" className="flex-1">
@@ -1179,12 +1181,12 @@ export default function App() {
                 {advancedOpen && (
                   <div className="border-t border-edge px-5 py-5 grid gap-6 lg:grid-cols-2">
                     <div>
-                      <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">Security</div>
+                      <div className="label-caps">Security</div>
                       <p className="mt-1.5 text-xs leading-relaxed text-ink-2">Pairing uses a one-time code; credentials are stored in the agent config with OS-level protection and never displayed here.</p>
                       <div className="mt-3 flex items-center gap-2 text-xs text-ok"><ShieldCheck className="h-4 w-4" aria-hidden /> Credentials stay on this PC</div>
                     </div>
                     <div>
-                      <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">Data locations</div>
+                      <div className="label-caps">Data locations</div>
                       {runtimePaths ? (
                         <div className="mt-2 space-y-1.5">
                           {[
@@ -1194,7 +1196,7 @@ export default function App() {
                             ["Manager log", runtimePaths.manager_log],
                             ["Agent data", runtimePaths.agent_data],
                           ].map(([label, path]) => (
-                            <div key={label} className="flex items-center gap-2 rounded-lg border border-edge bg-surface-2/60 px-2.5 py-1.5">
+                            <div key={label} className="flex items-center gap-2 rounded-md border border-edge bg-surface-2 px-2.5 py-1.5">
                               <span className="w-28 flex-shrink-0 text-xs font-medium text-ink-2">{label}</span>
                               <span className="flex-1 truncate font-mono text-[11px] text-ink-3">{String(path)}</span>
                               <CopyButton value={String(path)} label="Copy" onCopied={() => setMsg({ text: "Copied to clipboard", type: "success" })} />
@@ -1240,7 +1242,7 @@ export default function App() {
       <Drawer open={!!selectedPrinter} onClose={() => setSelectedPrinter(null)} title="Printer details" description={selectedPrinter?.name}>
         {selectedPrinter && (
           <div className="space-y-5">
-            <div className="flex items-center gap-2.5 rounded-xl border border-edge bg-surface-2/60 px-3.5 py-3">
+            <div className="flex items-center gap-2.5 rounded-lg border border-edge-accent bg-surface-accent px-3.5 py-3">
               <StatusDot tone={printerTone(selectedPrinter.status)} />
               <span className="text-sm font-semibold text-ink">{labelPrinter(selectedPrinter.status)}</span>
               <span className="ml-auto text-xs text-ink-3">{humanType(selectedPrinter)}</span>
@@ -1281,7 +1283,7 @@ export default function App() {
               <MetaRow label="Updated">{ (selectedJob as any).updatedAt ? new Date(String((selectedJob as any).updatedAt)).toLocaleString() : "—"}</MetaRow>
             </div>
             {(selectedJob as any).error ? (
-              <div className="rounded-xl border border-bad-edge bg-bad-bg p-3.5">
+              <div className="rounded-lg border border-bad-edge bg-bad-bg p-3.5">
                 <div className="flex items-center gap-2 text-sm font-semibold text-bad"><AlertTriangle className="h-4 w-4" aria-hidden /> Print failed</div>
                 <p className="mt-1.5 text-xs leading-relaxed text-ink-2">{friendlyPrinterError(String((selectedJob as any).error))}</p>
                 <details className="mt-2">
@@ -1291,7 +1293,7 @@ export default function App() {
                 <p className="mt-2 text-xs text-ink-3">Retries: {String((selectedJob as any).retries ?? 0)} of 5 — the gateway re-delivers the job to the agent while retries remain.</p>
               </div>
             ) : (
-              <div className="flex items-center gap-2 rounded-xl border border-info-edge bg-info-bg px-3.5 py-3 text-xs text-info">
+              <div className="flex items-center gap-2 rounded-lg border border-info-edge bg-info-bg px-3.5 py-3 text-xs text-info">
                 <Info className="h-4 w-4 flex-shrink-0" aria-hidden /> No error recorded for this job.
               </div>
             )}

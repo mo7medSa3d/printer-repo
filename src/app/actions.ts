@@ -9,7 +9,7 @@ import { cookies } from "next/headers";
 import { generatePairingCode } from "@/lib/agent-auth";
 import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
-import { pushJobToAgentWithClaim } from "@/server/ws";
+import { claimAndPushJobToAgent } from "@/server/ws";
 
 /**
  * Server actions are public HTTP endpoints (POST) like any route handler —
@@ -73,10 +73,11 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   };
   await db.insert(printJobs).values(row);
 
-  // Best-effort WS push (polling fallback covers offline agent). A delivered
-  // push also claims the job so the agent's PATCHes pass the claimed→… check.
+  // Claim-before-delivery push (polling fallback covers an offline agent).
+  // The row is moved queued→claimed inside a transaction *before* the socket
+  // write, so the agent never executes a job the gateway still calls queued.
   try {
-    await pushJobToAgentWithClaim({ id, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt: row.expiresAt });
+    await claimAndPushJobToAgent({ id, agentId: printer.agentId });
   } catch (e) {
     // Best-effort push; the durable row + agent polling is the fallback.
     // Log instead of swallowing so persistent push failures are visible.

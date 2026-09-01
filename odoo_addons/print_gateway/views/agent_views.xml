@@ -4,7 +4,7 @@
         <field name="name">print_gateway.agent.form</field>
         <field name="model">print_gateway.agent</field>
         <field name="arch" type="xml">
-            <form string="Agent">
+            <form string="Agent" class="o_pg_view o_pg_form">
                 <header>
                     <button name="action_sync_status" type="object" string="Sync Status" class="oe_highlight"/>
                 </header>
@@ -37,7 +37,7 @@
         <field name="name">print_gateway.agent.tree</field>
         <field name="model">print_gateway.agent</field>
         <field name="arch" type="xml">
-            <tree string="Agents" decoration-success="status=='online'" decoration-danger="status=='offline'" decoration-muted="status=='unknown'">
+            <tree string="Agents" class="o_pg_view o_pg_list" decoration-success="status=='online'" decoration-danger="status=='offline'" decoration-muted="status=='unknown'">
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="status" widget="badge"/>
@@ -47,10 +47,48 @@
             </tree>
         </field>
     </record>
+    <record id="view_print_gateway_agent_kanban" model="ir.ui.view">
+        <field name="name">print_gateway.agent.kanban</field>
+        <field name="model">print_gateway.agent</field>
+        <field name="arch" type="xml">
+            <!-- Fleet view of agents, styled with the shared brand tokens. -->
+            <kanban class="o_pg_view o_pg_kanban" sample="1">
+                <field name="status"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_global_click p-3">
+                            <div class="d-flex align-items-start gap-2">
+                                <span class="o_pg_card_icon me-2">
+                                    <i class="fa fa-server" role="img" aria-label="Agent"/>
+                                </span>
+                                <div class="flex-grow-1 overflow-hidden">
+                                    <div class="o_pg_card_title text-truncate">
+                                        <field name="name"/>
+                                    </div>
+                                    <div class="o_pg_card_meta text-truncate">
+                                        <field name="branch_id"/>
+                                    </div>
+                                </div>
+                                <span t-attf-class="o_pg_pill #{record.status.raw_value == 'online' ? 'o_pg_pill_ok' : record.status.raw_value == 'offline' ? 'o_pg_pill_bad' : ''}">
+                                    <field name="status"/>
+                                </span>
+                            </div>
+                            <div class="o_pg_card_meta mt-2 text-truncate">
+                                <field name="hostname"/> · <field name="os"/>
+                            </div>
+                            <div class="o_pg_card_mono mt-1 text-truncate">
+                                <field name="gateway_agent_id"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
     <record id="action_print_gateway_agent" model="ir.actions.act_window">
         <field name="name">Agents</field>
         <field name="res_model">print_gateway.agent</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">tree,kanban,form</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
                 No agents yet — agents register themselves from the Gateway.

@@ -28,6 +28,7 @@ import {
   Mono,
   MetaRow,
   CopyButton,
+  inputClass,
   type Tone,
 } from "@/components/ui";
 
@@ -150,7 +151,7 @@ export default function DashboardClient({
         <div
           role="status"
           className={cn(
-            "lg:col-span-3 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm",
+            "lg:col-span-3 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm",
             notice.tone === "ok" ? "border-ok-edge bg-ok-bg text-ok" : "border-bad-edge bg-bad-bg text-bad"
           )}
         >
@@ -165,14 +166,14 @@ export default function DashboardClient({
         <CardHeader
           title="Agents"
           subtitle="Machines paired to this gateway"
-          icon={<Activity className="h-4 w-4 text-brand-600" aria-hidden />}
+          icon={<Activity className="h-4 w-4 text-brand" aria-hidden />}
         />
         <div className="px-5 pb-5 space-y-4">
           <form onSubmit={handleCreateAgent} className="flex gap-2" aria-label="Register a new agent">
             <input
               type="text"
               placeholder="Agent name, e.g. Cairo Branch"
-              className="h-9 flex-1 rounded-lg border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-3 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+              className={`flex-1 ${inputClass}`}
               value={newAgentName}
               onChange={(e) => setNewAgentName(e.target.value)}
               disabled={isLoading}
@@ -192,7 +193,7 @@ export default function DashboardClient({
           ) : (
             <div className="space-y-3">
               {initialAgents.map((agent) => (
-                <div key={agent.id} className="rounded-xl border border-edge bg-surface p-4">
+                <div key={agent.id} className="card card-interactive p-4 shadow-none">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="truncate font-medium text-ink">{agent.name}</h3>
                     <StatusBadge tone={agentTone(agent.status)} label={agent.status === "online" ? "Online" : "Offline"} />
@@ -204,7 +205,7 @@ export default function DashboardClient({
                       <CopyButton value={agent.id} label="Copy" className="ml-auto" />
                     </div>
                     {agent.pairingCode ? (
-                      <div className="flex items-center gap-1.5 rounded-lg border border-warn-edge bg-warn-bg px-2.5 py-1.5">
+                      <div className="flex items-center gap-1.5 rounded-md border border-warn-edge bg-warn-bg px-2.5 py-1.5">
                         <KeyRound className="h-3.5 w-3.5 text-warn" aria-hidden />
                         <span className="text-ink-2">Pairing code</span>
                         <span className="font-mono font-bold tracking-widest text-ink">{agent.pairingCode}</span>
@@ -237,14 +238,14 @@ export default function DashboardClient({
         <CardHeader
           title="Printers"
           subtitle="Reported by agents via heartbeat"
-          icon={<Printer className="h-4 w-4 text-brand-600" aria-hidden />}
+          icon={<Printer className="h-4 w-4 text-brand" aria-hidden />}
         />
         <div className="px-5 pb-5 space-y-3">
           {initialPrinters.length === 0 ? (
             <EmptyState icon={<Printer className="h-7 w-7" />} title="No printers yet" description="Printers appear here as soon as an online agent reports them via heartbeat." />
           ) : (
             initialPrinters.map((printer) => (
-              <div key={printer.id} className="rounded-xl border border-edge bg-surface p-4">
+              <div key={printer.id} className="card card-interactive p-4 shadow-none">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="truncate font-medium text-ink">{printer.name}</h3>
                   <StatusBadge tone={printerTone(printer.status)} label={printer.status === "online" ? "Online" : printer.status.charAt(0).toUpperCase() + printer.status.slice(1)} />
@@ -273,14 +274,14 @@ export default function DashboardClient({
         <CardHeader
           title="Recent jobs"
           subtitle="Latest 50 in the gateway queue"
-          icon={<Clock className="h-4 w-4 text-brand-600" aria-hidden />}
+          icon={<Clock className="h-4 w-4 text-brand" aria-hidden />}
         />
         <div className="px-5 pb-5 space-y-2.5">
           {initialJobs.length === 0 ? (
             <EmptyState icon={<Clock className="h-7 w-7" />} title="No jobs in queue" description="Print jobs will appear here when an agent starts printing." />
           ) : (
             initialJobs.map((job) => (
-              <div key={job.id} className="rounded-lg border border-edge bg-surface px-3.5 py-3 text-xs">
+              <div key={job.id} className="row-hover rounded-lg border border-edge bg-surface px-3.5 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <Mono className="truncate">{job.id}</Mono>
                   <StatusBadge tone={jobTone(job.status)} label={job.status === "success" ? "Completed" : job.status.charAt(0).toUpperCase() + job.status.slice(1)} />

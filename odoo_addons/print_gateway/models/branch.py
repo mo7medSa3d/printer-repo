@@ -182,6 +182,13 @@ class PrintGatewayBranch(models.Model):
                         'zone': d.zone,
                         'enabled': d.enabled,
                     } for d in branch.destination_ids],
+                    'documentTypes': [{
+                        'id': str(dt.gateway_document_type_id or dt.id),
+                        'branchId': str(branch.gateway_branch_id or branch.id),
+                        'name': dt.name,
+                        'description': dt.description,
+                        'enabled': dt.enabled,
+                    } for dt in branch.document_type_ids],
                     'bindings': [{
                         'id': str(b.gateway_binding_id or b.id),
                         'branchId': str(branch.gateway_branch_id or branch.id),
@@ -194,12 +201,49 @@ class PrintGatewayBranch(models.Model):
                 }
                 resp = requests.post(f"{base}/api/odoo/sync", json=payload, headers=headers, timeout=10)
                 if resp.status_code not in (200, 201):
-                    raise ValidationError(_('Gateway sync failed %s: %s') % (resp.status_code, resp.text[:500]))
+                    raise ValidationError(_('Gateway sync failed %s: %s') % (resp.status_code, branch._format_sync_error(resp)))
                 _logger.info("Branch %s sync to gateway OK: %s", branch.name, resp.text[:500])
                 branch.last_sync_at = fields.Datetime.now()
             except requests.RequestException as e:
                 raise ValidationError(_('Sync to gateway failed: %s') % str(e))
         return True
+
+    @staticmethod
+    def _format_sync_error(resp):
+        """Turn the Gateway's structured sync error into a readable message.
+
+        The Gateway answers a rejected sync with
+        {"success": false, "error": "SYNC_VALIDATION_FAILED" |
+        "SYNC_DEPENDENCY_MISSING", "details": [{bindingId, printerId, reason}]}
+        and applies nothing at all. Showing the raw JSON blob hides which
+        binding is at fault, so the details are expanded here.
+        """
+        try:
+            body = resp.json()
+        except ValueError:
+            return resp.text[:500]
+        if not isinstance(body, dict):
+            return resp.text[:500]
+        code = body.get('error') or 'UNKNOWN_ERROR'
+        details = body.get('details') or []
+        lines = []
+        for item in details:
+            if not isinstance(item, dict):
+                lines.append(str(item))
+                continue
+            parts = []
+            for key in ('entity', 'bindingId', 'id', 'destinationId', 'printerId'):
+                value = item.get(key)
+                if value:
+                    parts.append('%s=%s' % (key, value))
+            reason = item.get('reason') or ''
+            lines.append('%s: %s' % (', '.join(parts), reason) if parts else reason)
+        message = body.get('message')
+        if message:
+            lines.append(str(message))
+        if lines:
+            return '%s\n%s' % (code, '\n'.join('- %s' % line for line in lines))
+        return code
 
     def create_print_job(self, destination_id, document_type, payload, odoo_model=None, odoo_record_id=None, report_xml_id=None, report_name=None, report_id=None, idempotency_key=None):
         """Helper to create a Gateway print job from Odoo business logic.

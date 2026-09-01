@@ -4,28 +4,29 @@ import { ArrowRight, MonitorPlay, Printer, ShieldCheck, Zap, Globe, Cpu } from "
 export default function Home() {
   return (
     <div className="flex flex-col items-center">
-      <section className="w-full border-b border-edge bg-surface">
+      <section className="canvas-wash w-full border-b border-edge">
         <div className="container mx-auto px-4 py-20 md:py-28 text-center">
-          <span className="inline-flex items-center gap-2 rounded-full border border-edge bg-surface-2 px-3 py-1 text-xs font-medium text-ink-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-ok" aria-hidden /> Production print infrastructure
+          <span className="inline-flex items-center gap-2 rounded-full border border-edge-accent bg-surface-accent px-3 py-1 text-xs font-medium text-brand-subtle-text">
+            <span className="h-1.5 w-1.5 rounded-full bg-ok-solid" aria-hidden /> Production print infrastructure
           </span>
           <h1 className="mx-auto mt-6 max-w-3xl text-4xl md:text-5xl font-extrabold tracking-tight text-ink">
             Printing infrastructure that just works
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-ink-2">
-            Odoo Print Gateway routes every document from Odoo to the right printer — through a
-            durable cloud queue, a Windows print agent, and a desktop manager built for the brand.
+            Print Gateway routes every document from Odoo to the right printer — through a
+            durable cloud queue, a Windows print agent, and a desktop manager. One platform,
+            one operations language, from the ERP to the paper.
           </p>
           <div className="mt-9 flex flex-col justify-center gap-3 sm:flex-row">
             <Link
               href="/dashboard"
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-brand-700 px-6 text-sm font-semibold text-white transition-colors hover:bg-brand-800"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-brand px-6 text-sm font-semibold text-brand-contrast shadow-sm transition-colors duration-150 hover:bg-brand-hover active:bg-brand-active focusable"
             >
               Open console <ArrowRight className="h-4 w-4" aria-hidden />
             </Link>
             <Link
               href="/simulator"
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-edge bg-surface px-6 text-sm font-semibold text-ink transition-colors hover:bg-surface-2"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-edge bg-surface px-6 text-sm font-semibold text-ink shadow-xs transition-colors duration-150 hover:border-edge-strong hover:bg-surface-2 focusable"
             >
               <MonitorPlay className="h-4 w-4" aria-hidden /> Try the simulator
             </Link>
@@ -75,8 +76,8 @@ export default function Home() {
 
 function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
-    <div className="card p-6 transition-shadow hover:shadow-md">
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-700 dark:bg-brand-900/60 dark:text-brand-300">
+    <div className="card card-interactive p-6">
+      <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-edge-accent bg-brand-subtle text-brand">
         {icon}
       </div>
       <h3 className="mt-4 font-semibold text-ink">{title}</h3>
