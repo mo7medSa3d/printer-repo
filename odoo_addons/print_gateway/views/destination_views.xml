@@ -6,16 +6,22 @@
         <field name="arch" type="xml">
             <form string="Destination">
                 <sheet>
-                    <group>
-                        <field name="name"/>
+                    <group string="Identity">
+                        <field name="name" placeholder="e.g., POS Receipt"/>
+                        <field name="zone" placeholder="e.g., Counter 1"/>
                         <field name="branch_id"/>
                         <field name="destination_type"/>
-                        <field name="enabled"/>
-                        <field name="zone"/>
-                        <field name="gateway_destination_id"/>
+                        <field name="enabled" widget="boolean_toggle"/>
+                    </group>
+                    <group string="Gateway">
+                        <field name="gateway_destination_id" help="Destination identifier as known to the Gateway, e.g. dest_pos_cairo."/>
+                    </group>
+                    <group>
                         <field name="description"/>
                     </group>
-                    <field name="binding_ids"/>
+                    <group string="Printer Bindings">
+                        <field name="binding_ids"/>
+                    </group>
                 </sheet>
             </form>
         </field>
@@ -24,11 +30,12 @@
         <field name="name">print_gateway.destination.tree</field>
         <field name="model">print_gateway.destination</field>
         <field name="arch" type="xml">
-            <tree string="Destinations">
+            <tree string="Destinations" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="destination_type"/>
-                <field name="enabled"/>
+                <field name="zone" optional="show"/>
+                <field name="enabled" widget="boolean_toggle"/>
             </tree>
         </field>
     </record>

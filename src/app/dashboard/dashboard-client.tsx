@@ -3,22 +3,34 @@
 import { useState } from "react";
 import { createAgent, createTestPrintJob, deleteAgent } from "@/app/actions";
 import { cn } from "@/lib/utils";
-import { 
-  Plus, 
-  Trash2, 
-  Printer, 
-  Settings, 
-  Activity, 
-  CheckCircle, 
-  AlertCircle, 
+import {
+  Plus,
+  Trash2,
+  Printer,
+  Activity,
+  CheckCircle2,
+  AlertTriangle,
   Clock,
   HardDrive,
-  Network
+  Network,
+  KeyRound,
+  Server,
 } from "lucide-react";
 import { format } from "date-fns";
+import {
+  Button,
+  Card,
+  CardHeader,
+  EmptyState,
+  StatusBadge,
+  StatusDot,
+  Modal,
+  Mono,
+  MetaRow,
+  CopyButton,
+  type Tone,
+} from "@/components/ui";
 
-// Agent rows arrive from the dashboard page already stripped of `secret`
-// (agents.secret is the credential hash and must never leave the server).
 type Agent = {
   id: string;
   name: string;
@@ -46,6 +58,20 @@ type Job = {
   createdAt: Date;
 };
 
+function agentTone(status: string): Tone {
+  return status === "online" ? "ok" : status === "offline" ? "bad" : "neutral";
+}
+function printerTone(status: string): Tone {
+  return status === "online" ? "ok" : status === "busy" ? "warn" : status === "error" ? "bad" : status === "offline" ? "bad" : "neutral";
+}
+function jobTone(status: string): Tone {
+  if (status === "success") return "ok";
+  if (status === "failed" || status === "expired") return "bad";
+  if (status === "printing") return "warn";
+  if (status === "claimed") return "info";
+  return "neutral";
+}
+
 export default function DashboardClient({
   initialAgents,
   initialPrinters,
@@ -57,6 +83,8 @@ export default function DashboardClient({
 }) {
   const [newAgentName, setNewAgentName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
 
   const handleCreateAgent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +93,7 @@ export default function DashboardClient({
     try {
       await createAgent(newAgentName);
       setNewAgentName("");
-      window.location.reload(); // Simple way to refresh for now
+      window.location.reload();
     } finally {
       setIsLoading(false);
     }
@@ -73,11 +101,12 @@ export default function DashboardClient({
 
   const handleTestPrint = async (printerId: string) => {
     setIsLoading(true);
+    setNotice(null);
     try {
       await createTestPrintJob(printerId);
-      alert("Test print job queued! Gateway → Agent → Printer. Check Recent Jobs for queued → claimed → printing → success/failed. Success = socket write OK (see PRINTERS.md), not paper-out.");
+      setNotice({ text: "Test print queued — it runs through the normal job pipeline (queued → claimed → printing → success/failed).", tone: "ok" });
     } catch (err) {
-      alert(`Failed to queue test print: ${err instanceof Error ? err.message : "unknown error"}`);
+      setNotice({ text: `Failed to queue test print: ${err instanceof Error ? err.message : "unknown error"}`, tone: "bad" });
     } finally {
       setIsLoading(false);
     }
@@ -85,207 +114,201 @@ export default function DashboardClient({
 
   const handleTestConnection = async (printerId: string) => {
     setIsLoading(true);
+    setNotice(null);
     try {
       const res = await fetch(`/api/printers/${printerId}/test-connection`, { method: "POST" });
       const data: { reachable: boolean; latencyMs: number | null; agentOnline: boolean; error: string | null } = await res.json();
       if (!res.ok) throw new Error((data as unknown as { error?: string }).error ?? "probe failed");
-      // Contract: {reachable, latencyMs, agentOnline, error} — no probeId, no printJobs row (see route.ts:10)
       if (data.error) {
-        alert(`reachable=${data.reachable} agentOnline=${data.agentOnline} latencyMs=${data.latencyMs ?? "n/a"}\n${data.error}`);
+        setNotice({ text: `reachable=${data.reachable} · agentOnline=${data.agentOnline} · ${data.error}`, tone: "bad" });
       } else {
-        alert(`reachable=${data.reachable} agentOnline=${data.agentOnline} latencyMs=${data.latencyMs ?? "null (Gateway cannot dial LAN; Agent dials on heartbeat)"}`);
+        setNotice({ text: `Printer reachable · agent online · round-trip ${data.latencyMs ?? "not measured (live probe pending)"}`, tone: "ok" });
       }
     } catch (err) {
-      alert(`Probe failed: ${err instanceof Error ? err.message : "unknown"}`);
+      setNotice({ text: `Probe failed: ${err instanceof Error ? err.message : "unknown"}`, tone: "bad" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteConfirmed = async () => {
+    if (!pendingDelete) return;
+    const id = pendingDelete.id;
+    setPendingDelete(null);
+    setIsLoading(true);
+    try {
+      await deleteAgent(id);
+      window.location.reload();
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-      {/* Agents Column */}
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <Activity className="w-5 h-5 text-blue-500" />
-            Agents
-          </h2>
-        </div>
-
-        <form onSubmit={handleCreateAgent} className="flex gap-2">
-          <input
-            type="text"
-            placeholder="Agent Name (e.g. Cairo Branch)"
-            className="flex-1 px-3 py-2 border rounded-md text-sm bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
-            value={newAgentName}
-            onChange={(e) => setNewAgentName(e.target.value)}
-            disabled={isLoading}
-          />
-          <button
-            type="submit"
-            disabled={isLoading || !newAgentName}
-            className="p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-          >
-            <Plus className="w-5 h-5" />
-          </button>
-        </form>
-
-        <div className="space-y-4">
-          {initialAgents.map((agent) => (
-            <div
-              key={agent.id}
-              className="p-4 border rounded-lg bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 relative group"
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="font-medium">{agent.name}</h3>
-                <span
-                  className={cn(
-                    "text-xs px-2 py-0.5 rounded-full uppercase font-bold",
-                    agent.status === "online"
-                      ? "bg-green-100 text-green-700"
-                      : "bg-zinc-100 text-zinc-600"
-                  )}
-                >
-                  {agent.status}
-                </span>
-              </div>
-              <div className="text-xs text-zinc-500 space-y-1">
-                <p>ID: {agent.id}</p>
-                {agent.pairingCode && (
-                  <p className="text-orange-600 font-mono font-bold">
-                    Pairing Code: {agent.pairingCode}
-                  </p>
-                )}
-                <p>Host: {(agent.metadata as unknown as { hostname?: string })?.hostname ?? "—"} · {(agent.metadata as unknown as { os?: string })?.os ?? ""} {(agent.metadata as unknown as { version?: string })?.version ?? ""}</p>
-                <p>
-                  Last seen:{" "}
-                  {agent.lastSeenAt
-                    ? format(new Date(agent.lastSeenAt), "MMM d, HH:mm:ss")
-                    : "Never"}
-                </p>
-                <p className="text-[10px] opacity-60">Gateway: queued→claimed→printing→success/failed/expired · Agent: queued→printing→success/failed</p>
-              </div>
-              <button
-                onClick={() => deleteAgent(agent.id)}
-                className="absolute top-2 right-2 p-1 text-zinc-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ))}
-          {initialAgents.length === 0 && (
-            <p className="text-center text-zinc-500 py-8 italic">No agents registered</p>
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      {notice && (
+        <div
+          role="status"
+          className={cn(
+            "lg:col-span-3 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm",
+            notice.tone === "ok" ? "border-ok-edge bg-ok-bg text-ok" : "border-bad-edge bg-bad-bg text-bad"
           )}
+        >
+          {notice.tone === "ok" ? <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden /> : <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden />}
+          <span className="text-ink-2">{notice.text}</span>
+          <button onClick={() => setNotice(null)} className="ml-auto text-ink-3 hover:text-ink" aria-label="Dismiss message">✕</button>
         </div>
-      </div>
+      )}
 
-      {/* Printers Column */}
-      <div className="space-y-6">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <Printer className="w-5 h-5 text-purple-500" />
-          Printers
-        </h2>
+      {/* Agents */}
+      <Card className="overflow-hidden">
+        <CardHeader
+          title="Agents"
+          subtitle="Machines paired to this gateway"
+          icon={<Activity className="h-4 w-4 text-brand-600" aria-hidden />}
+        />
+        <div className="px-5 pb-5 space-y-4">
+          <form onSubmit={handleCreateAgent} className="flex gap-2" aria-label="Register a new agent">
+            <input
+              type="text"
+              placeholder="Agent name, e.g. Cairo Branch"
+              className="h-9 flex-1 rounded-lg border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-3 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+              value={newAgentName}
+              onChange={(e) => setNewAgentName(e.target.value)}
+              disabled={isLoading}
+              aria-label="Agent name"
+            />
+            <Button variant="primary" type="submit" disabled={isLoading || !newAgentName} icon={<Plus className="h-4 w-4" />} aria-label="Create agent">
+              Add
+            </Button>
+          </form>
 
-        <div className="space-y-4">
-          {initialPrinters.map((printer) => (
-            <div
-              key={printer.id}
-              className="p-4 border rounded-lg bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="font-medium">{printer.name}</h3>
-                <span
-                  className={cn(
-                    "text-xs px-2 py-0.5 rounded-full",
-                    printer.status === "online"
-                      ? "bg-green-100 text-green-700"
-                      : "bg-red-100 text-red-700"
-                  )}
-                >
-                  {printer.status}
-                </span>
-              </div>
-              <div className="text-xs text-zinc-500 space-y-1 mb-4">
-                <div className="flex items-center gap-1">
-                  {printer.type === "usb" ? (
-                    <HardDrive className="w-3 h-3" />
-                  ) : (
-                    <Network className="w-3 h-3" />
-                  )}
-                  <span>{printer.type.toUpperCase()}</span>
+          {initialAgents.length === 0 ? (
+            <EmptyState
+              icon={<Server className="h-7 w-7" />}
+              title="No agents registered"
+              description="Create an agent to get a one-time pairing code, then pair the desktop manager or the CLI with it."
+            />
+          ) : (
+            <div className="space-y-3">
+              {initialAgents.map((agent) => (
+                <div key={agent.id} className="rounded-xl border border-edge bg-surface p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="truncate font-medium text-ink">{agent.name}</h3>
+                    <StatusBadge tone={agentTone(agent.status)} label={agent.status === "online" ? "Online" : "Offline"} />
+                  </div>
+                  <div className="mt-2 space-y-1.5 text-xs text-ink-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-ink-3">ID</span>
+                      <Mono>{agent.id}</Mono>
+                      <CopyButton value={agent.id} label="Copy" className="ml-auto" />
+                    </div>
+                    {agent.pairingCode ? (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-warn-edge bg-warn-bg px-2.5 py-1.5">
+                        <KeyRound className="h-3.5 w-3.5 text-warn" aria-hidden />
+                        <span className="text-ink-2">Pairing code</span>
+                        <span className="font-mono font-bold tracking-widest text-ink">{agent.pairingCode}</span>
+                        <CopyButton value={agent.pairingCode} label="Copy" className="ml-auto" />
+                      </div>
+                    ) : (
+                      <p className="text-ink-3">Paired — no active pairing code</p>
+                    )}
+                    <p className="text-ink-3">
+                      {(agent.metadata as unknown as { hostname?: string })?.hostname ?? "Host unknown"} · {(agent.metadata as unknown as { os?: string })?.os ?? ""} {(agent.metadata as unknown as { version?: string })?.version ?? ""}
+                    </p>
+                    <p className="text-ink-3">
+                      Last seen {agent.lastSeenAt ? format(new Date(agent.lastSeenAt), "MMM d, HH:mm:ss") : "never"}
+                    </p>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <Button variant="ghost" size="sm" onClick={() => setPendingDelete(agent)} icon={<Trash2 className="h-3.5 w-3.5" />} className="text-ink-3 hover:text-bad">
+                      Remove
+                    </Button>
+                  </div>
                 </div>
-                <p>Agent: {initialAgents.find(a => a.id === printer.agentId)?.name || printer.agentId}</p>
-                {printer.config?.ip && <p>IP: {printer.config.ip}</p>}
-                {printer.config?.address && <p>Path: {printer.config.address}</p>}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => handleTestConnection(printer.id)}
-                  disabled={isLoading}
-                  className="py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 text-sm font-medium rounded-md transition-colors"
-                >
-                  Test Connection
-                </button>
-                <button
-                  onClick={() => handleTestPrint(printer.id)}
-                  disabled={isLoading}
-                  className="py-2 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 hover:bg-zinc-800 text-sm font-medium rounded-md transition-colors"
-                >
-                  Test Print
-                </button>
-              </div>
-              <p className="text-[10px] text-zinc-400 mt-2 leading-tight">Connection = TCP dial only (no job). Print = real queued→claimed→printing→success/failed via Agent → LAN.</p>
+              ))}
             </div>
-          ))}
-          {initialPrinters.length === 0 && (
-            <p className="text-center text-zinc-500 py-8 italic">No printers discovered</p>
           )}
         </div>
-      </div>
+      </Card>
 
-      {/* Jobs Column */}
-      <div className="space-y-6">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <Clock className="w-5 h-5 text-orange-500" />
-          Recent Jobs
-        </h2>
-
-        <div className="space-y-3">
-          {initialJobs.map((job) => (
-            <div
-              key={job.id}
-              className="p-3 border rounded-lg bg-zinc-50 dark:bg-zinc-900/50 border-zinc-200 dark:border-zinc-800 text-xs"
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-mono text-zinc-400">{job.id}</span>
-                <span
-                  className={cn(
-                    "px-1.5 py-0.5 rounded flex items-center gap-1",
-                    job.status === "success" && "text-green-600 bg-green-50",
-                    job.status === "failed" && "text-red-600 bg-red-50",
-                    job.status === "queued" && "text-blue-600 bg-blue-50",
-                    job.status === "printing" && "text-orange-600 bg-orange-50"
-                  )}
-                >
-                  {job.status === "success" && <CheckCircle className="w-3 h-3" />}
-                  {job.status === "failed" && <AlertCircle className="w-3 h-3" />}
-                  {job.status}
-                </span>
-              </div>
-              <div className="flex justify-between items-end">
-                <div className="text-zinc-500">
-                  <p>Printer: {initialPrinters.find(p => p.id === job.printerId)?.name || job.printerId}</p>
-                  <p>{format(new Date(job.createdAt), "HH:mm:ss")}</p>
+      {/* Printers */}
+      <Card className="overflow-hidden">
+        <CardHeader
+          title="Printers"
+          subtitle="Reported by agents via heartbeat"
+          icon={<Printer className="h-4 w-4 text-brand-600" aria-hidden />}
+        />
+        <div className="px-5 pb-5 space-y-3">
+          {initialPrinters.length === 0 ? (
+            <EmptyState icon={<Printer className="h-7 w-7" />} title="No printers yet" description="Printers appear here as soon as an online agent reports them via heartbeat." />
+          ) : (
+            initialPrinters.map((printer) => (
+              <div key={printer.id} className="rounded-xl border border-edge bg-surface p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="truncate font-medium text-ink">{printer.name}</h3>
+                  <StatusBadge tone={printerTone(printer.status)} label={printer.status === "online" ? "Online" : printer.status.charAt(0).toUpperCase() + printer.status.slice(1)} />
+                </div>
+                <div className="mt-2 space-y-1.5 text-xs text-ink-2">
+                  <div className="flex items-center gap-1.5">
+                    {printer.type === "usb" ? <HardDrive className="h-3.5 w-3.5 text-ink-3" aria-hidden /> : <Network className="h-3.5 w-3.5 text-ink-3" aria-hidden />}
+                    <span className="uppercase">{printer.type}</span>
+                  </div>
+                  <p className="text-ink-3">Agent: {initialAgents.find(a => a.id === printer.agentId)?.name || printer.agentId}</p>
+                  {printer.config?.ip && <p className="font-mono text-ink-2">{printer.config.ip}</p>}
+                  {printer.config?.address && <p className="font-mono text-ink-2">{printer.config.address}</p>}
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => handleTestConnection(printer.id)} disabled={isLoading}>Test connection</Button>
+                  <Button variant="primary" size="sm" onClick={() => handleTestPrint(printer.id)} disabled={isLoading}>Test print</Button>
                 </div>
               </div>
-            </div>
-          ))}
-          {initialJobs.length === 0 && (
-            <p className="text-center text-zinc-500 py-8 italic">No jobs in queue</p>
+            ))
           )}
         </div>
-      </div>
+      </Card>
+
+      {/* Jobs */}
+      <Card className="overflow-hidden">
+        <CardHeader
+          title="Recent jobs"
+          subtitle="Latest 50 in the gateway queue"
+          icon={<Clock className="h-4 w-4 text-brand-600" aria-hidden />}
+        />
+        <div className="px-5 pb-5 space-y-2.5">
+          {initialJobs.length === 0 ? (
+            <EmptyState icon={<Clock className="h-7 w-7" />} title="No jobs in queue" description="Print jobs will appear here when an agent starts printing." />
+          ) : (
+            initialJobs.map((job) => (
+              <div key={job.id} className="rounded-lg border border-edge bg-surface px-3.5 py-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <Mono className="truncate">{job.id}</Mono>
+                  <StatusBadge tone={jobTone(job.status)} label={job.status === "success" ? "Completed" : job.status.charAt(0).toUpperCase() + job.status.slice(1)} />
+                </div>
+                <div className="mt-1.5 flex items-center justify-between text-ink-3">
+                  <span className="truncate">Printer: {initialPrinters.find(p => p.id === job.printerId)?.name || job.printerId}</span>
+                  <span className="whitespace-nowrap">{format(new Date(job.createdAt), "HH:mm:ss")}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
+
+      <Modal
+        open={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        title={`Remove agent “${pendingDelete?.name ?? ""}”?`}
+        description="The agent can no longer poll for jobs or report heartbeats. Its printers remain in the database."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setPendingDelete(null)}>Cancel</Button>
+            <Button variant="danger" onClick={handleDeleteConfirmed} icon={<Trash2 className="h-4 w-4" />}>Remove agent</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink-2">This action cannot be undone from the console. Pair the agent again later with a new code.</p>
+      </Modal>
     </div>
   );
 }

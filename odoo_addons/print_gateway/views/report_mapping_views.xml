@@ -6,13 +6,13 @@
         <field name="arch" type="xml">
             <form string="Report Mapping">
                 <sheet>
-                    <group>
+                    <group string="Mapping">
                         <field name="name" readonly="1"/>
-                        <field name="active"/>
-                        <field name="gateway_enabled"/>
-                        <field name="priority"/>
+                        <field name="active" widget="boolean_toggle"/>
+                        <field name="gateway_enabled" widget="boolean_toggle"/>
+                        <field name="fallback_to_normal" widget="boolean_toggle" help="When this is on, a routing failure falls back to the standard Odoo print/download flow."/>
+                        <field name="priority" help="Lower number = higher priority. When multiple mappings match a report, the lowest priority wins."/>
                         <field name="payload_type"/>
-                        <field name="fallback_to_normal"/>
                     </group>
                     <group string="Report Identification (priority: report &gt; xml_id &gt; report_name &gt; model)">
                         <field name="report_id" options="{'no_create': True}" placeholder="Select exact report action"/>
@@ -26,9 +26,10 @@
                         <field name="branch_id" options="{'no_create': True}"/>
                         <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
                     </group>
-                    <div class="alert alert-info" role="alert">
-                        Priority: Lower number = higher priority. When multiple mappings match a report, the lowest priority wins.
-                        Leave Branch/Destination empty to auto-determine from record/company.
+                    <div class="alert alert-warning" role="alert">
+                        <b>Priority:</b> lower number wins. <b>Fallback:</b> if the mapped routing cannot be resolved,
+                        the job falls back to the standard report action when <b>Fallback to Normal</b> is enabled.
+                        Leave Branch/Destination empty to auto-determine from the record/company.
                     </div>
                 </sheet>
             </form>
@@ -39,7 +40,7 @@
         <field name="name">print_gateway.report_mapping.tree</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <tree string="Report Mappings" decoration-bf="priority == 1">
+            <tree string="Report Mappings" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
                 <field name="name"/>
                 <field name="report_id"/>
                 <field name="report_xml_id"/>
@@ -48,9 +49,9 @@
                 <field name="document_type_name"/>
                 <field name="branch_id"/>
                 <field name="destination_id"/>
-                <field name="gateway_enabled"/>
+                <field name="gateway_enabled" widget="boolean_toggle"/>
                 <field name="priority"/>
-                <field name="active"/>
+                <field name="active" widget="boolean_toggle"/>
             </tree>
         </field>
     </record>

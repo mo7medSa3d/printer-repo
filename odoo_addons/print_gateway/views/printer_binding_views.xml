@@ -6,18 +6,28 @@
         <field name="arch" type="xml">
             <form string="Printer Binding">
                 <sheet>
-                    <group>
+                    <group string="Scope">
                         <field name="branch_id"/>
                         <field name="destination_id" domain="[('branch_id','=',branch_id)]"/>
                         <field name="document_type_id" domain="[('branch_id','=',branch_id)]"/>
                         <field name="document_type" placeholder="receipt / invoice / label / order (or leave empty for fallback)"/>
+                    </group>
+                    <group string="Target Printer">
                         <field name="printer_id" domain="[('branch_id','=',branch_id)]"/>
-                        <field name="priority" help="1=highest, fallback tries next priority if first printer offline"/>
-                        <field name="enabled"/>
+                        <field name="priority" help="1 = highest. Fallback tries the next priority if the first printer is offline."/>
+                        <field name="enabled" widget="boolean_toggle"/>
+                    </group>
+                    <group string="Gateway">
                         <field name="gateway_binding_id" readonly="1"/>
-                        <field name="config_override"/>
+                        <field name="config_override" placeholder='{"copies": 2}' help="Optional JSON overrides merged into the default payload config for this binding."/>
+                    </group>
+                    <group>
                         <field name="notes"/>
                     </group>
+                    <div class="alert alert-info" role="alert">
+                        A binding routes <b>Branch → Destination → Document Type → Printer</b>. When several bindings match,
+                        the lowest priority number wins; if that printer is offline, the next priority is tried.
+                    </div>
                 </sheet>
             </form>
         </field>
@@ -26,13 +36,13 @@
         <field name="name">print_gateway.printer_binding.tree</field>
         <field name="model">print_gateway.printer_binding</field>
         <field name="arch" type="xml">
-            <tree string="Bindings">
+            <tree string="Bindings" decoration-success="enabled" decoration-muted="not enabled" decoration-bf="priority==1">
                 <field name="branch_id"/>
                 <field name="destination_id"/>
                 <field name="document_type"/>
                 <field name="printer_id"/>
                 <field name="priority"/>
-                <field name="enabled"/>
+                <field name="enabled" widget="boolean_toggle"/>
             </tree>
         </field>
     </record>

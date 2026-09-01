@@ -12,9 +12,10 @@
                 <field name="print_gateway_branch_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}"/>
                 <field name="print_gateway_destination_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" domain="[('branch_id','=',print_gateway_branch_id)]"/>
                 <div attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" class="alert alert-info" role="alert">
-                    When enabled, this report's standard Print button will render the PDF and route it through Print Gateway
-                    (Branch → Destination → Document Type → Printer Binding → Printer) instead of browser download.
-                    Configure detailed routing in Print Gateway → Configuration → Report Mappings for priority control.
+                    When enabled, this report's standard <b>Print</b> button renders the PDF and routes it through
+                    Print Gateway <b>(Branch → Destination → Document Type → Printer Binding → Printer)</b> instead
+                    of a browser download. Configure detailed routing in
+                    <b>Print Gateway → Configuration → Report Mappings</b> for priority control.
                 </div>
             </xpath>
         </field>

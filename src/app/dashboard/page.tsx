@@ -51,9 +51,11 @@ export default async function DashboardPage() {
 
   return (
     <div className="container mx-auto py-8 px-4">
-      <h1 className="text-3xl font-bold mb-2">Print Hub Management Console</h1>
-      <p className="text-zinc-500 mb-2 italic">Cloud Gateway — Gateway: queued→claimed→printing→success/failed/expired · Agent: queued→printing→success/failed</p>
-      <p className="text-xs text-zinc-400 mb-8">Manager session (8h httpOnly, jti revocation) required for this page, its actions, and /api/agents/printers/jobs. Agent auth (Bearer agt:secret) separate. Odoo key separate. WebSocket: Agent ↔ Gateway only. Desktop polls HTTPS.</p>
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-bold text-ink">Management console</h1>
+        <span className="rounded-md border border-edge bg-surface-2 px-2 py-1 font-mono text-[11px] font-medium text-ink-3">live</span>
+      </div>
+      <p className="text-sm text-ink-2 mt-1">Agents, printers and the job queue, straight from PostgreSQL. A manager session (8h httpOnly, revocable) is required for this page and its actions.</p>
       <DashboardClient initialAgents={allAgents} initialPrinters={allPrinters} initialJobs={allJobs} />
     </div>
   );
