@@ -93,7 +93,12 @@ fn main() {
             commands::get_gateway_config,
             commands::set_gateway_config,
             commands::get_runtime_paths,
-            commands::get_app_version
+            commands::get_app_version,
+            commands::get_printers,
+            commands::discover_printers,
+            commands::test_printer,
+            commands::get_autostart,
+            commands::set_autostart
         ])
         .build(tauri::generate_context!());
 

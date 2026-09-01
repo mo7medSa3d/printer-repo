@@ -40,6 +40,20 @@ export const destinations = pgTable("destinations", {
   enabledIdx: index("destinations_enabled_idx").on(table.enabled),
 }));
 
+export const documentTypes = pgTable("document_types", {
+  id: text("id").primaryKey(),
+  branchId: text("branch_id").references(() => branches.id).notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  payloadHint: text("payload_hint"),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  branchIdIdx: index("document_types_branch_id_idx").on(table.branchId),
+  nameIdx: index("document_types_name_idx").on(table.name),
+}));
+
 export const localNetworks = pgTable("local_networks", {
   id: text("id").primaryKey(),
   branchId: text("branch_id").references(() => branches.id).notNull(),

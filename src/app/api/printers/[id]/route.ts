@@ -9,9 +9,14 @@ export const dynamic = "force-dynamic";
 
 const patchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  type: z.enum(["network", "usb"]).optional(),
+  type: z.enum(["network", "usb", "spooler", "tcp", "ipp", "ipps"]).optional(),
+  connectionType: z.enum(["network", "usb", "spooler", "tcp", "ipp", "ipps"]).optional(),
+  printerType: z.enum(["thermal", "laser", "inkjet", "spooler", "other", "unknown"]).optional(),
+  protocol: z.enum(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]).optional(),
+  branchId: z.string().optional(),
   enabled: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
+  capabilities: z.record(z.string(), z.unknown()).optional(),
   status: z.enum(["online","offline","busy","error","unknown"]).optional(),
 });
 
@@ -39,8 +44,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const update: Record<string, unknown> = { updatedAt: new Date() };
   if (parsed.data.name !== undefined) update.name = parsed.data.name;
   if (parsed.data.type !== undefined) update.type = parsed.data.type;
+  if (parsed.data.connectionType !== undefined) (update as any).connectionType = parsed.data.connectionType;
+  if (parsed.data.printerType !== undefined) (update as any).printerType = parsed.data.printerType;
+  if (parsed.data.protocol !== undefined) (update as any).protocol = parsed.data.protocol;
+  if (parsed.data.branchId !== undefined) (update as any).branchId = parsed.data.branchId;
   if (parsed.data.enabled !== undefined) update.enabled = parsed.data.enabled;
   if (parsed.data.config !== undefined) update.config = parsed.data.config;
+  if (parsed.data.capabilities !== undefined) (update as any).capabilities = parsed.data.capabilities;
   if (parsed.data.status !== undefined) update.status = parsed.data.status;
 
   const [row] = await db.update(printers).set(update as never).where(eq(printers.id, id)).returning();

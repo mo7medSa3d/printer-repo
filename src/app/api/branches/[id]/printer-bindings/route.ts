@@ -34,6 +34,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "destinationId and printerId are required" }, { status: 400 });
   }
 
+  // Branch isolation: destination must belong to this branch
+  const { destinations, printers } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const dest = await db.query.destinations.findFirst({ where: eq(destinations.id, destinationId) });
+  if (!dest) return NextResponse.json({ error: "INVALID_DESTINATION: destination not found" }, { status: 404 });
+  if (dest.branchId !== id) {
+    return NextResponse.json({ error: "INVALID_DESTINATION: destination belongs to another branch" }, { status: 400 });
+  }
+  const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
+  if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printer not found" }, { status: 404 });
+  if ((printer as any).branchId && (printer as any).branchId !== id) {
+    return NextResponse.json({ error: "Printer belongs to another branch; binding cannot connect resources across branches" }, { status: 400 });
+  }
+  // Also ensure printer's agent branch matches
+  try {
+    const { agents } = await import("@/db/schema");
+    const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+    if (agent && (agent as any).branchId && (agent as any).branchId !== id) {
+      return NextResponse.json({ error: "Printer's agent belongs to another branch" }, { status: 400 });
+    }
+  } catch {}
+
   const bindingId = `binding_${nanoid(8)}`;
   await db.insert(printerBindings).values({
     id: bindingId,

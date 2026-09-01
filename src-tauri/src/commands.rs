@@ -239,3 +239,156 @@ pub fn get_runtime_paths() -> RuntimePaths {
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").into()
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrinterInfo {
+    pub id: String,
+    pub name: String,
+    pub display_name: Option<String>,
+    pub printer_type: Option<String>,
+    pub connection_type: Option<String>,
+    pub protocol: Option<String>,
+    pub endpoint: Option<String>,
+    pub spooler_name: Option<String>,
+    pub network_address: Option<String>,
+    pub port: Option<i32>,
+    pub status: String,
+    pub enabled: bool,
+    pub capabilities: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+pub struct DiscoverResult {
+    pub printers: Vec<PrinterInfo>,
+    pub errors: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn get_printers(app: tauri::AppHandle) -> Result<Vec<PrinterInfo>, String> {
+    run_blocking(move || {
+        let path = paths::agent_data_root().join("printers.json");
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+        if raw.trim().is_empty() {
+            return Ok(vec![]);
+        }
+        let v: Vec<PrinterInfo> = serde_json::from_str(&raw).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+        Ok(v)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn discover_printers(app: tauri::AppHandle) -> Result<DiscoverResult, String> {
+    run_blocking(move || {
+        let cli = agent::cli_path(&app)?;
+        let config = paths::agent_config_path();
+        let root = paths::agent_data_root();
+        let _ = paths::ensure_agent_data_root().map_err(|e| format!("create agent data dir: {}", e))?;
+        let out = std::process::Command::new(&cli)
+            .arg("printers")
+            .arg("discover")
+            .arg("--json")
+            .arg("-config")
+            .arg(&config)
+            .env("ODOO_PRINT_AGENT_DATA_DIR", &root)
+            .output()
+            .map_err(|e| format!("failed to run discover: {}", e))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        if !out.status.success() {
+            let msg = if stderr.trim().is_empty() { stdout.clone() } else { stderr.clone() };
+            return Err(format!("discover failed: {}", msg));
+        }
+        // CLI prints table; also try to read printers.json for structured result
+        let printers = {
+            let p = root.join("printers.json");
+            if p.exists() {
+                let raw = std::fs::read_to_string(&p).unwrap_or_default();
+                serde_json::from_str::<Vec<PrinterInfo>>(&raw).unwrap_or_default()
+            } else {
+                vec![]
+            }
+        };
+        Ok(DiscoverResult { printers, errors: if stderr.is_empty() { vec![] } else { vec![stderr] } })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn test_printer(printer_id: String, app: tauri::AppHandle) -> Result<String, String> {
+    if printer_id.trim().is_empty() {
+        return Err("printer id is required".into());
+    }
+    let pid = printer_id.clone();
+    run_blocking(move || {
+        let cli = agent::cli_path(&app)?;
+        let config = paths::agent_config_path();
+        let root = paths::agent_data_root();
+        let out = std::process::Command::new(&cli)
+            .arg("printers")
+            .arg("test")
+            .arg(&pid)
+            .arg("-config")
+            .arg(&config)
+            .env("ODOO_PRINT_AGENT_DATA_DIR", &root)
+            .output()
+            .map_err(|e| format!("failed to run test: {}", e))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if !out.status.success() {
+            let msg = if stderr.is_empty() { stdout } else { stderr };
+            return Err(msg);
+        }
+        Ok(stdout)
+    })
+    .await
+}
+
+#[derive(Serialize, Clone)]
+pub struct AutostartStatus {
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub async fn get_autostart(app: tauri::AppHandle) -> Result<AutostartStatus, String> {
+    run_blocking(move || {
+        #[cfg(windows)]
+        {
+            use tauri_plugin_autostart::ManagerExt;
+            let enabled = app.autolaunch().is_enabled().unwrap_or(false);
+            Ok(AutostartStatus { enabled })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = &app;
+            Ok(AutostartStatus { enabled: false })
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<String, String> {
+    run_blocking(move || {
+        #[cfg(windows)]
+        {
+            use tauri_plugin_autostart::ManagerExt;
+            if enabled {
+                app.autolaunch().enable().map_err(|e| format!("enable autostart: {}", e))?;
+                Ok("autostart enabled".into())
+            } else {
+                app.autolaunch().disable().map_err(|e| format!("disable autostart: {}", e))?;
+                Ok("autostart disabled".into())
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (&app, enabled);
+            Err("autostart only available on Windows".into())
+        }
+    })
+    .await
+}

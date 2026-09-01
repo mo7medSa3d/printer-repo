@@ -123,9 +123,25 @@ export async function POST(req: Request) {
       branchId: parsed.branchId,
       destinationId: parsed.destinationId,
       documentType: parsed.documentType,
+      payloadType: (validatedPayload as any)?.type ?? null,
     });
     if (!resolved) {
-      return NextResponse.json({ error: "No printer binding matched branchId/destinationId/documentType" }, { status: 404 });
+      return NextResponse.json({ error: "NO_PRINTER_FOUND: No printer binding matched branchId/destinationId/documentType" }, { status: 404 });
+    }
+    if ("error" in resolved) {
+      const code = (resolved as { error: string }).error;
+      const msg = (resolved as { message: string }).message;
+      const statusMap: Record<string, number> = {
+        INVALID_BRANCH: 400,
+        INVALID_DESTINATION: 400,
+        NO_ROUTE: 404,
+        NO_PRINTER_FOUND: 404,
+        PRINTER_DISABLED: 409,
+        PRINTER_OFFLINE: 503,
+        CAPABILITY_MISMATCH: 422,
+      };
+      const httpStatus = statusMap[code] ?? 400;
+      return NextResponse.json({ error: `${code}: ${msg}`, code }, { status: httpStatus });
     }
 
     await createQueuedJob({
@@ -139,6 +155,9 @@ export async function POST(req: Request) {
       requestedBy: "odoo",
     });
 
+    // Auditable fallback info
+    const fallbackInfo = resolved.fallbackUsed ? { fallbackUsed: true, fallbackChain: resolved.fallbackChain } : {};
+
     return NextResponse.json({
       jobId,
       status: "queued",
@@ -147,6 +166,7 @@ export async function POST(req: Request) {
       branchId: parsed.branchId,
       destinationId: parsed.destinationId,
       documentType: parsed.documentType,
+      ...fallbackInfo,
     }, { status: 201 });
   }
 
@@ -165,8 +185,20 @@ export async function POST(req: Request) {
     }
 
     const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
-    if (!printer) return NextResponse.json({ error: "printerId not found" }, { status: 404 });
-    if (printer.enabled === false) return NextResponse.json({ error: "printer disabled" }, { status: 409 });
+    if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
+    if (printer.enabled === false) return NextResponse.json({ error: "PRINTER_DISABLED: printer disabled" }, { status: 409 });
+    if ((printer as any).status === "offline" || (printer as any).status === "error") {
+      return NextResponse.json({ error: "PRINTER_OFFLINE: printer is offline" }, { status: 503 });
+    }
+    // Capability validation for legacy path as well
+    const capLegacy = (await import("@/lib/routing")).validatePayloadForPrinter((validatedPayload as any)?.type, {
+      protocol: (printer as any).protocol,
+      connectionType: (printer as any).connectionType,
+      capabilities: (printer as any).capabilities,
+    });
+    if (!capLegacy.ok) {
+      return NextResponse.json({ error: capLegacy.reason }, { status: 422 });
+    }
     if (odoo.branchId && printer.branchId && odoo.branchId !== printer.branchId) {
       return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
     }

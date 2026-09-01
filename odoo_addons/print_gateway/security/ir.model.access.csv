@@ -1,0 +1,11 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_print_gateway_branch,print_gateway.branch,model_print_gateway_branch,base.group_user,1,0,0,0
+access_print_gateway_branch_manager,print_gateway.branch,model_print_gateway_branch,base.group_system,1,1,1,1
+access_print_gateway_destination,print_gateway.destination,model_print_gateway_destination,base.group_user,1,1,1,1
+access_print_gateway_document_type,print_gateway.document_type,model_print_gateway_document_type,base.group_user,1,1,1,1
+access_print_gateway_printer,print_gateway.printer,model_print_gateway_printer,base.group_user,1,1,1,1
+access_print_gateway_agent,print_gateway.agent,model_print_gateway_agent,base.group_user,1,1,1,1
+access_print_gateway_printer_binding,print_gateway.printer_binding,model_print_gateway_printer_binding,base.group_user,1,1,1,1
+access_print_gateway_print_job,print_gateway.print_job,model_print_gateway_print_job,base.group_user,1,1,1,1
+access_print_gateway_report_mapping,print_gateway.report_mapping,model_print_gateway_report_mapping,base.group_system,1,1,1,1
+access_print_gateway_report_mapping_user,print_gateway.report_mapping user,model_print_gateway_report_mapping,base.group_user,1,0,0,0

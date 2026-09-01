@@ -1,5 +1,9 @@
 # ARCHITECTURAL ANALYSIS: Current Implementation vs. Client Requirements
 
+> **⚠️ OUTDATED — Pre-Hardening Snapshot (2026-08-31 single-branch state).**
+> **For current truth, see `README.md` → `CURRENT PROJECT STATUS` + `ARCHITECTURE.md` + `PRINTERS.md` + `src/db/schema.ts`.**
+> **Current implementation (2026-09-01) is multi-branch: `branches, destinations, document_types, printerBindings` with `resolvePrinterForJob` fallback, `spooler_windows.go` correct `PRINTER_INFO_2W`, `network 9100` + `ipp 631` + `USB SetupDi` discovery, and Odoo `ir.actions.report` generic override. This file is kept for historical audit trail — do not use for current deployment decisions.**
+
 **Date**: 2026-08-31  
 **Scope**: Complete audit of code against multi-branch, multi-printer, Odoo-controlled routing requirements  
 **Analysis Level**: Evidence-based, code-referenced, no assumptions

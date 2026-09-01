@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,8 @@ const shutdownGrace = 25 * time.Second
 
 type Agent struct {
 	cfg            *config.Config
+	configPath     string
+	registryPath   string
 	client         *http.Client
 	printers       map[string]printer.Printer
 	printerConfigs map[string]config.PrinterConfig
@@ -78,6 +81,9 @@ type Agent struct {
 // A printer that fails to initialize (bad config, unsupported type) is
 // logged and skipped rather than aborting the whole agent - other
 // printers on the same agent must keep working.
+// It also loads the persistent discovery registry (printers.json) and merges
+// discovered/manual printers idempotently, so repeated discovery does not
+// create duplicates and the production config does not depend on printers: [].
 func New(cfg *config.Config, configPath string) (*Agent, error) {
 	dbPath := config.QueueDBPath(configPath)
 	q, err := queue.New(dbPath)
@@ -85,8 +91,12 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		return nil, fmt.Errorf("open local queue at %s: %w", dbPath, err)
 	}
 
+	registryPath := config.RegistryPath(configPath)
+
 	a := &Agent{
 		cfg:            cfg,
+		configPath:     configPath,
+		registryPath:   registryPath,
 		client:         &http.Client{Timeout: 15 * time.Second},
 		printers:       make(map[string]printer.Printer),
 		printerConfigs: make(map[string]config.PrinterConfig),
@@ -98,6 +108,7 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		shutdownCh:     make(chan struct{}),
 	}
 
+	// 1. Load configured printers from YAML (legacy, still supported for backward compat)
 	for _, pc := range cfg.Printers {
 		p, err := printer.New(pc)
 		if err != nil {
@@ -108,11 +119,190 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		a.printerConfigs[pc.ID] = pc
 	}
 
+	// 2. Merge registry printers (discovered + manually registered) — idempotent.
+	// Phase14: Do quick local discovery synchronously (config+spooler+registry) to avoid
+	// blocking startup on 8s LAN scan. Full network/USB discovery runs asynchronously.
+	quick := printer.DiscoverQuick(cfg, registryPath)
+	if len(quick.Errors) > 0 {
+		for _, e := range quick.Errors {
+			log.Printf("discovery warning: %s", e)
+		}
+	}
+	if len(quick.Printers) > 0 {
+		if merged, err := printer.UpsertRegistry(registryPath, quick.Printers); err == nil {
+			for _, di := range merged {
+				if _, exists := a.printers[di.ID]; exists {
+					continue
+				}
+				pc := config.PrinterConfig{
+					ID:           di.ID,
+					Name:         di.Name,
+					Type:         di.ConnectionType,
+					Endpoint:     di.Endpoint,
+					Protocol:     di.Protocol,
+					SpoolerName:  di.SpoolerName,
+					PrinterType:  di.PrinterType,
+					USBVID:       di.USBVID,
+					USBPID:       di.USBPID,
+					USBSerial:    di.USBSerial,
+					Capabilities: di.Capabilities,
+				}
+				if di.ConnectionType == "spooler" && pc.SpoolerName == "" {
+					pc.SpoolerName = di.SpoolerName
+				}
+				p, err := printer.New(pc)
+				if err != nil {
+					log.Printf("WARNING: registry printer %q (%s) not initialized: %v", di.ID, di.Name, err)
+					continue
+				}
+				a.printers[di.ID] = p
+				a.printerConfigs[di.ID] = pc
+			}
+		} else {
+			log.Printf("WARNING: failed to persist discovery registry: %v", err)
+		}
+	}
+	// 3. Full discovery (network+USB) asynchronously — additive, bounded, not blocking startup
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[discovery] async full discovery panic: %v", r)
+			}
+		}()
+		// Small delay to let gateway communication start first
+		time.Sleep(2 * time.Second)
+		log.Printf("[discovery] starting async full discovery (network+USB)")
+		full := printer.Discover(cfg, registryPath)
+		if len(full.Errors) > 0 {
+			for _, e := range full.Errors {
+				log.Printf("discovery warning: %s", e)
+			}
+		}
+		if len(full.Printers) > len(quick.Printers) {
+			log.Printf("[discovery] async discovery found %d printers (quick had %d), updating registry", len(full.Printers), len(quick.Printers))
+			if merged, err := printer.UpsertRegistry(registryPath, full.Printers); err == nil {
+				for _, di := range merged {
+					if _, exists := a.printers[di.ID]; exists {
+						continue
+					}
+					pc := config.PrinterConfig{
+						ID:           di.ID,
+						Name:         di.Name,
+						Type:         di.ConnectionType,
+						Endpoint:     di.Endpoint,
+						Protocol:     di.Protocol,
+						SpoolerName:  di.SpoolerName,
+						PrinterType:  di.PrinterType,
+						USBVID:       di.USBVID,
+						USBPID:       di.USBPID,
+						USBSerial:    di.USBSerial,
+						Capabilities: di.Capabilities,
+					}
+					if di.ConnectionType == "spooler" && pc.SpoolerName == "" {
+						pc.SpoolerName = di.SpoolerName
+					}
+					p, err := printer.New(pc)
+					if err != nil {
+						log.Printf("WARNING: async printer %q (%s) not initialized: %v", di.ID, di.Name, err)
+						continue
+					}
+					a.printers[di.ID] = p
+					a.printerConfigs[di.ID] = pc
+					log.Printf("[discovery] async added printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
+				}
+			}
+		} else {
+			log.Printf("[discovery] async discovery completed: %d printers (no new)", len(full.Printers))
+		}
+	}()
+
 	if len(a.printers) == 0 {
-		log.Printf("WARNING: no printers were successfully initialized from config; jobs will fail until printers are configured correctly")
+		log.Printf("INFO: no printers configured yet; run discovery or add manually. Jobs will be queued until a printer is available.")
+	} else {
+		log.Printf("Agent initialized with %d printer(s) (config + registry)", len(a.printers))
 	}
 
 	return a, nil
+}
+
+// ListPrinters returns the current discovered/configured printer inventory.
+func (a *Agent) ListPrinters() []printer.DeviceInfo {
+	infos, _ := printer.ListPrinters(a.cfg, a.registryPath)
+	return infos
+}
+
+// Discover runs discovery and refreshes the local registry + printer map.
+func (a *Agent) Discover() printer.DiscoveryResult {
+	result := printer.Discover(a.cfg, a.registryPath)
+	if len(result.Printers) > 0 {
+		if merged, err := printer.UpsertRegistry(a.registryPath, result.Printers); err == nil {
+			// Refresh in-memory printers with merged registry
+			for _, di := range merged {
+				if _, exists := a.printers[di.ID]; exists {
+					continue
+				}
+				pc := config.PrinterConfig{
+					ID:           di.ID,
+					Name:         di.Name,
+					Type:         di.ConnectionType,
+					Endpoint:     di.Endpoint,
+					Protocol:     di.Protocol,
+					SpoolerName:  di.SpoolerName,
+					PrinterType:  di.PrinterType,
+					USBVID:       di.USBVID,
+					USBPID:       di.USBPID,
+					USBSerial:    di.USBSerial,
+					Capabilities: di.Capabilities,
+				}
+				if p, err := printer.New(pc); err == nil {
+					a.printers[di.ID] = p
+					a.printerConfigs[di.ID] = pc
+				}
+			}
+			result.Printers = merged
+		}
+	}
+	log.Printf("Discovery completed: %d printers found", len(result.Printers))
+	return result
+}
+
+// RegisterManual adds a manually configured printer (for when discovery cannot identify correctly).
+func (a *Agent) RegisterManual(info printer.DeviceInfo) error {
+	if info.ID != "" {
+		if _, exists := a.printers[info.ID]; exists {
+			return fmt.Errorf("printer ID %q already exists", info.ID)
+		}
+	}
+	if info.ID == "" {
+		info.ID = printer.StableIDForDevice(info)
+	}
+	if _, err := printer.RegisterManual(a.registryPath, info); err != nil {
+		return err
+	}
+	pc := config.PrinterConfig{
+		ID:          info.ID,
+		Name:        info.Name,
+		Type:        info.ConnectionType,
+		Endpoint:    info.Endpoint,
+		Protocol:    info.Protocol,
+		SpoolerName: info.SpoolerName,
+	}
+	if info.ConnectionType == "spooler" && pc.SpoolerName == "" {
+		pc.SpoolerName = info.SpoolerName
+	}
+	p, err := printer.New(pc)
+	if err != nil {
+		return err
+	}
+	a.printers[info.ID] = p
+	a.printerConfigs[info.ID] = pc
+	log.Printf("Manual printer registered: %s (%s)", info.ID, info.Name)
+	return nil
+}
+
+// TestPrinter runs a real test print against the given printer ID.
+func (a *Agent) TestPrinter(printerID string) error {
+	return printer.TestPrinter(a.cfg, a.registryPath, printerID)
 }
 
 // Close releases the durable local queue. Call it during shutdown, after Run
@@ -402,9 +592,9 @@ func (a *Agent) pollJobsGuarded(ctx context.Context) {
 // printerStatusPayload builds the printer-sync block sent on every
 // heartbeat, using the agent's OWN view of its configured printers - the
 // server must never be trusted to tell an agent what printers it has.
-//
-// TCP probes run concurrently: a sequential probe of N offline printers (2s
-// dial timeout each) used to stall the whole heartbeat for 2*N seconds.
+// It now reports the full discovery model: connectionType, protocol,
+// spooler_name, etc., so Gateway can store canonical printer registry and
+// route jobs by branch/destination/documentType without relying on YAML.
 func (a *Agent) printerStatusPayload() []map[string]interface{} {
 	ids := make([]string, 0, len(a.printers))
 	for id := range a.printers {
@@ -416,33 +606,112 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 	var probeWg sync.WaitGroup
 	probeWg.Add(len(ids))
 	for i, id := range ids {
-		go func(i int, p printer.Printer) {
+		go func(i int, pid string, p printer.Printer) {
 			defer probeWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Status probe panic for %s: %v", pid, r)
+					statuses[i] = "error"
+				}
+			}()
 			statuses[i] = p.Status()
-		}(i, a.printers[id])
+		}(i, id, a.printers[id])
 	}
 	probeWg.Wait()
 
 	result := make([]map[string]interface{}, 0, len(ids))
 	for i, id := range ids {
 		pc := a.printerConfigs[id]
-		result = append(result, map[string]interface{}{
-			"id":     id,
-			"name":   pc.Name,
-			"type":   pc.Type,
-			"status": statuses[i],
-			"config": endpointToConfig(pc),
-		})
+		nt := pc.NormalizedType()
+		proto := pc.NormalizedProtocol()
+		if proto == "" {
+			proto = "raw"
+		}
+		pt := pc.PrinterType
+		if pt == "" {
+			pt = "unknown"
+		}
+		// Build payload with all required fields for Gateway inventory
+		entry := map[string]interface{}{
+			"id":             id,
+			"name":           pc.Name,
+			"displayName":    pc.Name,
+			"type":           nt,
+			"printerType":    pt,
+			"connectionType": nt,
+			"protocol":       proto,
+			"status":         statuses[i],
+			"enabled":        pc.IsEnabled(),
+			"config":         endpointToConfig(pc),
+		}
+		// Include USB identifiers if present
+		if pc.USBVID != "" {
+			entry["usbVid"] = pc.USBVID
+		}
+		if pc.USBPID != "" {
+			entry["usbPid"] = pc.USBPID
+		}
+		if pc.USBSerial != "" {
+			entry["usbSerial"] = pc.USBSerial
+		}
+		if pc.SpoolerName != "" {
+			entry["spoolerName"] = pc.SpoolerName
+		}
+		if pc.Endpoint != "" {
+			entry["endpoint"] = pc.Endpoint
+		}
+		// Network address/port for network and IPP printers
+		if nt == "network" || nt == "ipp" || nt == "ipps" {
+			if host, portStr, err := net.SplitHostPort(pc.Endpoint); err == nil {
+				entry["networkAddress"] = host
+				if p, err := strconv.Atoi(portStr); err == nil {
+					entry["port"] = p
+				}
+			} else {
+				// Try IPP URL parsing
+				lowerEP := strings.ToLower(pc.Endpoint)
+				parseStr := pc.Endpoint
+				if strings.HasPrefix(lowerEP, "ipp://") {
+					parseStr = "http://" + pc.Endpoint[6:]
+				} else if strings.HasPrefix(lowerEP, "ipps://") {
+					parseStr = "https://" + pc.Endpoint[7:]
+				}
+				if u, err := url.Parse(parseStr); err == nil && u.Host != "" {
+					entry["networkAddress"] = u.Hostname()
+					if p := u.Port(); p != "" {
+						if port, err := strconv.Atoi(p); err == nil {
+							entry["port"] = port
+						}
+					} else {
+						if strings.HasPrefix(lowerEP, "ipps://") || u.Scheme == "https" {
+							entry["port"] = 631
+						} else {
+							entry["port"] = 631
+						}
+					}
+				}
+			}
+		}
+		// Capabilities if available
+		if pc.Capabilities != nil && len(pc.Capabilities) > 0 {
+			entry["capabilities"] = pc.Capabilities
+		}
+		result = append(result, entry)
 	}
 	return result
 }
 
-// endpointToConfig normalizes the agent's local "ip:port" endpoint string
-// into the {ip, port, protocol} / {address, protocol} shape the gateway's
-// printer.config JSON column expects.
+// endpointToConfig normalizes the agent's local endpoint into the gateway's
+// printer.config shape. Handles tcp, spooler, usb, ipp and includes USB metadata.
 func endpointToConfig(pc config.PrinterConfig) map[string]interface{} {
-	cfgMap := map[string]interface{}{"protocol": pc.Protocol}
-	if pc.Type == "network" {
+	proto := pc.NormalizedProtocol()
+	if proto == "" {
+		proto = "raw"
+	}
+	cfgMap := map[string]interface{}{"protocol": proto}
+	nt := pc.NormalizedType()
+	switch nt {
+	case "network":
 		host, portStr, err := net.SplitHostPort(pc.Endpoint)
 		if err == nil {
 			cfgMap["ip"] = host
@@ -452,8 +721,83 @@ func endpointToConfig(pc config.PrinterConfig) map[string]interface{} {
 		} else {
 			cfgMap["ip"] = pc.Endpoint
 		}
-	} else {
+	case "spooler":
+		spoolerName := pc.SpoolerName
+		if spoolerName == "" {
+			spoolerName = pc.Endpoint
+		}
+		cfgMap["spooler_name"] = spoolerName
+		cfgMap["address"] = spoolerName
+		// Include underlying USB info if spooler is USB-backed
+		if pc.USBVID != "" {
+			cfgMap["vid"] = pc.USBVID
+			cfgMap["usb_vid"] = pc.USBVID
+		}
+		if pc.USBPID != "" {
+			cfgMap["pid"] = pc.USBPID
+			cfgMap["usb_pid"] = pc.USBPID
+		}
+		if pc.USBSerial != "" {
+			cfgMap["serial"] = pc.USBSerial
+			cfgMap["usb_serial"] = pc.USBSerial
+		}
+	case "usb":
 		cfgMap["address"] = pc.Endpoint
+		if pc.SpoolerName != "" {
+			cfgMap["spooler_name"] = pc.SpoolerName
+		}
+		if pc.USBVID != "" {
+			cfgMap["vid"] = pc.USBVID
+			cfgMap["usb_vid"] = pc.USBVID
+		}
+		if pc.USBPID != "" {
+			cfgMap["pid"] = pc.USBPID
+			cfgMap["usb_pid"] = pc.USBPID
+		}
+		if pc.USBSerial != "" {
+			cfgMap["serial"] = pc.USBSerial
+			cfgMap["usb_serial"] = pc.USBSerial
+		}
+		// Add diagnostic if direct USB without spooler
+		if pc.SpoolerName == "" {
+			cfgMap["diagnostic"] = "USB device requires Windows spooler queue for printing"
+		}
+	case "ipp", "ipps":
+		cfgMap["address"] = pc.Endpoint
+		cfgMap["ipp_url"] = pc.Endpoint
+		// Try to extract host/port from URL for gateway
+		lowerEP := strings.ToLower(pc.Endpoint)
+		parseStr := pc.Endpoint
+		if strings.HasPrefix(lowerEP, "ipp://") {
+			parseStr = "http://" + pc.Endpoint[6:]
+		} else if strings.HasPrefix(lowerEP, "ipps://") {
+			parseStr = "https://" + pc.Endpoint[7:]
+		}
+		if u, err := url.Parse(parseStr); err == nil && u.Host != "" {
+			cfgMap["ip"] = u.Hostname()
+			if p := u.Port(); p != "" {
+				if port, err := strconv.Atoi(p); err == nil {
+					cfgMap["port"] = port
+				}
+			} else {
+				cfgMap["port"] = 631
+			}
+			cfgMap["host"] = u.Host
+		} else {
+			cfgMap["ip"] = pc.Endpoint
+		}
+	default:
+		cfgMap["address"] = pc.Endpoint
+	}
+	// Include capabilities if present
+	if pc.Capabilities != nil {
+		for k, v := range pc.Capabilities {
+			cfgMap[k] = v
+		}
+	}
+	// Legacy alias
+	if pc.PrinterType != "" {
+		cfgMap["printer_type"] = pc.PrinterType
 	}
 	return cfgMap
 }

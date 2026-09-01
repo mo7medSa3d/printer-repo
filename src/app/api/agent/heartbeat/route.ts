@@ -5,26 +5,76 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
-const VALID_PRINTER_TYPES = new Set(["network", "usb"]);
-// The agent currently only reports "online"; clamp anything else so a
-// compromised/buggy agent cannot write arbitrary strings into agents.status.
+const VALID_PRINTER_TYPES = new Set(["network", "usb", "spooler", "tcp", "ipp", "ipps"]);
+const VALID_CONNECTION_TYPES = new Set(["tcp", "network", "usb", "spooler", "ipp", "ipps"]);
+const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler", ""]);
 const VALID_AGENT_STATUSES = new Set(["online", "offline"]);
 
 type ReportedPrinter = {
   id?: unknown;
   name?: unknown;
   type?: unknown;
+  printerType?: unknown;
+  connectionType?: unknown;
+  protocol?: unknown;
   status?: unknown;
+  enabled?: unknown;
   config?: unknown;
+  capabilities?: unknown;
 };
 
-function sanitizePrinter(p: ReportedPrinter): { id: string; name: string; type: string; status: string; config: Record<string, unknown> } | null {
+function normalizeConnectionType(raw?: unknown, fallback?: string): string {
+  let t = typeof raw === "string" ? raw.toLowerCase().trim() : "";
+  if (!t && typeof fallback === "string") t = fallback.toLowerCase().trim();
+  if (t === "tcp") t = "network";
+  if (t === "windows_spooler") t = "spooler";
+  if (!VALID_CONNECTION_TYPES.has(t)) {
+    if (VALID_PRINTER_TYPES.has(t)) return t === "tcp" ? "network" : t;
+    return "network";
+  }
+  return t;
+}
+
+function normalizeProtocol(raw?: unknown): string {
+  let p = typeof raw === "string" ? raw.toLowerCase().trim() : "";
+  if (p === "windows_spooler") p = "spooler";
+  if (!VALID_PROTOCOLS.has(p)) return "raw";
+  if (p === "") return "raw";
+  return p;
+}
+
+function sanitizePrinter(p: ReportedPrinter): {
+  id: string;
+  name: string;
+  type: string;
+  printerType: string;
+  connectionType: string;
+  protocol: string;
+  status: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  capabilities: Record<string, unknown> | null;
+} | null {
   if (typeof p.id !== "string" || !p.id) return null;
   if (typeof p.name !== "string" || !p.name) return null;
-  if (typeof p.type !== "string" || !VALID_PRINTER_TYPES.has(p.type)) return null;
+  // type is legacy; prefer connectionType if present
+  const connType = normalizeConnectionType(p.connectionType, typeof p.type === "string" ? p.type : undefined);
+  if (!VALID_CONNECTION_TYPES.has(connType) && !VALID_PRINTER_TYPES.has(connType)) return null;
+  const printerType = typeof p.printerType === "string" && p.printerType.trim() ? p.printerType.trim().toLowerCase() : "unknown";
+  const protocol = normalizeProtocol(p.protocol ?? (p.config as any)?.protocol);
   const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status) ? p.status : "unknown";
-  const config = (p.config && typeof p.config === "object") ? (p.config as Record<string, unknown>) : {};
-  return { id: p.id, name: p.name, type: p.type, status, config };
+  const enabled = typeof p.enabled === "boolean" ? p.enabled : true;
+  const config = p.config && typeof p.config === "object" ? (p.config as Record<string, unknown>) : {};
+  // sanitize config protocol consistency
+  if (typeof config.protocol === "string") {
+    config.protocol = normalizeProtocol(config.protocol);
+  } else if (!config.protocol) {
+    config.protocol = protocol;
+  }
+  const capabilities = p.capabilities && typeof p.capabilities === "object" ? (p.capabilities as Record<string, unknown>) : null;
+  // Map legacy type to still store for backward compat
+  const legacyType = connType === "network" ? "network" : connType === "spooler" ? "spooler" : connType;
+  return { id: p.id, name: p.name, type: legacyType, printerType, connectionType: connType, protocol, status, enabled, config, capabilities };
 }
 
 export async function POST(req: Request) {
@@ -57,9 +107,6 @@ export async function POST(req: Request) {
       });
 
       if (existing) {
-        // CRITICAL: an agent may only update a printer it already owns.
-        // Without this check, Agent A could overwrite Agent B's printer
-        // by reporting the same printer id.
         if (existing.agentId !== agent.id) {
           skipped.push(p.id);
           continue;
@@ -67,21 +114,35 @@ export async function POST(req: Request) {
         await db.update(printers)
           .set({
             name: p.name,
+            type: p.type as any,
+            printerType: p.printerType as any,
+            connectionType: p.connectionType as any,
+            protocol: p.protocol as any,
             status: p.status,
-            config: p.config,
+            config: p.config as any,
+            capabilities: p.capabilities as any,
+            enabled: p.enabled,
             lastSeenAt: new Date(),
+            branchId: agent.branchId ?? (existing as any).branchId,
+            updatedAt: new Date(),
           })
           .where(eq(printers.id, p.id));
       } else {
         await db.insert(printers).values({
           id: p.id,
           agentId: agent.id,
+          branchId: agent.branchId as any,
           name: p.name,
-          type: p.type,
+          type: p.type as any,
+          printerType: p.printerType as any,
+          connectionType: p.connectionType as any,
+          protocol: p.protocol as any,
           status: p.status,
-          config: p.config,
+          config: p.config as any,
+          capabilities: p.capabilities as any,
+          enabled: p.enabled,
           lastSeenAt: new Date(),
-        });
+        } as any);
       }
     }
 

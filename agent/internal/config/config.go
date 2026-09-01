@@ -27,11 +27,19 @@ type Config struct {
 }
 
 type PrinterConfig struct {
-	ID         string `yaml:"id"`
-	Name       string `yaml:"name"`
-	Type       string `yaml:"type"` // "usb" or "network"
-	Endpoint   string `yaml:"endpoint"` // IP:Port or USB Path
-	Protocol   string `yaml:"protocol"` // "raw", "escpos", "ipp"
+	ID             string                 `yaml:"id"`
+	Name           string                 `yaml:"name"`
+	Type           string                 `yaml:"type"`     // "network", "usb", "spooler", "tcp", "ipp" — tcp is alias for network
+	Endpoint       string                 `yaml:"endpoint"` // IP:Port, USB Path, or spooler name for spooler type
+	Protocol       string                 `yaml:"protocol"` // "raw", "escpos", "ipp", "spooler", "windows_spooler"
+	SpoolerName    string                 `yaml:"spooler_name,omitempty"`
+	ConnectionType string                 `yaml:"connection_type,omitempty"` // alias for Type: tcp/usb/spooler/ipp
+	PrinterType    string                 `yaml:"printer_type,omitempty"`    // thermal/laser/inkjet/label/unknown
+	USBVID         string                 `yaml:"usb_vid,omitempty"`
+	USBPID         string                 `yaml:"usb_pid,omitempty"`
+	USBSerial      string                 `yaml:"usb_serial,omitempty"`
+	Capabilities   map[string]interface{} `yaml:"capabilities,omitempty"`
+	Enabled        *bool                  `yaml:"enabled,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
@@ -248,6 +256,44 @@ func (c *Config) Validate() error {
 
 var printerIDRe = regexp.MustCompile(`^[a-z0-9_][a-z0-9_-]*$`)
 
+// NormalizeType returns canonical connection type for a PrinterConfig.
+// Supports legacy Type field and new ConnectionType field, plus aliases.
+func (p PrinterConfig) NormalizedType() string {
+	t := p.ConnectionType
+	if t == "" {
+		t = p.Type
+	}
+	t = strings.ToLower(strings.TrimSpace(t))
+	switch t {
+	case "tcp":
+		return "network"
+	case "":
+		return "network"
+	default:
+		return t
+	}
+}
+
+// NormalizedProtocol returns canonical protocol.
+func (p PrinterConfig) NormalizedProtocol() string {
+	proto := strings.ToLower(strings.TrimSpace(p.Protocol))
+	if proto == "" {
+		return "raw"
+	}
+	if proto == "windows_spooler" {
+		return "spooler"
+	}
+	return proto
+}
+
+// IsEnabled returns true if printer is enabled (default true).
+func (p PrinterConfig) IsEnabled() bool {
+	if p.Enabled != nil {
+		return *p.Enabled
+	}
+	return true
+}
+
 // ValidatePrinterConfig checks a single printer block.
 func ValidatePrinterConfig(p PrinterConfig) error {
 	if p.ID == "" {
@@ -259,26 +305,36 @@ func ValidatePrinterConfig(p PrinterConfig) error {
 	if p.Name == "" {
 		return fmt.Errorf("printer %s: name required", p.ID)
 	}
-	switch p.Type {
-	case "network", "usb":
+	nt := p.NormalizedType()
+	switch nt {
+	case "network", "usb", "spooler", "ipp", "ipps":
 	default:
-		return fmt.Errorf("printer %s: type must be network or usb, got %q", p.ID, p.Type)
+		return fmt.Errorf("printer %s: type must be network/usb/spooler/ipp/ipps, got %q", p.ID, p.Type)
 	}
-	switch p.Protocol {
-	case "raw", "escpos", "ipp", "":
+	proto := p.NormalizedProtocol()
+	switch proto {
+	case "raw", "escpos", "ipp", "ipps", "spooler", "":
 	default:
-		return fmt.Errorf("printer %s: protocol must be raw/escpos/ipp, got %q", p.ID, p.Protocol)
+		return fmt.Errorf("printer %s: protocol must be raw/escpos/ipp/ipps/spooler, got %q", p.ID, p.Protocol)
 	}
-	if p.Type == "network" {
-		if p.Endpoint == "" {
+	if nt == "network" || nt == "ipp" || nt == "ipps" {
+		ep := p.Endpoint
+		if nt == "ipp" && ep == "" {
+			// IPP may use URL-like endpoint; allow empty for manual config pending
+			return nil
+		}
+		if ep == "" {
 			return fmt.Errorf("printer %s: network endpoint required (ip:port)", p.ID)
 		}
-		host, portStr, err := net.SplitHostPort(p.Endpoint)
+		// Allow ipp:// URLs for IPP
+		if strings.HasPrefix(proto, "ipp") || strings.HasPrefix(ep, "ipp://") || strings.HasPrefix(ep, "http") {
+			return nil
+		}
+		host, portStr, err := net.SplitHostPort(ep)
 		if err != nil {
 			return fmt.Errorf("printer %s: endpoint must be ip:port, got %q", p.ID, p.Endpoint)
 		}
 		if host == "" || net.ParseIP(strings.Trim(host, "[]")) == nil {
-			// allow hostname as well, but warn if not IP
 			if strings.Contains(host, " ") {
 				return fmt.Errorf("printer %s: invalid host %q", p.ID, host)
 			}
@@ -288,5 +344,21 @@ func ValidatePrinterConfig(p PrinterConfig) error {
 			return fmt.Errorf("printer %s: invalid port %q", p.ID, portStr)
 		}
 	}
+	if nt == "spooler" {
+		if p.SpoolerName == "" && p.Endpoint == "" {
+			return fmt.Errorf("printer %s: spooler printer requires spooler_name or endpoint", p.ID)
+		}
+	}
 	return nil
+}
+
+// RegistryPath returns the persistent discovery registry path beside config.
+func RegistryPath(configPath string) string {
+	dir := filepath.Dir(configPath)
+	if dir == "" || dir == "." {
+		if d, err := ExecutableDir(); err == nil {
+			dir = d
+		}
+	}
+	return filepath.Join(dir, "printers.json")
 }

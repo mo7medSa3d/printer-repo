@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_report_mapping_form" model="ir.ui.view">
+        <field name="name">print_gateway.report_mapping.form</field>
+        <field name="model">print_gateway.report_mapping</field>
+        <field name="arch" type="xml">
+            <form string="Report Mapping">
+                <sheet>
+                    <group>
+                        <field name="name" readonly="1"/>
+                        <field name="active"/>
+                        <field name="gateway_enabled"/>
+                        <field name="priority"/>
+                        <field name="payload_type"/>
+                        <field name="fallback_to_normal"/>
+                    </group>
+                    <group string="Report Identification (priority: report &gt; xml_id &gt; report_name &gt; model)">
+                        <field name="report_id" options="{'no_create': True}" placeholder="Select exact report action"/>
+                        <field name="report_xml_id" placeholder="e.g., sale.action_report_saleorder"/>
+                        <field name="report_name" placeholder="e.g., sale.report_saleorder_document"/>
+                        <field name="model_name" placeholder="e.g., sale.order"/>
+                    </group>
+                    <group string="Routing">
+                        <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="e.g., Receipt, Invoice"/>
+                        <field name="document_type_name" placeholder="Fallback string: order, invoice, delivery..."/>
+                        <field name="branch_id" options="{'no_create': True}"/>
+                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
+                    </group>
+                    <div class="alert alert-info" role="alert">
+                        Priority: Lower number = higher priority. When multiple mappings match a report, the lowest priority wins.
+                        Leave Branch/Destination empty to auto-determine from record/company.
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_report_mapping_tree" model="ir.ui.view">
+        <field name="name">print_gateway.report_mapping.tree</field>
+        <field name="model">print_gateway.report_mapping</field>
+        <field name="arch" type="xml">
+            <tree string="Report Mappings" decoration-bf="priority == 1">
+                <field name="name"/>
+                <field name="report_id"/>
+                <field name="report_xml_id"/>
+                <field name="model_name"/>
+                <field name="document_type_id"/>
+                <field name="document_type_name"/>
+                <field name="branch_id"/>
+                <field name="destination_id"/>
+                <field name="gateway_enabled"/>
+                <field name="priority"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_report_mapping_search" model="ir.ui.view">
+        <field name="name">print_gateway.report_mapping.search</field>
+        <field name="model">print_gateway.report_mapping</field>
+        <field name="arch" type="xml">
+            <search string="Report Mappings">
+                <field name="name"/>
+                <field name="report_xml_id"/>
+                <field name="model_name"/>
+                <field name="report_name"/>
+                <field name="branch_id"/>
+                <field name="document_type_id"/>
+                <filter string="Active" name="active" domain="[('active','=',True)]"/>
+                <filter string="Gateway Enabled" name="gateway_enabled" domain="[('gateway_enabled','=',True)]"/>
+                <separator/>
+                <filter string="Sale Order" name="sale_order" domain="[('model_name','=','sale.order')]"/>
+                <filter string="Invoice" name="invoice" domain="[('model_name','=','account.move')]"/>
+                <filter string="Delivery" name="delivery" domain="[('model_name','=','stock.picking')]"/>
+                <separator/>
+                <group expand="0" string="Group By">
+                    <filter string="Branch" name="branch" context="{'group_by': 'branch_id'}"/>
+                    <filter string="Document Type" name="document_type" context="{'group_by': 'document_type_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_print_gateway_report_mapping" model="ir.actions.act_window">
+        <field name="name">Report Mappings</field>
+        <field name="res_model">print_gateway.report_mapping</field>
+        <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first report mapping!
+            </p>
+            <p>
+                Map Odoo reports to Print Gateway document types.
+                Priority: Report &gt; XML ID &gt; Report Name &gt; Model.
+                Example: sale.action_report_saleorder → order, account.account_invoices → invoice.
+            </p>
+        </field>
+    </record>
+</odoo>

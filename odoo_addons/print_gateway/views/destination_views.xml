@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_destination_form" model="ir.ui.view">
+        <field name="name">print_gateway.destination.form</field>
+        <field name="model">print_gateway.destination</field>
+        <field name="arch" type="xml">
+            <form string="Destination">
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="branch_id"/>
+                        <field name="destination_type"/>
+                        <field name="enabled"/>
+                        <field name="zone"/>
+                        <field name="gateway_destination_id"/>
+                        <field name="description"/>
+                    </group>
+                    <field name="binding_ids"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_print_gateway_destination_tree" model="ir.ui.view">
+        <field name="name">print_gateway.destination.tree</field>
+        <field name="model">print_gateway.destination</field>
+        <field name="arch" type="xml">
+            <tree string="Destinations">
+                <field name="name"/>
+                <field name="branch_id"/>
+                <field name="destination_type"/>
+                <field name="enabled"/>
+            </tree>
+        </field>
+    </record>
+    <record id="action_print_gateway_destination" model="ir.actions.act_window">
+        <field name="name">Destinations</field>
+        <field name="res_model">print_gateway.destination</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>

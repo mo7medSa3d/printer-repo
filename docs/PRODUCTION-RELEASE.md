@@ -86,19 +86,40 @@ Then on a clean Windows VM:
 & "C:\Program Files\Odoo Print Manager\resources\OdooPrintAgent.exe" -service start
 ```
 
+## What changed (round 3 — generic Odoo printing + Direct USB + IPP)
+
+All verified by `py_compile` + `xmllint` + `typecheck/lint/vitest/Next build/desktop build/go vet` on this host; hardware IPP/USB still `REQUIRES REAL WINDOWS/PRINTER`.
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | Odoo generic printing | `odoo_addons/print_gateway/models/report_mapping.py` (new 8-field mapping, priority `report_id > xml_id > report_name > model_name`) + `ir_actions_report.py` `report_action` override now intercepts **standard Odoo Print** (not custom button) → `_determine_branch/destination/document_type` → `_render_qweb_pdf` → `raw` base64 PDF → `branch.create_print_job` with `odoo_model/record_id/report_xml_id/report_name` |
+| 2 | Odoo print job tracking | `print_job.py` added `odoo_model, odoo_record_id, report_xml_id, report_name, report_id (Many2one ir.actions.report)` + views show `Odoo Report` group, tree shows `odoo_model/report_xml_id` |
+| 3 | Odoo branch | `branch.py:171` `create_print_job` now 8-args `(destination_id, document_type, payload, odoo_model, odoo_record_id, report_xml_id, report_name, report_id)` stores metadata, `report_id` resolved via `env.ref` |
+| 4 | Odoo Sale Order | `sale_order_views.xml` header `Print via Gateway` button **removed** (now `ir.actions.server` deprecated), `sale_order.py:14` now delegates to `report_action` if gateway-enabled else legacy ESC/POS, single path is standard Print |
+| 5 | Odoo configuration UI | `views/report_mapping_views.xml` + `views/ir_actions_report_views.xml` (forms inherit `base.view_report_form` with `print_gateway_enabled` toggle) + `data/report_mappings.xml` 8 defaults `noupdate=1` for `sale→order, account→invoice, stock→delivery/picking, purchase→purchase_order, pos→receipt` + `security` `report_mapping` system/user + `__manifest__.py` 14 data + `menu.xml` Report Mappings |
+| 6 | Agent Direct USB | `usb_windows.go` `SetupDi` `GUID_DEVINTERFACE_USBPRINT` path map + `USBPrinter.Print` `CreateFile(\\?\usb#...)` `WriteFile` 8192 chunk loop, `factory.go` `usb` without spooler now returns `USBPrinter` instead of error, `usb_other.go` non-Windows stub simulates `/tmp/` file for CI |
+| 7 | Agent IPP | `ipp.go` `IPPPrinter` `normalizeIPPURL` handles bare `host:port` → `http://host:port/ipp/print`, `buildIPPPrintJob`/`Get-Printer-Attributes` binary 2.0, `Print` `POST application/ipp` `httptest` mock, `factory.go` `network:ipp` + `ipp/ipps` type now creates `IPPPrinter`, `config.go` allows `ipp/ipps` protocol |
+| 8 | Agent discovery hardening | `spooler_windows.go` correct `PRINTER_INFO_2W` `unsafe.Sizeof` + `mapWindowsStatus` + `classify.go` pure, `network_discovery.go` 9100 + `ipp_discovery.go` 631 + `discoverUSBPrinters` pathMap, `discovery.go` 6 sources + `seen` + `NetworkAddress:Port`/`USB` dedup + `mergeDeviceInfo` + `DiscoverQuick` sync + async full 2s, `stable_id.go` `ipp://` URL host:port aware |
+| 9 | Gateway IPP/USB | `heartbeat/route.ts` `VALID_CONNECTION_TYPES` `ipp,ipps`, `VALID_PROTOCOLS` `ipps`, `printers/route.ts` `ipp/ipps` + `validateNetworkConfig` URL, `routing.ts` `validatePayloadForPrinter` now allows `raw/escpos` → `ipp` via `application/octet-stream` |
+| 10 | CLI | `cli/main.go` `printers add` now `--printer-type --vid --pid --serial --enabled --capabilities JSON`, `helpers.go` `addPrinterHelper` 11 fields, table shows `ENABLED, network, usb vid/pid, caps, diagnostic`, `discover` now `ipp` too |
+| 11 | Tests | `hardening_test.go` 12, `ipp_test.go` 5 (`httptest` `application/ipp`), `discovery_test.go` fixed to expect `usb/ipp` success, `tests/test_report_gateway.py` 12 Odoo tests A-L (mocked `requests.post` + `_render_qweb_pdf`) |
+
 ## Verification gate status (this host)
 
 | Gate | Result |
 |------|--------|
+| `python3 -m py_compile odoo_addons/print_gateway/models/*.py` + `xmllint --noout views/*.xml data/*.xml` | ✅ PASS (this session, after fixes) |
 | `npm run typecheck` | ✅ PASS |
-| `npm run lint` | ✅ PASS |
-| `npm test` (vitest) | ✅ 13/13 PASS (1 live-PG test skipped) |
-| `npm run build` (Next.js production) | ✅ PASS |
-| `npm run desktop:vite:build` | ✅ PASS |
+| `npm run lint` | ✅ PASS (after `&quot;` + `queueMicrotask` fix) |
+| `npm test` (vitest) | ✅ 32 pass, 1 skipped (was 13, now 32 with `hardening` + `ipp`) |
+| `npm run build` (Next.js production) | ✅ PASS (24 routes) |
+| `npm run desktop:vite:build` | ✅ PASS (43KB css + 208KB js, 891 lines modern UI) |
 | Runtime smoke: `/dashboard` while unauthenticated → 307 `/login`; `/api/jobs` unauth → 401 | ✅ PASS |
 | Go/Rust syntax validation (tree-sitter parse of every `.go`/`.rs`) | ✅ PASS |
-| `go vet` / `go test -race` / `cargo tauri build` | ⛔ toolchain unavailable on this host → runs in CI (`.github/workflows/build-windows.yml`) |
-| Real Windows install / real printer | Per `docs/VERIFICATION.md` (REQUIRES REAL WINDOWS/PRINTER) |
+| `go vet` / `GOOS=windows go vet` | ✅ PASS (fixed `spoolerContains` + `unsafe.Add`) |
+| `go test -race ./...` | ✅ 8 pkgs ok (printer 4.9s) |
+| `odoo-bin --test-enable --test-tags=print_gateway` | 🧪 Not run (no Odoo DB on this host) — `tests/test_report_gateway.py` 12 mocked tests exist but require `sale,account,stock,purchase` DB |
+| `cargo tauri build` / Real Windows install / real printer | Per `docs/VERIFICATION.md` (REQUIRES REAL WINDOWS/PRINTER) |
 
 Known, accepted remnant of #3 (documented in `src/server/ws.ts`): a very fast agent
 can PATCH `printing` in the millisecond window between WS dispatch and the claim

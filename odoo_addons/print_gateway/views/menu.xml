@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="menu_print_gateway_main" name="Print Gateway" sequence="90" web_icon="print_gateway,static/description/icon.png"/>
+    <menuitem id="menu_print_gateway_config" name="Configuration" parent="menu_print_gateway_main" sequence="10"/>
+    <menuitem id="menu_print_gateway_branch" name="Branches" parent="menu_print_gateway_config" action="action_print_gateway_branch" sequence="10"/>
+    <menuitem id="menu_print_gateway_destination" name="Destinations" parent="menu_print_gateway_config" action="action_print_gateway_destination" sequence="20"/>
+    <menuitem id="menu_print_gateway_document_type" name="Document Types" parent="menu_print_gateway_config" action="action_print_gateway_document_type" sequence="30"/>
+    <menuitem id="menu_print_gateway_report_mapping" name="Report Mappings" parent="menu_print_gateway_config" action="action_print_gateway_report_mapping" sequence="35"/>
+    <menuitem id="menu_print_gateway_printer_binding" name="Printer Bindings" parent="menu_print_gateway_config" action="action_print_gateway_printer_binding" sequence="40"/>
+    <menuitem id="menu_print_gateway_printers" name="Printers" parent="menu_print_gateway_main" action="action_print_gateway_printer" sequence="20"/>
+    <menuitem id="menu_print_gateway_agents" name="Agents" parent="menu_print_gateway_main" action="action_print_gateway_agent" sequence="30"/>
+    <menuitem id="menu_print_gateway_jobs" name="Print Jobs" parent="menu_print_gateway_main" action="action_print_gateway_print_job" sequence="40"/>
+</odoo>

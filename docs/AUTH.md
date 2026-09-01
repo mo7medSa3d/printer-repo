@@ -26,7 +26,11 @@ Status: **NOT VERIFIED** on real Tauri WebView — requires `REQUIRES REAL WINDO
 
 ## Odoo API Key
 
-- Created via `POST /api/odoo/keys` (manager auth). Raw key `odoo_<base64url>` shown once, stored as `SHA256 hashedKey` in `api_keys`. Validated via `validateOdooKey(req)` `src/lib/odoo-auth.ts:23` (`Authorization: Bearer odoo_xxx` or `X-Api-Key`). `POST /api/print/jobs` requires it; `GET /api/print/jobs?id=...` polls status.
+- Created via `POST /api/odoo/keys` (manager auth). Raw key `odoo_<base64url>` shown once, stored as `SHA256 hashedKey` in `api_keys`. Validated via `validateOdooKey(req)` `src/lib/odoo-auth.ts:23` (`Authorization: Bearer odoo_xxx` or `X-Api-Key`). `POST /api/print/jobs` requires it; `GET /api/print/jobs?id=...` polls status. Branch-scoped keys (`api_keys.branchId`) enforce `isBranchScopedKeyAllowed` (`src/lib/odoo-auth.ts:36`).
+
+## Report Mapping
+
+- `print_gateway.report_mapping` `odoo_addons/print_gateway/models/report_mapping.py:5` has `report_id Many2one ir.actions.report`, `report_xml_id`, `model_name`, `report_name`, `document_type_id/name`, `branch_id`, `destination_id`, `gateway_enabled`, `priority`, `fallback_to_normal`. Access: `security/ir.model.access.csv:9-10` `group_system` full `1,1,1,1` + `group_user` read-only `1,0,0,0`. `ir.actions.report` extra fields `print_gateway_enabled` etc. are on `base` `ir.actions.report` (inherits `base` ACL, no new entry needed). `gateway_api_key` on `print_gateway.branch` is `Char copy=False` with `password="True"` widget `branch_views.xml:18` but still readable via `search_read` by `group_user` (should be `groups="base.group_system"` + `ir.rule` per README P0 #6).
 
 ## Agent Credential
 

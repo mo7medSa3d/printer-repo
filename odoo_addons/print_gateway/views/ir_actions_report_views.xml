@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_ir_actions_report_print_gateway_form" model="ir.ui.view">
+        <field name="name">ir.actions.report.print_gateway.form</field>
+        <field name="model">ir.actions.report</field>
+        <field name="inherit_id" ref="base.view_report_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='report_type']" position="after">
+                <separator string="Print Gateway"/>
+                <field name="print_gateway_enabled" widget="boolean_toggle"/>
+                <field name="print_gateway_document_type_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" domain="[('branch_id','=',print_gateway_branch_id)]"/>
+                <field name="print_gateway_branch_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}"/>
+                <field name="print_gateway_destination_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" domain="[('branch_id','=',print_gateway_branch_id)]"/>
+                <div attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" class="alert alert-info" role="alert">
+                    When enabled, this report's standard Print button will render the PDF and route it through Print Gateway
+                    (Branch → Destination → Document Type → Printer Binding → Printer) instead of browser download.
+                    Configure detailed routing in Print Gateway → Configuration → Report Mappings for priority control.
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_ir_actions_report_print_gateway_tree" model="ir.ui.view">
+        <field name="name">ir.actions.report.print_gateway.tree</field>
+        <field name="model">ir.actions.report</field>
+        <field name="inherit_id" ref="base.view_report_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='name']" position="after">
+                <field name="print_gateway_enabled" widget="boolean_toggle" optional="show"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

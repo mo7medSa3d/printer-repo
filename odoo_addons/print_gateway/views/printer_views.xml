@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_printer_form" model="ir.ui.view">
+        <field name="name">print_gateway.printer.form</field>
+        <field name="model">print_gateway.printer</field>
+        <field name="arch" type="xml">
+            <form string="Printer">
+                <header>
+                    <button name="action_test_print" type="object" string="Test Print" class="oe_highlight"/>
+                    <button name="action_sync_from_gateway" type="object" string="Sync Status"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="gateway_printer_id"/>
+                        <field name="name"/>
+                        <field name="branch_id"/>
+                        <field name="printer_type"/>
+                        <field name="connection_type"/>
+                        <field name="protocol"/>
+                        <field name="status" readonly="1"/>
+                        <field name="enabled"/>
+                    </group>
+                    <group>
+                        <field name="ip_address"/>
+                        <field name="port"/>
+                        <field name="spooler_name"/>
+                        <field name="usb_serial"/>
+                        <field name="gateway_agent_id" readonly="1"/>
+                        <field name="last_seen_at" readonly="1"/>
+                    </group>
+                    <group>
+                        <field name="binding_count" readonly="1"/>
+                    </group>
+                    <field name="destination_ids" readonly="1"/>
+                    <field name="binding_ids"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_print_gateway_printer_tree" model="ir.ui.view">
+        <field name="name">print_gateway.printer.tree</field>
+        <field name="model">print_gateway.printer</field>
+        <field name="arch" type="xml">
+            <tree string="Printers" decoration-success="status=='online'" decoration-danger="status=='offline'">
+                <field name="name"/>
+                <field name="branch_id"/>
+                <field name="connection_type"/>
+                <field name="protocol"/>
+                <field name="status"/>
+                <field name="enabled"/>
+            </tree>
+        </field>
+    </record>
+    <record id="action_print_gateway_printer" model="ir.actions.act_window">
+        <field name="name">Printers</field>
+        <field name="res_model">print_gateway.printer</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>

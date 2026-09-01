@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_branch_form" model="ir.ui.view">
+        <field name="name">print_gateway.branch.form</field>
+        <field name="model">print_gateway.branch</field>
+        <field name="arch" type="xml">
+            <form string="Print Branch">
+                <header>
+                    <button name="action_test_connection" type="object" string="Test Connection" class="oe_highlight"/>
+                    <button name="action_sync_from_gateway" type="object" string="Sync From Gateway"/>
+                    <button name="action_sync_to_gateway" type="object" string="Sync To Gateway"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="company_id"/>
+                        <field name="gateway_url" placeholder="https://print.example.com"/>
+                        <field name="gateway_api_key" password="True" placeholder="odoo_..."/>
+                        <field name="gateway_branch_id"/>
+                        <field name="enabled"/>
+                    </group>
+                    <group>
+                        <field name="location"/>
+                        <field name="timezone"/>
+                        <field name="description"/>
+                        <field name="last_sync_at" readonly="1"/>
+                    </group>
+                    <notebook>
+                        <page string="Destinations" name="destinations">
+                            <field name="destination_ids"/>
+                        </page>
+                        <page string="Printers" name="printers">
+                            <field name="printer_ids"/>
+                        </page>
+                        <page string="Agents" name="agents">
+                            <field name="agent_ids"/>
+                        </page>
+                        <page string="Bindings" name="bindings">
+                            <field name="binding_ids"/>
+                        </page>
+                    </notebook>
+                    <group>
+                        <field name="agent_count" readonly="1"/>
+                        <field name="printer_count" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_branch_tree" model="ir.ui.view">
+        <field name="name">print_gateway.branch.tree</field>
+        <field name="model">print_gateway.branch</field>
+        <field name="arch" type="xml">
+            <tree string="Branches">
+                <field name="name"/>
+                <field name="gateway_url"/>
+                <field name="enabled"/>
+                <field name="agent_count"/>
+                <field name="printer_count"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="action_print_gateway_branch" model="ir.actions.act_window">
+        <field name="name">Print Branches</field>
+        <field name="res_model">print_gateway.branch</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>

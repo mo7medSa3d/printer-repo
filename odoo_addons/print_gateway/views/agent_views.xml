@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_agent_form" model="ir.ui.view">
+        <field name="name">print_gateway.agent.form</field>
+        <field name="model">print_gateway.agent</field>
+        <field name="arch" type="xml">
+            <form string="Agent">
+                <header>
+                    <button name="action_sync_status" type="object" string="Sync Status"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="gateway_agent_id"/>
+                        <field name="name"/>
+                        <field name="branch_id"/>
+                        <field name="status" readonly="1"/>
+                        <field name="last_seen_at" readonly="1"/>
+                        <field name="hostname"/>
+                        <field name="os"/>
+                    </group>
+                    <field name="printer_ids" readonly="1"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_print_gateway_agent_tree" model="ir.ui.view">
+        <field name="name">print_gateway.agent.tree</field>
+        <field name="model">print_gateway.agent</field>
+        <field name="arch" type="xml">
+            <tree string="Agents" decoration-success="status=='online'">
+                <field name="name"/>
+                <field name="branch_id"/>
+                <field name="status"/>
+                <field name="last_seen_at"/>
+            </tree>
+        </field>
+    </record>
+    <record id="action_print_gateway_agent" model="ir.actions.act_window">
+        <field name="name">Agents</field>
+        <field name="res_model">print_gateway.agent</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>

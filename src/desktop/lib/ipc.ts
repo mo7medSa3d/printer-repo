@@ -91,6 +91,75 @@ export function getAppVersion(): Promise<string> {
   return invoke<string>("get_app_version");
 }
 
+export interface PrinterInfo {
+  id: string;
+  name: string;
+  display_name?: string;
+  printer_type?: string;
+  connection_type?: string;
+  protocol?: string;
+  endpoint?: string;
+  spooler_name?: string;
+  network_address?: string;
+  port?: number | null;
+  status: string;
+  enabled: boolean;
+  capabilities?: Record<string, unknown> | null;
+}
+
+export interface DiscoverResult {
+  printers: PrinterInfo[];
+  errors: string[];
+}
+
+export function getPrinters(): Promise<PrinterInfo[]> {
+  return invoke<PrinterInfo[]>("get_printers");
+}
+
+export function discoverPrinters(): Promise<DiscoverResult> {
+  return invoke<DiscoverResult>("discover_printers");
+}
+
+export function testPrinter(printerId: string): Promise<string> {
+  return invoke<string>("test_printer", { printerId });
+}
+
+export interface AutostartStatus {
+  enabled: boolean;
+}
+
+export function getAutostart(): Promise<AutostartStatus> {
+  return invoke<AutostartStatus>("get_autostart");
+}
+
+export function setAutostart(enabled: boolean): Promise<string> {
+  return invoke<string>("set_autostart", { enabled });
+}
+
+export interface GatewayHealth {
+  ok?: boolean;
+  agents?: { total?: number; online?: number };
+  printers?: { total?: number; online?: number };
+  jobs?: { queued?: number; failed?: number };
+  error?: string;
+}
+
+export async function fetchGatewayJobs(
+  gatewayUrl: string
+): Promise<Record<string, unknown>[]> {
+  const base = gatewayUrl.replace(/\/$/, "");
+  const res = await fetch(`${base}/api/jobs?limit=50`, {
+    // Desktop manager uses manager session if available; otherwise try unauth (will 401)
+    credentials: "include",
+  });
+  if (!res.ok) {
+    // Try without credentials as fallback for public health-style endpoint
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `jobs fetch failed ${res.status}`);
+  }
+  return (await res.json()) as Record<string, unknown>[];
+}
+
 /** Tray menu "Restart Agent" event. Returns the unlisten function. */
 export function onTrayRestartAgent(handler: () => void): Promise<UnlistenFn> {
   return listen("tray:restart_agent", handler);

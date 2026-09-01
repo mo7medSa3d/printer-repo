@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_print_job_form" model="ir.ui.view">
+        <field name="name">print_gateway.print_job.form</field>
+        <field name="model">print_gateway.print_job</field>
+        <field name="arch" type="xml">
+            <form string="Print Job">
+                <header>
+                    <button name="action_sync_status" type="object" string="Sync Status"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="gateway_job_id" readonly="1"/>
+                        <field name="branch_id" readonly="1"/>
+                        <field name="destination_id" readonly="1"/>
+                        <field name="document_type" readonly="1"/>
+                        <field name="printer_id" readonly="1"/>
+                        <field name="status"/>
+                        <field name="payload" readonly="1"/>
+                        <field name="error" readonly="1"/>
+                        <field name="last_sync_at" readonly="1"/>
+                    </group>
+                    <group string="Odoo Report">
+                        <field name="odoo_model" readonly="1"/>
+                        <field name="odoo_record_id" readonly="1"/>
+                        <field name="report_xml_id" readonly="1"/>
+                        <field name="report_name" readonly="1"/>
+                        <field name="report_id" readonly="1"/>
+                    </group>
+                    <group string="Agent">
+                        <field name="agent_id" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_print_gateway_print_job_tree" model="ir.ui.view">
+        <field name="name">print_gateway.print_job.tree</field>
+        <field name="model">print_gateway.print_job</field>
+        <field name="arch" type="xml">
+            <tree string="Print Jobs" decoration-success="status in ('success','completed')" decoration-danger="status=='failed'">
+                <field name="gateway_job_id"/>
+                <field name="branch_id"/>
+                <field name="odoo_model"/>
+                <field name="odoo_record_id"/>
+                <field name="report_xml_id"/>
+                <field name="destination_id"/>
+                <field name="document_type"/>
+                <field name="printer_id"/>
+                <field name="status"/>
+                <field name="create_date"/>
+            </tree>
+        </field>
+    </record>
+    <record id="action_print_gateway_print_job" model="ir.actions.act_window">
+        <field name="name">Print Jobs</field>
+        <field name="res_model">print_gateway.print_job</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>
