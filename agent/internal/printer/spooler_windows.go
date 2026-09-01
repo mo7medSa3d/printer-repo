@@ -292,7 +292,22 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		enabled := pi.Attributes&0x00000400 == 0 // WORK_OFFLINE bit not set
 
 		printerType, connType := classifySpoolerPrinter(portName, driverName, name)
-		isVirtual := isVirtualSpooler(portName, driverName, name)
+		// Classify from metadata, not from a name blacklist: port monitor,
+		// driver, PnP identifiers and transport decide whether this queue is
+		// real printing hardware, a software writer or a session redirect.
+		classification := ClassifyDevice(DeviceFacts{
+			Name:           name,
+			DriverName:     driverName,
+			PortName:       portName,
+			Comment:        comment,
+			Location:       location,
+			ShareName:      shareName,
+			ConnectionType: connType,
+			Protocol:       "spooler",
+			Endpoint:       name,
+			SpoolerName:    name,
+		})
+		isVirtual := classification.IsVirtual
 		if isVirtual {
 			printerType = "virtual"
 		}
@@ -342,6 +357,11 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		if shareName != "" {
 			caps["share_name"] = shareName
 		}
+		caps["printer_class"] = string(classification.Class)
+		caps["printer_class_confidence"] = classification.Confidence
+		if len(classification.Reasons) > 0 {
+			caps["printer_class_reasons"] = classification.Reasons
+		}
 		if isVirtual {
 			caps["virtual"] = true
 			caps["is_virtual"] = true
@@ -368,7 +388,7 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		// Store port/driver as USB fields? No, keep spooler-specific in capabilities + separate fields
 		// NetworkAddress/Port already set for network spooler ports
 
-		log.Printf("[discovery] found spooler printer: %q port=%q driver=%q status=%s enabled=%v type=%s conn=%s", name, portName, driverName, status, enabled, printerType, connType)
+		log.Printf("[discovery] found spooler printer: %q port=%q driver=%q status=%s enabled=%v type=%s conn=%s class=%s(%s)", name, portName, driverName, status, enabled, printerType, connType, classification.Class, classification.Confidence)
 		infos = append(infos, info)
 	}
 

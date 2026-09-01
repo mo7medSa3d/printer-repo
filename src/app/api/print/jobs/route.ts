@@ -4,6 +4,7 @@ import { printJobs, printers } from "@/db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
 import { validatePrintJobPayload } from "@/lib/payload";
 import { resolvePrinterForJob, validatePayloadForPrinter } from "@/lib/routing";
+import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 import { claimAndPushJobToAgent } from "@/server/ws";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -180,6 +181,7 @@ export async function POST(req: Request) {
         NO_ROUTE: 404,
         NO_PRINTER_FOUND: 404,
         PRINTER_DISABLED: 409,
+        PRINTER_VIRTUAL: 409,
         PRINTER_OFFLINE: 503,
         CAPABILITY_MISMATCH: 422,
         INTERNAL_ERROR: 500,
@@ -260,6 +262,9 @@ export async function POST(req: Request) {
     const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
     if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
     if (printer.enabled === false) return NextResponse.json({ error: "PRINTER_DISABLED: printer disabled" }, { status: 409 });
+    if (isVirtualPrinterRecord(printer)) {
+      return NextResponse.json({ error: "PRINTER_VIRTUAL: printer is virtual or redirected" }, { status: 409 });
+    }
     if ((printer as any).status === "offline" || (printer as any).status === "error") {
       return NextResponse.json({ error: "PRINTER_OFFLINE: printer is offline" }, { status: 503 });
     }

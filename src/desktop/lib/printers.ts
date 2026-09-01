@@ -1,5 +1,6 @@
 import type { PrinterInfo } from "./ipc";
 import type { Tone } from "@/components/ui";
+import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 
 /* ============================================================
    Desktop presentation helpers for printers
@@ -13,47 +14,27 @@ import type { Tone } from "@/components/ui";
  * DEFENSIVE FILTER ONLY.
  *
  * The authoritative filter runs in the Windows agent: virtual, software and
- * RDP-redirected printers are classified during discovery and never reach the
- * registry, the heartbeat or the Gateway. This helper is the last line of
- * defence so an old record (persisted by a previous version) can never be
+ * RDP-redirected printers are classified during discovery (port monitor,
+ * driver, PnP ids, transport) and never reach the registry, the heartbeat or
+ * the Gateway. This helper is the last line of defence so an old record
+ * (persisted by a previous version) or a manual registration can never be
  * rendered as a production printer.
  *
- * It deliberately does NOT rely on the printer name alone — it reads the
- * normalized metadata first and only falls back to well-known software-writer
- * names when no metadata is available.
+ * It shares the Gateway's single classification rule, so it reads the same
+ * normalized metadata (and the same port-monitor table) instead of relying on
+ * the printer name alone.
  */
-const VIRTUAL_NAME_PATTERNS = [
-  "microsoft print to pdf",
-  "microsoft xps document writer",
-  "print to pdf",
-  "xps document writer",
-  "send to onenote",
-  "onenote",
-  "document writer",
-  "remote desktop easy print",
-  "terminal services easy print",
-  "microsoft enhanced point and print compatibility driver",
-];
-
 export function isVirtualPrinter(p: PrinterInfo | null | undefined): boolean {
   if (!p) return false;
   const anyP = p as unknown as Record<string, unknown>;
   if (anyP.isVirtual === true || anyP.is_virtual === true) return true;
-
-  const type = String(p.printer_type ?? "").toLowerCase();
-  const conn = String(p.connection_type ?? "").toLowerCase();
-  if (type === "virtual" || conn === "virtual") return true;
-
-  const caps = (p.capabilities ?? null) as Record<string, unknown> | null;
-  if (caps) {
-    if (caps.virtual === true || caps.is_virtual === true) return true;
-    const klass = String(caps.printer_class ?? "").toLowerCase();
-    if (klass === "virtual" || klass === "redirected") return true;
-  }
-
-  const name = String(p.name ?? "").toLowerCase();
-  if (name && name.includes("(redirected")) return true;
-  return VIRTUAL_NAME_PATTERNS.some((pattern) => name.includes(pattern));
+  return isVirtualPrinterRecord({
+    name: p.name,
+    printerType: p.printer_type,
+    connectionType: p.connection_type,
+    protocol: p.protocol,
+    capabilities: p.capabilities,
+  });
 }
 
 /** Printers that may be shown, selected for a binding and used for jobs. */

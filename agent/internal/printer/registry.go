@@ -3,6 +3,7 @@ package printer
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -26,40 +27,66 @@ func NewRegistry(configPath string) *Registry {
 	return &Registry{path: filepath.Join(dir, "printers.json")}
 }
 
-// loadRegistryPrinters reads the registry file and returns DeviceInfos.
-// It filters out stale generic PnP entries that were persisted by old buggy
-// discovery (USB Input Device, etc.) and rewrites the file to clean it.
-// If file does not exist, returns nil slice (not error).
+// loadRegistryPrinters reads the registry file and returns the printers that
+// may be surfaced as managed production printers.
+//
+// Two categories are kept out of the returned slice:
+//   - stale generic PnP entries persisted by old buggy discovery (USB Input
+//     Device, HID mice, cameras …) — those are junk and get cleaned up;
+//   - virtual / redirected / unclassified queues — those are PRESERVED on disk
+//     (never deleted) but never listed, so an operator can still inspect what
+//     this machine reports and a future classifier can recover them.
+//
+// If the file does not exist, a nil slice is returned (not an error).
 func loadRegistryPrinters(registryPath string) ([]DeviceInfo, error) {
+	production, _, _, err := loadRegistryPartitioned(registryPath)
+	return production, err
+}
+
+// loadRegistryPartitioned splits the persisted registry into the printers that
+// may be surfaced, the records that must be kept but hidden, and the number of
+// junk entries that were dropped.
+func loadRegistryPartitioned(registryPath string) (production, hidden []DeviceInfo, removed int, err error) {
 	if registryPath == "" {
-		return nil, nil
+		return nil, nil, 0, nil
 	}
 	data, err := os.ReadFile(registryPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 	if len(data) == 0 {
-		return nil, nil
+		return nil, nil, 0, nil
 	}
 	var infos []DeviceInfo
 	if err := json.Unmarshal(data, &infos); err != nil {
-		return nil, fmt.Errorf("parse registry %s: %w", registryPath, err)
+		return nil, nil, 0, fmt.Errorf("parse registry %s: %w", registryPath, err)
 	}
-	// Filter out stale generic devices that are not valid printers.
-	filtered := make([]DeviceInfo, 0, len(infos))
-	removed := 0
+	production = make([]DeviceInfo, 0, len(infos))
 	for _, d := range infos {
 		if !isValidDiscoveredPrinter(d) {
+			// Not a printer at all — drop the stale entry.
 			removed++
 			continue
 		}
-		filtered = append(filtered, d)
+		if !IsProductionPrinter(d) {
+			hidden = append(hidden, d)
+			continue
+		}
+		production = append(production, d)
 	}
 	if removed > 0 {
-		// Rewrite cleaned registry asynchronously - best effort, not fatal
-		_ = SaveRegistry(registryPath, filtered)
+		// Rewrite the cleaned registry (best effort, not fatal). Hidden
+		// records are written back so nothing is destroyed.
+		_ = SaveRegistry(registryPath, concatDevices(production, hidden))
 	}
-	return filtered, nil
+	return production, hidden, removed, nil
+}
+
+func concatDevices(a, b []DeviceInfo) []DeviceInfo {
+	out := make([]DeviceInfo, 0, len(a)+len(b))
+	out = append(out, a...)
+	out = append(out, b...)
+	return out
 }
 
 // Save persists the given DeviceInfos atomically to the registry path.
@@ -87,9 +114,10 @@ func SaveRegistry(registryPath string, printers []DeviceInfo) error {
 // - Otherwise append.
 // Returns the merged slice.
 func UpsertRegistry(registryPath string, discovered []DeviceInfo) ([]DeviceInfo, error) {
-	existing, err := loadRegistryPrinters(registryPath)
+	existing, hidden, _, err := loadRegistryPartitioned(registryPath)
 	if err != nil && !os.IsNotExist(err) {
 		existing = nil
+		hidden = nil
 	}
 	byID := make(map[string]int)
 	for i, p := range existing {
@@ -104,6 +132,12 @@ func UpsertRegistry(registryPath string, discovered []DeviceInfo) ([]DeviceInfo,
 		if !isValidDiscoveredPrinter(d) {
 			continue
 		}
+		// A virtual, redirected or unclassified queue is never promoted into
+		// the managed printer set, whatever source reported it.
+		if !IsProductionPrinter(d) {
+			log.Printf("[registry] refusing to register non-physical printer %q class=%s", d.Name, ClassifyDeviceInfo(d).Class)
+			continue
+		}
 		if idx, ok := byID[d.ID]; ok {
 			// Update existing
 			existing[idx] = d
@@ -112,7 +146,9 @@ func UpsertRegistry(registryPath string, discovered []DeviceInfo) ([]DeviceInfo,
 			byID[d.ID] = len(existing) - 1
 		}
 	}
-	if err := SaveRegistry(registryPath, existing); err != nil {
+	// Persist hidden records too: hiding a queue must never delete it.
+	all := concatDevices(existing, hidden)
+	if err := SaveRegistry(registryPath, all); err != nil {
 		return nil, err
 	}
 	return existing, nil
@@ -136,12 +172,20 @@ func RegisterManual(registryPath string, info DeviceInfo) ([]DeviceInfo, error) 
 	if info.Protocol == "" {
 		info.Protocol = "raw"
 	}
+	// Explicit operator intent: a manually registered queue stays visible even
+	// when no transport can be proven from its metadata.
+	if info.Capabilities == nil {
+		info.Capabilities = map[string]interface{}{}
+	}
+	if _, ok := info.Capabilities["registration_source"]; !ok {
+		info.Capabilities["registration_source"] = "manual"
+	}
 	return UpsertRegistry(registryPath, []DeviceInfo{info})
 }
 
 // RemoveFromRegistry removes a printer by ID.
 func RemoveFromRegistry(registryPath, printerID string) error {
-	existing, err := loadRegistryPrinters(registryPath)
+	existing, hidden, _, err := loadRegistryPartitioned(registryPath)
 	if err != nil {
 		return err
 	}
@@ -151,5 +195,6 @@ func RemoveFromRegistry(registryPath, printerID string) error {
 			out = append(out, p)
 		}
 	}
-	return SaveRegistry(registryPath, out)
+	// Hidden records survive an unrelated removal.
+	return SaveRegistry(registryPath, concatDevices(out, hidden))
 }

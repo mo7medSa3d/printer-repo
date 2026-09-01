@@ -145,6 +145,14 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 				log.Printf("[discovery] filtered non-printer device: %q type=%q conn=%q", d.Name, d.PrinterType, d.ConnectionType)
 				continue
 			}
+			// Only real printing hardware becomes a managed printer. Virtual,
+			// software and redirected queues never reach the registry, the
+			// heartbeat or the Gateway.
+			if !IsProductionPrinter(d) {
+				cls := ClassifyDeviceInfo(d)
+				log.Printf("[discovery] hiding non-physical printer: %q class=%s reasons=%v", d.Name, cls.Class, cls.Reasons)
+				continue
+			}
 			if seen[d.ID] {
 				for i, existing := range all {
 					if existing.ID == d.ID {
@@ -243,6 +251,14 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 			}
 			if !isValidDiscoveredPrinter(d) {
 				log.Printf("[discovery] filtered non-printer device: %q type=%q conn=%q", d.Name, d.PrinterType, d.ConnectionType)
+				continue
+			}
+			// Only real printing hardware becomes a managed printer. Virtual,
+			// software and redirected queues never reach the registry, the
+			// heartbeat or the Gateway.
+			if !IsProductionPrinter(d) {
+				cls := ClassifyDeviceInfo(d)
+				log.Printf("[discovery] hiding non-physical printer: %q class=%s reasons=%v", d.Name, cls.Class, cls.Reasons)
 				continue
 			}
 			// Deduplicate by stable ID
@@ -474,6 +490,10 @@ func discoverFromConfig(cfg *config.Config) []DeviceInfo {
 			Status:         "unknown",
 			Enabled:        pc.IsEnabled(),
 			Type:           pc.NormalizedType(),
+			// Printers declared in config.yaml are explicit operator intent:
+			// they stay visible even when no transport can be proven, because
+			// the operator typed the endpoint by hand.
+			Capabilities: map[string]interface{}{"registration_source": "config"},
 		}
 		if di.ConnectionType == "spooler" {
 			if di.SpoolerName == "" {

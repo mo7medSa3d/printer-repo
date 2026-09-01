@@ -282,9 +282,68 @@ pub struct DiscoverResult {
     pub errors: Vec<String>,
 }
 
-fn is_valid_printer_for_ui(p: &PrinterInfo) -> bool {
+/// Virtual / software / RDP-redirected queue detection — desktop safety net.
+///
+/// The authoritative filter is the Windows agent, which classifies every queue
+/// during discovery (port monitor, driver, PnP ids, transport) and never
+/// registers a non-physical printer. This only guards the UI against a record
+/// that an older version already persisted.
+fn is_virtual_printer_for_ui(p: &PrinterInfo) -> bool {
     if p.isVirtual.unwrap_or(false) {
         return true;
+    }
+    if let Some(t) = p.printer_type.as_ref() {
+        if t.trim().to_lowercase() == "virtual" {
+            return true;
+        }
+    }
+    if let Some(c) = p.connection_type.as_ref() {
+        if c.trim().to_lowercase() == "virtual" {
+            return true;
+        }
+    }
+    if let Some(proto) = p.protocol.as_ref() {
+        if proto.trim().to_lowercase() == "virtual" {
+            return true;
+        }
+    }
+    if let Some(caps) = p.capabilities.as_ref() {
+        for key in ["virtual", "is_virtual"].iter() {
+            if caps.get(*key).and_then(|v| v.as_bool()) == Some(true) {
+                return true;
+            }
+        }
+        let class = caps
+            .get("printer_class")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if class == "virtual" || class == "redirected" {
+            return true;
+        }
+    }
+    let name_lower = p.name.to_lowercase();
+    if name_lower.contains("(redirected") {
+        return true;
+    }
+    const VIRTUAL_NAMES: [&str; 9] = [
+        "microsoft print to pdf",
+        "microsoft xps document writer",
+        "xps document writer",
+        "onenote",
+        "document writer",
+        "print to pdf",
+        "remote desktop easy print",
+        "terminal services easy print",
+        "microsoft enhanced point and print compatibility driver",
+    ];
+    VIRTUAL_NAMES.iter().any(|n| name_lower.contains(*n))
+}
+
+fn is_valid_printer_for_ui(p: &PrinterInfo) -> bool {
+    // Virtual, software and redirected queues are never production printers.
+    if is_virtual_printer_for_ui(p) {
+        return false;
     }
     let name_lower = p.name.to_lowercase();
     let driver_lower = p.capabilities.as_ref()

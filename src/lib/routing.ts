@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { agents, branches, destinations, printerBindings, printers } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
+import { isVirtualPrinterRecord, type PrinterLike } from "./printer-virtual";
 
 export type BindingCandidate = {
   id: string;
@@ -100,8 +101,17 @@ export function validatePayloadForPrinter(
   return { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} incompatible with printer ${proto}/${conn}` };
 }
 
-export function isPrinterAvailableForJob(printer: { enabled: boolean | null; status: string | null }): boolean {
+/** Minimal printer shape the routing availability check needs. */
+export interface PrinterAvailability extends PrinterLike {
+  enabled: boolean | null;
+  status: string | null;
+}
+
+export function isPrinterAvailableForJob(printer: PrinterAvailability): boolean {
   if (printer.enabled === false) return false;
+  // Virtual / software / redirected queues are never a production route, even
+  // if an older agent version already registered one.
+  if (isVirtualPrinterRecord(printer)) return false;
   // Offline printers may trigger fallback; we treat offline as unavailable for routing
   // "unknown" is considered available (we don't know it's offline) to avoid blocking
   if (printer.status === "offline" || printer.status === "error") return false;
@@ -114,6 +124,7 @@ export type ResolveErrorCode =
   | "NO_ROUTE"
   | "NO_PRINTER_FOUND"
   | "PRINTER_DISABLED"
+  | "PRINTER_VIRTUAL"
   | "PRINTER_OFFLINE"
   | "CAPABILITY_MISMATCH"
   | "INTERNAL_ERROR";
@@ -162,6 +173,7 @@ export async function resolvePrinterForJob({
     const fallbackChain: string[] = [];
     let lastOfflinePrinter: string | null = null;
     let lastDisabledPrinter: string | null = null;
+    let lastVirtualPrinter: string | null = null;
     let lastCapabilityReason: string | null = null;
 
     for (let idx = 0; idx < candidates.length; idx++) {
@@ -181,6 +193,13 @@ export async function resolvePrinterForJob({
       if (printer.branchId && printer.branchId !== branchId) {
         // This binding violates isolation — skip and continue fallback
         continue;
+      }
+
+      // Virtual check. A virtual/software/redirected queue is never a
+      // production route — skip it and let the next binding take over.
+      if (isVirtualPrinterRecord(printer)) {
+        lastVirtualPrinter = printer.id;
+        continue; // try fallback
       }
 
       // Enabled check. An administratively disabled printer is a distinct,
@@ -241,6 +260,12 @@ export async function resolvePrinterForJob({
     }
     if (lastDisabledPrinter) {
       return { error: "PRINTER_DISABLED", message: `All candidate printers are disabled (last tried ${lastDisabledPrinter})` };
+    }
+    if (lastVirtualPrinter) {
+      return {
+        error: "PRINTER_VIRTUAL",
+        message: `All candidate printers are virtual or redirected (last tried ${lastVirtualPrinter}). Register a physical printer on the agent.`,
+      };
     }
     return { error: "NO_PRINTER_FOUND", message: `No available printer after evaluating ${candidates.length} bindings` };
   } catch (e) {

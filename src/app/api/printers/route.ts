@@ -5,6 +5,7 @@ import { validateManager } from "@/lib/manager-auth";
 import { z } from "zod";
 import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +66,9 @@ export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const rows = await db.select().from(printers).orderBy(desc(printers.createdAt));
-  return NextResponse.json(rows);
+  // Virtual / redirected queues are preserved in the database but are never
+  // presented as selectable production printers.
+  return NextResponse.json(rows.filter((r) => !isVirtualPrinterRecord(r)));
 }
 
 export async function POST(req: Request) {
