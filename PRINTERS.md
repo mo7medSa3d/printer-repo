@@ -9,7 +9,37 @@
 | Network `ipp`/`ipps` | ✅ Implemented | HTTP POST `application/ipp` (Print-Job) | `IPPPrinter` `agent/internal/printer/ipp.go:24` — URL normalization (`ipp://`/`http://`, bare `host:port`), `Get-Printer-Attributes`, context deadline. Gateway capability check allows raw/escpos/pdf → IPP. |
 | USB via Spooler | ✅ Implemented | Windows Spooler `winspool.drv` | USB printers installed as Windows printers use spooler path (`NewSpooler`); install USB via Windows → `type spooler` with `spooler_name`. See `PRINTERS.md` USB section. |
 | USB raw | ✅ Implemented (device path) | `CreateFile(\?\usb#...)` + `WriteFile` | `USBPrinter.Print` `usb_windows.go:36` — real write loop; if no Windows device path was discovered it returns an explicit diagnostic error guiding installation as a Windows printer (spooler type). Non-Windows stub writes to `/tmp/printer-usb-*.prn` for CI. |
-| Windows Spooler | ✅ Implemented | `winspool.drv` `spooler_windows.go` / stub `spooler_stub.go` | `SpoolerPrinter.Print` `OpenPrinterW` → `StartDocPrinterW` (RAW) → `WritePrinter` loop → `EndDocPrinter`. Non-Windows stub writes to `/tmp/spooler_*.prn` for CI/test. `Status()` via `OpenPrinterW` probe. |
+| Windows Spooler | ✅ Implemented | `winspool.drv` `spooler_windows.go` / stub `spooler_stub.go` | `raw`/`escpos`: `SpoolerPrinter.Print` `OpenPrinterW` → `StartDocPrinterW` (RAW datatype) → `WritePrinter` loop → `EndDocPrinter`. `pdf`: the PDF pipeline below (`PrintDocument`), **not** the RAW datatype. Non-Windows stub writes `/tmp/spooler_*.prn` (raw/escpos) or `/tmp/spooler_*.pdf` (simulated PDF) for CI/test. `Status()` via `OpenPrinterW` probe. |
+
+## Payload types vs. printer types
+
+The job payload type (`raw` / `escpos` / `pdf`) is carried end to end and decides the physical path. It is never rewritten or downgraded.
+
+| Backend | `raw` | `escpos` | `pdf` |
+|---------|-------|----------|-------|
+| Network RAW TCP (9100) | ✅ bytes on the socket | ✅ bytes on the socket | ❌ `CAPABILITY_MISMATCH` — a 9100 byte stream has no renderer |
+| USB raw (`CreateFile`+`WriteFile`) | ✅ | ✅ | ❌ `CAPABILITY_MISMATCH` — install the device as a Windows printer and route to the spooler queue |
+| Windows Spooler | ✅ RAW datatype | ✅ RAW datatype | ✅ PDF pipeline (see below) |
+| IPP / IPPS | ✅ `application/octet-stream` | ✅ `application/octet-stream` | ✅ `application/pdf` |
+
+Each backend declares this via `SupportsKind` (`agent/internal/printer/document.go`) and reports it to the gateway in the heartbeat as `capabilities.supported_protocols`, so `resolvePrinterForJob` can refuse an incompatible job *before* it is queued (HTTP 422 `CAPABILITY_MISMATCH`). Explicitly configured `supported_protocols` are never overwritten, and `pdf` is never inferred from `raw` support.
+
+## PDF printing (real, not RAW passthrough)
+
+`agent/internal/printer/pdf.go` + `pdf_windows.go`:
+
+1. **Validate** — the payload must actually be a PDF: `%PDF-` within the first 64 bytes, `%%EOF` in the last 4 KiB, non-empty, ≤ 5 MiB (the shared payload limit is preserved).
+2. **Materialize securely** — `os.MkdirTemp` (0700) + `os.CreateTemp` (0600). File and directory names come from the OS random-name APIs; nothing from the job, printer name or payload metadata influences the path.
+3. **Submit through a PDF-aware mechanism** —
+   - configured helper (any OS): `agent.pdf_print_command` in `config.yaml`, e.g.
+     `pdf_print_command: ["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]`.
+     `{printer}` and `{file}` are substituted as **whole argv elements** and executed with `exec.CommandContext` — no shell, no string concatenation, so a printer name containing spaces, `&`, `;` or quotes can never become a command.
+   - Windows default: `ShellExecuteExW` with the `printto` verb → the registered PDF handler renders the document through the printer's Windows driver.
+   - Other OSes without a helper: an explicit "not supported" error. **PDF is never downgraded to RAW.**
+4. **Wait for the outcome** — `SEE_MASK_NOCLOSEPROCESS` + `WaitForSingleObject` + `GetExitCodeProcess` (or `cmd.Run()` for the helper). A non-zero exit, a timeout (120 s default) or a missing handler is a real error reported back to the gateway; it is never reported as success.
+5. **Clean up** — the temp directory is removed on every exit path (success, failure, panic).
+
+Printer names are validated before use (`ValidatePDFPrinterName`): no control characters, no quotes, ≤ 220 bytes. A rejected name fails the job instead of being "sanitized" into a different printer.
 
 ## Identity
 
@@ -73,11 +103,11 @@ Registry `printers.json` beside `config.yaml` is canonical; `printers: []` YAML 
 ## Diagnostics (split)
 
 - `POST /api/printers/:id/test-connection` — **RPC, no job** `test-connection/route.ts`. Returns `{reachable,status,agentOnline}` = last heartbeat `printer.status` + agent freshness. Gateway does NOT dial LAN.
-- `POST /api/printers/:id/test-print` — **real job** `queued→claimed→printing→success/failed` (Gateway PG) and local `queued→printing→success/failed` (Agent WAL). `success` = socket write OK (`Print` loop completed), **NOT** `paper physically out`. Dashboard shows helper text.
+- `POST /api/printers/:id/test-print` — **real job** `queued→claimed→(delivery)→printing→success/failed` (Gateway PG) and local `queued→printing→success/failed` (Agent WAL). The job is claimed by the gateway *before* it is pushed over the WebSocket, so a status can never regress to `queued` after the agent started. `success` = the transport accepted the document (socket write completed / spooler accepted the job / PDF handler exited 0), **NOT** `paper physically out`. Dashboard shows helper text.
 
 ## Success Semantics (honest)
 
-`NetworkPrinter.Print` success means kernel accepted bytes on TCP; POS printers rarely ack paper. Do not claim paper-out without bidirectional status polling (not implemented). Retry on dial/write error only; `failed` after `retries>=5` and stale 90s reclaim.
+`NetworkPrinter.Print` success means the kernel accepted the bytes on TCP; POS printers rarely ack paper. For the PDF path, success means the PDF handler exited 0 after being handed the document for the named printer — i.e. the submission is proven, the physical page is not. Do not claim paper-out without bidirectional status polling (not implemented). Retry on dial/write error only; `failed` after `retries>=5` and stale 90s reclaim.
 
 ## Limits
 
@@ -88,4 +118,5 @@ Registry `printers.json` beside `config.yaml` is canonical; `printers: []` YAML 
 ## Error Handling
 
 - Dial 5s, total deadline 15s or context deadline, write loop handles short writes.
-- Agent crash window: `queued→printing` in SQLite but crash before `PATCH success` → Gateway reclaim after 90s may cause duplicate physical print if printer already received bytes — documented as at-least-once over socket during crash window, not exactly-once.
+- Agent crash window: `queued→printing` in SQLite but crash before `PATCH success` → Gateway reclaim after 90s may cause a duplicate physical print if the printer already received the bytes — at-least-once over the socket during the crash window, not exactly-once. A job that *completed* locally is protected: a duplicate delivery re-reports the stored terminal result instead of printing again (`agent/internal/agent/agent.go`, local SQLite queue).
+- Delivery failures do not strand jobs: a WS delivery that fails after the claim requeues the same job id (max 5 delivery attempts, then an explicit `failed`), and a silent claim is reclaimed after the 90 s lease with `retries+1`.

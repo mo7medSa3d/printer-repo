@@ -65,14 +65,15 @@ Exactly what happens when user clicks **normal Odoo Print** (not custom button):
         _generate_payload_for_report(report_ref, res_ids, data):
             pdf_content, _ = self._render_qweb_pdf(report_ref, res_ids=res_ids, data=data)  # Odoo 16/17/18 QWeb PDF
             b64 = base64.b64encode(pdf_content).decode('ascii')
-            return {'type':'raw','encoding':'base64','data':b64}  # PDF sent as raw binary
+            return {'type':'pdf','encoding':'base64','data':b64}   # QWeb PDF keeps the pdf payload type
+            # 'raw' only when report_mapping.payload_type is explicitly set to the legacy raw value
 
 5. Gateway API  odoo_addons/print_gateway/models/branch.py:171  create_print_job(...)
         requests.post(f"{base}/api/print/jobs",
             json={'branchId': gateway_branch_id or id,
                   'destinationId': gateway_destination_id or id,
                   'documentType': document_type,
-                  'payload': {'type':'raw','encoding':'base64','data':b64}},
+                  'payload': {'type':'pdf','encoding':'base64','data':b64}},
             headers={'Authorization': f'Bearer {gateway_api_key}'})
 
 6. Gateway routing  src/app/api/print/jobs/route.ts:82-170
@@ -80,13 +81,16 @@ Exactly what happens when user clicks **normal Odoo Print** (not custom button):
         validatePrintJobPayload (5 MiB, canonical base64, src/lib/payload.ts:7)
         resolvePrinterForJob({branchId, destinationId, documentType, payloadType})  src/lib/routing.ts:103
             → branches, destinations (must belong to branch), printerBindings (filter enabled, documentType, sort priority), fallbackChain, check printer.enabled/status, validatePayloadForPrinter (raw/escpos vs protocol), check printer.branchId & agent.branchId, fallbackUsed
-        createQueuedJob → INSERT printJobs queued, expiresAt 1h, pushJobToAgentWithClaim (WS if open → queued→claimed, else poll fallback)
+        createQueuedJob → INSERT printJobs queued, expiresAt 1h, claimAndPushJobToAgent
+            (open socket? → claim queued→claimed in a transaction (FOR UPDATE SKIP LOCKED) → THEN send over WS → stamp delivered_at;
+             send failed → releaseUndeliveredClaim requeues the SAME job id; no socket → stays queued for the poll path)
 
-7. Job Queue  src/app/api/agent/jobs/route.ts:17 GET → TTL sweep, stale 90s reclaim retries<5, claimable WITH ... FOR UPDATE SKIP LOCKED LIMIT 20 RETURNING id,printerId,payload,expiresAt
+7. Job Queue  src/app/api/agent/jobs/route.ts GET → TTL sweep, stale 90s reclaim retries<5, claimable WITH ... FOR UPDATE SKIP LOCKED LIMIT 20 RETURNING id,branchId,agentId,printerId,destinationId,documentType,status,payload,expiresAt,retries (rows are already 'claimed'; delivered_at stamped in the same statement)
         vs Agent SQLite WAL queued→printing→success/failed  agent/internal/queue/queue.go:14
 
 8. Agent execution  agent/internal/agent/agent.go:677 processJob
-        check expiresAt → IsProcessed → lookup a.printers[printerID] (from config+spooler+registry+network+USB+IPP) → payload.Parse → getPrinterLock → queue.Push → PATCH printing → p.Print(ctx, PL.Data) with 20s timeout → queue success/failed → PATCH success/failed
+        check expiresAt → local terminal check (already 'success' locally → re-report success, never print twice) → lookup a.printers[printerID] (from config+spooler+registry+network+USB+IPP) → payload.Parse → printer.SupportsKind (pdf/raw/escpos; mismatch → PATCH failed CAPABILITY_MISMATCH) → getPrinterLock → queue.Push → PATCH printing → printer.PrintDocument(ctx, p, {Kind,Data}) with 20s timeout (pdf → PDF pipeline, raw/escpos → byte stream) → queue success/failed → PATCH success/failed
+        WS deliveries are answered with {"type":"job_ack","jobId":...} on receipt (also for duplicates that will not be printed)
 
 9. Physical Printer
         NetworkPrinter.Print  agent/internal/printer/network.go:19  DialContext 5s + deadline 15s + short-write loop
@@ -101,19 +105,19 @@ Files/functions at each step listed above.
 
 | Document | Odoo Model | Report XML ID | Payload | Status | Evidence |
 |---|---|---|---|---|---|
-| Sale Order / Quotation | `sale.order` | `sale.action_report_saleorder` | `raw` PDF base64 (or `escpos` via mapping) | ✅ **Working** (generic) | `ir_actions_report.py:168` `sale.order→order`, `report_mapping.py` default |
-| Customer Invoice / Vendor Bill | `account.move` | `account.action_report_invoice` | `raw` PDF base64 | ✅ Working | `ir_actions_report.py:169` `account.move→invoice` |
-| Delivery Order / Picking | `stock.picking` | `stock.action_report_delivery` `stock.action_report_picking` | `raw` PDF base64 | ✅ Working | `ir_actions_report.py:171` `stock.picking→delivery` |
-| Purchase Order | `purchase.order` | `purchase.action_report_purchase_order` | `raw` PDF base64 | ✅ Working | `ir_actions_report.py:173` `purchase.order→purchase_order` |
-| POS receipt/order | `pos.order` | `point_of_sale.action_report_receipt` | `raw` / `escpos` | ✅ Working (POS via `receipt`) | `ir_actions_report.py:175` `pos.order→receipt` |
-| Labels | `product.template` | `product.label` etc. | `raw` PDF | ✅ Working via `model_name` fallback mapping | `report_mapping.py:15` `model_name` generic |
-| Other QWeb/PDF reports | any `ir.actions.report` with `model` | any `report_name` | `raw` PDF base64 | ✅ **Working generically** via `report_mapping` priority `report_id > xml_id > report_name > model` (`report_mapping.py:70`), or direct `ir.actions.report.print_gateway_enabled` fields (`ir_actions_report.py:14`) — **no Python edit needed per new report** | `ir_actions_report.py:35` `_get_gateway_mapping` |
+| Sale Order / Quotation | `sale.order` | `sale.action_report_saleorder` | `pdf` PDF base64 (or `escpos` via mapping) | ✅ **Working** (generic) | `ir_actions_report.py:168` `sale.order→order`, `report_mapping.py` default |
+| Customer Invoice / Vendor Bill | `account.move` | `account.action_report_invoice` | `pdf` PDF base64 | ✅ Working | `ir_actions_report.py:169` `account.move→invoice` |
+| Delivery Order / Picking | `stock.picking` | `stock.action_report_delivery` `stock.action_report_picking` | `pdf` PDF base64 | ✅ Working | `ir_actions_report.py:171` `stock.picking→delivery` |
+| Purchase Order | `purchase.order` | `purchase.action_report_purchase_order` | `pdf` PDF base64 | ✅ Working | `ir_actions_report.py:173` `purchase.order→purchase_order` |
+| POS receipt/order | `pos.order` | `point_of_sale.action_report_receipt` | `pdf` / `escpos` | ✅ Working (POS via `receipt`) | `ir_actions_report.py:175` `pos.order→receipt` |
+| Labels | `product.template` | `product.label` etc. | `pdf` PDF | ✅ Working via `model_name` fallback mapping | `report_mapping.py:15` `model_name` generic |
+| Other QWeb/PDF reports | any `ir.actions.report` with `model` | any `report_name` | `pdf` PDF base64 | ✅ **Working generically** via `report_mapping` priority `report_id > xml_id > report_name > model` (`report_mapping.py:70`), or direct `ir.actions.report.print_gateway_enabled` fields (`ir_actions_report.py:14`) — **no Python edit needed per new report** | `ir_actions_report.py:35` `_get_gateway_mapping` |
 | Custom “Print via Gateway” button | `sale.order` only | — | `escpos` custom | 🟡 **Partial** (still exists as deprecated `sale_order_views.xml:19` `ir.actions.server`, but standard Print is now single path) | `sale_order.py:14` `action_print_via_gateway` now delegates to `report_action` if gateway-enabled |
 
 **Distinction:**
-- **Actually implemented:** All above via generic `ir.actions.report` override + `report_mapping`; PDF generation via `_render_qweb_pdf` and `raw` base64 to Gateway; routing via `Branch→Destination→Document Type→Printer Binding` with no hardcoded `printer_xxx`.
+- **Actually implemented:** All above via generic `ir.actions.report` override + `report_mapping`; PDF generation via `_render_qweb_pdf` sent as `{"type":"pdf"}` base64 to the Gateway (`raw` only if a mapping explicitly selects the legacy raw type, `escpos` requires pre-formatted ESC/POS); routing via `Branch→Destination→Document Type→Printer Binding` with no hardcoded `printer_xxx`.
 - **Removed:** Legacy Sale Order "Print via Gateway" button (`sale_order.py`, `sale_order_views.xml`) — fully replaced by generic `report_mapping` + `ir.actions.report` override.
-- **Planned:** `pdf` payload type separate from `raw` (currently PDF sent as `raw` `application/octet-stream` for IPP/spooler RAW).
+- **Implemented (2026-09):** `pdf` is a first-class payload type end to end — Odoo sends `type: "pdf"`, the gateway validates printer capability (`CAPABILITY_MISMATCH` → 422 / `job.error`), the agent prints it through a PDF-aware path (Windows `printto` handler or a configured `pdf_print_command`) and IPP sends `document-format: application/pdf`. PDF is never relabelled as `raw`.
 - **Not implemented:** `ipp` protocol accepted but Gateway `validatePayloadForPrinter` now allows `raw/escpos` to `ipp` (previously blocked), but `IPPPrinter` still needs TLS client cert auth for some printers (not yet).
 
 ## D. Routing
@@ -148,31 +152,38 @@ Agent (agents: id, branch_id, localNetworkId, name, status, lastSeenAt)
 ## E. Payload
 
 **What is sent:**
-- For **PDF reports** (all standard QWeb reports): `ir_actions_report.py:180` renders via `self._render_qweb_pdf(report_ref, res_ids, data)` (Odoo 16/17/18, handles `TypeError` fallback for older signature, handles `list/tuple` return), `base64.b64encode(pdf_content)` → `{'type':'raw','encoding':'base64','data':b64}`.
+- For **PDF reports** (all standard QWeb reports): `ir_actions_report.py` renders via `self._render_qweb_pdf(report_ref, res_ids, data)` (Odoo 16/17/18, handles `TypeError` fallback for older signature, handles `list/tuple` return), `base64.b64encode(pdf_content)` → `{'type':'pdf','encoding':'base64','data':b64}` (default). A mapping with `payload_type=raw` sends the same bytes with the legacy `raw` type; `payload_type=escpos` raises a `UserError` instead of shipping PDF bytes to a thermal printer.
 - For **raw/ESC/POS** (thermal via mapping `payload_type=escpos` or legacy Sale Order): `sale_order.py:66` builds `b'\x1b\x40' + body.encode('utf-8') + b'\x1d\x56\x01'` → `{'type':'escpos','encoding':'base64','data':b64}`.
 - **API endpoint:** `POST /api/print/jobs` (`src/app/api/print/jobs/route.ts:75`)
 - **Authentication:** `Authorization: Bearer odoo_xxx` (`branch.py:48` `Bearer {gateway_api_key}`, validated `validateOdooKey` `src/lib/odoo-auth.ts` SHA256, branch-scoped, `allowedDocumentTypes` check)
 - **Request structure (branch route `route.ts:20`):**
   ```json
-  { "branchId": "branch_cairo", "destinationId": "dest_pos_1", "documentType": "order", "payload": {"type":"raw","encoding":"base64","data":"JVBERi0xLj..."}, "expiresAt?": "2026-09-01T12:00:00Z", "idempotencyKey?": "sale.order-42" }
+  { "branchId": "branch_cairo", "destinationId": "dest_pos_1", "documentType": "order", "payload": {"type":"pdf","encoding":"base64","data":"JVBERi0xLj..."}, "expiresAt?": "2026-09-01T12:00:00Z", "idempotencyKey?": "sale.order-42" }
   ```
-- **Response:** `201 {jobId, status:"queued", printerId, agentId, branchId, destinationId, documentType, fallbackUsed?, fallbackChain?}` or `200` if idempotent hit, or `4xx/5xx` with `code` (`INVALID_BRANCH`, `CAPABILITY_MISMATCH`, etc.)
-- **Job ID:** `job_<hash>` if `idempotencyKey` else `job_<nanoid(10)>`, returned as `gateway_job_id` stored in `print_gateway.print_job`.
+- **Response:** `201 {jobId, status, printerId, agentId, branchId, destinationId, documentType, fallbackUsed?, fallbackChain?}` where `status` is the real row state (`claimed` when it was delivered to a connected agent, `queued` when it waits for the poll path), or `200` if idempotent hit, or `4xx/5xx` with `code` (`INVALID_BRANCH`, `CAPABILITY_MISMATCH`, etc.)
+- **Job ID:** always `job_<nanoid(12)>`; deduplication uses the `(branch_id, idempotency_key)` unique index. Returned as `gateway_job_id` stored in `print_gateway.print_job`. A redelivery/reclaim never creates a new job id.
 
-**Gateway/Agent payload contract** `src/lib/payload.ts:7` / `agent/internal/payload/payload.go:22`: `z.enum(["raw","escpos"])` / `TypeRaw, TypeESCPOS`, `encoding:"base64"`, `data` canonical padded base64 `1..5MiB`, round-trip check `decoded.toString("base64")===s`.
+**Gateway/Agent payload contract** `src/lib/payload.ts` / `agent/internal/payload/payload.go`: `z.enum(["raw","escpos","pdf"])` / `TypeRaw, TypeESCPOS, TypePDF`, `encoding:"base64"`, `data` canonical padded base64 `1..5MiB`, round-trip check `decoded.toString("base64")===s`. The three types are not interchangeable — see the payload/printer matrix in `PRINTERS.md`.
 
 ## F. Job Lifecycle
 
 **States** `src/lib/job-status.ts` / `agent/internal/queue/queue.go:14` / `odoo_addons/print_gateway/models/print_job.py:19`:
 ```
-queued → claimed (Gateway FOR UPDATE SKIP LOCKED, lease 90s, retries<5, MAX_CLAIM 20) → printing → success / failed / expired
+queued → claimed (Gateway, in a transaction: FOR UPDATE SKIP LOCKED + UPDATE, lease 90s, retries<5, MAX_CLAIM 20)
+       → delivery (WS envelope {"type":"print_job", job:{... status:"claimed"}} → agent {"type":"job_ack"}, or the poll response)
+       → printing → success / failed / expired
 Agent local: queued → printing → success/failed (id == gateway job_id, INSERT OR IGNORE, WAL)
+
+The job is ALWAYS claimed before it is delivered: an agent never receives a job the gateway still calls `queued`, and
+"sent over the WebSocket" is never treated as "printed". A claim whose delivery fails is requeued under the same job id
+(max 5 delivery attempts, then an explicit `failed`); a claim that goes silent is reclaimed after the 90s lease with
+`retries+1`.
 ```
 
 **Odoo synchronization:**
 - `print_gateway.print_job.action_sync_status` (`print_job.py:41`) for each `gateway_job_id`: `GET /api/print/jobs?id=job_xxx` (`route.ts:239`) with branch-scoped Odoo key, updates `status, error, last_sync_at` (normalizes `completed→success`).
 - `cron_sync_pending_jobs` (`print_job.py:61`, `data/cron.xml:7`) every 2min `search([('status','in',['queued','claimed','printing'])])` → `action_sync_status`.
-- `branch` crons: `cron_sync_branch_status` 5min `action_sync_from_gateway` (pull agents/printers via `GET /api/odoo/{agents,printers}?branchId=` `branch.py:73`), `cron_push_branch_config` 5min `action_sync_to_gateway` (push branches/destinations/bindings `POST /api/odoo/sync` `branch.py:129`).
+- `branch` crons: `cron_sync_branch_status` 5min `action_sync_from_gateway` (pull agents/printers via `GET /api/odoo/{agents,printers}?branchId=`), `cron_push_branch_config` 5min `action_sync_to_gateway` (push branches/destinations/document types/bindings `POST /api/odoo/sync`). The gateway validates the entire payload first and applies it in one transaction: an invalid or dangling reference rejects the whole sync with `SYNC_VALIDATION_FAILED` / `SYNC_DEPENDENCY_MISSING` (HTTP 400) and writes nothing, and printers are never created from Odoo data. Odoo surfaces those `details` in the raised `ValidationError`.
 
 ## G. Configuration (actual UI, not plan)
 
@@ -253,7 +264,7 @@ Or use Dashboard `Printers` → `Add`.
 ### 5. Test (diagnostic split)
 
 - **Connection (no job):** `POST /api/printers/:id/test-connection` → `{reachable, status, agentOnline, probeId}` — Gateway cannot dial LAN; result is last heartbeat `printer.status` + agent online.
-- **Print (real job):** `POST /api/printers/:id/test-print` → `{jobId}` → job `queued → claimed (lease, FOR UPDATE SKIP LOCKED) → printing → success/failed` (Gateway PG) vs Agent local `queued → printing → success/failed` (SQLite WAL, `id == gateway job_id`). Success = socket write OK, NOT paper-out (see PRINTERS.md).
+- **Print (real job):** `POST /api/printers/:id/test-print` → `{jobId}` → job `queued → claimed (transactional, FOR UPDATE SKIP LOCKED) → delivery (WS envelope + job_ack, or poll) → printing → success/failed` (Gateway PG) vs Agent local `queued → printing → success/failed` (SQLite WAL, `id == gateway job_id`). Success = the transport accepted the document, NOT paper-out (see PRINTERS.md).
 
 ### 6. Odoo
 
@@ -309,7 +320,7 @@ Trails: `C:\ProgramData\OdooPrintManager\settings.json` (SYSTEM:F, Administrator
 
 ## Two Job Models
 
-- **Gateway PG:** `queued → claimed (lease 90s, FOR UPDATE SKIP LOCKED, retries<5) → printing → success/failed/expired` (`src/app/api/agent/jobs/route.ts:49`, `src/lib/job-status.ts`)
+- **Gateway PG:** `queued → claimed (transactional lease 90s, FOR UPDATE SKIP LOCKED, retries<5) → delivery (delivered_at/acked_at) → printing → success/failed/expired` (`src/app/api/agent/jobs/route.ts`, `src/lib/job-delivery.ts`, `src/lib/job-status.ts`). Agents can never transition out of `queued` themselves.
 - **Agent SQLite WAL:** `queued → printing → success/failed` (`agent/internal/queue/queue.go:14`, `id == gateway job_id`, `INSERT OR IGNORE` idempotency, `PRAGMA journal_mode=WAL`)
 
 ## Build & Test
@@ -322,6 +333,16 @@ npm run desktop:vite:build
 pwsh -File scripts/build-windows-installer.ps1
 ```
 
+**Database-backed regression suites.** `tests/ws-claim-delivery.test.ts` (WS claim-before-delivery, concurrency, recovery) and
+`tests/odoo-sync-transaction.test.ts` (validate-then-commit sync, rollback, idempotency) need a real PostgreSQL —
+`FOR UPDATE SKIP LOCKED`, transactions and concurrent connections cannot be simulated. They are **skipped** when
+`DATABASE_URL` is unset and run automatically when it points at a disposable database (the harness applies
+`drizzle/*.sql` itself and truncates between tests):
+
+```bash
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/printgw_test npm test
+```
+
 See `docs/VERIFICATION.md` for CI vs Real Windows vs Real Printer gate (no production-ready claim until all green).
 
 ---
@@ -330,7 +351,7 @@ See `docs/VERIFICATION.md` for CI vs Real Windows vs Real Printer gate (no produ
 
 | Component | Status | Current behavior | Evidence | Remaining work |
 |---|---|---|---|---|
-| **Gateway API `POST /api/print/jobs` (branch route)** | ✅ Working | Validates `branchId, destinationId, documentType, payload` (5 MiB, canonical base64), checks `validateOdooKey` branch-scoped, `resolvePrinterForJob` with fallback, inserts `queued`, `pushJobToAgentWithClaim` | `src/app/api/print/jobs/route.ts:75`, `src/lib/routing.ts:103`, `src/lib/payload.ts:7` | None |
+| **Gateway API `POST /api/print/jobs` (branch route)** | ✅ Working | Validates `branchId, destinationId, documentType, payload` (5 MiB, canonical base64), checks `validateOdooKey` branch-scoped, `resolvePrinterForJob` with fallback, inserts `queued`, then `claimAndPushJobToAgent` (claim in a transaction → deliver → `delivered_at`; failed delivery requeues the same job id) | `src/app/api/print/jobs/route.ts`, `src/lib/job-delivery.ts`, `src/lib/routing.ts`, `src/lib/payload.ts` | None |
 | **Gateway routing Branch→Destination→DocumentType→PrinterBinding→Printer** | ✅ Working | `resolvePrinterForJob` validates `branch` exists, `destination.branchId==branchId`, filters `printerBindings` by `branchId+destinationId+enabled+documentType`, sorts `priority`, checks `printer.enabled/status`, `validatePayloadForPrinter`, `agent.branchId`, returns `fallbackChain` | `src/lib/routing.ts:103` | None |
 | **Gateway heartbeating `POST /api/agent/heartbeat`** | ✅ Working | Upserts `agents.lastSeenAt`, `printers` scoped `agentId`, handles `spooler, network, usb, ipp, ipps, tcp` via `VALID_CONNECTION_TYPES`, `VALID_PROTOCOLS` includes `ipps` | `src/app/api/agent/heartbeat/route.ts:7` | None |
 | **Agent Windows Spooler discovery** | ✅ Working | `spooler_windows.go:143` correct `PRINTER_INFO_2W` via `unsafe.Sizeof`, extracts `pPrinterName, pPortName, pDriverName, pShareName, pLocation, pComment, Attributes, Status`, maps via `classify.go:3` + `mapWindowsStatus`, `DeviceInfo` with `NetworkAddress/Port, capabilities` | `agent/internal/printer/spooler_windows.go:143`, `classify.go:3` | None |
@@ -350,7 +371,7 @@ See `docs/VERIFICATION.md` for CI vs Real Windows vs Real Printer gate (no produ
 | **Agent Startup** | ✅ Working | `DiscoverQuick` (config+spooler+registry) sync, then async full discovery (network+USB+IPP) 2s delay, `INFO: no printers configured` if empty (`agent.go:160`) | `agent.go:129` | None |
 | **Odoo: Branch/Destination/DocumentType/Printer/Binding/PrintJob models** | ✅ Working | `odoo_addons/print_gateway/models/{branch,destination,document_type,printer,agent,printer_binding,print_job}.py` with `company_id, gateway_url/api_key, enabled, printerType/connectionType/protocol, priority fallback, branch consistency `_check_branch_consistency`` | `branch.py:9`, `printer.py:9` | None |
 | **Odoo: Generic report mapping** | ✅ Working (code) | `report_mapping.py:5` `print_gateway.report_mapping` + `ir_actions_report.py:9` `_inherit ir.actions.report` with `print_gateway_enabled, print_gateway_document_type_id, print_gateway_branch_id, print_gateway_destination_id` + `report_action` override `ir_actions_report.py:311` intercepting standard Print | `report_mapping.py:5`, `ir_actions_report.py:311` | 🧪 Not tested with live Odoo DB (see below) |
-| **Odoo: Payload generation (PDF → base64 raw)** | ✅ Working (code) | `_generate_payload_for_report:180` `self._render_qweb_pdf(report_ref, res_ids, data)` → `base64.b64encode(pdf_content)` → `{'type':'raw','encoding':'base64','data':b64}` | `ir_actions_report.py:180` | 🧪 Not tested with live Odoo render |
+| **Odoo: Payload generation (QWeb PDF → base64 pdf)** | ✅ Working (code) | `_generate_payload_for_report` `self._render_qweb_pdf(report_ref, res_ids, data)` → `base64.b64encode(pdf_content)` → `{'type':'pdf','encoding':'base64','data':b64}` (legacy `raw` only when a mapping asks for it) | `ir_actions_report.py` | 🧪 Not tested with live Odoo render |
 | **Odoo: Branch→Destination→DocumentType routing (asks Gateway)** | ✅ Working (code) | `_determine_branch/destination/document_type` + `branch.create_print_job(destination.gateway_destination_id, document_type, payload, odoo_model, odoo_record_id, report_xml_id, report_name)` → `POST /api/print/jobs` with `branchId, destinationId, documentType, payload` | `ir_actions_report.py:72` | None |
 | **Odoo: Print Job tracking** | ✅ Working (code) | `print_job.py:9` now has `odoo_model, odoo_record_id, report_xml_id, report_name, report_id` + `gateway_job_id, branch_id, destination_id, document_type, printer_id, agent_id, status, payload, error` + `action_sync_status` `GET /api/print/jobs?id=` + `cron_sync_pending_jobs` 2min | `print_job.py:9` | None |
 | **Odoo: Sale Order custom button** | 🟡 Partial | Button **removed** from header (`sale_order_views.xml:8` no longer has `Print via Gateway` button), kept as deprecated `ir.actions.server` `action_print_via_gateway_sale_order` + `sale_order.py:14` now delegates to `report.report_action` if gateway-enabled | `sale_order_views.xml:8`, `sale_order.py:14` | None (single path now) |
@@ -372,11 +393,11 @@ graph TD
     D --> E[_determine_branch<br/>ir_actions_report.py:72<br/>mapping.branch or record.branch/company or first enabled]
     D --> F[_determine_destination<br/>ir_actions_report.py:124<br/>mapping.destination or record.destination or branch.pos]
     D --> G[_determine_document_type<br/>ir_actions_report.py:152<br/>mapping.document_type or fallback sale.order→order, account.move→invoice, stock.picking→delivery]
-    E & F & G --> H[_generate_payload_for_report<br/>ir_actions_report.py:180<br/>self._render_qweb_pdf → base64.b64encode → {'type':'raw','encoding':'base64','data':b64}]
+    E & F & G --> H[_generate_payload_for_report<br/>ir_actions_report.py<br/>self._render_qweb_pdf → base64.b64encode → {'type':'pdf','encoding':'base64','data':b64}]
     H --> I[branch.create_print_job<br/>branch.py:171<br/>destination_id, document_type, payload, odoo_model, odoo_record_id, report_xml_id, report_name]
     I --> J[POST /api/print/jobs<br/>src/app/api/print/jobs/route.ts:75<br/>validateOdooKey, validatePrintJobPayload 5MiB, resolvePrinterForJob]
     J --> K{resolvePrinterForJob<br/>src/lib/routing.ts:103<br/>Branch→Destination→DocumentType→PrinterBinding priority fallback → Printer<br/>validatePayloadForPrinter, agent.branchId check}
-    K --> L[createQueuedJob<br/>route.ts:37<br/>INSERT printJobs queued, expiresAt 1h, pushJobToAgentWithClaim]
+    K --> L[createQueuedJob<br/>route.ts<br/>INSERT printJobs queued, expiresAt 1h, claimAndPushJobToAgent: claim queued→claimed THEN deliver]
     L --> M{Gateway Job Queue<br/>print_jobs queued → claimed → printing → success/failed/expired<br/>src/app/api/agent/jobs/route.ts:49 FOR UPDATE SKIP LOCKED]
     M -->|WS push| N[Agent WebSocket<br/>agent/internal/agent/agent.go:322 handleWSMessages]
     M -->|poll fallback| O[Agent GET /api/agent/jobs<br/>agent.go:641 pollJobs]
@@ -475,7 +496,7 @@ graph TD
 **What remains:**
 - **P0:** Create missing views (`report_mapping`, `ir.actions.report` inheritance), update `security/ir.model.access.csv` (add `report_mapping`), update `__manifest__.py` `data` (add new XMLs + `data/report_mappings.xml` with 5 defaults), update `views/menu.xml` (add `Report Mappings` menu), run `xmllint` + `py_compile` + `odoo-bin` install test.
 - **P1:** Physical tests on Windows with real thermal 9100, IPP 631, USB `\\?\usb#`, and `cargo tauri build` + `sc query` (see `docs/VERIFICATION.md` C1-C11).
-- **P2:** `DevMode` paper sizes, `pdf` payload type separate, `mDNS` full `zeroconf`.
+- **P2:** `DevMode` paper sizes, `mDNS` full `zeroconf`.
 
 **What should be done next:**
 1. Create `odoo_addons/print_gateway/views/report_mapping_views.xml` and `ir_actions_report_views.xml` + `data/report_mappings.xml` + update `security` + `__manifest__.py` (P0).

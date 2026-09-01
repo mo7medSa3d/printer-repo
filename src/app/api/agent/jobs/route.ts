@@ -4,10 +4,13 @@ import { validateAgent } from "@/lib/agent-auth";
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { isJobStatus, canTransition, isTerminal, type JobStatus } from "@/lib/job-status";
+import { CLAIM_LEASE_SECONDS } from "@/lib/job-delivery";
 
 // A claimed/printing job that hasn't been updated in this long is assumed
 // to belong to a crashed or disconnected agent and becomes reclaimable.
-const STALE_CLAIM_SECONDS = 90;
+// This is also the lease the WS claim-before-delivery path relies on
+// (src/lib/job-delivery.ts) — the two must stay identical.
+const STALE_CLAIM_SECONDS = CLAIM_LEASE_SECONDS;
 // After this many reclaims, stop retrying and mark the job permanently failed.
 const MAX_RETRIES = 5;
 // Cap how many jobs one poll can claim at once (basic resource limit).
@@ -76,6 +79,12 @@ export async function GET(req: Request) {
       status = 'claimed',
       claimed_at = now(),
       updated_at = now(),
+      -- The HTTP response IS the delivery for the poll path, so the claim and
+      -- the delivery record commit together (the WS path records them
+      -- separately: claim first, delivery only once the socket accepted it).
+      delivered_at = now(),
+      acked_at = NULL,
+      delivery_attempts = print_jobs.delivery_attempts + 1,
       retries = CASE WHEN print_jobs.status IN ('claimed', 'printing')
                      THEN print_jobs.retries + 1
                      ELSE print_jobs.retries END
@@ -83,12 +92,19 @@ export async function GET(req: Request) {
     WHERE print_jobs.id = claimable.id
     RETURNING
       print_jobs.id AS id,
+      print_jobs.branch_id AS "branchId",
+      print_jobs.agent_id AS "agentId",
       print_jobs.printer_id AS "printerId",
+      print_jobs.destination_id AS "destinationId",
+      print_jobs.document_type AS "documentType",
+      print_jobs.status AS status,
       print_jobs.payload AS payload,
       print_jobs.expires_at AS "expiresAt",
       print_jobs.retries AS retries
   `);
 
+  // Every row returned here is already 'claimed' in the database: the agent
+  // never receives a job it does not own.
   return NextResponse.json(claimed.rows);
 }
 

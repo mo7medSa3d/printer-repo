@@ -29,10 +29,10 @@
 | S8 | Go build | `go build ./...` | VERIFIED | 0 errors |
 | S9 | DB schema | `src/db/schema.ts` + `drizzle 0000/0001/0002` | VERIFIED | 10 tables, `document_types` added, branch isolation indexes |
 | S10 | Payload 5MiB cap | `src/lib/payload.ts` + `agent/internal/payload/payload.go` | VERIFIED | base64 canonical, `raw` for PDF |
-| S11 | WS attach | `src/server/ws.ts:38` `attachAgentWSS` | VERIFIED | ping/pong 30s, `pushJobToAgentWithClaim` |
+| S11 | WS attach | `src/server/ws.ts:38` `attachAgentWSS` | VERIFIED | ping/pong 30s, claim-before-delivery via `claimAndPushJobToAgent` (was `pushJobToAgentWithClaim`) |
 | S12 | Manager auth | `src/lib/manager-auth.ts` + `login` | VERIFIED | httpOnly 8h `jti`, scrypt; WebView `REQUIRES REAL WINDOWS` |
 | S13 | Odoo auth branch-scoped | `src/lib/odoo-auth.ts` + `POST /api/print/jobs` `branchId` | VERIFIED | `odoo_` SHA256, `allowedDocumentTypes` |
-| S14 | Printer diagnostics split | `test-connection` (RPC, no job) vs `test-print` (real job) | VERIFIED | `test-connection` cached `latencyMs:null`, `test-print` real job via `pushJobToAgentWithClaim` |
+| S14 | Printer diagnostics split | `test-connection` (RPC, no job) vs `test-print` (real job) | VERIFIED | `test-connection` cached `latencyMs:null`, `test-print` real job via `claimAndPushJobToAgent` (claim commits before the WS send) |
 | S15 | Vitest | `npm test` | VERIFIED | `job-status` 4 + `payload` 4 + `phase1/2-routing` 13 + `odoo-simulation` 3/4 |
 | S16 | Desktop assets | `dist-desktop` | VERIFIED | modern UI |
 | S17 | test-connection never creates job | `grep -F printJobs` | VERIFIED | header `MUST NOT` |

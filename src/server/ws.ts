@@ -1,14 +1,21 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
 import { validateAgent } from "@/lib/agent-auth";
-import { db } from "@/db";
-import { printJobs } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import {
+  claimJobForDelivery,
+  markJobDelivered,
+  recordJobAck,
+  releaseUndeliveredClaim,
+  type ClaimedJobRow,
+} from "@/lib/job-delivery";
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
 // Per-agent connection tracking. Agent ↔ Gateway is the ONLY persistent WS.
 const agentSockets = new Map<string, Set<AgentSocket>>();
+
+// Agent → Gateway control frames are tiny; anything larger is refused by ws.
+const MAX_WS_MESSAGE_BYTES = 64 * 1024;
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
   ws.agentId = agentId;
@@ -28,61 +35,143 @@ export function getAgentWsCount(agentId: string): number {
   return agentSockets.get(agentId)?.size ?? 0;
 }
 
-export function broadcastJobToAgent(agentId: string, job: unknown) {
+/** True when at least one socket for this agent is in OPEN state. */
+export function hasOpenAgentSocket(agentId: string): boolean {
+  const set = agentSockets.get(agentId);
+  if (!set) return false;
+  for (const ws of set) {
+    if (ws.readyState === WebSocket.OPEN) return true;
+  }
+  return false;
+}
+
+/**
+ * Write one message to exactly ONE open socket of the agent.
+ *
+ * Sending to every socket of the same agent would be a duplicate delivery of
+ * the same job, so the newest open socket wins. Returns false when nothing
+ * could actually be written — the caller must then treat the delivery as
+ * failed (previously this returned true whenever a socket object existed,
+ * even if it was already CLOSING, which silently lost jobs).
+ */
+export function sendToAgent(agentId: string, message: unknown): boolean {
   const set = agentSockets.get(agentId);
   if (!set || set.size === 0) return false;
-  const payload = JSON.stringify(job);
-  for (const ws of set) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(payload);
-    }
+  const open = [...set].filter((ws) => ws.readyState === WebSocket.OPEN);
+  if (open.length === 0) return false;
+  const target = open[open.length - 1];
+  const data = JSON.stringify(message);
+  try {
+    target.send(data);
+  } catch (e) {
+    console.warn(`[ws] send to agent ${agentId} failed:`, e);
+    return false;
   }
   return true;
 }
 
-// Called from print job creation paths (Odoo/test-print) to push immediately
-export function tryPushJob(job: { id: string; agentId: string; printerId: string; payload: unknown; expiresAt: string | Date }) {
-  const expiresAt = typeof job.expiresAt === "string" ? job.expiresAt : job.expiresAt.toISOString();
-  return broadcastJobToAgent(job.agentId, {
+export type JobDeliveryEnvelope = {
+  type: "print_job";
+  job: {
+    id: string;
+    branchId: string;
+    agentId: string;
+    printerId: string;
+    destinationId: string | null;
+    documentType: string | null;
+    status: string;
+    payload: unknown;
+    expiresAt: string;
+    retries: number;
+  };
+  // Flat aliases so an older agent build that reads `id`/`printerId`/`payload`
+  // straight off the message keeps working against a new gateway.
+  id: string;
+  printerId: string;
+  payload: unknown;
+  expiresAt: string;
+};
+
+export function buildJobEnvelope(job: ClaimedJobRow): JobDeliveryEnvelope {
+  const expiresAt = job.expiresAt instanceof Date ? job.expiresAt.toISOString() : new Date(job.expiresAt).toISOString();
+  return {
+    type: "print_job",
+    job: {
+      id: job.id,
+      branchId: job.branchId,
+      agentId: job.agentId,
+      printerId: job.printerId,
+      destinationId: job.destinationId ?? null,
+      documentType: job.documentType ?? null,
+      status: job.status,
+      payload: job.payload,
+      expiresAt,
+      retries: job.retries,
+    },
     id: job.id,
     printerId: job.printerId,
     payload: job.payload,
     expiresAt,
-  });
+  };
 }
 
+export type PushOutcome =
+  | "delivered" // claimed, written to a socket, agent owns it now
+  | "no_socket" // agent is not connected; row stays queued for the poll path
+  | "not_claimable" // already claimed/terminal/expired — nothing was sent
+  | "requeued" // claim taken but send failed; row is queued again
+  | "failed"; // claim taken, send failed, delivery budget exhausted
+
 /**
- * Push a freshly created job over the agent WebSocket AND record the gateway
- * lease that the poll path (GET /api/agent/jobs) would normally establish.
+ * Claim a job and only then push it to the agent.
  *
- * Why this matters: the PATCH status machine (src/lib/job-status.ts) refuses
- * every transition out of 'queued' — only a 'claimed' row may become
- * 'printing'/'failed'. A bare WS push left the job in 'queued', so a
- * WS-connected agent could never report progress/success (PATCH → 409), and
- * the job churned until TTL/reclaim. Now, when the push actually reached an
- * open socket, we atomically claim the row. If a poll (or another creator)
- * claimed it concurrently, the UPDATE simply matches 0 rows.
- *
- * Returns true when the job was delivered over WS (and the claim attempt was
- * made). A false return means "no open socket" — the row stays 'queued' and
- * the agent's poll fallback claims it normally.
- *
- * Known, accepted ms-window: a very fast agent can PATCH 'printing' between
- * the WS dispatch and the claim landing; that single progress tick may be
- * rejected with 409, but the terminal success/failed PATCH then lands
- * correctly against the claimed row.
+ * Ordering is the whole point: the queued→claimed transition commits BEFORE
+ * a single byte reaches the agent, so the agent can never execute (and report
+ * progress on) a job the gateway still believes is queued. If the socket
+ * write fails after the claim, the claim is released so the job stays
+ * recoverable under the same job id.
  */
-export async function pushJobToAgentWithClaim(job: { id: string; agentId: string; printerId: string; payload: unknown; expiresAt: string | Date }): Promise<boolean> {
-  const delivered = tryPushJob(job);
-  if (!delivered) return false;
-  await db.update(printJobs)
-    .set({ status: "claimed", claimedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(printJobs.id, job.id), eq(printJobs.status, "queued")));
-  return true;
+export async function claimAndPushJobToAgent(job: { id: string; agentId: string }): Promise<PushOutcome> {
+  if (!hasOpenAgentSocket(job.agentId)) return "no_socket";
+
+  const claimed = await claimJobForDelivery(job.id, job.agentId);
+  if (!claimed) return "not_claimable";
+
+  const delivered = sendToAgent(job.agentId, buildJobEnvelope(claimed));
+  if (!delivered) {
+    const outcome = await releaseUndeliveredClaim(
+      job.id,
+      job.agentId,
+      "websocket delivery failed after claim; job requeued for redelivery"
+    );
+    return outcome === "failed" ? "failed" : "requeued";
+  }
+
+  await markJobDelivered(job.id, job.agentId);
+  return "delivered";
+}
+
+/** Handles one Agent → Gateway control frame. Exported for tests. */
+export async function handleAgentMessage(agentId: string, raw: string): Promise<void> {
+  let msg: unknown;
+  try {
+    msg = JSON.parse(raw);
+  } catch {
+    return; // non-JSON keepalive noise
+  }
+  if (!msg || typeof msg !== "object") return;
+  const { type, jobId } = msg as { type?: unknown; jobId?: unknown };
+  if (type !== "job_ack") return;
+  if (typeof jobId !== "string" || !jobId) return;
+  // Acknowledgement is receipt only: it never changes the job status.
+  const known = await recordJobAck(jobId, agentId);
+  if (!known) {
+    console.warn(`[ws] agent ${agentId} acked unknown job ${jobId}`);
+  }
 }
 
 export function attachAgentWSS(server: HttpServer) {
-  const wss = new WebSocketServer({ noServer: true, path: "/api/agent/ws" });
+  const wss = new WebSocketServer({ noServer: true, path: "/api/agent/ws", maxPayload: MAX_WS_MESSAGE_BYTES });
 
   // Heartbeat for dead WS detection (per ws docs)
   const interval = setInterval(() => {
@@ -127,17 +216,23 @@ export function attachAgentWSS(server: HttpServer) {
       aws.isAlive = true;
       aws.on("pong", () => { aws.isAlive = true; });
       trackAgentSocket(agent!.id, aws);
-      // Optionally send a hello with agent id for diagnostics
-      // Do not send jobs here; jobs are pushed via broadcastJobToAgent after claim/creation.
+      // No jobs are sent on connect: a job is only ever pushed after the
+      // gateway has claimed it (claimAndPushJobToAgent). Undelivered claims
+      // are recovered by the agent's poll path.
       wss.emit("connection", ws, req);
     });
   });
 
-  // Handle WS connections: agent does not send messages except pong; just keep alive.
+  // Agent → Gateway frames: pong keepalives and `{"type":"job_ack","jobId"}`.
   wss.on("connection", (ws: AgentSocket) => {
-    ws.on("message", () => {
-      // Ignore; agent is producer-agnostic. But keep alive.
+    ws.on("message", (data) => {
       ws.isAlive = true;
+      const agentId = ws.agentId;
+      if (!agentId) return;
+      const raw = typeof data === "string" ? data : data.toString();
+      handleAgentMessage(agentId, raw).catch((e) => {
+        console.warn(`[ws] failed to handle message from agent ${agentId}:`, e);
+      });
     });
     ws.on("error", () => {
       try { ws.close(); } catch {}

@@ -191,6 +191,14 @@ export const printJobs = pgTable("print_jobs", {
   idempotencyKey: text("idempotency_key"),
   retries: integer("retries").notNull().default(0),
   claimedAt: timestamp("claimed_at"),
+  // Delivery bookkeeping for the claim-before-delivery WS protocol:
+  //   deliveryAttempts — how many times the gateway tried to hand the job to
+  //                      an agent (WS send or poll response)
+  //   deliveredAt      — the moment the job actually left the gateway
+  //   ackedAt          — the moment the agent confirmed receipt (WS job_ack)
+  deliveryAttempts: integer("delivery_attempts").notNull().default(0),
+  deliveredAt: timestamp("delivered_at"),
+  ackedAt: timestamp("acked_at"),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -199,6 +207,7 @@ export const printJobs = pgTable("print_jobs", {
   agentStatusIdx: index("print_jobs_agent_status_idx").on(table.agentId, table.status),
   printerStatusIdx: index("print_jobs_printer_status_idx").on(table.printerId, table.status),
   statusExpiresIdx: index("print_jobs_status_expires_idx").on(table.status, table.expiresAt),
+  claimedAtIdx: index("print_jobs_claimed_at_idx").on(table.status, table.claimedAt),
   destinationIdIdx: index("print_jobs_destination_id_idx").on(table.destinationId),
   branchIdempotencyIdx: index("print_jobs_branch_idempotency_idx").on(table.branchId, table.idempotencyKey),
   branchIdempotencyUnique: uniqueIndex("print_jobs_branch_idempotency_unique").on(table.branchId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),

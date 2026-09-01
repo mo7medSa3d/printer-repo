@@ -22,6 +22,12 @@ type Config struct {
 		ID     string `yaml:"id"`
 		Secret string `yaml:"secret"`
 		Name   string `yaml:"name"`
+		// PDFPrintCommand is an optional external PDF print helper, e.g.
+		//   pdf_print_command: ["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]
+		// The {printer} and {file} placeholders are substituted as WHOLE argv
+		// elements and executed without a shell. When unset, Windows uses the
+		// registered PDF handler (ShellExecuteExW "printto").
+		PDFPrintCommand []string `yaml:"pdf_print_command,omitempty"`
 	} `yaml:"agent"`
 	Printers []PrinterConfig `yaml:"printers"`
 }

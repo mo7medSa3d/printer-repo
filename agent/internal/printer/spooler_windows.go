@@ -36,6 +36,9 @@ type docInfo1 struct {
 type SpoolerPrinter struct {
 	Name        string
 	SpoolerName string
+	// PDFPrint overrides the PDF submission step (tests / explicit helper).
+	// nil means "use the platform PDF path" (ShellExecuteExW printto).
+	PDFPrint PDFPrintFunc
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
@@ -121,6 +124,32 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	}
 	log.Printf("Spooler printed %d bytes to %s (job %d)", written, p.SpoolerName, jobID)
 	return nil
+}
+
+// SupportsKind: a Windows print queue accepts RAW byte streams (ESC/POS and
+// raw) and — through the installed driver plus the registered PDF handler —
+// real PDF documents.
+func (p *SpoolerPrinter) SupportsKind(kind string) bool {
+	switch NormalizeKind(kind) {
+	case KindRaw, KindESCPOS, KindPDF:
+		return true
+	default:
+		return false
+	}
+}
+
+// PrintDocument selects the physically correct Windows path per document kind:
+// PDF goes through the PDF-aware pipeline (temp file + printto handler),
+// raw/escpos keep the RAW spooler datatype.
+func (p *SpoolerPrinter) PrintDocument(ctx context.Context, doc Document) error {
+	switch NormalizeKind(doc.Kind) {
+	case KindPDF:
+		return PrintPDF(ctx, p.SpoolerName, doc, p.PDFPrint)
+	case KindRaw, KindESCPOS:
+		return p.Print(ctx, doc.Data)
+	default:
+		return CapabilityMismatchf("spooler printer %q cannot render %s payloads", p.SpoolerName, NormalizeKind(doc.Kind))
+	}
 }
 
 func (p *SpoolerPrinter) Test(ctx context.Context) error {

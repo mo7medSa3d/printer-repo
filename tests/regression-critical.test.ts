@@ -119,3 +119,125 @@ describe("regression: stale refs and debug", () => {
     expect(allSrc).not.toContain("console.log");
   });
 });
+
+describe("regression: WS claim race (contract-level, no DB required)", () => {
+  const wsSrc = readFileSync("src/server/ws.ts", "utf8");
+  const deliverySrc = readFileSync("src/lib/job-delivery.ts", "utf8");
+
+  it("claims the job before it is written to the socket", () => {
+    const claimIdx = wsSrc.indexOf("claimJobForDelivery");
+    const sendIdx = wsSrc.indexOf("sendToAgent(job.agentId");
+    expect(claimIdx).toBeGreaterThan(-1);
+    expect(sendIdx).toBeGreaterThan(-1);
+    expect(claimIdx).toBeLessThan(sendIdx);
+  });
+
+  it("claims inside a transaction with FOR UPDATE SKIP LOCKED", () => {
+    expect(deliverySrc).toContain("db.transaction");
+    expect(deliverySrc).toContain("FOR UPDATE SKIP LOCKED");
+    expect(deliverySrc).toContain("status = 'claimed'");
+  });
+
+  it("releases an undelivered claim instead of stranding the job, reusing the job id", () => {
+    expect(wsSrc).toContain("releaseUndeliveredClaim");
+    expect(deliverySrc).toContain("SET status = 'queued'");
+    // The recovery path never inserts a new row / new job id.
+    expect(deliverySrc).not.toContain("nanoid");
+    expect(deliverySrc).not.toContain("INSERT INTO print_jobs");
+  });
+
+  it("delivers the claimed status and job identity in the WS envelope", () => {
+    expect(wsSrc).toContain('type: "print_job"');
+    expect(wsSrc).toContain("branchId");
+    expect(wsSrc).toContain("agentId");
+    expect(wsSrc).toContain("printerId");
+    expect(wsSrc).toContain('type !== "job_ack"');
+  });
+
+  it("keeps queued un-transitionable by agents (a fast agent cannot skip the claim)", () => {
+    expect(canTransition("queued", "printing")).toBe(false);
+    expect(canTransition("queued", "success")).toBe(false);
+    expect(canTransition("claimed", "printing")).toBe(true);
+    expect(canTransition("printing", "success")).toBe(true);
+    expect(canTransition("success", "printing")).toBe(false);
+  });
+});
+
+describe("regression: PDF capability routing (contract-level, no DB required)", () => {
+  it("refuses PDF for an ESC/POS-only printer even when it also lists raw", () => {
+    const escposOnly = {
+      protocol: "escpos",
+      connectionType: "network",
+      capabilities: { supported_protocols: ["escpos", "raw"] },
+    };
+    const result = validatePayloadForPrinter("pdf", escposOnly);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("CAPABILITY_MISMATCH");
+
+    // raw/escpos to the same printer stay valid — no over-blocking.
+    expect(validatePayloadForPrinter("raw", escposOnly).ok).toBe(true);
+    expect(validatePayloadForPrinter("escpos", escposOnly).ok).toBe(true);
+  });
+
+  it("accepts PDF for a printer that declares pdf support", () => {
+    expect(validatePayloadForPrinter("pdf", {
+      protocol: "spooler",
+      connectionType: "spooler",
+      capabilities: { supported_protocols: ["raw", "escpos", "pdf"] },
+    }).ok).toBe(true);
+  });
+
+  it("agent PDF path is real: validation, secure temp file, no shell", () => {
+    const pdfSrc = readFileSync("agent/internal/printer/pdf.go", "utf8");
+    expect(pdfSrc).toContain("%PDF-");
+    expect(pdfSrc).toContain("%%EOF");
+    expect(pdfSrc).toContain("os.MkdirTemp");
+    expect(pdfSrc).toContain("os.CreateTemp");
+    expect(pdfSrc).toContain("exec.CommandContext");
+    expect(pdfSrc).not.toContain("sh -c");
+    expect(pdfSrc).not.toContain("cmd /c");
+    const winSrc = readFileSync("agent/internal/printer/pdf_windows.go", "utf8");
+    expect(winSrc).toContain("ShellExecuteExW");
+    expect(winSrc).toContain("printto");
+    expect(winSrc).toContain("WaitForSingleObject");
+  });
+
+  it("payload types keep distinct semantics in the agent (pdf is never renamed to raw)", () => {
+    const doc = readFileSync("agent/internal/printer/document.go", "utf8");
+    expect(doc).toContain(`KindPDF    = "pdf"`);
+    expect(doc).toContain("ErrCapabilityMismatch");
+    const agentSrc = readFileSync("agent/internal/agent/agent.go", "utf8");
+    expect(agentSrc).toContain("printer.PrintDocument(printCtx, p, printer.Document{Kind: kind");
+    expect(agentSrc).toContain("CAPABILITY_MISMATCH");
+  });
+});
+
+describe("regression: Odoo sync is validated and transactional (contract-level)", () => {
+  const syncSrc = readFileSync("src/app/api/odoo/sync/route.ts", "utf8");
+
+  it("validates the whole payload before any write and applies it in one transaction", () => {
+    const validationIdx = syncSrc.indexOf("SYNC_VALIDATION_FAILED");
+    const txIdx = syncSrc.indexOf("db.transaction");
+    expect(validationIdx).toBeGreaterThan(-1);
+    expect(txIdx).toBeGreaterThan(-1);
+    expect(validationIdx).toBeLessThan(txIdx);
+  });
+
+  it("never auto-creates printers and reports missing dependencies explicitly", () => {
+    expect(syncSrc).toContain("SYNC_DEPENDENCY_MISSING");
+    expect(syncSrc).not.toContain("insert(printers)");
+    expect(syncSrc).not.toContain("insert(agents)");
+  });
+
+  it("normalizes ids to strings before comparing", () => {
+    expect(syncSrc).toContain("function asId");
+    expect(syncSrc).toContain("String(value)");
+  });
+
+  it("never returns success while something failed", () => {
+    // The only success:true is emitted after the transaction committed.
+    const successIdx = syncSrc.indexOf("success: true");
+    const commitIdx = syncSrc.indexOf("});", syncSrc.indexOf("db.transaction"));
+    expect(successIdx).toBeGreaterThan(commitIdx);
+  });
+});

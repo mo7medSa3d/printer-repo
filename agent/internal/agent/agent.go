@@ -43,6 +43,12 @@ const (
 // is asked to stop. The Windows SCM default stop timeout is 30s.
 const shutdownGrace = 25 * time.Second
 
+// While the WebSocket is connected the poll loop still runs every
+// wsSafetyPollEvery ticks (10s tick => every 30s) so claimed-but-undelivered
+// jobs are reclaimed after the gateway's 90s claim lease instead of being
+// stuck until the socket drops.
+const wsSafetyPollEvery = 3
+
 type Agent struct {
 	cfg            *config.Config
 	configPath     string
@@ -79,6 +85,10 @@ type Agent struct {
 
 	wsMu   sync.RWMutex
 	wsConn *websocket.Conn
+	// wsWriteMu serializes writes on the WebSocket: gorilla/websocket allows
+	// at most one concurrent writer, and job acknowledgements are written from
+	// the read loop while pings/other frames may be written elsewhere.
+	wsWriteMu sync.Mutex
 }
 
 // Printer map accessors. The printer map is mutated by the async discovery
@@ -139,6 +149,10 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		inFlight:       make(map[string]struct{}),
 		shutdownCh:     make(chan struct{}),
 	}
+
+	// An explicitly configured PDF helper takes precedence over the platform
+	// PDF path for every PDF-capable backend on this agent.
+	printer.SetPDFHelperCommand(cfg.Agent.PDFPrintCommand)
 
 	// 1. Load configured printers from YAML (legacy, still supported for backward compat)
 	for _, pc := range cfg.Printers {
@@ -380,6 +394,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.sendHeartbeatGuarded()
 	go a.pollJobsGuarded(ctx)
 
+	// Counts poll ticks skipped because the WebSocket is connected.
+	wsSafetyPollTicks := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -395,9 +412,22 @@ func (a *Agent) Run(ctx context.Context) error {
 			// of every configured printer, which can take seconds when offline.
 			go a.sendHeartbeatGuarded()
 		case <-pollTicker.C:
-			// Fallback polling only when WebSocket is not currently connected.
+			// Poll is the primary delivery path while the WebSocket is down.
+			// While the socket IS up it still runs as a safety net every
+			// wsSafetyPollEvery ticks: a job that was claimed for WS delivery
+			// but never reached the agent (socket died between claim and
+			// send, agent restarted, backlog overflow) is only recovered by
+			// the poll endpoint's stale-claim reclaim. Without this the job
+			// would sit claimed until the agent happened to disconnect.
 			if a.getWSConn() == nil {
+				wsSafetyPollTicks = 0
 				go a.pollJobsGuarded(ctx)
+			} else {
+				wsSafetyPollTicks++
+				if wsSafetyPollTicks >= wsSafetyPollEvery {
+					wsSafetyPollTicks = 0
+					go a.pollJobsGuarded(ctx)
+				}
 			}
 		}
 	}
@@ -486,14 +516,82 @@ func (a *Agent) handleWSMessages(ctx context.Context) error {
 			return err
 		}
 
-		var job map[string]interface{}
-		if err := json.Unmarshal(message, &job); err != nil {
+		var envelope map[string]interface{}
+		if err := json.Unmarshal(message, &envelope); err != nil {
 			log.Printf("Malformed WS message: %v", err)
 			continue
 		}
 
+		job, ok := extractJobFromWSMessage(envelope)
+		if !ok {
+			log.Printf("Ignoring WS message without a print job: %v", envelope["type"])
+			continue
+		}
+
+		jobID, _ := job["id"].(string)
+		if jobID == "" {
+			log.Printf("Ignoring WS job without an id")
+			continue
+		}
+
+		// Acknowledge receipt immediately — before any printing. The ack means
+		// "this agent has the job", never "the job printed"; the gateway only
+		// records delivery from it. Duplicates are acked too (see dispatchJob),
+		// so the gateway can distinguish a lost delivery from a duplicate one.
+		if err := a.sendJobAck(jobID); err != nil {
+			log.Printf("Job %s: failed to send job_ack: %v", jobID, err)
+		}
+
 		a.dispatchJob(ctx, job)
 	}
+}
+
+// extractJobFromWSMessage understands both the current delivery envelope
+//
+//	{"type":"print_job","job":{...}}
+//
+// and the legacy bare-job message ({"id":...,"printerId":...}) so an agent
+// still works against an older gateway build.
+func extractJobFromWSMessage(msg map[string]interface{}) (map[string]interface{}, bool) {
+	if msg == nil {
+		return nil, false
+	}
+	switch t, _ := msg["type"].(string); t {
+	case "print_job":
+		if job, ok := msg["job"].(map[string]interface{}); ok {
+			return job, true
+		}
+		// Envelope with flat aliases only.
+		if _, ok := msg["id"].(string); ok {
+			return msg, true
+		}
+		return nil, false
+	case "":
+		if _, ok := msg["id"].(string); ok {
+			return msg, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+// sendJobAck writes {"type":"job_ack","jobId":"..."} back to the gateway.
+func (a *Agent) sendJobAck(jobID string) error {
+	conn := a.getWSConn()
+	if conn == nil {
+		return fmt.Errorf("no websocket connection")
+	}
+	payload, err := json.Marshal(map[string]string{"type": "job_ack", "jobId": jobID})
+	if err != nil {
+		return err
+	}
+	a.wsWriteMu.Lock()
+	defer a.wsWriteMu.Unlock()
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
 // dispatchJob schedules exactly one job for execution under three safety
@@ -736,9 +834,22 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 				}
 			}
 		}
-		// Capabilities if available
-		if pc.Capabilities != nil && len(pc.Capabilities) > 0 {
-			entry["capabilities"] = pc.Capabilities
+		// Capabilities: always report which document kinds this backend can
+		// physically print, so the gateway routing layer can reject an
+		// incompatible job (e.g. PDF to an ESC/POS byte stream) before it is
+		// ever queued. An explicitly configured supported_protocols list is
+		// left untouched.
+		caps := make(map[string]interface{}, len(pc.Capabilities)+1)
+		for k, v := range pc.Capabilities {
+			caps[k] = v
+		}
+		if _, ok := caps["supported_protocols"]; !ok {
+			if p, ok := printerByID[id]; ok && p != nil {
+				caps["supported_protocols"] = printer.SupportedKinds(p)
+			}
+		}
+		if len(caps) > 0 {
+			entry["capabilities"] = caps
 		}
 		result = append(result, entry)
 	}
@@ -920,8 +1031,20 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		}
 	}
 
-	if a.queue.IsProcessed(jobID) {
-		log.Printf("Job %s already successfully processed locally. Skipping duplicate print.", jobID)
+	// Local idempotency: a job that already printed successfully on THIS agent
+	// is never printed again, no matter how often it is delivered. The stored
+	// terminal result is re-reported so a duplicate delivery cannot leave the
+	// gateway waiting for a status that will never come.
+	//
+	// A locally FAILED job is deliberately retryable: the gateway only
+	// re-delivers it after an explicit reclaim that increments the retry
+	// counter, and that retry (e.g. printer was briefly offline) must be
+	// allowed to run. The retry budget lives in the gateway, not here.
+	if _, localStatus, found, err := a.queue.Get(jobID); err != nil {
+		log.Printf("Job %s: local queue lookup failed (continuing): %v", jobID, err)
+	} else if found && localStatus == "success" {
+		log.Printf("Job %s already completed locally (success). Re-reporting terminal result instead of printing again.", jobID)
+		a.updateJobStatus(jobID, "success", "")
 		return
 	}
 
@@ -936,6 +1059,19 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	if err != nil {
 		log.Printf("Job %s has an invalid payload: %v", jobID, err)
 		a.updateJobStatus(jobID, "failed", fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+
+	// Capability gate BEFORE anything is written anywhere: a printer that
+	// cannot render this document kind (e.g. a PDF sent to an ESC/POS byte
+	// stream) fails the job with CAPABILITY_MISMATCH instead of emitting
+	// unrenderable bytes. The gateway routing layer performs the same check;
+	// this is the authoritative, device-side enforcement.
+	kind := string(pl.Type)
+	if !printer.SupportsKind(p, kind) {
+		reason := fmt.Sprintf("CAPABILITY_MISMATCH: printer %s cannot print %s payloads", printerID, kind)
+		log.Printf("Job %s rejected: %s", jobID, reason)
+		a.updateJobStatus(jobID, "failed", reason)
 		return
 	}
 
@@ -954,7 +1090,7 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		return
 	}
 
-	log.Printf("Printing job %s on printer %s (%d bytes, type=%s)", jobID, printerID, len(pl.Data), pl.Type)
+	log.Printf("Printing job %s on printer %s (%d bytes, type=%s, path=%s)", jobID, printerID, len(pl.Data), pl.Type, printer.NormalizeKind(kind))
 
 	if err := a.queue.Push(jobID, printerID, pl.Data); err != nil {
 		log.Printf("Job %s: failed to persist to local durable queue (continuing anyway): %v", jobID, err)
@@ -978,9 +1114,12 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		log.Printf("Job %s was already processed while waiting for printer %s. Skipping duplicate print.", jobID, printerID)
 		return
 	}
-	printErr := p.Print(printCtx, pl.Data)
+	// Kind-aware dispatch: PDF goes through the PDF pipeline (validated,
+	// written to a secure temp file, rendered by the printer driver), raw and
+	// ESC/POS keep their byte-stream paths. A PDF is never re-labelled as RAW.
+	printErr := printer.PrintDocument(printCtx, p, printer.Document{Kind: kind, Data: pl.Data, JobID: jobID})
 	if printErr != nil {
-		_ = a.queue.UpdateStatus(jobID, "failed")
+		_ = a.queue.UpdateStatusWithError(jobID, "failed", printErr.Error())
 	} else {
 		_ = a.queue.UpdateStatus(jobID, "success")
 	}
