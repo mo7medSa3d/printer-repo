@@ -3,7 +3,8 @@ import { db } from "@/db";
 import { printJobs, printers } from "@/db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
 import { validatePrintJobPayload } from "@/lib/payload";
-import { resolvePrinterForJob } from "@/lib/routing";
+import { resolvePrinterForJob, validatePayloadForPrinter } from "@/lib/routing";
+import { pushJobToAgentWithClaim } from "@/server/ws";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -90,9 +91,8 @@ async function createQueuedJob({
   }
 
   try {
-    const { pushJobToAgentWithClaim } = await import("@/server/ws");
     await pushJobToAgentWithClaim({ id: jobId, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt });
-  } catch {}
+  } catch { }
 }
 
 export async function POST(req: Request) {
@@ -188,8 +188,8 @@ export async function POST(req: Request) {
         // Fetch the winner by durable key, not by tentative jobId.
         const existing = parsed.idempotencyKey
           ? await db.query.printJobs.findFirst({
-              where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
-            })
+            where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+          })
           : await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
         if (existing) {
           return NextResponse.json({
@@ -242,7 +242,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "PRINTER_OFFLINE: printer is offline" }, { status: 503 });
     }
     // Capability validation for legacy path as well
-    const capLegacy = (await import("@/lib/routing")).validatePayloadForPrinter((validatedPayload as any)?.type, {
+    const capLegacy = validatePayloadForPrinter((validatedPayload as any)?.type, {
       protocol: (printer as any).protocol,
       connectionType: (printer as any).connectionType,
       capabilities: (printer as any).capabilities,
@@ -298,8 +298,8 @@ export async function POST(req: Request) {
         const dedupBranch = (printer as any).branchId ?? odoo.branchId;
         const existing = parsed.idempotencyKey && dedupBranch
           ? await db.query.printJobs.findFirst({
-              where: and(eq(printJobs.branchId, dedupBranch), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
-            })
+            where: and(eq(printJobs.branchId, dedupBranch), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+          })
           : await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
         if (existing) {
           return NextResponse.json({ jobId: existing.id, status: existing.status, printerId: existing.printerId, agentId: existing.agentId }, { status: 200 });

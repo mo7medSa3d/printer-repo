@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { branches, destinations, printerBindings, documentTypes } from "@/db/schema";
+import { agents, branches, destinations, printerBindings, documentTypes, printers, printJobs } from "@/db/schema";
 import { validateOdooKey } from "@/lib/odoo-auth";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -168,9 +168,6 @@ export async function GET(req: Request) {
 
   const branchFilter = branchId ?? odoo.branchId ?? null;
   // Return summary of agents/printers for this branch
-  const { agents, printers, printJobs } = await import("@/db/schema");
-  const { eq, desc } = await import("drizzle-orm");
-
   let agentRows: any[] = [];
   let printerRows: any[] = [];
   let jobRows: any[] = [];
@@ -185,7 +182,7 @@ export async function GET(req: Request) {
       printerRows = await db.select().from(printers).orderBy(desc(printers.updatedAt)).limit(20);
       jobRows = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(20);
     }
-  } catch {}
+  } catch { }
 
   // Strip secrets
   const safeAgents = agentRows.map((a: any) => {

@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { branches, destinations, printerBindings, printers } from "@/db/schema";
+import { agents, branches, destinations, printerBindings, printers } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 
 export type BindingCandidate = {
@@ -198,13 +198,10 @@ export async function resolvePrinterForJob({
       }
 
       // Agent branch consistency: ensure printer's agent is in same branch
-      try {
-        const agents = await import("@/db/schema").then((m) => m.agents);
-        const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-        if (agent && agent.branchId && agent.branchId !== branchId) {
-          continue; // cross-branch printer binding invalid
-        }
-      } catch {}
+      const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+      if (agent && agent.branchId && agent.branchId !== branchId) {
+        continue; // cross-branch printer binding invalid
+      }
 
       const fallbackUsed = idx > 0;
       // Auditable: include fallbackChain

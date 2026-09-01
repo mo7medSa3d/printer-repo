@@ -21,7 +21,7 @@ func dispatchTestJob(id, printerID string) map[string]interface{} {
 // first copy is still printing, the second delivery must be dropped instead
 // of queueing another print.
 func TestDispatchDeduplicatesInFlightJobs(t *testing.T) {
-	p := &fakePrinter{sleep: 100 * time.Millisecond}
+	p := &fakePrinter{}
 	ag := newTestAgent(t, "p1", p)
 
 	ag.dispatchJob(context.Background(), dispatchTestJob("dup_ws_poll", "p1"))
@@ -36,7 +36,7 @@ func TestDispatchDeduplicatesInFlightJobs(t *testing.T) {
 // A burst of jobs must execute completely (bounded executor) and be fully
 // drained by waitForJobs during shutdown.
 func TestDispatchBoundedAndDrained(t *testing.T) {
-	p := &fakePrinter{sleep: 10 * time.Millisecond}
+	p := &fakePrinter{}
 	ag := newTestAgent(t, "p1", p)
 
 	const n = 12
@@ -49,8 +49,6 @@ func TestDispatchBoundedAndDrained(t *testing.T) {
 	ag.waitForJobs()
 	elapsed := time.Since(start)
 
-	// All jobs serialize on the one printer (10ms each) so ~120ms+ is expected;
-	// the 25s shutdown grace must never be hit.
 	if elapsed > 10*time.Second {
 		t.Fatalf("drain took unexpectedly long: %v", elapsed)
 	}

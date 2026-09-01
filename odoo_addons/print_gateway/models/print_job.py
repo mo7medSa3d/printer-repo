@@ -21,7 +21,6 @@ class PrintGatewayPrintJob(models.Model):
         ('claimed', 'Claimed'),
         ('printing', 'Printing'),
         ('success', 'Success'),
-        ('completed', 'Completed'),
         ('failed', 'Failed'),
         ('expired', 'Expired'),
     ], default='queued', index=True)

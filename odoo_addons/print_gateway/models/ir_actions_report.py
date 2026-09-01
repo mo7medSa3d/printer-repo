@@ -62,6 +62,12 @@ class IrActionsReport(models.Model):
             }
         return None
 
+    def _user_has_branch_access(self, branch):
+        """SECURITY: Check if user has access to branch's company."""
+        if not branch or not branch.company_id:
+            return False
+        return branch.company_id.id in self.env.user.company_ids.ids
+
     def _should_route_via_gateway(self):
         """Check if this report should be routed via gateway."""
         self.ensure_one()
@@ -247,7 +253,9 @@ class IrActionsReport(models.Model):
         raise UserError(_("Could not generate printable payload for report %s") % str(report_ref))
 
     def _route_via_gateway(self, report_ref, res_ids, data=None):
-        """Main gateway routing logic. Returns print job record or raises."""
+        """Main gateway routing logic. Returns print job record or raises.
+        SECURITY: Validates user has access to determined branch's company.
+        """
         self.ensure_one()
         
         # Need at least one record to determine branch/destination
@@ -300,6 +308,14 @@ class IrActionsReport(models.Model):
             raise UserError(_("No print branch configured. Please configure a Print Gateway Branch first."))
         if not destination:
             raise UserError(_("No destination configured for branch %s. Create a destination (POS/Kitchen/Warehouse).") % branch.name)
+        
+        # SECURITY: Validate user has access to branch's company
+        if not self._user_has_branch_access(branch):
+            raise UserError(_("You do not have access to branch %s. Cannot print via this branch.") % branch.name)
+        
+        # SECURITY: Validate record's company matches branch's company (if record has company field)
+        if record and 'company_id' in record._fields and record.company_id and record.company_id.id != branch.company_id.id:
+            raise UserError(_("Cannot route record from company %s to branch in company %s. Please route to correct company's branch.") % (record.company_id.name, branch.company_id.name))
         
         # Generate actual payload
         payload = self._generate_payload_for_report(report_ref, res_ids, data)

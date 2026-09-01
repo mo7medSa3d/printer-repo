@@ -28,6 +28,7 @@ Features:
     'depends': ['base', 'sale', 'account', 'stock', 'purchase', 'point_of_sale'],
     'data': [
         'security/ir.model.access.csv',
+        'security/security.xml',
         'views/branch_views.xml',
         'views/destination_views.xml',
         'views/document_type_views.xml',

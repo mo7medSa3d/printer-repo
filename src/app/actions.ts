@@ -1,7 +1,7 @@
 "use server";
 
 import { db } from "@/db";
-import { agents, printers, printJobs } from "@/db/schema";
+import { agents, branches, printers, printJobs } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
@@ -9,6 +9,7 @@ import { cookies } from "next/headers";
 import { generatePairingCode } from "@/lib/agent-auth";
 import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
+import { pushJobToAgentWithClaim } from "@/server/ws";
 
 /**
  * Server actions are public HTTP endpoints (POST) like any route handler —
@@ -32,7 +33,6 @@ export async function createAgent(name: string) {
   const id = `agt_${nanoid(8)}`;
 
   // Default to 'default' branch for dashboard-created agents; manager can reassign later
-  const { branches } = await import("@/db/schema");
   const defaultBranch = await db.query.branches.findFirst({ where: eq(branches.id, "default") });
   const branchId = defaultBranch?.id ?? (await db.query.branches.findFirst({}))?.id ?? "default";
   await db.insert(agents).values({
@@ -76,9 +76,9 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   // Best-effort WS push (polling fallback covers offline agent). A delivered
   // push also claims the job so the agent's PATCHes pass the claimed→… check.
   try {
-    const { pushJobToAgentWithClaim } = await import("@/server/ws");
+
     await pushJobToAgentWithClaim({ id, agentId: printer.agentId, printerId: printer.id, payload: validatedPayload, expiresAt: row.expiresAt });
-  } catch {}
+  } catch { }
 
   revalidatePath("/dashboard");
   return { id };

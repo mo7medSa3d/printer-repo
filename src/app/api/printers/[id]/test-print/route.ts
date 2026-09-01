@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { printers } from "@/db/schema";
+import { agents, printJobs, printers } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
 import { eq } from "drizzle-orm";
 import { createPrintJob } from "@/app/actions";
 import { buildTestPrintPayload } from "@/lib/payload";
+import { pushJobToAgentWithClaim } from "@/server/ws";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!printer) return NextResponse.json({ error: "Printer not found" }, { status: 404 });
   if (printer.enabled === false) return NextResponse.json({ error: "printer disabled" }, { status: 409 });
 
-  const { agents } = await import("@/db/schema");
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
 
   const payload = buildTestPrintPayload(printer.name, (agent as unknown as { name?: string })?.name ?? printer.agentId);
@@ -30,12 +30,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // covers offline). A successful push also claims the job so the agent's
     // PATCHes pass the claimed→… transition policy.
     try {
-      const { pushJobToAgentWithClaim } = await import("@/server/ws");
-      const jobRow = await db.query.printJobs.findFirst({ where: eq((await import("@/db/schema")).printJobs.id, jobId) });
+      const jobRow = await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
       if (jobRow) {
         await pushJobToAgentWithClaim({ id: jobRow.id, agentId: jobRow.agentId, printerId: jobRow.printerId, payload: jobRow.payload, expiresAt: jobRow.expiresAt as unknown as string });
       }
-    } catch {}
+    } catch { }
     return NextResponse.json({ ok: true, jobId, printerId: printer.id }, { status: 201 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "createPrintJob failed";

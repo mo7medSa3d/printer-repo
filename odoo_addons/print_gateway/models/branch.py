@@ -37,6 +37,33 @@ class PrintGatewayBranch(models.Model):
         ('name_company_unique', 'unique(name, company_id)', 'Branch name must be unique per company'),
     ]
 
+    def create(self, vals):
+        """Ensure created branch is in user's company."""
+        if 'company_id' not in vals:
+            vals['company_id'] = self.env.company.id
+        # Prevent users from creating branches in other companies
+        if vals.get('company_id') and vals['company_id'] != self.env.company.id:
+            from odoo.exceptions import AccessError
+            raise AccessError(_("You cannot create branches outside your company."))
+        return super().create(vals)
+
+    def write(self, vals):
+        """Prevent company change and validate access."""
+        if 'company_id' in vals:
+            for rec in self:
+                if rec.company_id.id != vals['company_id']:
+                    from odoo.exceptions import AccessError
+                    raise AccessError(_("You cannot change a branch's company. Please create a new branch instead."))
+        self._check_company_access()
+        return super().write(vals)
+
+    def _check_company_access(self):
+        """Verify user has access to branch's company."""
+        for rec in self:
+            if rec.company_id and rec.company_id.id not in self.env.user.company_ids.ids:
+                from odoo.exceptions import AccessError
+                raise AccessError(_("You do not have access to branch %s's company.") % rec.name)
+
     @api.depends('agent_ids', 'agent_ids.status', 'printer_ids')
     def _compute_counts(self):
         for rec in self:
@@ -185,6 +212,8 @@ class PrintGatewayBranch(models.Model):
         nanoid(12) and never truncated.
         """
         self.ensure_one()
+        # SECURITY: Verify user has access to this branch's company
+        self._check_company_access()
         if not destination_id or not document_type:
             raise ValidationError(_('destination and document_type required'))
         headers = self._gateway_headers()
