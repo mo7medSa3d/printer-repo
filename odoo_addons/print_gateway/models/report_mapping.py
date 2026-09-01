@@ -27,12 +27,13 @@ class PrintGatewayReportMapping(models.Model):
     # Gateway enabled for this report
     gateway_enabled = fields.Boolean(string='Gateway Enabled', default=True, help='If enabled, this report will be routed through Print Gateway. Otherwise normal Odoo printing.')
     
-    # Payload type - how to generate payload
+    # Payload type - how to generate payload. This field IS consumed by
+    # _generate_payload_for_report; it is not decorative.
     payload_type = fields.Selection([
-        ('pdf', 'PDF (render report as PDF)'),
-        ('raw', 'Raw (send PDF bytes as raw)'),
-        ('escpos', 'ESC/POS (for thermal printers, will try to convert)'),
-    ], default='pdf', string='Payload Type', required=True, help='PDF will render the QWeb PDF and send as base64 raw. ESC/POS for thermal.')
+        ('pdf', 'PDF (render report as PDF, type=pdf)'),
+        ('raw', 'Raw (send PDF bytes as raw, type=raw — legacy, same bytes as pdf but legacy type)'),
+        ('escpos', 'ESC/POS (thermal printers; requires ESC/POS bytes — PDF-to-ESC/POS conversion is not implemented)'),
+    ], default='pdf', string='Payload Type', required=True, help='pdf: render QWeb PDF and send with type pdf (requires spooler or IPP printer that accepts PDF). raw: same PDF bytes but type raw (legacy). escpos: expects pre-formatted ESC/POS; if you select escpos but the report renders PDF, the job will be rejected with CAPABILITY_MISMATCH rather than printing garbage on thermal printers.')
 
     priority = fields.Integer(default=10, help='Lower number = higher priority when multiple mappings match')
 

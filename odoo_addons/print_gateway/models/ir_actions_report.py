@@ -57,6 +57,7 @@ class IrActionsReport(models.Model):
                 'branch_id': mapping.branch_id,
                 'destination_id': mapping.destination_id,
                 'gateway_enabled': mapping.gateway_enabled,
+                'payload_type': mapping.payload_type,
                 'mapping': mapping,
             }
         return None
@@ -180,46 +181,69 @@ class IrActionsReport(models.Model):
     def _generate_payload_for_report(self, report_ref, res_ids, data=None):
         """Generate the actual printable payload for a report.
         Returns dict with type, encoding, data (base64).
-        For PDF reports, renders PDF and encodes as raw.
+        Respects report_mapping.payload_type if available; honest about content.
+        - pdf  -> type 'pdf'  (requires spooler/IPP, never raw thermal)
+        - raw  -> type 'raw'  (same PDF bytes but legacy type)
+        - escpos -> raises UserError (no PDF->ESC/POS rasterizer)
         """
         self.ensure_one()
+        # Determine desired payload type from mapping (if any)
+        desired_type = 'pdf'  # default honest type for QWeb PDF
+        try:
+            mi = self._get_gateway_mapping()
+            if mi and mi.get('payload_type'):
+                desired_type = mi['payload_type']
+            elif mi and mi.get('mapping') and mi['mapping'].payload_type:
+                desired_type = mi['mapping'].payload_type
+        except Exception:
+            pass
+        if desired_type == 'escpos':
+            # No automatic PDF->ESC/POS conversion exists. Sending PDF bytes
+            # as escpos to a thermal printer would produce garbage and false
+            # success. Fail fast so admin can fix mapping (use pdf+spooler
+            # or provide pre-formatted ESC/POS payload).
+            raise UserError(_("Report %s is mapped to ESC/POS but no PDF-to-ESC/POS conversion is configured. Change mapping payload_type to 'pdf' (spooler/IPP) or provide ESC/POS payload manually.") % (self.report_name or str(report_ref)))
+
         # Render the report to get actual PDF bytes
         try:
-            # Use Odoo's standard rendering - handle different versions
             if hasattr(self, '_render_qweb_pdf'):
-                # Odoo 16/17/18 QWeb PDF
                 report = self._get_report(report_ref) if hasattr(self, '_get_report') else self
                 if isinstance(report_ref, str):
                     report = self._get_report(report_ref)
                 else:
                     report = report_ref if isinstance(report_ref, models.Model) else self
-                
-                # Try different rendering methods
+
                 pdf_content = None
                 if hasattr(self, '_render_qweb_pdf'):
                     try:
                         pdf_content, _ = self._render_qweb_pdf(report_ref, res_ids=res_ids, data=data)
                     except TypeError:
-                        # Older signature
                         pdf_content, _ = self._render_qweb_pdf(report_ref, res_ids, data)
-                
+
                 if pdf_content and len(pdf_content) > 0:
-                    # Check if it's already PDF bytes or needs decoding
                     if isinstance(pdf_content, (list, tuple)):
                         pdf_content = pdf_content[0]
-                    
-                    # Encode as base64 raw (gateway accepts raw for PDF)
-                    # Use raw type for PDF, as Agent will send via spooler RAW
+
                     b64 = base64.b64encode(pdf_content).decode('ascii')
+                    # Honest type: pdf (or raw legacy) — gateway will enforce
+                    # capability (pdf only to spooler/IPP, never to raw thermal)
+                    payload_type = 'pdf' if desired_type in ('pdf', 'escpos') else 'raw'
+                    # raw is kept for backward compat but maps to same PDF bytes
+                    if desired_type == 'raw':
+                        payload_type = 'raw'
+                    else:
+                        payload_type = 'pdf'
                     return {
-                        'type': 'raw',
+                        'type': payload_type,
                         'encoding': 'base64',
                         'data': b64,
                     }
+        except UserError:
+            raise
         except Exception as e:
             _logger.warning("Failed to render report %s for ids %s: %s", report_ref, res_ids, str(e))
             raise UserError(_("Failed to generate report for printing: %s") % str(e))
-        
+
         raise UserError(_("Could not generate printable payload for report %s") % str(report_ref))
 
     def _route_via_gateway(self, report_ref, res_ids, data=None):
@@ -280,7 +304,12 @@ class IrActionsReport(models.Model):
         # Generate actual payload
         payload = self._generate_payload_for_report(report_ref, res_ids, data)
         
-        # Send to Gateway via branch helper
+        # Stable idempotency key per logical print operation (one report_action call = one key).
+        # Generated here so branch.create_print_job retry logic reuses the SAME key.
+        import uuid as _uuid
+        idempotency_key = _uuid.uuid4().hex
+
+        # Send to Gateway via branch helper (idempotent)
         try:
             job = branch.create_print_job(
                 destination.gateway_destination_id or destination.id,
@@ -290,6 +319,7 @@ class IrActionsReport(models.Model):
                 odoo_record_id=res_ids[0] if res_ids else None,
                 report_xml_id=self.get_external_id().get(self.id, '') if hasattr(self, 'get_external_id') else self.report_name,
                 report_name=self.report_name,
+                idempotency_key=idempotency_key,
             )
             _logger.info("Report %s for %s[%s] queued as gateway job %s via %s -> %s (%s)", 
                         self.report_name, model_name, res_ids, job.gateway_job_id, branch.name, destination.name, document_type)

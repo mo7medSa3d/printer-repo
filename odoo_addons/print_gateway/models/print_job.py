@@ -28,6 +28,7 @@ class PrintGatewayPrintJob(models.Model):
     payload = fields.Text(help='Base64 payload or description')
     error = fields.Text()
     requested_by = fields.Char(default='odoo')
+    idempotency_key = fields.Char(string='Idempotency Key', copy=False, index=True, help='Stable per logical print operation; reused on retry to avoid duplicate physical prints')
     create_date = fields.Datetime(string='Created At', readonly=True)
     write_date = fields.Datetime(string='Updated At', readonly=True)
     last_sync_at = fields.Datetime(readonly=True)

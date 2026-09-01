@@ -32,6 +32,17 @@ func TestParseValidEscpos(t *testing.T) {
 	}
 }
 
+func TestParseValidPDF(t *testing.T) {
+	data := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 fake"))
+	pl, err := Parse(map[string]interface{}{"type": "pdf", "encoding": "base64", "data": data})
+	if err != nil {
+		t.Fatalf("unexpected error for pdf: %v", err)
+	}
+	if pl.Type != TypePDF {
+		t.Fatalf("expected pdf, got %s", pl.Type)
+	}
+}
+
 func TestParseInvalidCases(t *testing.T) {
 	cases := []struct {
 		name string
@@ -40,7 +51,7 @@ func TestParseInvalidCases(t *testing.T) {
 		{"nil", nil},
 		{"not object", "string"},
 		{"missing type", map[string]interface{}{"encoding": "base64", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
-		{"bad type", map[string]interface{}{"type": "pdf", "encoding": "base64", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
+		{"bad type", map[string]interface{}{"type": "badtype", "encoding": "base64", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
 		{"bad encoding", map[string]interface{}{"type": "raw", "encoding": "hex", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
 		{"missing data", map[string]interface{}{"type": "raw", "encoding": "base64"}},
 		{"empty data", map[string]interface{}{"type": "raw", "encoding": "base64", "data": ""}},

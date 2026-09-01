@@ -3,6 +3,8 @@ from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError
 import requests
 import logging
+import time
+import uuid
 
 _logger = logging.getLogger(__name__)
 
@@ -168,24 +170,56 @@ class PrintGatewayBranch(models.Model):
                 raise ValidationError(_('Sync to gateway failed: %s') % str(e))
         return True
 
-    def create_print_job(self, destination_id, document_type, payload, odoo_model=None, odoo_record_id=None, report_xml_id=None, report_name=None, report_id=None):
+    def create_print_job(self, destination_id, document_type, payload, odoo_model=None, odoo_record_id=None, report_xml_id=None, report_name=None, report_id=None, idempotency_key=None):
         """Helper to create a Gateway print job from Odoo business logic.
         Resolves branch/destination/document_type and sends to Gateway.
         Never hardcodes physical printer IDs.
         Stores Odoo report metadata for tracing.
+        Idempotency: one logical Odoo print operation must produce ONE stable
+        idempotency key. The key is generated once per logical operation
+        (uuid4) and reused on retry so a timeout/retry never creates a
+        duplicate physical print. Gateway enforces uniqueness via
+        PostgreSQL partial unique index on (branch_id, idempotency_key)
+        and handles concurrent duplicate inserts as 200 with the same
+        existing job returned. The jobId itself is a collision-safe
+        nanoid(12) and never truncated.
         """
         self.ensure_one()
         if not destination_id or not document_type:
             raise ValidationError(_('destination and document_type required'))
         headers = self._gateway_headers()
         base = self._gateway_base()
+        # Stable idempotency key per logical operation. Caller (ir_actions_report)
+        # should generate it once per report_action invocation; if not provided
+        # we generate one here so every job is still idempotent against retries.
+        if not idempotency_key:
+            idempotency_key = uuid.uuid4().hex
         data = {
             'branchId': self.gateway_branch_id or self.id,
             'destinationId': destination_id,
             'documentType': document_type,
             'payload': payload,
+            'idempotencyKey': idempotency_key,
         }
-        resp = requests.post(f"{base}/api/print/jobs", json=data, headers=headers, timeout=15)
+        # Idempotent retry: reuse same idempotencyKey so second attempt
+        # returns existing job (200) rather than creating duplicate.
+        last_exc = None
+        for attempt in (1, 2):
+            try:
+                resp = requests.post(f"{base}/api/print/jobs", json=data, headers=headers, timeout=15)
+                break
+            except (requests.Timeout, requests.ConnectionError) as e:
+                last_exc = e
+                if attempt == 1:
+                    _logger.warning("Print job POST timeout/connection error (attempt %s) for branch %s, retrying once with same idempotencyKey %s: %s", attempt, self.name, idempotency_key[:8], str(e))
+                    time.sleep(0.5)
+                    continue
+                raise ValidationError(_('Print job failed: Gateway timeout/connection error after retry: %s') % str(e))
+            except requests.RequestException as e:
+                raise ValidationError(_('Print job request failed: %s') % str(e))
+        else:
+            # Should not reach here; last_exc is set
+            raise ValidationError(_('Print job failed: %s') % str(last_exc))
         if resp.status_code not in (200, 201):
             raise ValidationError(_('Print job failed %s: %s') % (resp.status_code, resp.text[:500]))
         j = resp.json()
@@ -213,6 +247,7 @@ class PrintGatewayBranch(models.Model):
             'printer_id': self.env['print_gateway.printer'].search([('gateway_printer_id', '=', j.get('printerId'))], limit=1).id or False,
             'status': j.get('status') or 'queued',
             'payload': payload_meta,
+            'idempotency_key': idempotency_key,
             'odoo_model': odoo_model or False,
             'odoo_record_id': odoo_record_id or False,
             'report_xml_id': report_xml_id or False,

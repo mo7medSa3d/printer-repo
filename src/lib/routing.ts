@@ -77,8 +77,17 @@ export function validatePayloadForPrinter(
     if (["escpos", "raw", "spooler", ""].includes(proto) || conn === "spooler") return { ok: true };
     return { ok: false, reason: `CAPABILITY_MISMATCH: escpos payload incompatible with printer protocol ${proto}` };
   }
-  // For unknown payload types (e.g., pdf), only spooler is assumed capable
+  if (pt === "pdf") {
+    // PDF requires a spooler/IPP path that can render PDF (Windows driver or IPP PDF).
+    // Never send PDF directly to raw TCP ESC/POS thermal printers.
+    if (conn === "spooler" || proto === "spooler") return { ok: true };
+    if (proto === "ipp" || conn === "ipp" || proto === "ipps" || conn === "ipps") return { ok: true };
+    // Thermal/label printers via raw TCP must not receive PDF
+    return { ok: false, reason: `CAPABILITY_MISMATCH: pdf payload requires spooler or IPP printer (got ${proto}/${conn})` };
+  }
+  // For other unknown payload types (e.g., pcl), only spooler/IPP are assumed capable
   if (conn === "spooler" || proto === "spooler") return { ok: true };
+  if (proto === "ipp" || conn === "ipp" || proto === "ipps" || conn === "ipps") return { ok: true };
   return { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} incompatible with printer ${proto}/${conn}` };
 }
 

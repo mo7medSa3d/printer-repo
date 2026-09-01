@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, jsonb, integer, index, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const branches = pgTable("branches", {
   id: text("id").primaryKey(),
@@ -71,7 +72,7 @@ export const localNetworks = pgTable("local_networks", {
 
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(), // agt_...
-  branchId: text("branch_id").references(() => branches.id),
+  branchId: text("branch_id").references(() => branches.id).notNull(),
   localNetworkId: text("local_network_id").references(() => localNetworks.id),
   name: text("name").notNull(),
   pairingCode: text("pairing_code"),
@@ -95,7 +96,7 @@ export const agents = pgTable("agents", {
 
 export const printers = pgTable("printers", {
   id: text("id").primaryKey(), // printer_...
-  branchId: text("branch_id").references(() => branches.id),
+  branchId: text("branch_id").references(() => branches.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
   type: text("type").notNull().default("network"), // legacy compatibility; prefer printerType/connectionType/protocol
@@ -178,7 +179,7 @@ export const managerSessions = pgTable("manager_sessions", {
 
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
-  branchId: text("branch_id").references(() => branches.id),
+  branchId: text("branch_id").references(() => branches.id).notNull(),
   destinationId: text("destination_id").references(() => destinations.id),
   documentType: text("document_type"),
   agentId: text("agent_id").references(() => agents.id).notNull(),
@@ -187,6 +188,7 @@ export const printJobs = pgTable("print_jobs", {
   payload: jsonb("payload").notNull(),
   error: text("error"),
   requestedBy: text("requested_by"),
+  idempotencyKey: text("idempotency_key"),
   retries: integer("retries").notNull().default(0),
   claimedAt: timestamp("claimed_at"),
   expiresAt: timestamp("expires_at").notNull(),
@@ -198,4 +200,6 @@ export const printJobs = pgTable("print_jobs", {
   printerStatusIdx: index("print_jobs_printer_status_idx").on(table.printerId, table.status),
   statusExpiresIdx: index("print_jobs_status_expires_idx").on(table.status, table.expiresAt),
   destinationIdIdx: index("print_jobs_destination_id_idx").on(table.destinationId),
+  branchIdempotencyIdx: index("print_jobs_branch_idempotency_idx").on(table.branchId, table.idempotencyKey),
+  branchIdempotencyUnique: uniqueIndex("print_jobs_branch_idempotency_unique").on(table.branchId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
 }));

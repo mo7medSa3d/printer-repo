@@ -4,7 +4,7 @@ import { printJobs, printers } from "@/db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
 import { validatePrintJobPayload } from "@/lib/payload";
 import { resolvePrinterForJob } from "@/lib/routing";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 
@@ -43,6 +43,7 @@ async function createQueuedJob({
   destinationId,
   documentType,
   requestedBy,
+  idempotencyKey,
 }: {
   jobId: string;
   printer: { id: string; agentId: string; branchId?: string | null };
@@ -52,19 +53,41 @@ async function createQueuedJob({
   destinationId?: string | null;
   documentType?: string | null;
   requestedBy?: string | null;
+  idempotencyKey?: string | null;
 }) {
-  await db.insert(printJobs).values({
-    id: jobId,
-    branchId: branchId ?? printer.branchId ?? null,
-    destinationId: destinationId ?? null,
-    documentType: documentType ?? null,
-    agentId: printer.agentId,
-    printerId: printer.id,
-    status: "queued",
-    payload: validatedPayload,
-    requestedBy: requestedBy ?? "odoo",
-    expiresAt,
-  });
+  try {
+    const effectiveBranchId = branchId ?? (printer as any).branchId ?? "default";
+    await db.insert(printJobs).values({
+      id: jobId,
+      branchId: effectiveBranchId,
+      destinationId: destinationId ?? null,
+      documentType: documentType ?? null,
+      agentId: printer.agentId,
+      printerId: printer.id,
+      status: "queued",
+      payload: validatedPayload,
+      requestedBy: requestedBy ?? "odoo",
+      idempotencyKey: idempotencyKey ?? null,
+      expiresAt,
+    });
+  } catch (e: any) {
+    // Idempotency race: two concurrent requests with same idempotencyKey
+    // both passed the existence check and now collide on PK. Treat as
+    // "already exists" and let caller return the existing job.
+    const isUniqueViolation =
+      e?.code === "23505" ||
+      e?.cause?.code === "23505" ||
+      String(e?.message ?? "").includes("duplicate key") ||
+      String(e?.cause?.message ?? "").includes("duplicate key");
+    if (isUniqueViolation) {
+      // Signal to caller that job already exists; throw a sentinel
+      const err: any = new Error("DUPLICATE_JOB");
+      err.code = "DUPLICATE_JOB";
+      err.jobId = jobId;
+      throw err;
+    }
+    throw e;
+  }
 
   try {
     const { pushJobToAgentWithClaim } = await import("@/server/ws");
@@ -98,12 +121,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Invalid expiresAt" }, { status: 400 });
     }
 
+    // Idempotency is enforced by PostgreSQL unique constraint on
+    // (branch_id, idempotency_key) — not by truncated hash. The jobId is
+    // always a collision-safe nanoid; deduplication uses the durable key.
     let jobId: string;
     if (parsed.idempotencyKey) {
-      const { createHash } = await import("crypto");
-      const h = createHash("sha256").update(`${odoo.id}:${parsed.idempotencyKey}`).digest("hex").slice(0, 10);
-      jobId = `job_${h}`;
-      const existing = await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
+      const existing = await db.query.printJobs.findFirst({
+        where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+      });
       if (existing) {
         return NextResponse.json({
           jobId: existing.id,
@@ -115,8 +140,9 @@ export async function POST(req: Request) {
           documentType: existing.documentType,
         }, { status: 200 });
       }
+      jobId = `job_${nanoid(12)}`;
     } else {
-      jobId = `job_${nanoid(10)}`;
+      jobId = `job_${nanoid(12)}`;
     }
 
     const resolved = await resolvePrinterForJob({
@@ -144,16 +170,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `${code}: ${msg}`, code }, { status: httpStatus });
     }
 
-    await createQueuedJob({
-      jobId,
-      printer: resolved.printer,
-      validatedPayload,
-      expiresAt,
-      branchId: parsed.branchId,
-      destinationId: parsed.destinationId,
-      documentType: parsed.documentType,
-      requestedBy: "odoo",
-    });
+    try {
+      await createQueuedJob({
+        jobId,
+        printer: resolved.printer,
+        validatedPayload,
+        expiresAt,
+        branchId: parsed.branchId,
+        destinationId: parsed.destinationId,
+        documentType: parsed.documentType,
+        requestedBy: "odoo",
+        idempotencyKey: parsed.idempotencyKey ?? null,
+      });
+    } catch (e: any) {
+      if (e?.code === "DUPLICATE_JOB") {
+        // Concurrent duplicate: unique violation on (branch_id, idempotency_key).
+        // Fetch the winner by durable key, not by tentative jobId.
+        const existing = parsed.idempotencyKey
+          ? await db.query.printJobs.findFirst({
+              where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+            })
+          : await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
+        if (existing) {
+          return NextResponse.json({
+            jobId: existing.id,
+            status: existing.status,
+            printerId: existing.printerId,
+            agentId: existing.agentId,
+            branchId: existing.branchId,
+            destinationId: existing.destinationId,
+            documentType: existing.documentType,
+          }, { status: 200 });
+        }
+      }
+      throw e;
+    }
 
     // Auditable fallback info
     const fallbackInfo = resolved.fallbackUsed ? { fallbackUsed: true, fallbackChain: resolved.fallbackChain } : {};
@@ -208,27 +259,54 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Invalid expiresAt" }, { status: 400 });
     }
 
+    // Legacy path also uses durable (branch_id, idempotency_key) for dedup;
+    // jobId is always a full nanoid.
     let jobId: string;
-    if (parsed.idempotencyKey) {
-      const { createHash } = await import("crypto");
-      const h = createHash("sha256").update(`${odoo.id}:${parsed.idempotencyKey}`).digest("hex").slice(0, 10);
-      jobId = `job_${h}`;
-      const existing = await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
+    const legacyBranchId = (printer as any).branchId as string | null;
+    if (parsed.idempotencyKey && legacyBranchId) {
+      const existing = await db.query.printJobs.findFirst({
+        where: and(eq(printJobs.branchId, legacyBranchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+      });
       if (existing) {
         return NextResponse.json({ jobId: existing.id, status: existing.status, printerId: existing.printerId, agentId: existing.agentId }, { status: 200 });
       }
+      jobId = `job_${nanoid(12)}`;
+    } else if (parsed.idempotencyKey && odoo.branchId) {
+      const existing = await db.query.printJobs.findFirst({
+        where: and(eq(printJobs.branchId, odoo.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+      });
+      if (existing) {
+        return NextResponse.json({ jobId: existing.id, status: existing.status, printerId: existing.printerId, agentId: existing.agentId }, { status: 200 });
+      }
+      jobId = `job_${nanoid(12)}`;
     } else {
-      jobId = `job_${nanoid(10)}`;
+      jobId = `job_${nanoid(12)}`;
     }
 
-    await createQueuedJob({
-      jobId,
-      printer,
-      validatedPayload,
-      expiresAt,
-      branchId: printer.branchId,
-      requestedBy: "odoo-legacy",
-    });
+    try {
+      await createQueuedJob({
+        jobId,
+        printer,
+        validatedPayload,
+        expiresAt,
+        branchId: printer.branchId,
+        requestedBy: "odoo-legacy",
+        idempotencyKey: parsed.idempotencyKey ?? null,
+      });
+    } catch (e: any) {
+      if (e?.code === "DUPLICATE_JOB") {
+        const dedupBranch = (printer as any).branchId ?? odoo.branchId;
+        const existing = parsed.idempotencyKey && dedupBranch
+          ? await db.query.printJobs.findFirst({
+              where: and(eq(printJobs.branchId, dedupBranch), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
+            })
+          : await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId) });
+        if (existing) {
+          return NextResponse.json({ jobId: existing.id, status: existing.status, printerId: existing.printerId, agentId: existing.agentId }, { status: 200 });
+        }
+      }
+      throw e;
+    }
 
     return NextResponse.json({ jobId, status: "queued", printerId: printer.id, agentId: printer.agentId }, { status: 201 });
   }

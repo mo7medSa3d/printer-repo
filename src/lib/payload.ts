@@ -5,7 +5,7 @@ import { z } from "zod";
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 MiB — mirrors agent/internal/payload/payload.go
 
 export const printJobPayloadSchema = z.object({
-  type: z.enum(["raw", "escpos"]),
+  type: z.enum(["raw", "escpos", "pdf"]),
   encoding: z.literal("base64"),
   data: z.string().min(1).refine((s) => {
     // cheap base64 length check before decode: 4/3 expansion

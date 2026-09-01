@@ -3,7 +3,7 @@
 // PRINTERS.md for the documented wire format.
 //
 //	{
-//	  "type": "raw" | "escpos",
+//	  "type": "raw" | "escpos" | "pdf",
 //	  "encoding": "base64",
 //	  "data": "<base64-encoded bytes>"
 //	}
@@ -22,6 +22,7 @@ type Type string
 const (
 	TypeRaw    Type = "raw"
 	TypeESCPOS Type = "escpos"
+	TypePDF    Type = "pdf"
 )
 
 const EncodingBase64 = "base64"
@@ -52,12 +53,12 @@ func Parse(raw interface{}) (*Payload, error) {
 
 	typ, _ := m["type"].(string)
 	switch Type(typ) {
-	case TypeRaw, TypeESCPOS:
+	case TypeRaw, TypeESCPOS, TypePDF:
 		// ok
 	case "":
 		return nil, fmt.Errorf("payload.type is required")
 	default:
-		return nil, fmt.Errorf("unsupported payload type %q (expected %q or %q)", typ, TypeRaw, TypeESCPOS)
+		return nil, fmt.Errorf("unsupported payload type %q (expected %q, %q or %q)", typ, TypeRaw, TypeESCPOS, TypePDF)
 	}
 
 	encoding, _ := m["encoding"].(string)

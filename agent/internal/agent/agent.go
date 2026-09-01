@@ -896,13 +896,16 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	}
 
 	// Per-printer serialization: two jobs for the same printer never run concurrently.
+	// The lock is held ONLY around the physical print call and local queue
+	// bookkeeping. Gateway status callbacks (network I/O) are done outside the
+	// critical section so a slow/unresponsive gateway never blocks other jobs
+	// queued for the same printer.
 	lock := a.getPrinterLock(printerID)
 	lock.Lock()
-	defer lock.Unlock()
-
 	// Re-check idempotency now that we hold the lock, in case a racing
 	// delivery (WS + poll fallback both firing) got here first.
 	if a.queue.IsProcessed(jobID) {
+		lock.Unlock()
 		log.Printf("Job %s was already processed while waiting for the printer lock. Skipping.", jobID)
 		return
 	}
@@ -913,20 +916,39 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		log.Printf("Job %s: failed to persist to local durable queue (continuing anyway): %v", jobID, err)
 	}
 	a.queue.UpdateStatus(jobID, "printing")
+	lock.Unlock()
+
+	// Report printing outside the per-printer lock (network I/O must not hold mutex)
 	a.updateJobStatus(jobID, "printing", "")
 
 	printCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	if err := p.Print(printCtx, pl.Data); err != nil {
-		log.Printf("Job %s FAILED on printer %s: %v", jobID, printerID, err)
-		a.queue.UpdateStatus(jobID, "failed")
-		a.updateJobStatus(jobID, "failed", err.Error())
+	// Physical print is serialized per printer; re-check dedup before printing
+	// in case the same jobId was already completed while we were reporting
+	// "printing" or waiting for the printer lock. Local queue updates are kept
+	// inside the critical section so a waiter sees the terminal state.
+	lock.Lock()
+	if a.queue.IsProcessed(jobID) {
+		lock.Unlock()
+		log.Printf("Job %s was already processed while waiting for printer %s. Skipping duplicate print.", jobID, printerID)
+		return
+	}
+	printErr := p.Print(printCtx, pl.Data)
+	if printErr != nil {
+		_ = a.queue.UpdateStatus(jobID, "failed")
+	} else {
+		_ = a.queue.UpdateStatus(jobID, "success")
+	}
+	lock.Unlock()
+
+	if printErr != nil {
+		log.Printf("Job %s FAILED on printer %s: %v", jobID, printerID, printErr)
+		a.updateJobStatus(jobID, "failed", printErr.Error())
 		return
 	}
 
 	log.Printf("Job %s: payload transmitted successfully to printer %s", jobID, printerID)
-	a.queue.UpdateStatus(jobID, "success")
 	a.updateJobStatus(jobID, "success", "")
 }
 

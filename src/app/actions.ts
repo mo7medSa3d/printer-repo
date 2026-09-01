@@ -31,8 +31,13 @@ export async function createAgent(name: string) {
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
 
+  // Default to 'default' branch for dashboard-created agents; manager can reassign later
+  const { branches } = await import("@/db/schema");
+  const defaultBranch = await db.query.branches.findFirst({ where: eq(branches.id, "default") });
+  const branchId = defaultBranch?.id ?? (await db.query.branches.findFirst({}))?.id ?? "default";
   await db.insert(agents).values({
     id,
+    branchId,
     name: name.trim(),
     pairingCode,
     pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30), // 30 mins
@@ -59,6 +64,7 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   const id = `job_${nanoid(10)}`;
   const row = {
     id,
+    branchId: (printer as any).branchId ?? "default",
     agentId: printer.agentId,
     printerId: printer.id,
     status: "queued" as const,
