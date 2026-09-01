@@ -3,6 +3,7 @@ package printer
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/odoo-print-agent/agent/internal/config"
@@ -159,11 +160,11 @@ func TestManualPrinterTypes(t *testing.T) {
 	for _, tc := range cases {
 		// Validate via config validation
 		pc := config.PrinterConfig{
-			ID:   "test_" + tc.ConnectionType,
-			Name: tc.Name,
-			Type: tc.ConnectionType,
-			Endpoint: tc.Endpoint,
-			Protocol: tc.Protocol,
+			ID:          "test_" + tc.ConnectionType,
+			Name:        tc.Name,
+			Type:        tc.ConnectionType,
+			Endpoint:    tc.Endpoint,
+			Protocol:    tc.Protocol,
 			SpoolerName: tc.SpoolerName,
 		}
 		if tc.ConnectionType == "spooler" && pc.SpoolerName == "" {
@@ -213,6 +214,13 @@ func TestPrinterTestOperation(t *testing.T) {
 	cfg := &config.Config{}
 	registryPath := config.RegistryPath(cfgPath)
 
+	// This test performs a real Windows spooler operation.
+	// GitHub Actions does not provide a printer named "Test Printer For Unit",
+	// so skip the physical spooler operation when running on Windows.
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping physical Windows spooler test: no test printer available")
+	}
+
 	// Add a spooler printer manually (stub on non-windows will succeed via file write)
 	info := DeviceInfo{
 		Name:           "Test Spooler",
@@ -221,15 +229,19 @@ func TestPrinterTestOperation(t *testing.T) {
 		SpoolerName:    "Test Printer For Unit",
 		Endpoint:       "Test Printer For Unit",
 	}
+
 	if _, err := RegisterManual(registryPath, info); err != nil {
 		t.Fatalf("manual: %v", err)
 	}
+
 	// Discover to ensure it's found
 	result := Discover(cfg, registryPath)
 	found := false
+
 	for _, p := range result.Printers {
 		if p.SpoolerName == "Test Printer For Unit" {
 			found = true
+
 			// Test printing via stub should succeed (writes to temp file)
 			if err := TestPrinter(cfg, registryPath, p.ID); err != nil {
 				t.Fatalf("TestPrinter failed for spooler stub: %v", err)
@@ -237,6 +249,7 @@ func TestPrinterTestOperation(t *testing.T) {
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("test spooler printer not discovered")
 	}
