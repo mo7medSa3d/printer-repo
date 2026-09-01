@@ -13,15 +13,15 @@ import (
 )
 
 var (
-	modWinspool         = syscall.NewLazyDLL("winspool.drv")
-	procOpenPrinterW    = modWinspool.NewProc("OpenPrinterW")
-	procClosePrinter    = modWinspool.NewProc("ClosePrinter")
+	modWinspool          = syscall.NewLazyDLL("winspool.drv")
+	procOpenPrinterW     = modWinspool.NewProc("OpenPrinterW")
+	procClosePrinter     = modWinspool.NewProc("ClosePrinter")
 	procStartDocPrinterW = modWinspool.NewProc("StartDocPrinterW")
 	procStartPagePrinter = modWinspool.NewProc("StartPagePrinter")
-	procWritePrinter    = modWinspool.NewProc("WritePrinter")
-	procEndPagePrinter  = modWinspool.NewProc("EndPagePrinter")
-	procEndDocPrinter   = modWinspool.NewProc("EndDocPrinter")
-	procEnumPrintersW   = modWinspool.NewProc("EnumPrintersW")
+	procWritePrinter     = modWinspool.NewProc("WritePrinter")
+	procEndPagePrinter   = modWinspool.NewProc("EndPagePrinter")
+	procEndDocPrinter    = modWinspool.NewProc("EndDocPrinter")
+	procEnumPrintersW    = modWinspool.NewProc("EnumPrintersW")
 )
 
 // DOC_INFO_1W for StartDocPrinterW
@@ -179,8 +179,6 @@ func utf16PtrToString(p *uint16) string {
 	return windows.UTF16PtrToString(p)
 }
 
-
-
 // EnumSpoolerPrinters enumerates Windows spooler printers via EnumPrintersW
 // with correct PRINTER_INFO_2W parsing (no hardcoded structSize hack).
 func EnumSpoolerPrinters() ([]DeviceInfo, error) {
@@ -255,7 +253,11 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		status := mapWindowsStatus(pi.Status, pi.Attributes)
 		enabled := pi.Attributes&0x00000400 == 0 // WORK_OFFLINE bit not set
 
+		isVirtual := isVirtualSpooler(portName, driverName, name)
 		printerType, connType := classifySpoolerPrinter(portName, driverName, name)
+		if isVirtual {
+			printerType = "virtual"
+		}
 
 		// Infer network address/port if portName is IP-like
 		var netAddr string
@@ -302,6 +304,10 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 		if shareName != "" {
 			caps["share_name"] = shareName
 		}
+		if isVirtual {
+			caps["virtual"] = true
+			caps["is_virtual"] = true
+		}
 		// Keep capabilities empty if no reliable info; gateway treats empty as unknown
 
 		info := DeviceInfo{
@@ -317,6 +323,7 @@ func EnumSpoolerPrinters() ([]DeviceInfo, error) {
 			Port:           netPort,
 			Status:         status,
 			Enabled:        enabled,
+			IsVirtual:      isVirtual,
 			Capabilities:   caps,
 			Type:           connType, // legacy
 		}

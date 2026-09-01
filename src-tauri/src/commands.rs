@@ -254,6 +254,7 @@ pub struct PrinterInfo {
     pub port: Option<i32>,
     pub status: String,
     pub enabled: bool,
+    pub isVirtual: Option<bool>,
     pub capabilities: Option<serde_json::Value>,
 }
 
@@ -343,6 +344,83 @@ pub async fn test_printer(printer_id: String, app: tauri::AppHandle) -> Result<S
             return Err(msg);
         }
         Ok(stdout)
+    })
+    .await
+}
+
+#[derive(Deserialize, Debug)]
+pub struct RegisterPrinterRequest {
+    pub name: String,
+    pub connectionType: String,
+    #[serde(rename = "connection_type")]
+    pub connection_type_alt: Option<String>,
+    pub endpoint: Option<String>,
+    #[serde(rename = "spoolerName")]
+    pub spooler_name: Option<String>,
+    pub protocol: Option<String>,
+    #[serde(rename = "printerType")]
+    pub printer_type: Option<String>,
+    #[serde(rename = "usbVid")]
+    pub usb_vid: Option<String>,
+    #[serde(rename = "usbPid")]
+    pub usb_pid: Option<String>,
+    #[serde(rename = "usbSerial")]
+    pub usb_serial: Option<String>,
+}
+
+#[tauri::command]
+pub async fn register_printer(request: RegisterPrinterRequest, app: tauri::AppHandle) -> Result<String, String> {
+    let name = request.name.trim().to_string();
+    if name.is_empty() {
+        return Err("printer name is required".into());
+    }
+    let conn = request.connection_type_alt.clone().unwrap_or(request.connectionType.clone());
+    let conn_lower = conn.trim().to_lowercase();
+    let valid_conns = ["spooler", "network", "tcp", "usb", "ipp", "ipps"];
+    if !valid_conns.contains(&conn_lower.as_str()) {
+        return Err("connection type must be spooler, network, usb, or ipp".into());
+    }
+    run_blocking(move || {
+        let cli = agent::cli_path(&app)?;
+        let config = paths::agent_config_path();
+        let root = paths::agent_data_root();
+        let mut cmd = std::process::Command::new(&cli);
+        cmd.arg("printers").arg("add").arg("--name").arg(&name).arg("--type").arg(&conn_lower);
+        if let Some(ep) = request.endpoint.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--endpoint").arg(ep.trim());
+        }
+        if let Some(sn) = request.spooler_name.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--spooler-name").arg(sn.trim());
+        }
+        if let Some(proto) = request.protocol.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--protocol").arg(proto.trim().to_lowercase());
+        }
+        if let Some(pt) = request.printer_type.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--printer-type").arg(pt.trim().to_lowercase());
+        }
+        if let Some(vid) = request.usb_vid.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--vid").arg(vid.trim());
+        }
+        if let Some(pid) = request.usb_pid.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--pid").arg(pid.trim());
+        }
+        if let Some(serial) = request.usb_serial.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.arg("--serial").arg(serial.trim());
+        }
+        cmd.arg("-config").arg(&config);
+        cmd.env("ODOO_PRINT_AGENT_DATA_DIR", &root);
+        let out = cmd.output().map_err(|e| format!("failed to run register: {}", e))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if !out.status.success() {
+            let msg = if stderr.is_empty() { stdout } else { stderr };
+            return Err(msg);
+        }
+        if stdout.is_empty() {
+            Ok(format!("Printer '{}' added", name))
+        } else {
+            Ok(stdout)
+        }
     })
     .await
 }

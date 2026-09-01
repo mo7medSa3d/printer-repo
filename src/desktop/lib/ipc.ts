@@ -95,15 +95,25 @@ export interface PrinterInfo {
   id: string;
   name: string;
   display_name?: string;
+  displayName?: string;
   printer_type?: string;
+  printerType?: string;
   connection_type?: string;
+  connectionType?: string;
   protocol?: string;
   endpoint?: string;
   spooler_name?: string;
+  spoolerName?: string;
   network_address?: string;
+  networkAddress?: string;
   port?: number | null;
   status: string;
   enabled: boolean;
+  isVirtual?: boolean;
+  is_virtual?: boolean;
+  usbVid?: string;
+  usbPid?: string;
+  usbSerial?: string;
   capabilities?: Record<string, unknown> | null;
 }
 
@@ -122,6 +132,22 @@ export function discoverPrinters(): Promise<DiscoverResult> {
 
 export function testPrinter(printerId: string): Promise<string> {
   return invoke<string>("test_printer", { printerId });
+}
+
+export interface RegisterPrinterRequest {
+  name: string;
+  connectionType: string;
+  endpoint?: string;
+  spoolerName?: string;
+  protocol?: string;
+  printerType?: string;
+  usbVid?: string;
+  usbPid?: string;
+  usbSerial?: string;
+}
+
+export function registerPrinter(req: RegisterPrinterRequest): Promise<string> {
+  return invoke<string>("register_printer", { request: req });
 }
 
 export interface AutostartStatus {

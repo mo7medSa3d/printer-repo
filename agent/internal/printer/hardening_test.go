@@ -92,9 +92,9 @@ func TestUSBParseVIDPID(t *testing.T) {
 	// Use helper from usb_windows.go via parseVIDPIDSerial (exported? it's private)
 	// Instead test StableIDFromUSB directly
 	cases := []struct {
-		id       string
-		wantVID  uint16
-		wantPID  uint16
+		id         string
+		wantVID    uint16
+		wantPID    uint16
 		wantSerial string
 	}{
 		{"USB\\VID_03F0&PID_0C17\\CN123", 0x03F0, 0x0C17, "CN123"},
@@ -319,6 +319,58 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestIsPrinterUSBDevice(t *testing.T) {
+	cases := []struct {
+		hw, compat []string
+		class      string
+		want       bool
+		name       string
+	}{
+		{[]string{"USB\\VID_046D&PID_C52B&MI_00"}, []string{"USB\\Class_03&SubClass_01"}, "03", false, "mouse HID"},
+		{[]string{"USB\\VID_04FE&PID_0021"}, []string{"USB\\Class_0E"}, "0E", false, "camera"},
+		{[]string{"USB\\VID_06CB&PID_00A2"}, []string{"USB\\VID_06CB&PID_00A2"}, "00", false, "fingerprint"},
+		{[]string{"USB\\VID_8087&PID_0A2B"}, []string{"USB\\Class_E0"}, "E0", false, "bluetooth"},
+		{[]string{"USB\\VID_1A40&PID_0101"}, []string{"USB\\Class_09"}, "09", false, "hub composite"},
+		{[]string{"USB\\VID_03F0&PID_0C17"}, []string{"USB\\Class_FF"}, "FF", false, "generic composite VID/PID only"},
+		{[]string{"USBPRINT\\HP_LaserJet"}, []string{"USBPRINT\\HP_LaserJet"}, "Printer", true, "USBPRINT"},
+		{[]string{"USB\\VID_04B8&PID_0202&MI_00"}, []string{"USB\\Class_07"}, "07", true, "Class_07"},
+		{[]string{"USB\\VID_03F0&PID_C17A"}, []string{"USB\\Class_07&SubClass_01"}, "07", true, "Class_07 subclass"},
+		{[]string{"USB\\VID_04B8&PID_0202"}, []string{"USB\\Class_07&SubClass_01&Prot_02", "USBPRINT"}, "", true, "compatible USBPRINT"},
+	}
+	for _, tc := range cases {
+		got := isPrinterUSBDevice(tc.hw, tc.compat, tc.class)
+		if got != tc.want {
+			t.Errorf("%s: got %v want %v hw=%v compat=%v class=%q", tc.name, got, tc.want, tc.hw, tc.compat, tc.class)
+		}
+	}
+}
+
+func TestIsVirtualSpooler(t *testing.T) {
+	cases := []struct {
+		port, driver, name string
+		want               bool
+	}{
+		{"PORTPROMPT:", "Microsoft Print To PDF", "Microsoft Print to PDF", true},
+		{"XPSPort:", "Microsoft XPS Document Writer", "Microsoft XPS Document Writer", true},
+		{"FILE:", "Generic", "PDF995", true},
+		{"nul:", "Generic", "My Printer", true},
+		{"SHRFAX:", "Fax Driver", "Fax", true},
+		{"IP_192.168.1.50", "Microsoft Print to PDF", "Microsoft Print to PDF", true},
+		{"USB001", "HP LaserJet", "HP LaserJet 1020", false},
+		{"WSD-abc", "Generic Laser", "Office Printer", false},
+		{"IP_192.168.1.10", "Zebra Label", "Zebra GK420", false},
+		{"192.168.1.50:9100", "ESC/POS", "Thermal Receipt", false},
+		{"USB001", "AnyDesk Printer", "AnyDesk Printer", true},
+		{"USB001", "Foxit Reader PDF", "Foxit Printer", true},
+	}
+	for _, tc := range cases {
+		got := isVirtualSpooler(tc.port, tc.driver, tc.name)
+		if got != tc.want {
+			t.Errorf("port=%q driver=%q name=%q: got %v want %v", tc.port, tc.driver, tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestCapabilityNormalization(t *testing.T) {

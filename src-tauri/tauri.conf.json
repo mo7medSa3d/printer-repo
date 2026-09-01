@@ -32,6 +32,8 @@
     "shortDescription": "Local print manager for Odoo POS/ERP",
     "longDescription": "Odoo Print Manager pairs this Windows PC with the Odoo Print Gateway, runs the local print agent, and shows gateway/agent health from the system tray.",
     "icon": [
+      "icons/16x16.png",
+      "icons/24x24.png",
       "icons/32x32.png",
       "icons/48x48.png",
       "icons/64x64.png",

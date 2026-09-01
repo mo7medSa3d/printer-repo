@@ -97,6 +97,7 @@ fn main() {
             commands::get_printers,
             commands::discover_printers,
             commands::test_printer,
+            commands::register_printer,
             commands::get_autostart,
             commands::set_autostart
         ])

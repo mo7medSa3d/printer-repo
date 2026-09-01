@@ -103,26 +103,28 @@ func (p *USBPrinter) Status() string {
 }
 
 const (
-	digcfPresent         = 0x00000002
-	digcfAllClasses      = 0x00000004
-	digcfDeviceInterface = 0x00000010
+	digcfPresent             = 0x00000002
+	digcfAllClasses          = 0x00000004
+	digcfDeviceInterface     = 0x00000010
 	spdrpHardwareID          = 0x00000001
 	spdrpCompatibleIDs       = 0x00000002
 	spdrpDeviceDesc          = 0x00000000
 	spdrpFriendlyName        = 0x0000000C
 	spdrpLocationInformation = 0x0000000D
 	spdrpMfg                 = 0x0000000B
+	spdrpClass               = 0x00000007
+	spdrpClassGuid           = 0x00000008
 )
 
 var (
-	modSetupAPI                          = syscall.NewLazyDLL("setupapi.dll")
-	procSetupDiGetClassDevsW             = modSetupAPI.NewProc("SetupDiGetClassDevsW")
-	procSetupDiEnumDeviceInfo            = modSetupAPI.NewProc("SetupDiEnumDeviceInfo")
-	procSetupDiGetDeviceInstanceIdW      = modSetupAPI.NewProc("SetupDiGetDeviceInstanceIdW")
+	modSetupAPI                           = syscall.NewLazyDLL("setupapi.dll")
+	procSetupDiGetClassDevsW              = modSetupAPI.NewProc("SetupDiGetClassDevsW")
+	procSetupDiEnumDeviceInfo             = modSetupAPI.NewProc("SetupDiEnumDeviceInfo")
+	procSetupDiGetDeviceInstanceIdW       = modSetupAPI.NewProc("SetupDiGetDeviceInstanceIdW")
 	procSetupDiGetDeviceRegistryPropertyW = modSetupAPI.NewProc("SetupDiGetDeviceRegistryPropertyW")
-	procSetupDiDestroyDeviceInfoList     = modSetupAPI.NewProc("SetupDiDestroyDeviceInfoList")
-	procSetupDiEnumDeviceInterfaces      = modSetupAPI.NewProc("SetupDiEnumDeviceInterfaces")
-	procSetupDiGetDeviceInterfaceDetailW = modSetupAPI.NewProc("SetupDiGetDeviceInterfaceDetailW")
+	procSetupDiDestroyDeviceInfoList      = modSetupAPI.NewProc("SetupDiDestroyDeviceInfoList")
+	procSetupDiEnumDeviceInterfaces       = modSetupAPI.NewProc("SetupDiEnumDeviceInterfaces")
+	procSetupDiGetDeviceInterfaceDetailW  = modSetupAPI.NewProc("SetupDiGetDeviceInterfaceDetailW")
 )
 
 type spDevInfoData struct {
@@ -146,7 +148,8 @@ func discoverUSBPrinters() ([]DeviceInfo, error) {
 	log.Printf("[discovery] starting USB discovery (SetupDi)")
 	pathMap := buildUSBDevicePathMap()
 
-	handle, _, err := procSetupDiGetClassDevsW.Call(0, 0, 0, uintptr(digcfPresent|digcfAllClasses))
+	// Prefer printer-specific interface GUID; fallback to ALLCLASSES with strict filtering
+	handle, _, err := procSetupDiGetClassDevsW.Call(uintptr(unsafe.Pointer(&guidDevInterfaceUSBPrint)), 0, 0, uintptr(digcfPresent|digcfDeviceInterface))
 	if handle == uintptr(0) || handle == uintptr(^uint32(0)) {
 		return nil, fmt.Errorf("SetupDiGetClassDevsW failed: %v", err)
 	}
@@ -173,8 +176,9 @@ func discoverUSBPrinters() ([]DeviceInfo, error) {
 		}
 		hwIDs, _ := getDeviceRegistryProperty(handle, &devInfo, spdrpHardwareID)
 		compatIDs, _ := getDeviceRegistryProperty(handle, &devInfo, spdrpCompatibleIDs)
-		combinedIDs := strings.ToUpper(strings.Join(append(hwIDs, compatIDs...), " "))
-		if !(strings.Contains(combinedIDs, "USBPRINT") || strings.Contains(combinedIDs, "PRINTER") || strings.Contains(upperID, "USBPRINT") || strings.Contains(combinedIDs, "VID_")) {
+		classVal, _ := getDeviceRegistryPropertySingle(handle, &devInfo, spdrpClass)
+		if !isPrinterUSBDevice(hwIDs, compatIDs, classVal) {
+			continue
 		}
 		vid, pid, serial := parseVIDPIDSerial(instanceID)
 		friendlyName, _ := getDeviceRegistryPropertySingle(handle, &devInfo, spdrpFriendlyName)
@@ -210,6 +214,9 @@ func discoverUSBPrinters() ([]DeviceInfo, error) {
 					break
 				}
 			}
+		}
+		if devicePath == "" {
+			continue
 		}
 
 		caps := map[string]interface{}{}
@@ -270,6 +277,119 @@ func discoverUSBPrinters() ([]DeviceInfo, error) {
 		}
 		log.Printf("[discovery] found USB printer: %q VID:%04x PID:%04x serial:%q location:%q path:%q -> %s", friendlyName, vid, pid, serial, location, devicePath, id)
 		infos = append(infos, di)
+	}
+	// Fallback enumeration via ALLCLASSES with strict filtering to catch vendor-specific
+	// printers that do not expose GUID_DEVINTERFACE_USBPRINT but still have Class_07.
+	// This path is only taken if primary found nothing, to avoid re-enumerating hundreds
+	// of devices when primary succeeded.
+	if len(infos) == 0 {
+		fbHandle, _, _ := procSetupDiGetClassDevsW.Call(0, 0, 0, uintptr(digcfPresent|digcfAllClasses))
+		if fbHandle != uintptr(0) && fbHandle != uintptr(^uint32(0)) {
+			defer procSetupDiDestroyDeviceInfoList.Call(fbHandle)
+			for idx := 0; ; idx++ {
+				var devInfo spDevInfoData
+				devInfo.cbSize = uint32(unsafe.Sizeof(devInfo))
+				ret, _, _ := procSetupDiEnumDeviceInfo.Call(fbHandle, uintptr(idx), uintptr(unsafe.Pointer(&devInfo)))
+				if ret == 0 {
+					break
+				}
+				instanceID, err := getDeviceInstanceID(fbHandle, &devInfo)
+				if err != nil || instanceID == "" {
+					continue
+				}
+				upperID := strings.ToUpper(instanceID)
+				if !(strings.Contains(upperID, "USB\\VID_") || strings.Contains(upperID, "USBPRINT")) {
+					continue
+				}
+				hwIDs, _ := getDeviceRegistryProperty(fbHandle, &devInfo, spdrpHardwareID)
+				compatIDs, _ := getDeviceRegistryProperty(fbHandle, &devInfo, spdrpCompatibleIDs)
+				classVal, _ := getDeviceRegistryPropertySingle(fbHandle, &devInfo, spdrpClass)
+				if !isPrinterUSBDevice(hwIDs, compatIDs, classVal) {
+					continue
+				}
+				vid, pid, serial := parseVIDPIDSerial(instanceID)
+				friendlyName, _ := getDeviceRegistryPropertySingle(fbHandle, &devInfo, spdrpFriendlyName)
+				if friendlyName == "" {
+					friendlyName, _ = getDeviceRegistryPropertySingle(fbHandle, &devInfo, spdrpDeviceDesc)
+				}
+				mfg, _ := getDeviceRegistryPropertySingle(fbHandle, &devInfo, spdrpMfg)
+				location, _ := getDeviceRegistryPropertySingle(fbHandle, &devInfo, spdrpLocationInformation)
+				desc, _ := getDeviceRegistryPropertySingle(fbHandle, &devInfo, spdrpDeviceDesc)
+				if friendlyName == "" {
+					friendlyName = desc
+				}
+				if friendlyName == "" {
+					friendlyName = fmt.Sprintf("USB Printer %04X:%04X", vid, pid)
+				}
+				friendlyName = strings.TrimSpace(friendlyName)
+				if mfg != "" && !strings.Contains(strings.ToLower(friendlyName), strings.ToLower(mfg)) {
+					friendlyName = mfg + " " + friendlyName
+				}
+				vidStr := fmt.Sprintf("%04x", vid)
+				pidStr := fmt.Sprintf("%04x", pid)
+				id := StableIDFromUSB(vidStr, pidStr, serial, location)
+				if seenIDs[id] {
+					continue
+				}
+				seenIDs[id] = true
+				devicePath := pathMap[instanceID]
+				if devicePath == "" {
+					for k, v := range pathMap {
+						if strings.EqualFold(k, instanceID) {
+							devicePath = v
+							break
+						}
+					}
+				}
+				if devicePath == "" {
+					continue
+				}
+				caps := map[string]interface{}{}
+				caps["hardware_ids"] = hwIDs
+				caps["compatible_ids"] = compatIDs
+				caps["device_instance_id"] = instanceID
+				if mfg != "" {
+					caps["manufacturer"] = mfg
+				}
+				if desc != "" {
+					caps["device_desc"] = desc
+				}
+				if location != "" {
+					caps["location"] = location
+				}
+				caps["device_path"] = devicePath
+				caps["direct_usb_available"] = true
+				caps["requires_spooler"] = false
+				di := DeviceInfo{
+					ID:             id,
+					Name:           friendlyName,
+					DisplayName:    friendlyName,
+					PrinterType:    "unknown",
+					ConnectionType: "usb",
+					Protocol:       "raw",
+					Endpoint:       devicePath,
+					USBVID:         vidStr,
+					USBPID:         pidStr,
+					USBSerial:      serial,
+					Status:         "online",
+					Enabled:        true,
+					Capabilities:   caps,
+					Type:           "usb",
+				}
+				lowerName := strings.ToLower(friendlyName + " " + desc + " " + mfg)
+				if strings.Contains(lowerName, "thermal") || strings.Contains(lowerName, "receipt") || strings.Contains(lowerName, "pos") {
+					di.PrinterType = "thermal"
+				} else if strings.Contains(lowerName, "label") || strings.Contains(lowerName, "zebra") {
+					di.PrinterType = "label"
+				} else if strings.Contains(lowerName, "laser") {
+					di.PrinterType = "laser"
+				} else if strings.Contains(lowerName, "inkjet") || strings.Contains(lowerName, "deskjet") {
+					di.PrinterType = "inkjet"
+				}
+				log.Printf("[discovery] found USB printer via fallback: %q VID:%04x PID:%04x -> %s", friendlyName, vid, pid, id)
+				infos = append(infos, di)
+			}
+		}
 	}
 	log.Printf("[discovery] USB discovery completed: %d devices", len(infos))
 	return infos, nil

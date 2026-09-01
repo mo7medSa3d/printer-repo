@@ -5,6 +5,58 @@ import (
 	"strings"
 )
 
+func isPrinterUSBDevice(hwIDs, compatIDs []string, classVal string) bool {
+	combined := strings.ToUpper(strings.Join(append(append([]string{}, hwIDs...), compatIDs...), " "))
+	classUpper := strings.ToUpper(strings.TrimSpace(classVal))
+	if strings.Contains(combined, "USBPRINT") {
+		return true
+	}
+	if strings.Contains(combined, "USB\\CLASS_07") {
+		return true
+	}
+	if strings.Contains(combined, "CLASS_07") && strings.Contains(combined, "USB") {
+		return true
+	}
+	if classUpper == "07" || classUpper == "PRINTER" {
+		return true
+	}
+	if strings.Contains(classUpper, "07") && strings.Contains(classUpper, "USB") {
+		return true
+	}
+	if strings.Contains(combined, "PRINTER") && strings.Contains(combined, "USB") {
+		return true
+	}
+	return false
+}
+
+func isVirtualSpooler(portName, driverName, printerName string) bool {
+	portLower := spoolerToLowerTrim(portName)
+	driverLower := spoolerToLowerTrim(driverName)
+	nameLower := spoolerToLowerTrim(printerName)
+	virtualPorts := []string{"portprompt:", "xpsport:", "file:", "nul:", "shrfax:"}
+	for _, p := range virtualPorts {
+		if portLower == p || spoolerHasPrefix(portLower, p) {
+			return true
+		}
+	}
+	virtualDrivers := []string{"microsoft print to pdf", "print to pdf", "xps document writer", "onenote", " fax", "fax ", "anydesk", "foxit reader pdf", "foxit", "microsoft xps", "pdf995", "cutepdf", "doro pdf"}
+	for _, d := range virtualDrivers {
+		if strings.Contains(driverLower, d) || strings.Contains(nameLower, d) {
+			return true
+		}
+	}
+	virtualNames := []string{"onenote", "xps document writer", "fax", "microsoft print to pdf", "anydesk printer"}
+	for _, n := range virtualNames {
+		if nameLower == n || strings.Contains(nameLower, n) {
+			return true
+		}
+	}
+	if strings.Contains(driverLower, "pdf") && (strings.Contains(portLower, "portprompt") || strings.Contains(portLower, "xpsport")) {
+		return true
+	}
+	return false
+}
+
 // classifySpoolerPrinter infers printerType and connectionType from PortName and DriverName.
 // Pure function, no Windows API, testable on all platforms.
 func classifySpoolerPrinter(portName, driverName, printerName string) (printerType, connectionType string) {
@@ -122,7 +174,9 @@ func spoolerToLowerTrim(s string) string {
 	}
 	return string(b)
 }
-func spoolerHasPrefix(s, prefix string) bool { return len(s) >= len(prefix) && s[:len(prefix)] == prefix }
+func spoolerHasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
 func spoolerIndexComma(s string) int {
 	for i, c := range s {
 		if c == ',' {
