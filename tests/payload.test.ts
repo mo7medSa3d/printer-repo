@@ -12,9 +12,12 @@ describe("payload", () => {
     const huge = Buffer.alloc(6 * 1024 * 1024).toString("base64");
     expect(() => validatePrintJobPayload({ type: "raw", encoding: "base64", data: huge })).toThrow();
   });
-  it("validates pdf payload type (spooler/IPP)", () => {
+  it("validates pdf payload type only when bytes carry a PDF signature", () => {
     const pdf = { type: "pdf", encoding: "base64", data: Buffer.from("%PDF-1.4").toString("base64") };
     expect(validatePrintJobPayload(pdf).type).toBe("pdf");
+    expect(() => validatePrintJobPayload({ type: "pdf", encoding: "base64", data: Buffer.from("hello").toString("base64") })).toThrow(/PDF payload/);
+    expect(() => validatePrintJobPayload({ type: "raw", encoding: "base64", data: Buffer.from("%PDF-1.7").toString("base64") })).toThrow(/PDF bytes/);
+    expect(() => validatePrintJobPayload({ type: "escpos", encoding: "base64", data: Buffer.from("%PDF-1.7").toString("base64") })).toThrow(/PDF bytes/);
   });
   it("rejects bad type", () => {
     expect(() => validatePrintJobPayload({ type: "badtype", encoding: "base64", data: "aGVsbG8=" })).toThrow();

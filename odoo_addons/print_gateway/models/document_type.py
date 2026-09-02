@@ -7,7 +7,7 @@ class PrintGatewayDocumentType(models.Model):
     _order = 'name'
 
     name = fields.Char(required=True, help='e.g., Receipt, Invoice, Label, Order')
-    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
+    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='restrict')
     description = fields.Text()
     payload_hint = fields.Selection([
         ('raw', 'Raw Binary'),

@@ -13,23 +13,28 @@ class PrintGatewayPrinter(models.Model):
 
     gateway_printer_id = fields.Char(string='Gateway Printer ID', required=True, help='ID in Gateway, e.g., printer_xxx')
     name = fields.Char(required=True)
-    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
+    agent_id = fields.Many2one('print_gateway.agent', required=True, ondelete='restrict')
+    branch_id = fields.Many2one('print_gateway.branch', related='agent_id.branch_id', store=True, readonly=True)
     printer_type = fields.Selection([
-        ('thermal', 'Thermal Receipt'),
+        ('physical', 'Physical'),
+        ('virtual', 'Virtual'),
+        ('redirected', 'Redirected'),
+    ], default='physical', string='Printer Type', readonly=True)
+    device_class = fields.Selection([
+        ('thermal', 'Thermal'),
         ('laser', 'Laser'),
         ('inkjet', 'Inkjet'),
-        ('spooler', 'Windows Spooler / Network'),
+        ('label', 'Label'),
         ('other', 'Other'),
         ('unknown', 'Unknown'),
-    ], default='unknown', string='Printer Type')
+    ], default='unknown', string='Device Class', readonly=True)
     connection_type = fields.Selection([
-        ('tcp', 'Network (TCP)'),
+        ('network', 'Network'),
         ('usb', 'USB'),
         ('spooler', 'Windows Spooler'),
         ('ipp', 'IPP'),
         ('ipps', 'IPPS'),
-        ('network', 'Network'),
-    ], default='tcp', string='Connection Type')
+    ], default='network', string='Connection Type')
     protocol = fields.Selection([
         ('raw', 'Raw Binary'),
         ('escpos', 'ESC/POS'),
@@ -49,8 +54,7 @@ class PrintGatewayPrinter(models.Model):
     port = fields.Integer(help='Network port if TCP')
     usb_serial = fields.Char(help='USB serial')
     spooler_name = fields.Char(help='Windows spooler printer name')
-    enabled = fields.Boolean(default=True)
-    gateway_agent_id = fields.Char(string='Gateway Agent ID')
+    lifecycle = fields.Selection([('active', 'Active'), ('disabled', 'Disabled'), ('retired', 'Retired')], default='active', required=True, readonly=True)
 
     binding_ids = fields.One2many('print_gateway.printer_binding', 'printer_id', string='Bindings')
     binding_count = fields.Integer(compute='_compute_binding_count', string='Binding Count')
@@ -58,8 +62,16 @@ class PrintGatewayPrinter(models.Model):
     last_seen_at = fields.Datetime(readonly=True)
 
     _sql_constraints = [
-        ('gateway_printer_id_branch_unique', 'unique(gateway_printer_id, branch_id)', 'Printer ID must be unique per branch'),
+        ('gateway_printer_id_unique', 'unique(gateway_printer_id)', 'Printer ID must be globally unique'),
     ]
+
+    @api.constrains('agent_id')
+    def _check_agent_branch(self):
+        for rec in self:
+            if not rec.agent_id:
+                raise ValidationError(_('Printer must have an owning agent'))
+            if rec.branch_id and rec.branch_id != rec.agent_id.branch_id:
+                raise ValidationError(_('Printer branch is derived from agent and cannot diverge'))
 
     @api.depends('binding_ids')
     def _compute_binding_count(self):
@@ -71,9 +83,29 @@ class PrintGatewayPrinter(models.Model):
         for rec in self:
             rec.destination_ids = rec.binding_ids.mapped('destination_id')
 
+    def write(self, vals):
+        if 'lifecycle' in vals:
+            for rec in self:
+                if rec.lifecycle == 'retired' and vals['lifecycle'] != 'retired':
+                    raise ValidationError(_('Retired printers are terminal; provision a new printer identity instead.'))
+                if vals['lifecycle'] not in ('active', 'disabled', 'retired'):
+                    raise ValidationError(_('Invalid printer lifecycle state.'))
+                if rec.lifecycle == 'active' and vals['lifecycle'] not in ('active', 'disabled', 'retired'):
+                    raise ValidationError(_('Invalid printer lifecycle transition.'))
+                if rec.lifecycle == 'disabled' and vals['lifecycle'] not in ('disabled', 'active', 'retired'):
+                    raise ValidationError(_('Invalid printer lifecycle transition.'))
+        if 'agent_id' in vals:
+            for rec in self:
+                if rec.agent_id.id and rec.agent_id.id != vals['agent_id']:
+                    raise ValidationError(_('Printer ownership is immutable; retire and provision it under a new agent.'))
+        return super().write(vals)
+
+    def unlink(self):
+        raise ValidationError(_('Printers cannot be physically deleted. Disable or retire the printer to preserve history.'))
+
     def action_sync_from_gateway(self):
         for printer in self:
-            branch = printer.branch_id
+            branch = printer.agent_id.branch_id
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
@@ -90,7 +122,7 @@ class PrintGatewayPrinter(models.Model):
                         if pr.get('id') == printer.gateway_printer_id:
                             printer.write({
                                 'status': pr.get('status') or 'unknown',
-                                'enabled': pr.get('enabled', True),
+                                'lifecycle': pr.get('lifecycle') or 'active',
                             })
                             break
             except Exception as e:

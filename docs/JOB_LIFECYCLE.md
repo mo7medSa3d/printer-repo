@@ -183,3 +183,13 @@ claim it anywhere. Covered by `TestInterruptedJobIsReportedAtStartup` and
 printer, agent, status, error and the originating report metadata. The cron
 `Print Gateway: Sync Job Statuses` (every 2 minutes) calls
 `GET /api/print/jobs?id=…` for every non-terminal job and normalises `completed → success`.
+
+## Agent and printer lifecycle invariants
+
+Agents and Printers are never physically deleted by normal application flows. Use `disabled` to stop runtime use without retiring identity; use `retired` for terminal decommissioning. `retired` cannot transition back to `active` or `disabled`. Historical Jobs remain queryable.
+
+Disabling or retiring an Agent revokes its credentials and disables all of its Printers. A disabled Agent can later be enabled only with fresh pairing credentials. A retired Agent must be replaced by a new identity.
+
+## Agent and printer lifecycle invariants
+
+Agents and Printers are never physically deleted by normal application flows. `retired` is terminal, and historical Jobs remain queryable. Disabling or retiring an Agent revokes its credentials and disables all of its Printers. Re-enabling a disabled Agent requires fresh pairing credentials.

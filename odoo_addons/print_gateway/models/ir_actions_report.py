@@ -78,21 +78,21 @@ class IrActionsReport(models.Model):
 
     def _determine_branch(self, record=None, mapping_info=None):
         """Determine branch for a given record/report.
-        
-        FAIL-CLOSED behavior: raises ValidationError if branch cannot be 
+
+        FAIL-CLOSED behavior: raises ValidationError if branch cannot be
         deterministically resolved. Never falls back to arbitrary first branch.
-        
+
         Priority:
         1. Mapping/report direct branch (explicit/forced)
         2. Record's print_gateway_branch_id field (if exists)
         3. Record's company -> branch with that company (must be unique/deterministic)
-        
+
         If no deterministic branch can be found, raises ValidationError.
         """
         # 1. Direct mapping branch (explicit)
         if mapping_info and mapping_info.get('branch_id'):
             return mapping_info['branch_id']
-        
+
         if record:
             # 2. Try record's explicit branch field
             if 'print_gateway_branch_id' in record._fields:
@@ -102,7 +102,7 @@ class IrActionsReport(models.Model):
                         return branch
                 except Exception as e:
                     _logger.warning("Failed to read print_gateway_branch_id from record: %s", str(e))
-            
+
             # 3. Try company-based branch (must be unique per company for determinism)
             if 'company_id' in record._fields and record.company_id:
                 branches = self.env['print_gateway.branch'].search([
@@ -120,7 +120,7 @@ class IrActionsReport(models.Model):
                         "Please configure explicit branch in report mapping."
                     ) % record.company_id.name)
                 # else: no branch for company, continue
-            
+
             # 3b. Try partner's company as fallback
             if 'partner_id' in record._fields and record.partner_id and record.partner_id.company_id:
                 branches = self.env['print_gateway.branch'].search([
@@ -134,7 +134,7 @@ class IrActionsReport(models.Model):
                         "Multiple print branches configured for partner's company %s. "
                         "Cannot determine routing unambiguously."
                     ) % record.partner_id.company_id.name)
-        
+
         # No deterministic branch found - fail closed
         raise ValidationError(_(
             "Unable to determine the print branch for this report. "
@@ -143,12 +143,12 @@ class IrActionsReport(models.Model):
 
     def _determine_destination(self, branch, record=None, mapping_info=None):
         """Determine destination for branch/record.
-        
+
         FAIL-CLOSED: Raises if destination cannot be determined or belongs to wrong branch.
         """
         if not branch:
             raise ValidationError(_("Branch is required to determine destination"))
-        
+
         # 1. Explicit mapping destination (forced)
         if mapping_info and mapping_info.get('destination_id'):
             dest = mapping_info['destination_id']
@@ -158,7 +158,7 @@ class IrActionsReport(models.Model):
                     "Cross-branch routing is not allowed."
                 ) % (dest.name, dest.branch_id.name, branch.name))
             return dest
-        
+
         # 2. Try record's explicit destination field
         if record and 'print_gateway_destination_id' in record._fields:
             try:
@@ -173,22 +173,13 @@ class IrActionsReport(models.Model):
                 raise
             except Exception as e:
                 _logger.warning("Failed to read destination from record: %s", str(e))
-        
-        # 3. Use branch's default destination (POS > Kitchen > first enabled)
-        enabled_dests = branch.destination_ids.filtered(lambda d: d.enabled)
-        if not enabled_dests:
-            raise ValidationError(_(
-                "No enabled destinations configured for branch %s. "
-                "Please create at least one destination (POS/Kitchen/Warehouse)."
-            ) % branch.name)
-        
-        # Prefer POS destination
-        pos_dests = enabled_dests.filtered(lambda d: d.destination_type == 'pos')
-        if pos_dests:
-            return pos_dests[0]
-        
-        # Fallback to first enabled destination
-        return enabled_dests[0]
+
+        # No implicit/default/first destination selection. A destination is a
+        # routing key and must be explicit in the mapping or record.
+        raise ValidationError(_(
+            "Unable to determine a print destination for branch %s. "
+            "Configure an explicit destination in the report mapping or record."
+        ) % branch.name)
 
     def _determine_document_type(self, mapping_info=None, report=None):
         """Determine document type string (normalized lowercase)."""
@@ -198,7 +189,7 @@ class IrActionsReport(models.Model):
                 return dt_name.strip().lower() if dt_name else None
             if mapping_info.get('document_type_name'):
                 return mapping_info['document_type_name'].strip().lower()
-        
+
         # Fallback based on report model/name
         if report:
             model = report.model or ''
@@ -214,7 +205,7 @@ class IrActionsReport(models.Model):
                 return 'purchase_order'
             elif 'pos.order' in model:
                 return 'receipt'
-        
+
         return 'document'
 
     def _generate_payload_for_report(self, report_ref, res_ids, data=None):
@@ -222,7 +213,6 @@ class IrActionsReport(models.Model):
         Returns dict with type, encoding, data (base64).
         Respects report_mapping.payload_type if available; honest about content.
         - pdf  -> type 'pdf'  (requires spooler/IPP, never raw thermal)
-        - raw  -> type 'raw'  (same PDF bytes but legacy type)
         - escpos -> raises UserError (no PDF->ESC/POS rasterizer)
         """
         self.ensure_one()
@@ -236,7 +226,7 @@ class IrActionsReport(models.Model):
                 desired_type = mi['mapping'].payload_type
         except Exception:
             pass
-        
+
         if desired_type == 'escpos':
             # No automatic PDF->ESC/POS conversion exists. Sending PDF bytes
             # as escpos to a thermal printer would produce garbage and false
@@ -265,11 +255,10 @@ class IrActionsReport(models.Model):
                         pdf_content = pdf_content[0]
 
                     b64 = base64.b64encode(pdf_content).decode('ascii')
-                    # Honest type: pdf default, raw only when the mapping
-                    # explicitly asks for legacy raw; gateway enforces
-                    # capability (pdf only to spooler/IPP, never raw thermal).
-                    # escpos raised above (no PDF->ESC/POS rasterizer).
-                    payload_type = 'raw' if desired_type == 'raw' else 'pdf'
+                    # A rendered QWeb report is a PDF document. It is never
+                    # relabeled as RAW; ambiguous PDF->RAW is rejected by the
+                    # canonical gateway content contract.
+                    payload_type = 'pdf'
                     return {
                         'type': payload_type,
                         'encoding': 'base64',
@@ -285,10 +274,10 @@ class IrActionsReport(models.Model):
 
     def _validate_recordset_routing_consistency(self, records, mapping_info):
         """Validate that all records in a multi-record reportset have consistent routing.
-        
+
         Returns list of routing groups if all records have consistent routing,
         or raises ValidationError if recordset is heterogeneous.
-        
+
         For simplicity and safety: current implementation rejects heterogeneous recordsets.
         Advanced multi-group splitting can be added later if report rendering supports it.
         """
@@ -305,16 +294,16 @@ class IrActionsReport(models.Model):
             branch = self._determine_branch(record, mapping_info)
             destination = self._determine_destination(branch, record, mapping_info)
             doc_type = self._determine_document_type(mapping_info, self)
-            
+
             # Try to find existing group with same routing
             matching_group = None
             for group in routing_groups:
-                if (group['branch'].id == branch.id and 
+                if (group['branch'].id == branch.id and
                     group['destination'].id == destination.id and
                     group['document_type'] == doc_type):
                     matching_group = group
                     break
-            
+
             if matching_group:
                 matching_group['records'] += record
             else:
@@ -324,7 +313,7 @@ class IrActionsReport(models.Model):
                     'destination': destination,
                     'document_type': doc_type,
                 })
-        
+
         # If multiple routing groups, reject (heterogeneous recordset)
         if len(routing_groups) > 1:
             raise ValidationError(_(
@@ -332,13 +321,13 @@ class IrActionsReport(models.Model):
                 "Please print records separately to ensure correct routing. "
                 "Groups found: %d"
             ) % len(routing_groups))
-        
+
         return routing_groups
 
     def _route_via_gateway(self, report_ref, res_ids, data=None):
         """Main gateway routing logic. Returns print job record or raises.
         SECURITY: Validates user has access to determined branch's company.
-        
+
         Processing order (FAIL-CLOSED):
         1. Validate recordset is not empty
         2. Validate routing is deterministic and consistent
@@ -348,67 +337,67 @@ class IrActionsReport(models.Model):
         6. Call Gateway
         """
         self.ensure_one()
-        
+
         # Step 1: Validate non-empty recordset
         if not res_ids:
             raise ValidationError(_("No records to print for report %s") % self.name)
-        
+
         # Get mapping
         mapping_info = self._get_gateway_mapping()
         if not mapping_info or not mapping_info.get('gateway_enabled'):
             return None  # Not configured for gateway, fallback to normal
-        
+
         # Get the actual records
         model_name = self.model
         if not model_name:
             # Try to get from report
             report = self._get_report(report_ref) if hasattr(self, '_get_report') else self
             model_name = report.model if hasattr(report, 'model') else None
-        
+
         if not model_name:
             raise ValidationError(_("Report model not found"))
-        
+
         # Step 2: Validate recordset and routing consistency
         try:
             Model = self.env[model_name]
         except KeyError:
             raise ValidationError(_("Model %s not found") % model_name)
-        
+
         try:
             records = Model.browse(res_ids)
         except Exception as e:
             raise ValidationError(_("Failed to load records: %s") % str(e))
-        
+
         # Check if records actually exist
         if not records or len(records) == 0:
             raise ValidationError(_("Cannot print an empty report."))
-        
+
         # Validate routing consistency
         routing_groups = self._validate_recordset_routing_consistency(records, mapping_info)
-        
+
         # Use first (and only) routing group
         routing_group = routing_groups[0]
         branch = routing_group['branch']
         destination = routing_group['destination']
         document_type = routing_group['document_type']
-        
+
         if not branch:
             raise ValidationError(_("No print branch configured. Please configure a Print Gateway Branch first."))
         if not destination:
             raise ValidationError(_("No destination configured for branch %s. Create a destination (POS/Kitchen/Warehouse).") % branch.name)
-        
+
         # SECURITY: Validate user has access to branch's company
         if not self._user_has_branch_access(branch):
             raise ValidationError(_("You do not have access to branch %s. Cannot print via this branch.") % branch.name)
-        
+
         # SECURITY: Validate record's company matches branch's company (if record has company field)
         for record in records:
             if 'company_id' in record._fields and record.company_id and record.company_id.id != branch.company_id.id:
                 raise ValidationError(_("Cannot route record from company %s to branch in company %s. Please route to correct company's branch.") % (record.company_id.name, branch.company_id.name))
-        
+
         # Step 3: Render PDF (only after routing validation)
         payload = self._generate_payload_for_report(report_ref, res_ids, data)
-        
+
         # Step 4: Generate idempotency key (stable per logical print operation)
         import uuid as _uuid
         idempotency_key = _uuid.uuid4().hex
@@ -425,7 +414,7 @@ class IrActionsReport(models.Model):
                 report_name=self.report_name,
                 idempotency_key=idempotency_key,
             )
-            _logger.info("Report %s for %s[%s] queued as gateway job %s via %s -> %s (%s)", 
+            _logger.info("Report %s for %s[%s] queued as gateway job %s via %s -> %s (%s)",
                         self.report_name, model_name, res_ids, job.gateway_job_id, branch.name, destination.name, document_type)
             return job
         except ValidationError:
@@ -444,20 +433,20 @@ class IrActionsReport(models.Model):
     def report_action(self, docids, data=None, config=True):
         """Override standard report action to optionally route via Gateway."""
         self.ensure_one()
-        
+
         # Check if this report should be routed via gateway
         # We need to be careful to not break non-PDF reports or many records
         should_gateway = self._should_route_via_gateway()
-        
+
         if not should_gateway:
             # Normal Odoo behavior
             return super().report_action(docids, data=data, config=config)
-        
+
         # For gateway-enabled reports, we try to route via gateway
         # But we need to handle the case where docids is None or empty (like for wizard)
         if not docids:
             return super().report_action(docids, data=data, config=config)
-        
+
         # Normalize docids
         if isinstance(docids, int):
             docids = [docids]
@@ -467,7 +456,7 @@ class IrActionsReport(models.Model):
                 docids = [int(docids)]
             except (TypeError, ValueError):
                 return super().report_action(docids, data=data, config=config)
-        
+
         try:
             # Try gateway routing
             job = self._route_via_gateway(self, docids, data)
@@ -479,7 +468,7 @@ class IrActionsReport(models.Model):
                     'params': {
                         'title': _('Print Job Sent to Gateway'),
                         'message': _('Report %s for %d record(s) queued as job %s (%s -> %s). Status: %s') % (
-                            self.name, len(docids), job.gateway_job_id, 
+                            self.name, len(docids), job.gateway_job_id,
                             job.branch_id.name, job.destination_id.name if job.destination_id else 'N/A',
                             job.status
                         ),
@@ -495,6 +484,6 @@ class IrActionsReport(models.Model):
         except Exception as e:
             _logger.error("Unexpected error in gateway report routing for %s: %s", self.report_name, str(e), exc_info=True)
             raise UserError(_("Gateway printing failed: %s") % str(e))
-        
+
         # If gateway routing didn't create a job (shouldn't happen), fallback
         return super().report_action(docids, data=data, config=config)

@@ -42,12 +42,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
   if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printer not found" }, { status: 404 });
-  if ((printer as any).branchId && (printer as any).branchId !== id) {
-    return NextResponse.json({ error: "Printer belongs to another branch; binding cannot connect resources across branches" }, { status: 400 });
-  }
-  // Also ensure printer's agent branch matches
+  // Branch ownership is resolved only through Printer -> Agent -> Branch.
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (agent && (agent as any).branchId && (agent as any).branchId !== id) {
+  if (!agent) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
+  if (agent.branchId !== id) {
     return NextResponse.json({ error: "Printer's agent belongs to another branch" }, { status: 400 });
   }
 

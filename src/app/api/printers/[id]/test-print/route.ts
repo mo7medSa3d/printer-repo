@@ -22,12 +22,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
   if (!printer) return NextResponse.json({ error: "Printer not found" }, { status: 404 });
 
-  const claims = await validateManager(req);
-  const odoo = claims ? null : await validateOdooKey(req, printer.branchId);
-  if (!claims && !odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (printer.enabled === false) return NextResponse.json({ error: "printer disabled" }, { status: 409 });
-
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+  if (!agent) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
+  const claims = await validateManager(req);
+  const odoo = claims ? null : await validateOdooKey(req, agent.branchId);
+  if (!claims && !odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (printer.lifecycle !== "active") return NextResponse.json({ error: "printer disabled" }, { status: 409 });
+
+  if (odoo?.branchId && odoo.branchId !== agent.branchId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const payload = buildTestPrintPayload(printer.name, (agent as unknown as { name?: string })?.name ?? printer.agentId);
 

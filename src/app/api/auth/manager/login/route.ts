@@ -5,6 +5,7 @@ import {
   inspectAuthRateLimit,
   recordAuthFailure,
   recordAuthSuccess,
+  cleanupAuthRateLimits,
 } from "@/lib/auth-rate-limit";
 import { logWarn, logInfo, requestIdFrom } from "@/lib/log";
 
@@ -37,6 +38,9 @@ export async function POST(req: Request) {
   }
 
   const ip = clientIpFrom(req);
+  await cleanupAuthRateLimits().catch(() => {
+    // Cleanup is housekeeping only; limiter reads remain fail-closed below.
+  });
 
   try {
     const pre = await inspectAuthRateLimit(ip, username);

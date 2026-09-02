@@ -15,7 +15,7 @@ class PrintGatewayDestination(models.Model):
         ('other', 'Other'),
     ], required=True, default='pos', string='Type')
 
-    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade', string='Branch')
+    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='restrict', string='Branch')
     description = fields.Text()
     zone = fields.Char(help='Physical zone within branch')
     enabled = fields.Boolean(default=True)

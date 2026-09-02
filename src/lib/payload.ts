@@ -7,24 +7,26 @@ const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 MiB — mirrors agent/internal/p
 export const printJobPayloadSchema = z.object({
   type: z.enum(["raw", "escpos", "pdf"]),
   encoding: z.literal("base64"),
-  data: z.string().min(1).refine((s) => {
-    // cheap base64 length check before decode: 4/3 expansion
-    if (s.length > (MAX_PAYLOAD_BYTES / 3) * 4 + 8) return false;
+  data: z.string().min(1).refine((value) => {
+    if (value.length > (MAX_PAYLOAD_BYTES / 3) * 4 + 8) return false;
     try {
-      const decoded = Buffer.from(s, "base64");
-      if (decoded.length === 0) return false;
-      if (decoded.length > MAX_PAYLOAD_BYTES) return false;
-      // Round-trip check: Buffer.from silently tolerates invalid base64
-      // (skips non-alphabet chars, accepts missing padding), while the Go
-      // agent's base64.StdEncoding.DecodeString is strict. Canonical
-      // re-encoding keeps the gateway's validator in lockstep with the
-      // agent's, so a job we accept can never be rejected downstream.
-      if (decoded.toString("base64") !== s) return false;
-      return true;
+      const decoded = Buffer.from(value, "base64");
+      if (decoded.length === 0 || decoded.length > MAX_PAYLOAD_BYTES) return false;
+      return decoded.toString("base64") === value;
     } catch {
       return false;
     }
   }, { message: `payload.data must be valid base64 and decode to 1..${MAX_PAYLOAD_BYTES} bytes` }),
+}).superRefine((payload, ctx) => {
+  const decoded = Buffer.from(payload.data, "base64");
+  const signature = Buffer.from("%PDF-");
+  const looksLikePdf = decoded.length >= signature.length && decoded.subarray(0, signature.length).equals(signature);
+  if (payload.type === "pdf" && !looksLikePdf) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["data"], message: "PDF payload must start with the %PDF- signature" });
+  }
+  if ((payload.type === "raw" || payload.type === "escpos") && looksLikePdf) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["data"], message: "PDF bytes cannot be labeled as raw/escpos; provide a real byte-stream payload or convert explicitly" });
+  }
 });
 
 export type PrintJobPayload = z.infer<typeof printJobPayloadSchema>;

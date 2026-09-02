@@ -100,6 +100,31 @@ describe("regression: Odoo payload_type dead UI fixed", () => {
   });
 });
 
+describe("regression: architecture ownership contracts", () => {
+  it("Gateway schema has no printer branch ownership and has lifecycle/global IDs", () => {
+    const schema = readFileSync("src/db/schema.ts", "utf8");
+    const printerBlock = schema.slice(schema.indexOf("export const printers"), schema.indexOf("export const printerBindings"));
+    expect(printerBlock).not.toContain("branchId");
+    expect(printerBlock).toContain("agentId");
+    expect(printerBlock).toContain("lifecycle");
+  });
+
+  it("normal printer endpoints reject ownership mutation and never physically delete", () => {
+    const create = readFileSync("src/app/api/printers/route.ts", "utf8");
+    const update = readFileSync("src/app/api/printers/[id]/route.ts", "utf8");
+    expect(create).toContain("branchId/enabled are not writable");
+    expect(update).not.toContain("export async function DELETE");
+    expect(update).toContain("canTransitionLifecycle");
+  });
+
+  it("agent registration rejects client branch ownership", () => {
+    const src = readFileSync("src/app/api/agent/register/route.ts", "utf8");
+    expect(src).toContain("branchId");
+    expect(src).toContain("not accepted");
+    expect(src).not.toContain("branchId: branchId");
+  });
+});
+
 describe("regression: branch isolation and auth", () => {
   it("route.ts validates odoo key with branchId", () => {
     const src = readFileSync("src/app/api/print/jobs/route.ts", "utf8");

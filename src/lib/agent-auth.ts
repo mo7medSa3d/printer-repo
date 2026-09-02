@@ -61,7 +61,7 @@ export async function validateAgent(authHeader: string | null) {
     where: eq(agents.id, agentId),
   });
 
-  if (!agent || !agent.secret) return null;
+  if (!agent || !agent.secret || agent.lifecycle !== "active") return null;
 
   const providedHash = hashSecret(secret);
   if (!timingSafeStringEqual(agent.secret, providedHash)) {

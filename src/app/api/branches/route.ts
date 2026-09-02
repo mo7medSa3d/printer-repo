@@ -22,7 +22,8 @@ export async function POST(req: Request) {
   let body: { name?: unknown; description?: unknown; location?: unknown; timezone?: unknown; enabled?: unknown };
   try { body = await req.json(); } catch { body = {}; }
 
-  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Default Branch";
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name || name.length > 120) return NextResponse.json({ error: "name is required and must be <= 120 characters" }, { status: 400 });
   const id = `branch_${nanoid(8)}`;
   await db.insert(branches).values({
     id,

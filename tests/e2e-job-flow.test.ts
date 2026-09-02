@@ -138,7 +138,7 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
   it("refuses a PDF for an ESC/POS-only printer with CAPABILITY_MISMATCH (422) and creates no job", async () => {
     const escpos = await seedFixture({ printerCapabilities: { supported_protocols: ["escpos", "raw"] } });
     await pool().query(
-      `UPDATE printers SET type='network', connection_type='network', protocol='escpos' WHERE id = $1`,
+      `UPDATE printers SET connection_type='network', protocol='escpos' WHERE id = $1`,
       [escpos.printerId]
     );
     await pool().query(

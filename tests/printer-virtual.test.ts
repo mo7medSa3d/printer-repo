@@ -139,7 +139,8 @@ const PHYSICAL = [
     name: "physical USB printer",
     record: {
       name: "HP LaserJet Pro M404",
-      printerType: "laser",
+      printerType: "physical",
+      deviceClass: "laser",
       connectionType: "spooler",
       capabilities: { port_name: "USB001", driver_name: "HP LaserJet Pro M404 PCL 6" },
     },
@@ -148,7 +149,8 @@ const PHYSICAL = [
     name: "physical TCP/IP printer",
     record: {
       name: "Zebra ZD421",
-      printerType: "label",
+      printerType: "physical",
+      deviceClass: "label",
       connectionType: "network",
       capabilities: { printer_class: "physical" },
     },
@@ -157,7 +159,8 @@ const PHYSICAL = [
     name: "physical IPP printer",
     record: {
       name: "Canon i-SENSYS",
-      printerType: "laser",
+      printerType: "physical",
+      deviceClass: "laser",
       connectionType: "ipp",
       capabilities: { printer_class: "physical" },
     },
@@ -166,7 +169,8 @@ const PHYSICAL = [
     name: "physical Windows spooler printer",
     record: {
       name: "Brother HL-L2360D",
-      printerType: "laser",
+      printerType: "physical",
+      deviceClass: "laser",
       connectionType: "spooler",
       capabilities: { port_name: "BRN30055C4B5B4C", printer_class: "physical" },
     },
@@ -204,7 +208,7 @@ describe("virtual printers are never production routes", () => {
     ];
     for (const name of fleet) {
       expect(
-        isVirtualPrinterRecord({ name, connectionType: "spooler", printerType: "laser" }),
+        isVirtualPrinterRecord({ name, connectionType: "spooler", printerType: "physical", deviceClass: "laser" }),
         `${name} must stay routable`
       ).toBe(false);
     }
@@ -215,7 +219,7 @@ describe("routing availability", () => {
   it("refuses a virtual printer even when it is online and enabled", () => {
     expect(
       isPrinterAvailableForJob({
-        enabled: true,
+        lifecycle: "active",
         status: "online",
         printerType: "virtual",
         name: "Microsoft Print to PDF",
@@ -226,7 +230,7 @@ describe("routing availability", () => {
   it("refuses a virtual printer detected only through capabilities", () => {
     expect(
       isPrinterAvailableForJob({
-        enabled: true,
+        lifecycle: "active",
         status: "unknown",
         capabilities: { virtual: true },
       })
@@ -235,16 +239,16 @@ describe("routing availability", () => {
 
   it("keeps a physical printer available", () => {
     expect(
-      isPrinterAvailableForJob({ enabled: true, status: "online", printerType: "laser" })
+      isPrinterAvailableForJob({ lifecycle: "active", status: "online", printerType: "physical", deviceClass: "laser" })
     ).toBe(true);
     expect(
-      isPrinterAvailableForJob({ enabled: true, status: "unknown", printerType: "laser" })
+      isPrinterAvailableForJob({ lifecycle: "active", status: "unknown", printerType: "physical", deviceClass: "laser" })
     ).toBe(true);
     expect(
-      isPrinterAvailableForJob({ enabled: true, status: "offline", printerType: "laser" })
+      isPrinterAvailableForJob({ lifecycle: "active", status: "offline", printerType: "physical", deviceClass: "laser" })
     ).toBe(false);
     expect(
-      isPrinterAvailableForJob({ enabled: false, status: "online", printerType: "laser" })
+      isPrinterAvailableForJob({ lifecycle: "disabled", status: "online", printerType: "physical", deviceClass: "laser" })
     ).toBe(false);
   });
 });
@@ -255,7 +259,7 @@ describe("routing availability", () => {
 // the real resolvePrinterForJob instead of asserting on source text.
 
 describe("desktop manager safety net", () => {
-  it.each(VIRTUAL)("hides $name from the printer list", ({ record }) => {
+  it.each(VIRTUAL)("hides $name from the printer list", ({ record }: { name: string; record: Record<string, unknown> }) => {
     const printer = {
       id: "p",
       name: record.name as string,
@@ -270,7 +274,7 @@ describe("desktop manager safety net", () => {
     expect(isProductionPrinter(printer)).toBe(false);
   });
 
-  it.each(PHYSICAL)("keeps $name in the printer list", ({ record }) => {
+  it.each(PHYSICAL)("keeps $name in the printer list", ({ record }: { name: string; record: Record<string, unknown> }) => {
     const printer = {
       id: "p",
       name: record.name as string,

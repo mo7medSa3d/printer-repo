@@ -76,17 +76,16 @@ function bind(printerId: string, priority: number, id = `b_${printerId}`) {
   return { id, branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId, priority, enabled: true };
 }
 
-function printer(id: string, opts: { enabled?: boolean; status?: string; name?: string; capabilities?: unknown; printerType?: string } = {}) {
+function printer(id: string, opts: { lifecycle?: string; status?: string; name?: string; capabilities?: unknown; printerType?: string } = {}) {
   return {
     id,
     agentId: `agent_${id}`,
-    branchId: "branch_a",
     name: opts.name ?? id,
-    printerType: opts.printerType ?? "laser",
+    printerType: opts.printerType ?? "physical", deviceClass: "laser",
     connectionType: "spooler",
     protocol: "raw",
     status: opts.status ?? "online",
-    enabled: opts.enabled ?? true,
+    lifecycle: opts.lifecycle ?? "active",
     capabilities: opts.capabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] },
   };
 }
@@ -99,7 +98,7 @@ const VIRTUAL = {
 
 function setup(printers: any[], bindings: any[]) {
   state.printers = Object.fromEntries(printers.map((p) => [p.id, p]));
-  state.agents = Object.fromEntries(printers.map((p) => [p.agentId, { id: p.agentId, branchId: "branch_a" }]));
+  state.agents = Object.fromEntries(printers.map((p) => [p.agentId, { id: p.agentId, branchId: state.branch.id, lifecycle: "active" }]));
   state.bindings = bindings;
   state.printerCalls = 0;
 }
@@ -179,7 +178,7 @@ describe("routing regression: virtual printers never win", () => {
 
   it("reports PRINTER_DISABLED when the physical candidate is disabled", async () => {
     setup(
-      [printer("printer_virtual", VIRTUAL), printer("printer_physical", { enabled: false })],
+      [printer("printer_virtual", VIRTUAL), printer("printer_physical", { lifecycle: "disabled" })],
       [bind("printer_virtual", 1), bind("printer_physical", 2)]
     );
     const res = await resolvePrinterForJob(job);

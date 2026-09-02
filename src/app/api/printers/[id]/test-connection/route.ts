@@ -26,7 +26,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // No printJobs row is created here — grep verification: this endpoint must not import printJobs.
 
-  if (printer.enabled === false) {
+  if (printer.lifecycle !== "active") {
     return NextResponse.json({ reachable: false, latencyMs: null, agentOnline: false, error: "printer disabled" });
   }
 
@@ -35,7 +35,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // Validate config
   const cfg = (printer.config ?? {}) as Record<string, unknown>;
-  if (printer.type === "network") {
+  if (printer.connectionType === "network") {
     if (!cfg.ip || !cfg.port) {
       return NextResponse.json({ reachable: false, latencyMs: null, agentOnline: false, error: "missing ip/port in config" });
     }

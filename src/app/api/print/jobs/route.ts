@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { printJobs, printers } from "@/db/schema";
+import { agents, printJobs, printers } from "@/db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
 import { validatePrintJobPayload } from "@/lib/payload";
 import { resolvePrinterForJob, validatePayloadForPrinter } from "@/lib/routing";
@@ -49,7 +49,7 @@ async function createQueuedJob({
   idempotencyKey,
 }: {
   jobId: string;
-  printer: { id: string; agentId: string; branchId?: string | null };
+  printer: { id: string; agentId: string };
   validatedPayload: ReturnType<typeof validatePrintJobPayload>;
   expiresAt: Date;
   branchId?: string | null;
@@ -59,7 +59,8 @@ async function createQueuedJob({
   idempotencyKey?: string | null;
 }): Promise<"queued" | "claimed"> {
   try {
-    const effectiveBranchId = branchId ?? (printer as any).branchId ?? "default";
+    if (!branchId) throw new Error("Printer branch must be resolved from its Agent before job creation");
+    const effectiveBranchId = branchId;
     await db.insert(printJobs).values({
       id: jobId,
       branchId: effectiveBranchId,
@@ -273,7 +274,7 @@ export async function POST(req: Request) {
 
     const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
     if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
-    if (printer.enabled === false) return NextResponse.json({ error: "PRINTER_DISABLED: printer disabled" }, { status: 409 });
+    if (printer.lifecycle !== "active") return NextResponse.json({ error: `PRINTER_DISABLED: printer is ${printer.lifecycle}` }, { status: 409 });
     if (isVirtualPrinterRecord(printer)) {
       return NextResponse.json({ error: "PRINTER_VIRTUAL: printer is virtual or redirected" }, { status: 409 });
     }
@@ -289,7 +290,10 @@ export async function POST(req: Request) {
     if (!capLegacy.ok) {
       return NextResponse.json({ error: capLegacy.reason }, { status: 422 });
     }
-    if (odoo.branchId && printer.branchId && odoo.branchId !== printer.branchId) {
+    const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+    if (!ownerAgent) return NextResponse.json({ error: "INTERNAL_ERROR: printer owner agent missing" }, { status: 500 });
+    if (ownerAgent.lifecycle !== "active") return NextResponse.json({ error: `AGENT_DISABLED: agent is ${ownerAgent.lifecycle}` }, { status: 409 });
+    if (odoo.branchId && ownerAgent.branchId !== odoo.branchId) {
       return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
     }
 
@@ -301,7 +305,7 @@ export async function POST(req: Request) {
     // Legacy path also uses durable (branch_id, idempotency_key) for dedup;
     // jobId is always a full nanoid.
     let jobId: string;
-    const legacyBranchId = (printer as any).branchId as string | null;
+    const legacyBranchId = ownerAgent.branchId;
     if (parsed.idempotencyKey && legacyBranchId) {
       const existing = await db.query.printJobs.findFirst({
         where: and(eq(printJobs.branchId, legacyBranchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
@@ -329,13 +333,13 @@ export async function POST(req: Request) {
         printer,
         validatedPayload,
         expiresAt,
-        branchId: printer.branchId,
+        branchId: ownerAgent.branchId,
         requestedBy: "odoo-legacy",
         idempotencyKey: parsed.idempotencyKey ?? null,
       });
     } catch (e: any) {
       if (e?.code === "DUPLICATE_JOB") {
-        const dedupBranch = (printer as any).branchId ?? odoo.branchId;
+        const dedupBranch = ownerAgent.branchId ?? odoo.branchId;
         const existing = parsed.idempotencyKey && dedupBranch
           ? await db.query.printJobs.findFirst({
             where: and(eq(printJobs.branchId, dedupBranch), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),

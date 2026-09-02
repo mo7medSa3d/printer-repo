@@ -89,5 +89,13 @@ func Parse(raw interface{}) (*Payload, error) {
 		return nil, fmt.Errorf("payload exceeds %d byte limit (got %d)", MaxPayloadBytes, len(decoded))
 	}
 
+	looksLikePDF := len(decoded) >= 5 && string(decoded[:5]) == "%PDF-"
+	if Type(typ) == TypePDF && !looksLikePDF {
+		return nil, fmt.Errorf("PDF payload must start with the %%PDF- signature")
+	}
+	if (Type(typ) == TypeRaw || Type(typ) == TypeESCPOS) && looksLikePDF {
+		return nil, fmt.Errorf("PDF bytes cannot be labeled as raw/escpos; provide a real byte-stream payload or convert explicitly")
+	}
+
 	return &Payload{Type: Type(typ), Data: decoded}, nil
 }

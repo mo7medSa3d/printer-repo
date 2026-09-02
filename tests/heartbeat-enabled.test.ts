@@ -27,7 +27,7 @@ suite("heartbeat must not re-enable a disabled printer", () => {
   });
 
   it("leaves operator-disabled printers disabled", async () => {
-    await pool().query(`UPDATE printers SET enabled = false WHERE id = $1`, [f.printerId]);
+    await pool().query(`UPDATE printers SET lifecycle = 'disabled' WHERE id = $1`, [f.printerId]);
 
     const res = await heartbeatPOST(new Request("http://gateway.test/api/agent/heartbeat", {
       method: "POST",
@@ -40,14 +40,13 @@ suite("heartbeat must not re-enable a disabled printer", () => {
           connectionType: "spooler",
           protocol: "spooler",
           status: "online",
-          enabled: true,
         }],
       }),
     }));
     expect(res.status).toBe(200);
 
-    const row = await pool().query(`SELECT enabled, status FROM printers WHERE id = $1`, [f.printerId]);
-    expect(row.rows[0].enabled).toBe(false);
+    const row = await pool().query(`SELECT lifecycle, status FROM printers WHERE id = $1`, [f.printerId]);
+    expect(row.rows[0].lifecycle).toBe('disabled');
     expect(row.rows[0].status).toBe("online");
   });
 
@@ -64,7 +63,6 @@ suite("heartbeat must not re-enable a disabled printer", () => {
           connectionType: "spooler",
           protocol: "spooler",
           status: "online",
-          enabled: true,
         }],
       }),
     }));

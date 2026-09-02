@@ -23,6 +23,7 @@
 export interface PrinterLike {
   name?: string | null;
   printerType?: string | null;
+  deviceClass?: string | null;
   connectionType?: string | null;
   protocol?: string | null;
   capabilities?: unknown;

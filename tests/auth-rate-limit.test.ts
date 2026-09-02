@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { lockDurationMs, accountKey, ipKey, clientIpFrom } from "@/lib/auth-rate-limit";
+import { lockDurationMs, accountKey, ipKey, clientIpFrom, cleanupAuthRateLimits, AUTH_RATE_RETENTION_MS } from "@/lib/auth-rate-limit";
 import {
   hasTestDatabase,
   applyMigrations,
@@ -129,6 +129,17 @@ suite("manager login rate limiting", () => {
 
     const after = await login(USER, "wrong", "198.51.100.70");
     expect(after.status).toBe(401);
+  });
+
+
+  it("removes only expired buckets and retains recent security state", async () => {
+    const staleAt = new Date(Date.now() - AUTH_RATE_RETENTION_MS - 60_000);
+    await pool().query(`INSERT INTO auth_rate_limits (key, failures, window_started_at, updated_at) VALUES ($1, 1, now() - interval '2 days', $2) ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at`, ["ip:stale", staleAt]);
+    await pool().query(`INSERT INTO auth_rate_limits (key, failures, window_started_at, updated_at) VALUES ($1, 1, now(), now()) ON CONFLICT (key) DO UPDATE SET updated_at = now()`, ["ip:fresh"]);
+    const removed = await cleanupAuthRateLimits();
+    expect(removed).toBeGreaterThanOrEqual(1);
+    const rows = await pool().query(`SELECT key FROM auth_rate_limits WHERE key IN ('ip:stale','ip:fresh') ORDER BY key`);
+    expect(rows.rows.map((r) => r.key)).toEqual(["ip:fresh"]);
   });
 
   it("concurrent attempts cannot bypass the limiter", async () => {

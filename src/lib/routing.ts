@@ -22,7 +22,7 @@ export function selectBestBinding(bindingRows: BindingCandidate[], requestedDocu
       const bindingType = (binding.documentType ?? "").trim().toLowerCase();
       return bindingType === "" || bindingType === normalized || normalized === "";
     })
-    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0));
+    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0) || a.id.localeCompare(b.id));
 
   return candidates[0] ?? null;
 }
@@ -35,7 +35,7 @@ export function selectFallbackBindings(bindingRows: BindingCandidate[], requeste
       const bindingType = (binding.documentType ?? "").trim().toLowerCase();
       return bindingType === "" || bindingType === normalized || normalized === "";
     })
-    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0));
+    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0) || a.id.localeCompare(b.id));
 }
 
 export type CapabilityCheckResult = { ok: true } | { ok: false; reason: string };
@@ -103,12 +103,12 @@ export function validatePayloadForPrinter(
 
 /** Minimal printer shape the routing availability check needs. */
 export interface PrinterAvailability extends PrinterLike {
-  enabled: boolean | null;
+  lifecycle: string | null;
   status: string | null;
 }
 
 export function isPrinterAvailableForJob(printer: PrinterAvailability): boolean {
-  if (printer.enabled === false) return false;
+  if (printer.lifecycle !== "active") return false;
   // Virtual / software / redirected queues are never a production route, even
   // if an older agent version already registered one.
   if (isVirtualPrinterRecord(printer)) return false;
@@ -189,9 +189,15 @@ export async function resolvePrinterForJob({
         continue;
       }
 
-      // Branch consistency: printer must belong to same branch
-      if (printer.branchId && printer.branchId !== branchId) {
-        // This binding violates isolation — skip and continue fallback
+      // Ownership is derived exclusively through Printer -> Agent -> Branch.
+      const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+      if (!agent) {
+        return { error: "INTERNAL_ERROR", message: `printer ${printer.id} has no owner agent` };
+      }
+      if (agent.branchId !== branchId || binding.branchId !== agent.branchId) {
+        return { error: "INTERNAL_ERROR", message: `cross-branch routing rejected for binding ${binding.id}` };
+      }
+      if (agent.lifecycle !== "active") {
         continue;
       }
 
@@ -202,13 +208,10 @@ export async function resolvePrinterForJob({
         continue; // try fallback
       }
 
-      // Enabled check. An administratively disabled printer is a distinct,
-      // non-transient condition from an offline one: it is reported as
-      // PRINTER_DISABLED (409, fix it in configuration) instead of
-      // PRINTER_OFFLINE (503, retry later).
-      if (printer.enabled === false) {
+      // Lifecycle is the authoritative administrative state.
+      if (printer.lifecycle !== "active") {
         lastDisabledPrinter = printer.id;
-        continue; // try fallback
+        continue;
       }
 
       // Offline check — fallback per spec
@@ -228,12 +231,6 @@ export async function resolvePrinterForJob({
           lastCapabilityReason = cap.reason;
           continue;
         }
-      }
-
-      // Agent branch consistency: ensure printer's agent is in same branch
-      const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-      if (agent && agent.branchId && agent.branchId !== branchId) {
-        continue; // cross-branch printer binding invalid
       }
 
       const fallbackUsed = idx > 0;

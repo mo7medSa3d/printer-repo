@@ -5,35 +5,30 @@ below corresponds to a command that was actually executed; every gap is named ex
 
 ## Verdict
 
-**PRODUCTION READY WITH WARNINGS — pending hardware verification.**
+**NOT PRODUCTION-READY FROM THE VERIFIED SCOPE.**
 
-The software paths are exercised end to end against a real PostgreSQL and a real agent
-WebSocket, and the whole check battery passes. What is **not** proven anywhere in this
-repository is the part that needs physical devices: Windows spooler/USB printing, the
-Windows PDF submission call, a real IPP printer, and a live Odoo instance. Until
+This workspace did not have the dependency/runtime infrastructure needed to execute the full software check battery. The repository contains real PostgreSQL/agent/Odoo test harnesses and CI gates, but this local pass does not claim them as executed. Windows spooler/USB printing, the Windows PDF submission call, a real IPP printer, and a live Odoo instance remain unverified. Until
 [../WINDOWS_PHYSICAL_E2E.md](../WINDOWS_PHYSICAL_E2E.md) has been executed and its result
 table filled in, do not describe the system as production-verified.
 
-## 1. Verified (executed here)
+## 1. Verified in this workspace
 
 | Area | Evidence |
 |---|---|
-| Type checking, linting, production build | `npm run typecheck`, `npm run lint`, `npm run build` — clean |
-| Gateway unit + contract tests | `npm test` → 134 passed, 56 skipped (database suites skipped without `DATABASE_URL`) |
-| Gateway database-backed tests | `DATABASE_URL=… npm test` — **not executed in this workspace** (PostgreSQL unavailable) |
-| Claim-before-delivery, ack, requeue, lease reclaim, concurrency | `tests/ws-claim-delivery.test.ts` (real WS client + real DB) |
-| Odoo sync validation, rollback, idempotency, concurrency | `tests/odoo-sync-transaction.test.ts` |
-| Routing availability + document-type authorization | `tests/routing-availability.test.ts` |
-| Odoo → gateway → agent socket → status (software only) | `tests/e2e-job-flow.test.ts` |
-| Agent build/vet/test/race | **not executed in this workspace** (Go toolchain unavailable). IPP parser tests added in `ipp_test.go`. Windows CI is the execution gate. |
-| PDF pipeline: validation, secure temp file lifecycle, argv safety, backend matrix | `agent/internal/printer/pdf_test.go` |
-| Crash recovery marking and reprint policy | `agent/internal/agent/ws_delivery_test.go`, `agent/internal/queue/queue_test.go` |
-| Windows cross-compilation | `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=windows go vet ./...` — clean |
-| Migrations on a fresh database | `drizzle/0000 → 0004` applied in order; schema compared column-by-column with `src/db/schema.ts` (10/10 tables match) |
-| Odoo addon syntax | `python -m py_compile` on the models, XML well-formedness on all 13 addon XML files |
-| Whitespace/diff hygiene | `git diff --check` clean |
+| Python/Odoo source syntax | `python3 -m compileall -q odoo_addons/print_gateway` — PASS |
+| Workflow/package metadata syntax | YAML, `package.json`, and Drizzle journal JSON parse — PASS |
+| Go formatting | `gofmt` over modified Go files — PASS |
+| Node unit/lint/typecheck/build | Commands executed but blocked by unavailable npm dependencies. `npm test`/`npm run lint`/`npm run build` exit 127; `npm run typecheck` exits 2 with dependency/module-resolution errors. |
+| Go test/vet | Commands executed from `agent/`; module downloads failed because external network/DNS is unavailable. No pass claimed. |
+| PostgreSQL integration | Not executable: `psql` and Docker are unavailable and no PostgreSQL service is running. CI contains the real PostgreSQL gate. |
+| Odoo runtime tests | Not executable: Odoo runtime is unavailable. Odoo test files are included and Python syntax was validated. |
+| Windows/Tauri/physical-printer E2E | Not executable on this Linux workspace; Windows and hardware are unavailable. |
 
-## 2. Hardware-dependent verification (open)
+## 1.1 Required CI verification
+
+`.github/workflows/ci.yml` is the authoritative CI gate. It runs Node lint/typecheck/tests/build against a real PostgreSQL 16 service, applies migrations before the test suite, and runs Go test/vet. `.github/workflows/build-windows.yml` remains the Windows packaging/E2E gate.
+
+## 2. Environment-dependent verification (open)
 
 | Item | Status |
 |---|---|
@@ -92,4 +87,4 @@ Procedure to close these: [../WINDOWS_PHYSICAL_E2E.md](../WINDOWS_PHYSICAL_E2E.m
 - [ ] Database backups and monitoring for stuck `claimed` jobs and `retries >= 3`
 
 Until every box is ticked, the honest status of this system is
-**PRODUCTION READY WITH WARNINGS — physical printing NOT VERIFIED**.
+**NOT PRODUCTION-READY FROM THE VERIFIED SCOPE — physical printing, Odoo runtime, Windows/Tauri packaging, and real PostgreSQL execution were not available in this workspace.**

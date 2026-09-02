@@ -105,7 +105,7 @@ cd agent && go build ./... && go vet ./... && go test ./... && go test -race ./.
 GOOS=windows go build ./... && GOOS=windows go vet ./...
 ```
 
-Current results: **134 gateway tests without a database** (56 skipped pending PostgreSQL).
+Current local verification: Node test/lint/build commands are **blocked by missing npm dependencies**; PostgreSQL-backed suites were not executable because PostgreSQL is unavailable.
 What each suite covers — and what is deliberately not covered — is in
 [docs/TESTING.md](docs/TESTING.md).
 
@@ -155,14 +155,20 @@ in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Production verification status
 
-**PRODUCTION READY WITH WARNINGS.** All software paths above are verified by automated tests
-(including against a real PostgreSQL and a real WebSocket client), and the Windows agent
-cross-compiles and vets cleanly. **Physical printing is `NOT VERIFIED — physical printer test
-unavailable`**, the Windows PDF submission call is **COMPILE VERIFIED** only, and the Odoo
-end-to-end flow **REQUIRES LIVE ODOO**. Close those gaps with
-[WINDOWS_PHYSICAL_E2E.md](WINDOWS_PHYSICAL_E2E.md) before calling a deployment verified;
-details in [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md).
+**NOT PRODUCTION-READY FROM THE VERIFIED SCOPE.** This workspace could not execute the Node test/lint/build gates because the npm dependencies are not installed and the package cache is incomplete; real PostgreSQL is unavailable locally; Go dependency downloads are blocked by the unavailable network; Odoo, Windows, and physical-printer environments are unavailable. The corrected repository includes the required CI gates and environment-dependent test matrix, but no unavailable external integration is claimed as passing. See [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md).
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Production architecture and ownership
+
+Odoo is the business/configuration source of truth. The Gateway is the runtime authority for registered Agents, runtime Printers, heartbeat/availability, print Jobs, and execution state.
+
+The authoritative runtime hierarchy is **Branch -> Agent -> Printer**. A Gateway Printer has no independent Branch ownership field. When a Branch is exposed for a Printer, it is derived through `printer.agentId -> agent.branchId`.
+
+Agent and Printer deletion is lifecycle-based: `active <-> disabled`, `active/disabled -> retired`; `retired` is terminal. Normal API/UI flows never physically delete Agents or Printers, so historical jobs and audit relationships survive.
+
+Logical print requests are idempotent by UUID/idempotency key. Physical printing remains potentially at-least-once because a device may receive bytes before a network failure is observed; exactly-once physical printing is not claimed.
+
+PostgreSQL-backed integration tests are a required CI gate. Odoo, Windows, network-printer and USB-printer E2E are environment-dependent and are not represented as passing unless that environment actually ran.

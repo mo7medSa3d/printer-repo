@@ -33,7 +33,7 @@ type DeviceInfo struct {
 	IsVirtual      bool                   `json:"isVirtual,omitempty"`
 	Capabilities   map[string]interface{} `json:"capabilities,omitempty"`
 	// Legacy aliases for backward compatibility with heartbeat
-	Type string `json:"type,omitempty"`
+	Type string `json:"-"`
 }
 
 // Capability describes printable capabilities used for validation.

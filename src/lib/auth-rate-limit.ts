@@ -159,6 +159,20 @@ async function bump(key: string): Promise<{ failures: number; lockedUntil: Date 
   return { failures, lockedUntil };
 }
 
+
+export const AUTH_RATE_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** Remove stale buckets without touching active security state. */
+export async function cleanupAuthRateLimits(now = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - AUTH_RATE_RETENTION_MS);
+  const result = await db.execute(sql`
+    DELETE FROM auth_rate_limits
+    WHERE updated_at < ${cutoff}
+    RETURNING key
+  `);
+  return result.rows.length;
+}
+
 export async function recordAuthFailure(ip: string, username: string): Promise<RateLimitDecision> {
   const [ipBump, acctBump] = await Promise.all([
     bump(ipKey(ip)),

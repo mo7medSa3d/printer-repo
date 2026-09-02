@@ -23,10 +23,10 @@ describe("Phase 2 routing fallback", () => {
   });
 
   it("validates branch isolation for printer availability", () => {
-    expect(isPrinterAvailableForJob({ enabled: true, status: "online" })).toBe(true);
-    expect(isPrinterAvailableForJob({ enabled: true, status: "offline" })).toBe(false);
-    expect(isPrinterAvailableForJob({ enabled: false, status: "online" })).toBe(false);
-    expect(isPrinterAvailableForJob({ enabled: true, status: "unknown" })).toBe(true);
+    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "online" })).toBe(true);
+    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "offline" })).toBe(false);
+    expect(isPrinterAvailableForJob({ lifecycle: "disabled", status: "online" })).toBe(false);
+    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "unknown" })).toBe(true);
   });
 
   it("fallback selects next when first printer offline (simulated)", () => {
@@ -41,8 +41,8 @@ describe("Phase 2 routing fallback", () => {
     expect(candidates[0].printerId).toBe("printer_offline");
     expect(candidates[1].printerId).toBe("printer_online");
     // isPrinterAvailable reflects that first should be skipped
-    expect(isPrinterAvailableForJob({ enabled: true, status: "offline" })).toBe(false);
-    expect(isPrinterAvailableForJob({ enabled: true, status: "online" })).toBe(true);
+    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "offline" })).toBe(false);
+    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "online" })).toBe(true);
   });
 });
 

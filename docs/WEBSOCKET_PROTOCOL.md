@@ -129,4 +129,4 @@ first byte is written. "Sent" is therefore never confused with "executed".
 | Terminal job is never re-delivered | "Test 6" |
 | Envelope parsing (envelope + legacy), acks on duplicates | `agent/internal/agent/ws_delivery_test.go` |
 
-These run against a real PostgreSQL and a real `ws` client; see [TESTING.md](TESTING.md).
+These tests require the Node dependencies and, for database-backed cases, a real PostgreSQL instance; see [TESTING.md](TESTING.md). They were not executable in this workspace.

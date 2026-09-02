@@ -23,7 +23,7 @@ class TestRoutingFailClosed(TransactionCase):
         # Create two companies
         self.company_a = self.env['res.company'].create({'name': 'Company A'})
         self.company_b = self.env['res.company'].create({'name': 'Company B'})
-        
+
         # Create multiple branches in Company A (ambiguous situation)
         self.branch_a1 = self.env['print_gateway.branch'].create({
             'name': 'Branch A1',
@@ -39,7 +39,7 @@ class TestRoutingFailClosed(TransactionCase):
             'gateway_api_key': 'key_a2',
             'enabled': True,
         })
-        
+
         # Create single branch in Company B (deterministic)
         self.branch_b = self.env['print_gateway.branch'].create({
             'name': 'Branch B',
@@ -48,7 +48,7 @@ class TestRoutingFailClosed(TransactionCase):
             'gateway_api_key': 'key_b',
             'enabled': True,
         })
-        
+
         # Create destinations
         self.dest_a1 = self.env['print_gateway.destination'].create({
             'name': 'POS A1',
@@ -62,7 +62,7 @@ class TestRoutingFailClosed(TransactionCase):
             'destination_type': 'pos',
             'enabled': True,
         })
-        
+
         # Create document types
         self.doc_type = self.env['print_gateway.document_type'].create({
             'name': 'invoice',
@@ -80,12 +80,12 @@ class TestRoutingFailClosed(TransactionCase):
             'print_gateway_enabled': True,
             'print_gateway_document_type_id': self.doc_type.id,
         })
-        
+
         partner = self.env['res.partner'].create({
             'name': 'Test Partner',
             'company_id': self.env.ref('base.main_company').id,  # No branch for this company
         })
-        
+
         with self.assertRaises(ValidationError) as cm:
             report._determine_branch(partner, {})
         self.assertIn('Unable to determine', str(cm.exception))
@@ -99,12 +99,12 @@ class TestRoutingFailClosed(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         partner = self.env['res.partner'].create({
             'name': 'Test Partner',
             'company_id': self.company_a.id,  # Has multiple branches
         })
-        
+
         with self.assertRaises(ValidationError) as cm:
             report._determine_branch(partner, {})
         self.assertIn('Multiple print branches', str(cm.exception))
@@ -118,12 +118,12 @@ class TestRoutingFailClosed(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         partner = self.env['res.partner'].create({
             'name': 'Test Partner',
             'company_id': self.company_b.id,  # Has unique branch
         })
-        
+
         branch = report._determine_branch(partner, {})
         self.assertEqual(branch.id, self.branch_b.id)
 
@@ -136,12 +136,12 @@ class TestRoutingFailClosed(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         partner = self.env['res.partner'].create({
             'name': 'Test Partner',
             'company_id': self.company_b.id,
         })
-        
+
         mapping_info = {'branch_id': self.branch_a1}
         branch = report._determine_branch(partner, mapping_info)
         self.assertEqual(branch.id, self.branch_a1.id)
@@ -153,7 +153,7 @@ class TestMultiRecordRouting(TransactionCase):
     def setUp(self):
         super().setUp()
         self.company = self.env['res.company'].create({'name': 'Test Company'})
-        
+
         # Create branches
         self.branch_1 = self.env['print_gateway.branch'].create({
             'name': 'Branch 1',
@@ -169,7 +169,7 @@ class TestMultiRecordRouting(TransactionCase):
             'gateway_api_key': 'key2',
             'enabled': True,
         })
-        
+
         # Create destinations
         self.dest_1 = self.env['print_gateway.destination'].create({
             'name': 'POS 1',
@@ -183,7 +183,7 @@ class TestMultiRecordRouting(TransactionCase):
             'destination_type': 'pos',
             'enabled': True,
         })
-        
+
         # Create document types
         self.doc_type = self.env['print_gateway.document_type'].create({
             'name': 'invoice',
@@ -200,9 +200,9 @@ class TestMultiRecordRouting(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         empty_recordset = self.env['res.partner'].browse([])
-        
+
         with self.assertRaises(ValidationError) as cm:
             report._validate_recordset_routing_consistency(empty_recordset, {})
         self.assertIn('empty', str(cm.exception).lower())
@@ -216,7 +216,7 @@ class TestMultiRecordRouting(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         partner = self.env['res.partner'].create({
             'name': 'Test Partner',
             'company_id': self.company.id,
@@ -240,12 +240,12 @@ class TestMultiRecordRouting(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         mapping_info = {
             'branch_id': self.branch_1,
             'destination_id': self.dest_1,
         }
-        
+
         partner1 = self.env['res.partner'].create({
             'name': 'Partner 1',
             'company_id': self.company.id,
@@ -254,7 +254,7 @@ class TestMultiRecordRouting(TransactionCase):
             'name': 'Partner 2',
             'company_id': self.company.id,
         })
-        
+
         partners = partner1 | partner2
         groups = report._validate_recordset_routing_consistency(partners, mapping_info)
         self.assertEqual(len(groups), 1)
@@ -269,11 +269,11 @@ class TestMultiRecordRouting(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         # Create partners in different companies (different branches)
         company_a = self.env['res.company'].create({'name': 'Company A'})
         company_b = self.env['res.company'].create({'name': 'Company B'})
-        
+
         branch_a = self.env['print_gateway.branch'].create({
             'name': 'Branch A',
             'company_id': company_a.id,
@@ -288,7 +288,7 @@ class TestMultiRecordRouting(TransactionCase):
             'gateway_api_key': 'key_b',
             'enabled': True,
         })
-        
+
         partner_a = self.env['res.partner'].create({
             'name': 'Partner A',
             'company_id': company_a.id,
@@ -297,9 +297,9 @@ class TestMultiRecordRouting(TransactionCase):
             'name': 'Partner B',
             'company_id': company_b.id,
         })
-        
+
         partners = partner_a | partner_b
-        
+
         with self.assertRaises(ValidationError) as cm:
             report._validate_recordset_routing_consistency(partners, {})
         self.assertIn('different print routing', str(cm.exception))
@@ -311,7 +311,7 @@ class TestCrossBranchValidation(TransactionCase):
     def setUp(self):
         super().setUp()
         self.company = self.env['res.company'].create({'name': 'Test Company'})
-        
+
         # Create two branches
         self.branch_1 = self.env['print_gateway.branch'].create({
             'name': 'Branch 1',
@@ -327,7 +327,7 @@ class TestCrossBranchValidation(TransactionCase):
             'gateway_api_key': 'key2',
             'enabled': True,
         })
-        
+
         # Create destination in branch 2
         self.dest_2 = self.env['print_gateway.destination'].create({
             'name': 'POS 2',
@@ -345,7 +345,7 @@ class TestCrossBranchValidation(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         # Try to use destination from branch_2 with branch_1
         with self.assertRaises(ValidationError) as cm:
             report._determine_destination(self.branch_1, None, {
@@ -362,7 +362,7 @@ class TestCrossBranchValidation(TransactionCase):
             'model': 'res.partner',
             'print_gateway_enabled': True,
         })
-        
+
         # branch_1 has no destinations
         with self.assertRaises(ValidationError) as cm:
             report._determine_destination(self.branch_1, None, {})
@@ -375,7 +375,7 @@ class TestIdempotency(TransactionCase):
     def setUp(self):
         super().setUp()
         self.company = self.env['res.company'].create({'name': 'Test Company'})
-        
+
         self.branch = self.env['print_gateway.branch'].create({
             'name': 'Branch',
             'company_id': self.company.id,
@@ -383,7 +383,7 @@ class TestIdempotency(TransactionCase):
             'gateway_api_key': 'key',
             'enabled': True,
         })
-        
+
         self.dest = self.env['print_gateway.destination'].create({
             'name': 'POS',
             'branch_id': self.branch.id,
@@ -402,7 +402,7 @@ class TestIdempotency(TransactionCase):
             'status': 'queued',
             'printerId': 'printer_1',
         }
-        
+
         # Second call (retry) returns existing job with 200
         mock_resp_2 = MagicMock()
         mock_resp_2.status_code = 200
@@ -411,11 +411,11 @@ class TestIdempotency(TransactionCase):
             'status': 'queued',
             'printerId': 'printer_1',
         }
-        
+
         mock_post.side_effect = [mock_resp_1, mock_resp_2]
-        
+
         idempotency_key = 'fixed_key_for_test'
-        
+
         # First submission
         job1 = self.branch.create_print_job(
             self.dest.id,
@@ -423,7 +423,7 @@ class TestIdempotency(TransactionCase):
             {'type': 'pdf', 'encoding': 'base64', 'data': 'test'},
             idempotency_key=idempotency_key,
         )
-        
+
         # Second submission with same idempotency key
         job2 = self.branch.create_print_job(
             self.dest.id,
@@ -431,7 +431,7 @@ class TestIdempotency(TransactionCase):
             {'type': 'pdf', 'encoding': 'base64', 'data': 'test'},
             idempotency_key=idempotency_key,
         )
-        
+
         # Both should reference the same gateway job
         self.assertEqual(job1.gateway_job_id, job2.gateway_job_id)
 
@@ -446,7 +446,7 @@ class TestIdempotency(TransactionCase):
             'printerId': 'printer_1',
         }
         mock_post.return_value = mock_resp
-        
+
         # First submission
         job1 = self.branch.create_print_job(
             self.dest.id,
@@ -454,7 +454,7 @@ class TestIdempotency(TransactionCase):
             {'type': 'pdf', 'encoding': 'base64', 'data': 'test'},
             idempotency_key='key_1',
         )
-        
+
         # Second submission with different idempotency key
         job2 = self.branch.create_print_job(
             self.dest.id,
@@ -462,7 +462,7 @@ class TestIdempotency(TransactionCase):
             {'type': 'pdf', 'encoding': 'base64', 'data': 'test'},
             idempotency_key='key_2',
         )
-        
+
         # Both should have been submitted
         self.assertEqual(mock_post.call_count, 2)
 
@@ -473,7 +473,7 @@ class TestGatewayErrorHandling(TransactionCase):
     def setUp(self):
         super().setUp()
         self.company = self.env['res.company'].create({'name': 'Test Company'})
-        
+
         self.branch = self.env['print_gateway.branch'].create({
             'name': 'Branch',
             'company_id': self.company.id,
@@ -481,7 +481,7 @@ class TestGatewayErrorHandling(TransactionCase):
             'gateway_api_key': 'key',
             'enabled': True,
         })
-        
+
         self.dest = self.env['print_gateway.destination'].create({
             'name': 'POS',
             'branch_id': self.branch.id,
@@ -496,7 +496,7 @@ class TestGatewayErrorHandling(TransactionCase):
         mock_resp.status_code = 401
         mock_resp.text = 'Unauthorized'
         mock_post.return_value = mock_resp
-        
+
         with self.assertRaises(ValidationError) as cm:
             self.branch.create_print_job(
                 self.dest.id,
@@ -512,7 +512,7 @@ class TestGatewayErrorHandling(TransactionCase):
         mock_resp.status_code = 409
         mock_resp.text = 'Printer disabled'
         mock_post.return_value = mock_resp
-        
+
         with self.assertRaises(ValidationError) as cm:
             self.branch.create_print_job(
                 self.dest.id,
@@ -528,7 +528,7 @@ class TestGatewayErrorHandling(TransactionCase):
         mock_resp.status_code = 500
         mock_resp.text = 'Internal server error'
         mock_post.return_value = mock_resp
-        
+
         with self.assertRaises(ValidationError) as cm:
             self.branch.create_print_job(
                 self.dest.id,
@@ -542,7 +542,7 @@ class TestGatewayErrorHandling(TransactionCase):
         """Gateway timeout should raise error after retry."""
         import requests
         mock_post.side_effect = requests.Timeout('Connection timed out')
-        
+
         with self.assertRaises(ValidationError) as cm:
             self.branch.create_print_job(
                 self.dest.id,

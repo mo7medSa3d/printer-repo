@@ -47,6 +47,20 @@ describe("Odoo addon static contracts", () => {
     expect(src).toContain("Sync partially failed");
   });
 
+  it("requires an affirmative JSON success response for gateway push sync", () => {
+    const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
+    expect(src).toContain("Gateway returned malformed JSON for sync response");
+    expect(src).toContain("result.get('success') is not True");
+  });
+
+  it("keeps printer branch derived from agent and terminal lifecycle enforced", () => {
+    const printer = readFileSync(path.join(ADDON, "models/printer.py"), "utf8");
+    const agent = readFileSync(path.join(ADDON, "models/agent.py"), "utf8");
+    expect(printer).toContain("related='agent_id.branch_id'");
+    expect(printer).toContain("Retired printers are terminal");
+    expect(agent).toContain("Retired agents are terminal");
+  });
+
   it("does not use (model + record_ids + report_id + current_minute) as identity", () => {
     const report = readFileSync(path.join(ADDON, "models/ir_actions_report.py"), "utf8");
     expect(report).not.toContain("current_minute");

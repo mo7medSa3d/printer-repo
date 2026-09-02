@@ -19,21 +19,20 @@ class PrintGatewayReportMapping(models.Model):
     # Document type mapping
     document_type_id = fields.Many2one('print_gateway.document_type', string='Document Type', help='Maps to print_gateway.document_type. If empty, uses document_type_name.')
     document_type_name = fields.Char(string='Document Type Name', help='Fallback string like quotation, invoice, delivery, purchase_order, receipt, label. Lowercase.')
-    
+
     # Routing - if empty, will be determined dynamically from record/branch
     branch_id = fields.Many2one('print_gateway.branch', string='Branch', help='If set, forces this branch. Otherwise determined from record/company.')
     destination_id = fields.Many2one('print_gateway.destination', string='Destination', help='If set, forces this destination. Otherwise determined from branch/record.')
-    
+
     # Gateway enabled for this report
     gateway_enabled = fields.Boolean(string='Gateway Enabled', default=True, help='If enabled, this report will be routed through Print Gateway. Otherwise normal Odoo printing.')
-    
+
     # Payload type - how to generate payload. This field IS consumed by
     # _generate_payload_for_report; it is not decorative.
     payload_type = fields.Selection([
-        ('pdf', 'PDF (render report as PDF, type=pdf)'),
-        ('raw', 'Raw (send PDF bytes as raw, type=raw — legacy, same bytes as pdf but legacy type)'),
-        ('escpos', 'ESC/POS (thermal printers; requires ESC/POS bytes — PDF-to-ESC/POS conversion is not implemented)'),
-    ], default='pdf', string='Payload Type', required=True, help='pdf: render QWeb PDF and send with type pdf (requires spooler or IPP printer that accepts PDF). raw: same PDF bytes but type raw (legacy). escpos: expects pre-formatted ESC/POS; if you select escpos but the report renders PDF, the job will be rejected with CAPABILITY_MISMATCH rather than printing garbage on thermal printers.')
+        ('pdf', 'PDF (application/pdf)'),
+        ('escpos', 'ESC/POS (raw-compatible bytes; requires an explicit ESC/POS conversion path)'),
+    ], default='pdf', string='Payload Type', required=True, help='PDF reports remain application/pdf. ESC/POS is only valid when the payload is actually converted to ESC/POS bytes; a PDF is never relabeled as raw.')
 
     priority = fields.Integer(default=10, help='Lower number = higher priority when multiple mappings match')
 
@@ -56,11 +55,17 @@ class PrintGatewayReportMapping(models.Model):
                 parts.append(rec.model_name)
             else:
                 parts.append('Mapping')
-            
+
             dt = rec.document_type_id.name if rec.document_type_id else rec.document_type_name
             if dt:
                 parts.append(f"-> {dt}")
             rec.name = " ".join(parts)
+
+    @api.constrains('payload_type')
+    def _check_payload_type(self):
+        for rec in self:
+            if rec.payload_type not in ('pdf', 'escpos'):
+                raise ValidationError(_('Unsupported payload type. PDF documents cannot be relabeled as RAW.'))
 
     @api.constrains('report_id', 'report_xml_id', 'model_name')
     def _check_at_least_one_identifier(self):
@@ -76,12 +81,12 @@ class PrintGatewayReportMapping(models.Model):
         """
         if not report:
             return False
-        
+
         # Try exact report_id match first
         mapping = self.search([('report_id', '=', report.id), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
         if mapping:
             return mapping
-        
+
         # Try XML ID - need to find xml id for report
         try:
             xml_id = report.get_external_id().get(report.id)
@@ -91,19 +96,19 @@ class PrintGatewayReportMapping(models.Model):
                     return mapping
         except Exception:
             pass
-        
+
         # Try report_name
         if report.report_name:
             mapping = self.search([('report_name', '=', report.report_name), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
             if mapping:
                 return mapping
-        
+
         # Try model
         if report.model:
             mapping = self.search([('model_name', '=', report.model), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
             if mapping:
                 return mapping
-        
+
         return False
 
     @api.model

@@ -14,7 +14,8 @@
                         <field name="name"/>
                         <field name="branch_id"/>
                         <field name="printer_type"/>
-                        <field name="enabled" widget="boolean_toggle"/>
+                        <field name="device_class"/>
+                        <field name="lifecycle" widget="badge"/>
                     </group>
                     <group string="Connection">
                         <field name="connection_type"/>
@@ -26,7 +27,7 @@
                     </group>
                     <group string="Gateway Sync">
                         <field name="gateway_printer_id" help="Printer identifier as known to the Gateway, e.g. printer_abc123."/>
-                        <field name="gateway_agent_id" readonly="1" help="Agent that currently owns this printer, set by the Gateway."/>
+                        <field name="agent_id" readonly="1" help="Agent that currently owns this printer, set by the Gateway."/>
                         <field name="status" readonly="1" widget="badge"/>
                         <field name="last_seen_at" readonly="1"/>
                     </group>
@@ -57,9 +58,10 @@
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="connection_type"/>
+                <field name="device_class"/>
                 <field name="protocol"/>
                 <field name="status" widget="badge"/>
-                <field name="enabled" widget="boolean_toggle"/>
+                <field name="lifecycle" widget="badge"/>
             </tree>
         </field>
     </record>
@@ -71,7 +73,7 @@
                  the same card geometry as the desktop manager / web console. -->
             <kanban class="o_pg_view o_pg_kanban" sample="1">
                 <field name="status"/>
-                <field name="enabled"/>
+                <field name="lifecycle"/>
                 <templates>
                     <t t-name="kanban-box">
                         <div class="oe_kanban_global_click p-3">

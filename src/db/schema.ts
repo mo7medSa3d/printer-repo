@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, boolean, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const branches = pgTable("branches", {
@@ -79,6 +79,7 @@ export const agents = pgTable("agents", {
   pairingCodeExpiresAt: timestamp("pairing_code_expires_at"),
   secret: text("secret"),
   status: text("status").notNull().default("offline"),
+  lifecycle: text("lifecycle").notNull().default("active"),
   metadata: jsonb("metadata").$type<{
     hostname?: string;
     os?: string;
@@ -92,22 +93,22 @@ export const agents = pgTable("agents", {
   branchIdIdx: index("agents_branch_id_idx").on(table.branchId),
   localNetworkIdIdx: index("agents_local_network_id_idx").on(table.localNetworkId),
   lastSeenIdx: index("agents_last_seen_idx").on(table.lastSeenAt),
+  lifecycleCheck: check("agents_lifecycle_check", sql`${table.lifecycle} in ('active','disabled','retired')`),
 }));
 
 export const printers = pgTable("printers", {
   id: text("id").primaryKey(), // printer_...
-  branchId: text("branch_id").references(() => branches.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
-  type: text("type").notNull().default("network"), // legacy compatibility; prefer printerType/connectionType/protocol
-  printerType: text("printer_type").notNull().default("thermal"),
-  connectionType: text("connection_type").notNull().default("tcp"),
-  protocol: text("protocol").notNull().default("escpos"),
+  printerType: text("printer_type").notNull().default("physical"),
+  deviceClass: text("device_class").notNull().default("unknown"),
+  connectionType: text("connection_type").notNull().default("network"),
+  protocol: text("protocol").notNull().default("raw"),
   status: text("status").notNull().default("unknown"),
+  lifecycle: text("lifecycle").notNull().default("active"),
   config: jsonb("config").$type<{
     ip?: string;
     port?: number;
-    protocol?: string;
     vid?: number;
     pid?: number;
     serial?: string;
@@ -117,7 +118,6 @@ export const printers = pgTable("printers", {
     color_capable?: boolean;
     duplex_capable?: boolean;
   }>(),
-  enabled: boolean("enabled").notNull().default(true),
   capabilities: jsonb("capabilities").$type<{
     max_paper_width?: number;
     supports_color?: boolean;
@@ -128,10 +128,14 @@ export const printers = pgTable("printers", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-  branchIdIdx: index("printers_branch_id_idx").on(table.branchId),
   agentIdx: index("printers_agent_id_idx").on(table.agentId),
   printerTypeIdx: index("printers_printer_type_idx").on(table.printerType),
   statusIdx: index("printers_status_idx").on(table.status),
+  lifecycleCheck: check("printers_lifecycle_check", sql`${table.lifecycle} in ('active','disabled','retired')`),
+  printerTypeCheck: check("printers_type_check", sql`${table.printerType} in ('physical','virtual','redirected')`),
+  deviceClassCheck: check("printers_device_class_check", sql`${table.deviceClass} in ('thermal','laser','inkjet','label','other','unknown')`),
+  connectionTypeCheck: check("printers_connection_type_check", sql`${table.connectionType} in ('network','usb','spooler','ipp','ipps')`),
+  protocolCheck: check("printers_protocol_check", sql`${table.protocol} in ('raw','escpos','ipp','ipps','spooler')`),
 }));
 
 export const printerBindings = pgTable("printer_bindings", {
@@ -185,6 +189,7 @@ export const authRateLimits = pgTable("auth_rate_limits", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   lockedUntilIdx: index("auth_rate_limits_locked_until_idx").on(table.lockedUntil),
+  updatedAtIdx: index("auth_rate_limits_updated_at_idx").on(table.updatedAt),
 }));
 
 export const printJobs = pgTable("print_jobs", {

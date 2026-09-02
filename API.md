@@ -177,19 +177,18 @@ Secrets are stripped; 500 on a database error.
 
 ### `POST /api/agent/register` — pairing
 
-No auth (the pairing code is the credential).
+No auth (the pairing code is the credential). The registration request cannot establish ownership.
 
 ```json
-{ "pairingCode": "AB12CD", "branchId": "branch_cairo",
+{ "agentId": "agt_7f3c", "pairingCode": "AB12CD",
   "metadata": {"hostname":"pos-pc-1","os":"windows","version":"1.0.0"} }
 ```
 
-The code is uppercased/trimmed, must be unexpired, and is consumed atomically (a racing
-second registration gets 409). `branchId` is optional but validated when present.
+`branchId` is forbidden. The Gateway resolves the existing Agent by `agentId`/pairing code and returns
+that Agent's authoritative `branchId`. Disabled and retired Agents cannot register.
 
-**200** `{"agentId":"agt_7f3c","secret":"<shown once>"}` — only the SHA-256 hash is stored.
-400 invalid/expired code, 404 unknown branch, 409 disabled branch or code already used,
-500 internal error.
+**200** `{"agentId":"agt_7f3c","branchId":"branch_cairo","secret":"<shown once>"}` — only the SHA-256 hash is stored.
+400 invalid/expired/unknown ownership input, 409 a racing or already-consumed code, 500 internal error.
 
 ### `POST /api/agent/heartbeat`
 
@@ -198,21 +197,19 @@ Auth: agent. Sent every 30 s.
 ```json
 { "status": "online",
   "printers": [
-    { "id":"printer_spooler_9ab1", "name":"HP LaserJet", "type":"spooler",
-      "printerType":"laser", "connectionType":"spooler", "protocol":"spooler",
-      "status":"online", "enabled":true,
-      "config":{"spooler_name":"HP LaserJet","port_name":"USB001","driver_name":"HP LaserJet"},
+    { "id":"printer_spooler_9ab1", "name":"HP LaserJet",
+      "printerType":"physical", "deviceClass":"laser", "connectionType":"spooler", "protocol":"spooler",
+      "status":"online",
+      "config":{"spooler_name":"HP LaserJet"},
       "capabilities":{"supported_protocols":["raw","escpos","pdf"]} } ] }
 ```
 
 Updates `agents.status`/`lastSeenAt` and upserts each printer **scoped to the calling
-agent** — a printer row owned by another agent is skipped, never overwritten. An existing
-printer's `enabled` flag is operator-controlled and is **not** overwritten by a heartbeat
-(a disabled printer stays disabled). Values are
-normalised/whitelisted: `type` ∈ `network|usb|spooler|tcp|ipp|ipps`, `connectionType` ∈
-`tcp|network|usb|spooler|ipp|ipps`, `protocol` ∈ `raw|escpos|ipp|ipps|spooler|windows_spooler`,
-`status` ∈ `online|offline|busy|error|unknown`. `capabilities.supported_protocols` is what
-routing uses for the capability check.
+agent** — a printer row owned by another agent is skipped, never overwritten. Lifecycle is
+operator-controlled and is never re-enabled by heartbeat. The canonical printer model is
+`printerType + connectionType + protocol`; legacy `type`/`config.protocol` may be parsed only at
+compatibility input boundaries and are not stored or returned as canonical fields. The printer
+branch is always derived from the calling Agent's authoritative branch.
 
 **200** `{"success":true,"skippedPrinters":["printer_x"]}`. 401 unauthenticated, 500 internal.
 
@@ -273,8 +270,8 @@ All require a manager session unless stated otherwise.
 | `GET /api/branches` · `POST /api/branches` | List / create a branch (`{name,description,location,timezone,enabled}` → 201 `{id,name}`) |
 | `GET/POST /api/branches/:id/destinations` | List / create destinations for the branch |
 | `GET/POST /api/branches/:id/printer-bindings` | List / create bindings. POST validates that the destination, the printer and the printer's agent all belong to the branch (400/404 otherwise) |
-| `GET /api/printers` · `POST /api/printers` | List / manually create a printer. Validates ids, `type`, `connectionType`, `printerType`, `protocol`, `config` (network needs `ip`+`port`, spooler needs `spooler_name`/`address`) and that the printer's branch matches the agent's branch. 404 unknown agent, 409 duplicate id |
-| `GET/PATCH/DELETE /api/printers/:id` | Read / update / delete a printer |
+| `GET /api/printers` · `POST /api/printers` | List / manually create a printer. Canonical writable model is `agentId`, `name`, `printerType`, `deviceClass`, `connectionType`, `protocol`, `config`, `capabilities`. Branch is derived from the Agent; `branchId`/`enabled` are rejected. 404 unknown agent, 409 duplicate id |
+| `GET/PATCH /api/printers/:id` | Read/update a printer. PATCH supports lifecycle `active|disabled|retired`; normal DELETE does not exist. `retired` is terminal. |
 | `POST /api/printers/:id/test-connection` | **Diagnostic RPC, creates no job.** Returns `{reachable, latencyMs, agentOnline, error}`. `latencyMs` is always `null`: the value comes from the last heartbeat, the gateway cannot dial the LAN. A live agent probe is not implemented |
 | `POST /api/printers/:id/test-print` | **Real job.** Accepts a manager session *or* a branch-scoped Odoo key (used by the addon's Test Print button). Builds an ESC/POS test payload and runs the normal pipeline → 201 `{ok:true,jobId,printerId}`. 404 unknown printer, 409 disabled printer |
 | `GET /api/jobs?status=&printerId=&agentId=&limit=` | Job list for the manager UI; filters are applied in SQL before `LIMIT` (max 200). 400 on an unknown status |

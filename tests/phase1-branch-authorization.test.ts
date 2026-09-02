@@ -58,7 +58,7 @@ function makeOdooKey(branchId: string | null) {
 }
 
 function makePrinter(branchId: string | null) {
-  return { id: "printer_1", agentId: "agent_1", branchId, enabled: true };
+  return { id: "printer_1", agentId: "agent_1", lifecycle: "active" };
 }
 
 function legacyRequest() {

@@ -239,7 +239,7 @@ export async function POST(req: Request) {
 
     const referencedPrinterIds = [...new Set(validBindings.map((b) => b.printerId))];
     const existingPrinters = referencedPrinterIds.length
-      ? await db.select({ id: printers.id, branchId: printers.branchId }).from(printers).where(inArray(printers.id, referencedPrinterIds))
+      ? await db.select({ id: printers.id, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).where(inArray(printers.id, referencedPrinterIds))
       : [];
     const printerBranchById = new Map(existingPrinters.map((p) => [asId(p.id)!, asId(p.branchId)]));
 
@@ -465,11 +465,13 @@ export async function GET(req: Request) {
   try {
     if (branchFilter) {
       agentRows = await db.select().from(agents).where(eq(agents.branchId, branchFilter)).orderBy(desc(agents.lastSeenAt)).limit(50);
-      printerRows = await db.select().from(printers).where(eq(printers.branchId, branchFilter)).orderBy(desc(printers.updatedAt)).limit(100);
+      const rows = await db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).where(eq(agents.branchId, branchFilter)).orderBy(desc(printers.updatedAt)).limit(100);
+      printerRows = rows.map(({ printer, branchId }) => ({ ...printer, branchId }));
       jobRows = await db.select().from(printJobs).where(eq(printJobs.branchId, branchFilter)).orderBy(desc(printJobs.createdAt)).limit(50);
     } else {
       agentRows = await db.select().from(agents).orderBy(desc(agents.lastSeenAt)).limit(20);
-      printerRows = await db.select().from(printers).orderBy(desc(printers.updatedAt)).limit(20);
+      const rows = await db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt)).limit(20);
+      printerRows = rows.map(({ printer, branchId }) => ({ ...printer, branchId }));
       jobRows = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(20);
     }
   } catch (e) {
@@ -484,5 +486,5 @@ export async function GET(req: Request) {
     return rest;
   });
 
-  return NextResponse.json({ branchId: branchFilter, agents: safeAgents, printers: printerRows, jobs: jobRows });
+  return NextResponse.json({ branchId: branchFilter, agents: safeAgents, printers: printerRows, jobs: jobRows, syncStatus: "success" });
 }

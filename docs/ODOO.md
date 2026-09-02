@@ -55,15 +55,15 @@ User presses Print on a QWeb report
   → ir.actions.report.report_action()                      models/ir_actions_report.py
      → _should_route_via_gateway()  (direct report flag, or report_mapping match:
                                      report_id > xml_id > report_name > model)
-     → _determine_branch()       mapping.branch_id → record.branch → company → first enabled
-     → _determine_destination()  mapping.destination_id → record field → branch default
+     → _determine_branch()       mapping.branch_id → record.branch → unique enabled company branch
+     → _determine_destination()  mapping.destination_id → record field → otherwise FAIL
      → _determine_document_type()mapping document type → model fallback
                                  (sale.order→order, account.move→invoice,
                                   stock.picking→delivery, purchase.order→purchase_order,
                                   pos.order→receipt, else "document")
      → _generate_payload_for_report()
           _render_qweb_pdf(...)  → base64 → {"type": "pdf", "encoding": "base64", "data": …}
-          payload_type=raw in the mapping ⇒ the same bytes with the legacy "raw" type
+          payload_type=raw is rejected for rendered PDF bytes; raw requires actual raw-compatible bytes
           payload_type=escpos          ⇒ UserError (there is no PDF→ESC/POS rasteriser;
                                           failing loudly beats printing garbage)
      → branch.create_print_job(destinationId, documentType, payload, … , idempotency_key)
@@ -78,9 +78,12 @@ behaviour (normal PDF download). When the gateway call fails and the mapping has
 `fallback_to_normal`, the normal download is used; otherwise a `ValidationError` surfaces the
 gateway's error text.
 
-**QWeb reports default to `payload_type = pdf`** and the gateway/agent print them through the
-real PDF path. `raw` remains available for legacy setups that want the same bytes with the
-old type name.
+**QWeb reports use `payload_type = pdf` by default** and rendered PDF bytes stay `application/pdf`.
+ESC/POS is accepted only when an actual converter emits ESC/POS bytes; rendered PDF bytes are
+never relabeled as RAW.
+
+No implicit branch/destination selection is performed. A report must have an explicit branch and
+destination mapping, or an explicit record routing field; ambiguous routing fails closed.
 
 ## 5. Idempotency
 
@@ -130,3 +133,13 @@ from Odoo data.**
 | HTTP 422 `CAPABILITY_MISMATCH` | The routed printer cannot render the payload type (e.g. PDF to an ESC/POS-only printer) |
 | HTTP 503 `PRINTER_OFFLINE` / 409 `PRINTER_DISABLED` | The printer is offline (retry) or administratively disabled (fix configuration) |
 | `Report … is mapped to ESC/POS but no PDF-to-ESC/POS conversion is configured` | Change the mapping's payload type to `pdf`, or supply pre-formatted ESC/POS |
+
+## Authoritative Odoo topology
+
+`print_gateway.branch` owns `print_gateway.agent` records; `print_gateway.agent` owns `print_gateway.printer` records through `printer.agent_id`. `printer.branch_id` is a stored related value from `agent_id.branch_id` for search/indexing only and is readonly. A Printer cannot be moved to a different Agent through normal ORM writes.
+
+Bindings are valid only when the destination/document type and `printer.agent_id.branch_id` all match the Binding Branch. Printer/Agent physical deletion is blocked to preserve history.
+
+Pull sync is strict: HTTP errors, timeouts and malformed JSON are recorded as `failed`; if Agent synchronization succeeds but the optional Printer runtime section fails, the result is `partial`. Only complete synchronization is marked `success`. The last successful synchronization timestamp is preserved separately.
+
+The old printer `branch_id`/`gateway_agent_id` ownership representation is migrated by `migrations/1.1.0/pre-migrate.py`. It validates every relationship and duplicate ID before removing obsolete columns. It never deletes printers. Legacy Odoo report mappings that mislabeled rendered PDF bytes as `raw` are normalized to `pdf` during migration.

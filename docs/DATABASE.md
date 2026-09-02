@@ -56,7 +56,7 @@ Indexes: branch, name
 
 ### `agents` — one per Windows PC (owned by the gateway)
 `id` PK · `name` NOT NULL · `pairing_code` · `pairing_code_expires_at` ·
-`secret` (SHA-256 hash) · `status` NOT NULL default `offline` · `metadata` ·
+`secret` (SHA-256 hash) · `status` NOT NULL default `offline` · `lifecycle` (`active|disabled|retired`) · `metadata` ·
 `last_seen_at` · `branch_id` NOT NULL · `local_network_id` · timestamps
 Indexes: branch, local network, `agents_last_seen_idx`
 

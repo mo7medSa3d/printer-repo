@@ -7,9 +7,9 @@ class PrintGatewayPrinterBinding(models.Model):
     _description = 'Printer Binding (Destination + Document Type -> Printer)'
     _order = 'priority, id'
 
-    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
-    destination_id = fields.Many2one('print_gateway.destination', required=True, ondelete='cascade')
-    document_type_id = fields.Many2one('print_gateway.document_type', ondelete='cascade', string='Document Type')
+    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='restrict')
+    destination_id = fields.Many2one('print_gateway.destination', required=True, ondelete='restrict')
+    document_type_id = fields.Many2one('print_gateway.document_type', ondelete='restrict', string='Document Type')
     document_type = fields.Char(string='Document Type (legacy string)', help='For simple string documentType like receipt/invoice/label/order')
     printer_id = fields.Many2one('print_gateway.printer', required=True, ondelete='restrict')
     priority = fields.Integer(default=1, help='1=highest priority, lower number tried first; fallback chain')
@@ -27,8 +27,8 @@ class PrintGatewayPrinterBinding(models.Model):
         for rec in self:
             if rec.destination_id.branch_id != rec.branch_id:
                 raise ValidationError(_('Destination must belong to the same branch as binding'))
-            if rec.printer_id.branch_id != rec.branch_id:
-                raise ValidationError(_('Printer must belong to the same branch as binding (cross-branch bindings forbidden)'))
+            if rec.printer_id.agent_id.branch_id != rec.branch_id:
+                raise ValidationError(_('Printer agent branch must match binding branch (cross-branch bindings forbidden)'))
             if rec.document_type_id and rec.document_type_id.branch_id != rec.branch_id:
                 raise ValidationError(_('Document Type must belong to same branch'))
 

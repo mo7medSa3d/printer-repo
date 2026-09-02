@@ -1,11 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { createAgent, createTestPrintJob, deleteAgent } from "@/app/actions";
+import { createAgent, createTestPrintJob, setAgentLifecycle, setPrinterLifecycle } from "@/app/actions";
 import { cn } from "@/lib/utils";
 import {
   Plus,
-  Trash2,
   Printer,
   Activity,
   CheckCircle2,
@@ -32,24 +31,10 @@ import {
   type Tone,
 } from "@/components/ui";
 
-type Agent = {
-  id: string;
-  name: string;
-  pairingCode: string | null;
-  status: string;
-  lastSeenAt: Date | null;
-  createdAt: Date;
-  metadata?: unknown;
-};
+type Branch = { id: string; name: string; enabled: boolean };
+type Agent = { id: string; branchId: string; name: string; pairingCode: string | null; status: string; lifecycle: string; lastSeenAt: Date | null; createdAt: Date; printerCount: number; metadata?: unknown };
 
-type Printer = {
-  id: string;
-  agentId: string;
-  name: string;
-  type: string;
-  status: string;
-  config: any;
-};
+type Printer = { id: string; agentId: string; branchId: string | null; name: string; printerType: string; deviceClass: string; connectionType: string; lifecycle: string; status: string; config: any };
 
 type Job = {
   id: string;
@@ -74,26 +59,31 @@ function jobTone(status: string): Tone {
 }
 
 export default function DashboardClient({
+  initialBranches,
   initialAgents,
   initialPrinters,
   initialJobs,
+  databaseError,
 }: {
-  initialAgents: Agent[];
-  initialPrinters: Printer[];
-  initialJobs: Job[];
+  initialBranches: Branch[]; initialAgents: Agent[]; initialPrinters: Printer[]; initialJobs: Job[]; databaseError: string | null;
 }) {
   const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentBranchId, setNewAgentBranchId] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
+  const [pendingLifecycle, setPendingLifecycle] = useState<{ agent?: Agent; printer?: Printer; lifecycle: "disabled" | "retired" } | null>(null);
+  const branchesById = new Map(initialBranches.map((branch) => [branch.id, branch]));
+  const agentsById = new Map(initialAgents.map((agent) => [agent.id, agent]));
 
   const handleCreateAgent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAgentName) return;
     setIsLoading(true);
     try {
-      await createAgent(newAgentName);
+      if (!newAgentBranchId) throw new Error("Select a branch");
+      await createAgent(newAgentName, newAgentBranchId);
       setNewAgentName("");
+      setNewAgentBranchId("");
       window.location.reload();
     } finally {
       setIsLoading(false);
@@ -132,17 +122,18 @@ export default function DashboardClient({
     }
   };
 
-  const handleDeleteConfirmed = async () => {
-    if (!pendingDelete) return;
-    const id = pendingDelete.id;
-    setPendingDelete(null);
-    setIsLoading(true);
+  const handleLifecycle = async () => {
+    if (!pendingLifecycle) return;
+    const { agent, printer, lifecycle } = pendingLifecycle;
+    setPendingLifecycle(null); setIsLoading(true);
     try {
-      await deleteAgent(id);
+      if (agent) await setAgentLifecycle(agent.id, lifecycle);
+      else if (printer) await setPrinterLifecycle(printer.id, lifecycle);
+      else throw new Error("lifecycle target missing");
       window.location.reload();
-    } finally {
-      setIsLoading(false);
     }
+    catch (err) { setNotice({ text: err instanceof Error ? err.message : "Lifecycle update failed", tone: "bad" }); }
+    finally { setIsLoading(false); }
   };
 
   return (
@@ -179,7 +170,11 @@ export default function DashboardClient({
               disabled={isLoading}
               aria-label="Agent name"
             />
-            <Button variant="primary" type="submit" disabled={isLoading || !newAgentName} icon={<Plus className="h-4 w-4" />} aria-label="Create agent">
+            <select value={newAgentBranchId} onChange={(e) => setNewAgentBranchId(e.target.value)} disabled={isLoading || databaseError !== null} className={`w-48 ${inputClass}`} aria-label="Agent branch">
+              <option value="">Select branch</option>
+              {initialBranches.filter(b => b.enabled).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+            <Button variant="primary" type="submit" disabled={isLoading || !newAgentName || !newAgentBranchId || databaseError !== null} icon={<Plus className="h-4 w-4" />} aria-label="Create agent">
               Add
             </Button>
           </form>
@@ -196,7 +191,7 @@ export default function DashboardClient({
                 <div key={agent.id} className="card card-interactive p-4 shadow-none">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="truncate font-medium text-ink">{agent.name}</h3>
-                    <StatusBadge tone={agentTone(agent.status)} label={agent.status === "online" ? "Online" : "Offline"} />
+                    <div className="flex items-center gap-2"><StatusBadge tone={agent.lifecycle === "active" ? agentTone(agent.status) : "warn"} label={agent.status === "online" ? "Online" : "Offline"} /><StatusBadge tone={agent.lifecycle === "retired" ? "bad" : agent.lifecycle === "disabled" ? "warn" : "ok"} label={agent.lifecycle} /></div>
                   </div>
                   <div className="mt-2 space-y-1.5 text-xs text-ink-2">
                     <div className="flex items-center gap-1.5">
@@ -214,6 +209,7 @@ export default function DashboardClient({
                     ) : (
                       <p className="text-ink-3">Paired — no active pairing code</p>
                     )}
+                    <p className="text-ink-3">Branch: {branchesById.get(agent.branchId)?.name ?? agent.branchId} · Printers: {agent.printerCount}</p>
                     <p className="text-ink-3">
                       {(agent.metadata as unknown as { hostname?: string })?.hostname ?? "Host unknown"} · {(agent.metadata as unknown as { os?: string })?.os ?? ""} {(agent.metadata as unknown as { version?: string })?.version ?? ""}
                     </p>
@@ -221,11 +217,11 @@ export default function DashboardClient({
                       Last seen {agent.lastSeenAt ? format(new Date(agent.lastSeenAt), "MMM d, HH:mm:ss") : "never"}
                     </p>
                   </div>
-                  <div className="mt-3 flex justify-end">
-                    <Button variant="ghost" size="sm" onClick={() => setPendingDelete(agent)} icon={<Trash2 className="h-3.5 w-3.5" />} className="text-ink-3 hover:text-bad">
-                      Remove
-                    </Button>
-                  </div>
+                  {agent.lifecycle !== "retired" && <div className="mt-3 flex justify-end gap-2">
+                    {agent.lifecycle === "active" && <Button variant="ghost" size="sm" onClick={() => setPendingLifecycle({ agent, lifecycle: "disabled" })}>Disable</Button>}
+                    {agent.lifecycle === "disabled" && <Button variant="ghost" size="sm" onClick={async () => { await setAgentLifecycle(agent.id, "active"); window.location.reload(); }}>Enable</Button>}
+                    <Button variant="ghost" size="sm" onClick={() => setPendingLifecycle({ agent, lifecycle: "retired" })}>Retire</Button>
+                  </div>}
                 </div>
               ))}
             </div>
@@ -252,17 +248,22 @@ export default function DashboardClient({
                 </div>
                 <div className="mt-2 space-y-1.5 text-xs text-ink-2">
                   <div className="flex items-center gap-1.5">
-                    {printer.type === "usb" ? <HardDrive className="h-3.5 w-3.5 text-ink-3" aria-hidden /> : <Network className="h-3.5 w-3.5 text-ink-3" aria-hidden />}
-                    <span className="uppercase">{printer.type}</span>
+                    {printer.connectionType === "usb" ? <HardDrive className="h-3.5 w-3.5 text-ink-3" aria-hidden /> : <Network className="h-3.5 w-3.5 text-ink-3" aria-hidden />}
+                    <span className="uppercase">{printer.connectionType} · {printer.printerType}{printer.deviceClass !== "unknown" ? ` · ${printer.deviceClass}` : ""}</span>
                   </div>
-                  <p className="text-ink-3">Agent: {initialAgents.find(a => a.id === printer.agentId)?.name || printer.agentId}</p>
+                  <p className="text-ink-3">Agent: {agentsById.get(printer.agentId)?.name || printer.agentId}</p><p className="text-ink-3">Branch: {(printer.branchId && branchesById.get(printer.branchId)?.name) || printer.branchId || "unknown"} · Lifecycle: {printer.lifecycle}</p>
                   {printer.config?.ip && <p className="font-mono text-ink-2">{printer.config.ip}</p>}
                   {printer.config?.address && <p className="font-mono text-ink-2">{printer.config.address}</p>}
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  <Button variant="secondary" size="sm" onClick={() => handleTestConnection(printer.id)} disabled={isLoading}>Test connection</Button>
-                  <Button variant="primary" size="sm" onClick={() => handleTestPrint(printer.id)} disabled={isLoading}>Test print</Button>
+                  <Button variant="secondary" size="sm" onClick={() => handleTestConnection(printer.id)} disabled={isLoading || printer.lifecycle !== "active"}>Test connection</Button>
+                  <Button variant="primary" size="sm" onClick={() => handleTestPrint(printer.id)} disabled={isLoading || printer.lifecycle !== "active"}>Test print</Button>
                 </div>
+                {printer.lifecycle !== "retired" && <div className="mt-2 flex justify-end gap-2">
+                  {printer.lifecycle === "active" && <Button variant="ghost" size="sm" onClick={() => setPendingLifecycle({ printer, lifecycle: "disabled" })}>Disable</Button>}
+                  {printer.lifecycle === "disabled" && <Button variant="ghost" size="sm" onClick={async () => { await setPrinterLifecycle(printer.id, "active"); window.location.reload(); }}>Enable</Button>}
+                  <Button variant="ghost" size="sm" onClick={() => setPendingLifecycle({ printer, lifecycle: "retired" })}>Retire</Button>
+                </div>}
               </div>
             ))
           )}
@@ -297,18 +298,16 @@ export default function DashboardClient({
       </Card>
 
       <Modal
-        open={!!pendingDelete}
-        onClose={() => setPendingDelete(null)}
-        title={`Remove agent “${pendingDelete?.name ?? ""}”?`}
-        description="The agent can no longer poll for jobs or report heartbeats. Its printers remain in the database."
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setPendingDelete(null)}>Cancel</Button>
-            <Button variant="danger" onClick={handleDeleteConfirmed} icon={<Trash2 className="h-4 w-4" />}>Remove agent</Button>
-          </>
-        }
+        open={!!pendingLifecycle}
+        onClose={() => setPendingLifecycle(null)}
+        title={`${pendingLifecycle?.lifecycle === "retired" ? "Retire" : "Disable"} ${pendingLifecycle?.agent ? "agent" : "printer"} “${pendingLifecycle?.agent?.name ?? pendingLifecycle?.printer?.name ?? ""}”?`}
+        description="This preserves the resource, its historical jobs and audit history. New printing is blocked while disabled or retired."
+        footer={<>
+          <Button variant="secondary" onClick={() => setPendingLifecycle(null)}>Cancel</Button>
+          <Button variant="danger" onClick={handleLifecycle}>{pendingLifecycle?.lifecycle === "retired" ? `Retire ${pendingLifecycle?.agent ? "agent" : "printer"}` : `Disable ${pendingLifecycle?.agent ? "agent" : "printer"}`}</Button>
+        </>}
       >
-        <p className="text-sm text-ink-2">This action cannot be undone from the console. Pair the agent again later with a new code.</p>
+        <p className="text-sm text-ink-2">Retired is terminal and cannot be reactivated.</p>
       </Modal>
     </div>
   );

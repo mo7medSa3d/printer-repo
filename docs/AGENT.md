@@ -93,7 +93,7 @@ Subsequent requests use `Authorization: Bearer <agentId>:<secret>`.
 ## 6. Heartbeat
 
 Every 30 s the agent POSTs `/api/agent/heartbeat` with its status and one entry per known
-printer: id, name, type/connectionType/protocol/printerType, live `status()` probe result,
+printer: id, name, canonical `printerType` + `deviceClass` + `connectionType` + `protocol`, live `status()` probe result,
 `enabled`, transport config (spooler name, ip/port, USB vid/pid/serial) and
 `capabilities`. When the operator has not pinned `supported_protocols`, the agent reports
 the backend's real capability list (`printer.SupportedKinds`), which is what the gateway's

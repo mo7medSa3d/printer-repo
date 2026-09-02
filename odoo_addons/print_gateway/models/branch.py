@@ -24,7 +24,7 @@ class PrintGatewayBranch(models.Model):
     gateway_branch_id = fields.Char(string='Gateway Branch ID', help='ID in Gateway DB; defaults to Odoo record id if empty', copy=False)
 
     destination_ids = fields.One2many('print_gateway.destination', 'branch_id', string='Destinations')
-    printer_ids = fields.One2many('print_gateway.printer', 'branch_id', string='Printers')
+    printer_ids = fields.Many2many('print_gateway.printer', compute='_compute_printers', string='Printers', readonly=True)
     document_type_ids = fields.One2many('print_gateway.document_type', 'branch_id', string='Document Types')
     binding_ids = fields.One2many('print_gateway.printer_binding', 'branch_id', string='Printer Bindings')
     agent_ids = fields.One2many('print_gateway.agent', 'branch_id', string='Agents')
@@ -38,6 +38,7 @@ class PrintGatewayBranch(models.Model):
         ('partial', 'Partial'),
     ], string='Last Sync Status', readonly=True, copy=False)
     last_sync_error = fields.Text(string='Last Sync Error', readonly=True, copy=False)
+    last_successful_sync_at = fields.Datetime(string='Last Successful Sync', readonly=True, copy=False)
 
     _sql_constraints = [
         ('name_company_unique', 'unique(name, company_id)', 'Branch name must be unique per company'),
@@ -70,11 +71,20 @@ class PrintGatewayBranch(models.Model):
                 from odoo.exceptions import AccessError
                 raise AccessError(_("You do not have access to branch %s's company.") % rec.name)
 
-    @api.depends('agent_ids', 'agent_ids.status', 'printer_ids')
+    @api.depends('agent_ids', 'agent_ids.status')
     def _compute_counts(self):
         for rec in self:
             rec.agent_count = len(rec.agent_ids.filtered(lambda a: a.status == 'online'))
-            rec.printer_count = len(rec.printer_ids)
+            rec.printer_count = self.env['print_gateway.printer'].search_count([('agent_id.branch_id', '=', rec.id)])
+
+    @api.depends('agent_ids', 'agent_ids.printer_ids')
+    def _compute_printers(self):
+        Printer = self.env['print_gateway.printer']
+        for rec in self:
+            rec.printer_ids = Printer.search([('agent_id.branch_id', '=', rec.id)])
+
+    def unlink(self):
+        raise ValidationError(_('Branches are lifecycle/configuration roots and cannot be physically deleted. Disable the branch or decommission it explicitly.'))
 
     def _gateway_headers(self):
         if not self.gateway_api_key:
@@ -105,49 +115,114 @@ class PrintGatewayBranch(models.Model):
         except requests.RequestException as e:
             raise ValidationError(_('Cannot reach Gateway: %s') % str(e))
 
+    def _gateway_get_json(self, url, headers, params=None, timeout=10):
+        """GET a JSON Gateway endpoint with strict transport semantics."""
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            raise ValidationError(_('Gateway request failed: %s') % str(exc))
+        if not 200 <= resp.status_code < 300:
+            raise ValidationError(_('Gateway returned HTTP %s: %s') % (resp.status_code, self._format_sync_error(resp)))
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise ValidationError(_('Gateway returned malformed JSON: %s') % str(exc))
+        if not isinstance(body, (list, dict)):
+            raise ValidationError(_('Gateway returned an invalid JSON payload'))
+        return body
+
     def action_sync_from_gateway(self):
-        """Pull agents and printers status from Gateway (Gateway -> Odoo). Idempotent."""
+        """Pull runtime state in dependency order: Agents, then Printers.
+
+        Agents are required. Printer state is an optional runtime section for
+        status visibility, so an agent-success/printer-failure run is marked
+        partial rather than falsely successful. No failed HTTP response is
+        interpreted as success and no ownership relationship is guessed.
+        """
+        errors = []
         for branch in self:
+            started = fields.Datetime.now()
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
-                # Gateway ids are strings; Odoo record ids must be stringified
-                # before they are used as branchId query params (the Gateway
-                # compares them against text columns and branch-scoped keys).
                 gateway_branch_id = str(branch.gateway_branch_id or branch.id)
-                # Sync agents
-                resp = requests.get(f"{base}/api/odoo/agents", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    for ag in resp.json():
-                        existing = branch.env['print_gateway.agent'].search([('gateway_agent_id', '=', ag.get('id')), ('branch_id', '=', branch.id)], limit=1)
+
+                agents_data = branch._gateway_get_json(
+                    f"{base}/api/odoo/agents",
+                    headers,
+                    params={'branchId': gateway_branch_id},
+                )
+                if not isinstance(agents_data, list):
+                    raise ValidationError(_('Agents endpoint must return an array'))
+
+                Agent = branch.env['print_gateway.agent']
+                with branch.env.cr.savepoint():
+                    for ag in agents_data:
+                        gateway_id = ag.get('id')
+                        if not isinstance(gateway_id, str) or not gateway_id.strip():
+                            raise ValidationError(_('Agents endpoint returned an invalid agent id'))
+                        existing = Agent.search([('gateway_agent_id', '=', gateway_id)], limit=1)
+                        if ag.get('lifecycle') not in ('active', 'disabled', 'retired'):
+                            raise ValidationError(_('Agent %s has missing or invalid lifecycle') % gateway_id)
                         vals = {
                             'branch_id': branch.id,
-                            'gateway_agent_id': ag.get('id'),
-                            'name': ag.get('name') or ag.get('id'),
+                            'gateway_agent_id': gateway_id,
+                            'name': (ag.get('name') or gateway_id)[:255],
                             'status': ag.get('status') or 'unknown',
-                            'last_seen_at': ag.get('lastSeenAt'),
+                            'lifecycle': ag.get('lifecycle'),
+                            'last_seen_at': ag.get('lastSeenAt') or False,
                         }
                         if existing:
+                            if existing.branch_id != branch:
+                                raise ValidationError(_('Agent %s belongs to another Odoo branch') % gateway_id)
                             existing.write(vals)
                         else:
-                            branch.env['print_gateway.agent'].create(vals)
-                # Sync printers
-                resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    for pr in resp.json():
-                        existing = branch.env['print_gateway.printer'].search([('gateway_printer_id', '=', pr.get('id')), ('branch_id', '=', branch.id)], limit=1)
+                            Agent.create(vals)
+
+                printer_error = None
+                try:
+                    printers_data = branch._gateway_get_json(
+                        f"{base}/api/odoo/printers",
+                        headers,
+                        params={'branchId': gateway_branch_id},
+                    )
+                    if not isinstance(printers_data, list):
+                        raise ValidationError(_('Printers endpoint must return an array'))
+                    Printer = branch.env['print_gateway.printer']
+                    for pr in printers_data:
+                        printer_id = pr.get('id')
+                        agent_id = pr.get('agentId')
+                        if not isinstance(printer_id, str) or not printer_id.strip():
+                            raise ValidationError(_('Printers endpoint returned an invalid printer id'))
+                        if not isinstance(agent_id, str) or not agent_id.strip():
+                            raise ValidationError(_('Printer %s has no owning agent') % printer_id)
+                        agent = Agent.search([('gateway_agent_id', '=', agent_id)], limit=1)
+                        if not agent:
+                            raise ValidationError(_('Printer %s references an agent not present in the synchronized branch') % printer_id)
+                        if agent.branch_id != branch:
+                            raise ValidationError(_('Printer %s agent belongs to another branch') % printer_id)
+                        existing = Printer.search([('gateway_printer_id', '=', printer_id)], limit=1)
+                        if pr.get('printerType') not in ('physical', 'virtual', 'redirected'):
+                            raise ValidationError(_('Printer %s has missing or invalid printerType') % printer_id)
+                        if pr.get('deviceClass') not in ('thermal', 'laser', 'inkjet', 'label', 'other', 'unknown'):
+                            raise ValidationError(_('Printer %s has missing or invalid deviceClass') % printer_id)
+                        if pr.get('connectionType') not in ('network', 'usb', 'spooler', 'ipp', 'ipps'):
+                            raise ValidationError(_('Printer %s has missing or invalid connectionType') % printer_id)
+                        if pr.get('protocol') not in ('raw', 'escpos', 'ipp', 'ipps', 'spooler'):
+                            raise ValidationError(_('Printer %s has missing or invalid protocol') % printer_id)
+                        if pr.get('lifecycle') not in ('active', 'disabled', 'retired'):
+                            raise ValidationError(_('Printer %s has missing or invalid lifecycle') % printer_id)
                         vals = {
-                            'branch_id': branch.id,
-                            'gateway_printer_id': pr.get('id'),
-                            'name': pr.get('name'),
-                            'printer_type': pr.get('printerType') or pr.get('printer_type') or 'unknown',
-                            'connection_type': pr.get('connectionType') or pr.get('connection_type') or 'tcp',
-                            'protocol': pr.get('protocol') or 'raw',
+                            'agent_id': agent.id,
+                            'gateway_printer_id': printer_id,
+                            'name': pr.get('name') or printer_id,
+                            'printer_type': pr.get('printerType'),
+                            'device_class': pr.get('deviceClass'),
+                            'connection_type': pr.get('connectionType'),
+                            'protocol': pr.get('protocol'),
                             'status': pr.get('status') or 'unknown',
-                            'enabled': pr.get('enabled', True),
-                            'gateway_agent_id': pr.get('agentId') or pr.get('agent_id'),
+                            'lifecycle': pr.get('lifecycle'),
                         }
-                        # Extract config
                         cfg = pr.get('config') or {}
                         vals.update({
                             'ip_address': cfg.get('ip'),
@@ -155,14 +230,42 @@ class PrintGatewayBranch(models.Model):
                             'spooler_name': cfg.get('spooler_name'),
                         })
                         if existing:
+                            if existing.agent_id.branch_id != branch:
+                                raise ValidationError(_('Printer %s belongs to another branch') % printer_id)
                             existing.write(vals)
                         else:
-                            branch.env['print_gateway.printer'].create(vals)
-                branch.last_sync_at = fields.Datetime.now()
-                _logger.info("Branch %s sync from gateway completed", branch.name)
-            except requests.RequestException as e:
-                _logger.error("Branch %s sync failed: %s", branch.name, str(e))
-                raise ValidationError(_('Sync failed: %s') % str(e))
+                            Printer.create(vals)
+                except Exception as exc:
+                    printer_error = str(exc)
+
+                completed = fields.Datetime.now()
+                if printer_error:
+                    branch.write({
+                        'last_sync_at': completed,
+                        'last_sync_status': 'partial',
+                        'last_sync_error': printer_error[:2000],
+                    })
+                    errors.append('%s: partial (%s)' % (branch.name, printer_error))
+                else:
+                    branch.write({
+                        'last_sync_at': completed,
+                        'last_sync_status': 'success',
+                        'last_sync_error': False,
+                        'last_successful_sync_at': completed,
+                    })
+                    _logger.info("Branch %s sync from gateway completed", branch.name)
+            except Exception as exc:
+                err = str(exc)
+                completed = fields.Datetime.now()
+                branch.write({
+                    'last_sync_at': completed,
+                    'last_sync_status': 'failed',
+                    'last_sync_error': err[:2000],
+                })
+                _logger.error("Branch %s sync from gateway failed: %s", branch.name, err)
+                errors.append('%s: failed (%s)' % (branch.name, err))
+        if errors:
+            raise ValidationError(_('Gateway pull sync did not fully succeed:\n%s') % '\n'.join('- %s' % e for e in errors))
         return True
 
     def action_sync_to_gateway(self):
@@ -215,6 +318,12 @@ class PrintGatewayBranch(models.Model):
                 resp = requests.post(f"{base}/api/odoo/sync", json=payload, headers=headers, timeout=10)
                 if resp.status_code not in (200, 201):
                     raise ValidationError(_('Gateway sync failed %s: %s') % (resp.status_code, branch._format_sync_error(resp)))
+                try:
+                    result = resp.json()
+                except ValueError:
+                    raise ValidationError(_('Gateway returned malformed JSON for sync response'))
+                if not isinstance(result, dict) or result.get('success') is not True:
+                    raise ValidationError(_('Gateway returned a non-success sync result'))
                 _logger.info("Branch %s sync to gateway OK: %s", branch.name, resp.text[:500])
                 branch.write({
                     'last_sync_at': fields.Datetime.now(),
@@ -228,6 +337,7 @@ class PrintGatewayBranch(models.Model):
                 _logger.error("Branch %s sync to gateway failed: %s", branch.name, err)
                 try:
                     branch.write({
+                        'last_sync_at': fields.Datetime.now(),
                         'last_sync_status': 'failed',
                         'last_sync_error': err[:2000],
                     })
@@ -393,7 +503,12 @@ class PrintGatewayBranch(models.Model):
             raise ValidationError(_('Print job failed: %s') % str(last_exc))
         if resp.status_code not in (200, 201):
             raise ValidationError(_('Print job failed %s: %s') % (resp.status_code, resp.text[:500]))
-        j = resp.json()
+        try:
+            j = resp.json()
+        except ValueError:
+            raise ValidationError(_('Gateway returned malformed JSON for print job response'))
+        if not isinstance(j, dict) or not (j.get('jobId') or j.get('id')):
+            raise ValidationError(_('Gateway returned an invalid print job response'))
         # Resolve report_id if provided as xml_id
         report_rec_id = False
         if report_id:

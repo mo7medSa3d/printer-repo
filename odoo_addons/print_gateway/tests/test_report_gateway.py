@@ -49,13 +49,17 @@ class TestReportGateway(TransactionCase):
             'branch_id': self.branch.id,
             'enabled': True,
         })
-        # Create printer
+        # Create Agent -> Printer topology (printer branch is derived).
+        self.agent = self.env['print_gateway.agent'].create({
+            'gateway_agent_id': 'agt_test_123',
+            'name': 'Test Agent',
+            'branch_id': self.branch.id,
+        })
         self.printer = self.env['print_gateway.printer'].create({
             'gateway_printer_id': 'printer_test_123',
             'name': 'Test Printer',
-            'branch_id': self.branch.id,
+            'agent_id': self.agent.id,
             'status': 'online',
-            'enabled': True,
         })
         # Create binding
         self.binding = self.env['print_gateway.printer_binding'].create({
@@ -172,7 +176,7 @@ class TestReportGateway(TransactionCase):
         mock_resp.status_code = 201
         mock_resp.json.return_value = {'jobId': 'job_test_123', 'status': 'queued', 'printerId': self.printer.gateway_printer_id}
         mock_post.return_value = mock_resp
-        
+
         job = self.branch.create_print_job(
             self.dest_pos.id,
             'order',
@@ -200,7 +204,7 @@ class TestReportGateway(TransactionCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {'status': 'success', 'error': None}
         mock_get.return_value = mock_resp
-        
+
         job.action_sync_status()
         self.assertEqual(job.status, 'success')
 
@@ -269,13 +273,13 @@ class TestReportGateway(TransactionCase):
         if not report:
             self.skipTest("sale report not found")
         report.write({'print_gateway_enabled': True, 'print_gateway_document_type_id': self.doc_order.id})
-        
+
         partner = self.env['res.partner'].create({'name': 'Test Partner PDF'})
         try:
             order = self.env['sale.order'].create({'partner_id': partner.id})
         except Exception:
             self.skipTest("Cannot create sale order")
-        
+
         # Call report_action which should trigger gateway
         # Mock the branch determination to use our test branch/dest
         with patch.object(type(report), '_determine_branch', return_value=self.branch):
@@ -286,7 +290,7 @@ class TestReportGateway(TransactionCase):
                     except Exception as e:
                         # It will return a client action, not raise, but we check mock_post was called
                         pass
-        
+
         # Verify that requests.post was called with actual payload
         self.assertTrue(mock_post.called)
         call_args = mock_post.call_args
@@ -300,5 +304,5 @@ class TestReportGateway(TransactionCase):
             # Decode and check it's actually PDF
             decoded = base64.b64decode(payload['data'])
             self.assertTrue(decoded.startswith(b'%PDF'))
-        
+
         report.write({'print_gateway_enabled': False})

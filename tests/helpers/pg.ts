@@ -84,13 +84,13 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
 
   await pool().query(`INSERT INTO branches (id, name) VALUES ($1, $2)`, [branchId, `Branch ${suffix}`]);
   await pool().query(
-    `INSERT INTO agents (id, branch_id, name, secret, status) VALUES ($1, $2, $3, $4, 'online')`,
+    `INSERT INTO agents (id, branch_id, name, secret, status, lifecycle) VALUES ($1, $2, $3, $4, 'online', 'active')`,
     [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]
   );
   await pool().query(
-    `INSERT INTO printers (id, agent_id, branch_id, name, type, connection_type, protocol, status, config, capabilities, enabled)
-     VALUES ($1, $2, $3, $4, 'spooler', 'spooler', 'spooler', 'online', '{"protocol":"spooler"}'::jsonb, $5::jsonb, true)`,
-    [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]
+    `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+     VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
+    [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]
   );
   await pool().query(
     `INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos')`,

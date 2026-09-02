@@ -147,3 +147,17 @@ fragments, and requires `http://` or `https://`.
   reused on the in-process retry. A brand-new user click after both retries have
   already failed mints a new UUID (intentional reprint). Agent crash mid-print is
   at-least-once (`AGENT_RESTART_DURING_PRINT`); no exactly-once guarantee.
+
+## Security hardening in the current architecture
+
+Ownership is derived server-side. Agent registration cannot establish a Branch from client input; the existing paired Agent identity determines its authoritative Branch. Printer creation/update cannot write Branch ownership. Manager/API routes authenticate before resolving ownership and state.
+
+Authentication rate-limit buckets are PostgreSQL-backed and retained for a bounded period (24 hours), with an indexed cleanup path that does not alter active lock semantics.
+
+Production Next.js responses include `X-Content-Type-Options: nosniff`, strict-origin referrer policy, frame denial, restrictive permissions policy, and HSTS only for production HTTPS.
+
+## Security hardening
+
+Ownership is resolved server-side. Agent registration cannot establish a Branch from client input; the paired Agent identity determines its authoritative Branch. Printer creation/update cannot write Branch ownership. Authentication rate-limit buckets are PostgreSQL-backed with bounded 24-hour retention and indexed cleanup.
+
+Production Next.js responses include `X-Content-Type-Options: nosniff`, strict-origin referrer policy, frame denial, restrictive permissions policy, and HSTS only for production HTTPS.

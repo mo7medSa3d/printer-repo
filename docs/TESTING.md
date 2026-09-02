@@ -37,23 +37,9 @@ Labels used throughout the documentation:
 | `routing-virtual-regression.test.ts` | 7 | no | Virtual printers never win routing |
 | `desktop-ui-smoke.test.ts` | 1 | no | Desktop pages boot; virtual queues hidden |
 
-Totals (executed for this documentation pass):
-`npm test` **134 passed / 56 skipped** without a database.
-With `DATABASE_URL` set the skipped DB suites run as well (190 tests across 19 files). The
-database-backed suites were **not executed in this workspace** (no PostgreSQL).
+Totals for this workspace verification pass: the Node/Vitest suite was **not executed** because `vitest` is unavailable and npm dependency installation could not complete from the local cache. The PostgreSQL-backed suites were therefore also not executed.
 
-The database-backed suites are skipped (not failed) when `DATABASE_URL` is unset, because
-`FOR UPDATE SKIP LOCKED`, real transactions and concurrent connections cannot be simulated.
-
-```bash
-npm test                                                     # 67 tests, DB suites skipped
-DATABASE_URL=postgres://postgres@127.0.0.1:5432/printgw_test npm test   # 100 tests
-```
-
-`tests/helpers/pg.ts` applies `drizzle/*.sql` itself, checks that the delivery-tracking
-columns exist and truncates all tables between tests, so any disposable PostgreSQL works.
-`tests/pg-concurrent-claim.mjs` (+ `scripts/pg-concurrent-claim.sh`) is a standalone
-concurrency harness against a seeded database.
+The repository still contains the full unit/integration suites and `.github/workflows/ci.yml` runs them against a real PostgreSQL service in CI.
 
 ### Agent — Go (`agent/internal/**/*_test.go`)
 
@@ -128,3 +114,30 @@ an actual MSI installation and a smoke test of the installed application.
 The manual procedure that closes the hardware gap is
 [../WINDOWS_PHYSICAL_E2E.md](../WINDOWS_PHYSICAL_E2E.md). Do not mark it as completed
 without filling in its result table from a real run.
+
+## Production verification matrix
+
+| Layer | Standard CI status | External dependency |
+|---|---|---|
+| TypeScript unit tests | Executable in CI | None beyond npm dependencies |
+| PostgreSQL migrations/integration | Executable in CI | PostgreSQL service/container |
+| Go Agent tests/vet | Executable in CI | Go toolchain and module download |
+| Odoo integration | Environment-dependent | Odoo server + configured database/module dependencies |
+| Network printer E2E | Environment-dependent | Reachable printer/network |
+| USB printer E2E | Environment-dependent | Windows/USB device |
+| Windows installer | Environment-dependent | Windows runner/toolchain |
+
+No physical printer or Odoo test is represented as passing unless that environment actually executed it.
+
+## Production verification matrix
+
+| Layer | CI | External dependency |
+|---|---|---|
+| TypeScript unit tests | Executable | npm dependencies |
+| PostgreSQL integration/migrations | Executable | PostgreSQL service |
+| Go Agent tests/vet | Executable | Go toolchain/modules |
+| Odoo integration | Environment-dependent | Odoo runtime/database |
+| Network/USB printer E2E | Environment-dependent | Real device/network/Windows |
+| Windows installer | Environment-dependent | Windows runner/toolchain |
+
+No physical printer or Odoo test is represented as passing unless that environment actually executed.

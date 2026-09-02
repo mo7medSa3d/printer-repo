@@ -803,21 +803,25 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 		if proto == "" {
 			proto = "raw"
 		}
-		pt := pc.PrinterType
-		if pt == "" {
-			pt = "unknown"
+		deviceClass := pc.PrinterType
+		if deviceClass == "" {
+			deviceClass = "unknown"
+		}
+		printerType := "physical"
+		if deviceClass == "virtual" {
+			printerType = "virtual"
+			deviceClass = "unknown"
 		}
 		// Build payload with all required fields for Gateway inventory
 		entry := map[string]interface{}{
 			"id":             id,
 			"name":           pc.Name,
 			"displayName":    pc.Name,
-			"type":           nt,
-			"printerType":    pt,
+			"printerType":    printerType,
+			"deviceClass":    deviceClass,
 			"connectionType": nt,
 			"protocol":       proto,
 			"status":         statuses[i],
-			"enabled":        pc.IsEnabled(),
 			"config":         endpointToConfig(pc),
 		}
 		// Include USB identifiers if present

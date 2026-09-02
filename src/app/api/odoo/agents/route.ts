@@ -20,6 +20,7 @@ export async function GET(req: Request) {
           branchId: agents.branchId,
           name: agents.name,
           status: agents.status,
+          lifecycle: agents.lifecycle,
           lastSeenAt: agents.lastSeenAt,
           createdAt: agents.createdAt,
         }).from(agents).where(eq(agents.branchId, filter)).orderBy(desc(agents.lastSeenAt))
@@ -28,6 +29,7 @@ export async function GET(req: Request) {
           branchId: agents.branchId,
           name: agents.name,
           status: agents.status,
+          lifecycle: agents.lifecycle,
           lastSeenAt: agents.lastSeenAt,
           createdAt: agents.createdAt,
         }).from(agents).orderBy(desc(agents.lastSeenAt));

@@ -32,11 +32,11 @@ async function bind(f: Fixture, bindingId: string, printerId: string, priority: 
   );
 }
 
-async function addPrinter(f: Fixture, id: string, opts: { enabled?: boolean; status?: string } = {}) {
+async function addPrinter(f: Fixture, id: string, opts: { lifecycle?: string; status?: string } = {}) {
   await pool().query(
-    `INSERT INTO printers (id, agent_id, branch_id, name, type, connection_type, protocol, status, config, capabilities, enabled)
-     VALUES ($1, $2, $3, $4, 'spooler', 'spooler', 'spooler', $5, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb, $6)`,
-    [id, f.agentId, f.branchId, id, opts.status ?? "online", opts.enabled ?? true]
+    `INSERT INTO printers (id, agent_id, name, printer_type, connection_type, protocol, status, lifecycle, config, capabilities)
+     VALUES ($1, $2, $3, 'other', 'spooler', 'spooler', $4, $5, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb)`,
+    [id, f.agentId, id, opts.status ?? "online", opts.lifecycle ?? "active"]
   );
 }
 
@@ -51,7 +51,7 @@ suite("routing availability + document-type authorization", () => {
   });
 
   it("reports a disabled printer as PRINTER_DISABLED, not PRINTER_OFFLINE", async () => {
-    await pool().query(`UPDATE printers SET enabled = false WHERE id = $1`, [f.printerId]);
+    await pool().query(`UPDATE printers SET lifecycle = 'disabled' WHERE id = $1`, [f.printerId]);
     await bind(f, "binding_disabled", f.printerId, 1);
 
     const resolved = await resolvePrinterForJob({
@@ -67,7 +67,7 @@ suite("routing availability + document-type authorization", () => {
   });
 
   it("returns HTTP 409 PRINTER_DISABLED from POST /api/print/jobs and creates no job", async () => {
-    await pool().query(`UPDATE printers SET enabled = false WHERE id = $1`, [f.printerId]);
+    await pool().query(`UPDATE printers SET lifecycle = 'disabled' WHERE id = $1`, [f.printerId]);
     await bind(f, "binding_disabled", f.printerId, 1);
 
     const res = await printJobsPOST(new Request("http://gateway.test/api/print/jobs", {
@@ -102,7 +102,7 @@ suite("routing availability + document-type authorization", () => {
   });
 
   it("prefers the transient PRINTER_OFFLINE when both a disabled and an offline candidate exist", async () => {
-    await pool().query(`UPDATE printers SET enabled = false WHERE id = $1`, [f.printerId]);
+    await pool().query(`UPDATE printers SET lifecycle = 'disabled' WHERE id = $1`, [f.printerId]);
     await addPrinter(f, "printer_offline_2", { status: "offline" });
     await bind(f, "binding_disabled", f.printerId, 1);
     await bind(f, "binding_offline", "printer_offline_2", 2);
@@ -117,7 +117,7 @@ suite("routing availability + document-type authorization", () => {
   });
 
   it("falls back to the next healthy printer when the first one is disabled", async () => {
-    await pool().query(`UPDATE printers SET enabled = false WHERE id = $1`, [f.printerId]);
+    await pool().query(`UPDATE printers SET lifecycle = 'disabled' WHERE id = $1`, [f.printerId]);
     await addPrinter(f, "printer_healthy", {});
     await bind(f, "binding_disabled", f.printerId, 1);
     await bind(f, "binding_healthy", "printer_healthy", 2);
