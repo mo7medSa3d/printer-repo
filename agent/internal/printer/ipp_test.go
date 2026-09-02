@@ -145,17 +145,18 @@ func TestParseIPPAttributesRealistic(t *testing.T) {
 	buf.WriteByte(0x04) // printer attributes
 	writeIPPIntAttr(&buf, 0x23, "printer-state", 3)
 	writeIPPAttribute(&buf, 0x44, "printer-state-reasons", "none")
-	writeIPPBoolAttr(&buf, "printer-is-accepting-jobs", true)
-	writeIPPAttribute(&buf, 0x42, "printer-name", "HP LaserJet")
-	writeIPPAttribute(&buf, 0x45, "printer-uri", "ipp://192.168.1.60/ipp/print")
-	writeIPPAttribute(&buf, 0x41, "printer-info", "Front desk")
-	writeIPPIntAttr(&buf, 0x21, "copies-default", 1)
-	// Repeated additional value for printer-state-reasons (name-length 0).
+	// Additional value for printer-state-reasons (name-length 0) MUST follow
+	// the named attribute immediately, per RFC 8010.
 	buf.WriteByte(0x44)
 	binary.Write(&buf, binary.BigEndian, uint16(0))
 	media := "media-low"
 	binary.Write(&buf, binary.BigEndian, uint16(len(media)))
 	buf.WriteString(media)
+	writeIPPBoolAttr(&buf, "printer-is-accepting-jobs", true)
+	writeIPPAttribute(&buf, 0x42, "printer-name", "HP LaserJet")
+	writeIPPAttribute(&buf, 0x45, "printer-uri", "ipp://192.168.1.60/ipp/print")
+	writeIPPAttribute(&buf, 0x41, "printer-info", "Front desk")
+	writeIPPIntAttr(&buf, 0x21, "copies-default", 1)
 	// Unknown attribute with a text tag should still be captured.
 	writeIPPAttribute(&buf, 0x41, "vendor-extension", "ok")
 	buf.WriteByte(0x03)
