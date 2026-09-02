@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import {
   isVirtualPrinterRecord,
   isRoutablePrinterRecord,
@@ -67,6 +66,71 @@ const VIRTUAL = [
   {
     name: "legacy row only matched by name",
     record: { name: "Microsoft Print to PDF", connectionType: "spooler" },
+  },
+  // ---- detected through the DRIVER, not the printer name ----
+  {
+    name: "print-to-FILE port",
+    record: { name: "Export Queue", connectionType: "spooler", capabilities: { port_name: "FILE:" } },
+  },
+  {
+    name: "NUL: port",
+    record: { name: "Discard Queue", connectionType: "spooler", capabilities: { port_name: "NUL:" } },
+  },
+  {
+    name: "PORTPROMPT: port",
+    record: { name: "Oddly Named Queue", connectionType: "spooler", capabilities: { port_name: "PORTPROMPT:" } },
+  },
+  {
+    name: "Foxit driver",
+    record: {
+      name: "Front Desk",
+      connectionType: "spooler",
+      capabilities: { driver_name: "Foxit Reader PDF Printer Driver" },
+    },
+  },
+  {
+    name: "AnyDesk driver",
+    record: {
+      name: "Remote Helpdesk",
+      connectionType: "spooler",
+      capabilities: { driver_name: "AnyDesk Printer" },
+    },
+  },
+  {
+    name: "Remote Desktop Easy Print driver",
+    record: {
+      name: "Brother HL-L2360D",
+      connectionType: "spooler",
+      capabilities: { driver_name: "Remote Desktop Easy Print" },
+    },
+  },
+  {
+    name: "Terminal Services Easy Print driver",
+    record: {
+      name: "Kyocera P3145",
+      connectionType: "spooler",
+      capabilities: { driver_name: "Terminal Services Easy Print" },
+    },
+  },
+  {
+    name: "Citrix driver",
+    record: {
+      name: "Ricoh MP C3004",
+      connectionType: "spooler",
+      capabilities: { driver_name: "Citrix Universal Printer Driver" },
+    },
+  },
+  {
+    name: "VMware driver",
+    record: {
+      name: "Xerox C405",
+      connectionType: "spooler",
+      capabilities: { driver_name: "VMware Virtual Print Driver" },
+    },
+  },
+  {
+    name: "Citrix (from host) in session",
+    record: { name: "HP LaserJet (from WKS12) in session 4", connectionType: "spooler" },
   },
 ];
 
@@ -185,24 +249,10 @@ describe("routing availability", () => {
   });
 });
 
-describe("routing resolves around virtual printers", () => {
-  const routingSrc = readFileSync("src/lib/routing.ts", "utf8");
-  const jobsRouteSrc = readFileSync("src/app/api/print/jobs/route.ts", "utf8");
-
-  it("consults the virtual guard while evaluating bindings", () => {
-    expect(routingSrc).toContain("isVirtualPrinterRecord(printer)");
-    expect(routingSrc).toContain("isVirtualPrinterRecord(printer)");
-    expect(routingSrc).toContain("PRINTER_VIRTUAL");
-  });
-
-  it("maps PRINTER_VIRTUAL to HTTP 409 like other configuration problems", () => {
-    expect(jobsRouteSrc).toContain("PRINTER_VIRTUAL: 409");
-  });
-
-  it("guards the legacy printerId print path too", () => {
-    expect(jobsRouteSrc).toContain("PRINTER_VIRTUAL: printer is virtual or redirected");
-  });
-});
+// The end-to-end routing behaviour (virtual candidate skipped, physical
+// candidate chosen, PRINTER_VIRTUAL returned only when every candidate is
+// virtual) is covered by tests/routing-virtual-regression.test.ts, which drives
+// the real resolvePrinterForJob instead of asserting on source text.
 
 describe("desktop manager safety net", () => {
   it.each(VIRTUAL)("hides $name from the printer list", ({ record }) => {

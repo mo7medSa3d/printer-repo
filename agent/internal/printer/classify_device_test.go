@@ -462,3 +462,155 @@ func TestIsVirtualSpoolerMatchesClassifier(t *testing.T) {
 		}
 	}
 }
+
+func TestUsbDevicePathProvesPhysical(t *testing.T) {
+	// A USB printer whose ids do not advertise the print class and whose
+	// VID/PID/serial could not be parsed: the device path alone is proof that
+	// Plug and Play enumerated real hardware.
+	di := DeviceInfo{
+		Name: "Receipt Printer", ConnectionType: "usb", Protocol: "raw",
+		Endpoint: `\\?\usb#vid_04b8&pid_0202#cn123#{28d78fad-5a12-11d1-ae5b-0000f803a8c2}`,
+		Enabled:  true,
+		Capabilities: map[string]interface{}{
+			"hardware_ids":   []string{`USB\VID_04B8&PID_0202`},
+			"compatible_ids": []string{`USB\Class_ff`},
+			"device_path":    `\\?\usb#vid_04b8&pid_0202#cn123`,
+		},
+	}
+	got := ClassifyDeviceInfo(di)
+	if got.Class != ClassPhysical {
+		t.Fatalf("class = %s, want %s (reasons %v)", got.Class, ClassPhysical, got.Reasons)
+	}
+	if !IsProductionPrinter(di) {
+		t.Fatalf("a USB printer with a device path must stay visible")
+	}
+}
+
+func TestManualRegistrationCannotBypassVirtualChecks(t *testing.T) {
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, "printers.json")
+
+	// An operator (or a provisioning script) tries to register a software
+	// writer by name. Explicit registration must NOT rescue it.
+	pdf := DeviceInfo{
+		Name: "Microsoft Print to PDF", ConnectionType: "spooler", Protocol: "spooler",
+		SpoolerName: "Microsoft Print to PDF", Enabled: true, Status: "unknown",
+		Capabilities: caps("port_name", "PORTPROMPT:"),
+	}
+	merged, err := RegisterManual(registryPath, pdf)
+	if err != nil {
+		t.Fatalf("RegisterManual: %v", err)
+	}
+	if len(merged) != 0 {
+		t.Fatalf("manual registration bypassed the virtual check: %+v", merged)
+	}
+
+	// A session-redirected queue is refused as well.
+	redirected := DeviceInfo{
+		Name: "HP LaserJet 1020 (redirected 3)", ConnectionType: "spooler",
+		Protocol: "spooler", SpoolerName: "HP LaserJet 1020 (redirected 3)",
+		Enabled: true, Status: "unknown",
+	}
+	if merged, err = RegisterManual(registryPath, redirected); err != nil {
+		t.Fatalf("RegisterManual: %v", err)
+	}
+	if len(merged) != 0 {
+		t.Fatalf("manual registration bypassed the redirect check: %+v", merged)
+	}
+
+	// Real hardware is still accepted.
+	physical := DeviceInfo{
+		Name: "HP LaserJet Pro M404", ConnectionType: "spooler", Protocol: "spooler",
+		SpoolerName: "HP LaserJet Pro M404", Enabled: true, Status: "unknown",
+		Capabilities: caps("port_name", "USB001"),
+	}
+	if merged, err = RegisterManual(registryPath, physical); err != nil {
+		t.Fatalf("RegisterManual: %v", err)
+	}
+	if len(merged) != 1 || merged[0].SpoolerName != "HP LaserJet Pro M404" {
+		t.Fatalf("legitimate manual registration was rejected: %+v", merged)
+	}
+}
+
+func TestRegistryKeepsThinMetadataPrinters(t *testing.T) {
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, "printers.json")
+
+	// A record an older version persisted with almost no metadata: no port,
+	// no VID, no endpoint, no spooler name. It must not silently disappear.
+	thin := DeviceInfo{
+		ID: "printer_old", Name: "Back Office Printer", ConnectionType: "usb",
+		Protocol: "raw", Status: "unknown", Enabled: true,
+	}
+	if err := SaveRegistry(registryPath, []DeviceInfo{thin}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	listed, err := loadRegistryPrinters(registryPath)
+	if err != nil {
+		t.Fatalf("loadRegistryPrinters: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "printer_old" {
+		t.Fatalf("a persisted printer with thin metadata was dropped: %+v", listed)
+	}
+	// It is still honestly reported as unclassified — we did not fake it.
+	if got := ClassifyDeviceInfo(listed[0]); got.Class != ClassUnknown {
+		t.Fatalf("class = %s, want %s", got.Class, ClassUnknown)
+	}
+	if !IsProductionPrinter(listed[0]) {
+		t.Fatalf("a persisted printer must stay a production printer")
+	}
+}
+
+func TestStaleVirtualRowDoesNotBreakPhysicalPrinters(t *testing.T) {
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, "printers.json")
+
+	hp := DeviceInfo{
+		ID: "printer_hp", Name: "HP LaserJet Pro M404", ConnectionType: "spooler",
+		Protocol: "spooler", SpoolerName: "HP LaserJet Pro M404", Status: "online",
+		Enabled: true, Capabilities: caps("port_name", "USB001"),
+	}
+	zebra := DeviceInfo{
+		ID: "printer_zebra", Name: "Zebra ZD421", ConnectionType: "network",
+		Protocol: "raw", NetworkAddress: "192.168.1.62", Port: 9100, Status: "online",
+		Enabled: true,
+	}
+	pdf := DeviceInfo{
+		ID: "printer_pdf", Name: "Microsoft Print to PDF", ConnectionType: "spooler",
+		Protocol: "spooler", SpoolerName: "Microsoft Print to PDF", Status: "online",
+		Enabled: true, IsVirtual: true, Capabilities: caps("port_name", "PORTPROMPT:"),
+	}
+	// Registry as an older version would have left it.
+	if err := SaveRegistry(registryPath, []DeviceInfo{hp, pdf, zebra}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	// Discovery re-reports everything, including the virtual queue.
+	merged, err := UpsertRegistry(registryPath, []DeviceInfo{hp, pdf, zebra})
+	if err != nil {
+		t.Fatalf("UpsertRegistry: %v", err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("expected the two physical printers, got %+v", merged)
+	}
+	byID := map[string]DeviceInfo{}
+	for _, d := range merged {
+		byID[d.ID] = d
+	}
+	if _, ok := byID["printer_pdf"]; ok {
+		t.Fatalf("virtual printer survived: %+v", merged)
+	}
+	for _, id := range []string{"printer_hp", "printer_zebra"} {
+		d, ok := byID[id]
+		if !ok {
+			t.Fatalf("physical printer %q was lost", id)
+		}
+		if !d.Enabled {
+			t.Errorf("physical printer %q lost its state (enabled=false)", id)
+		}
+	}
+	if byID["printer_zebra"].NetworkAddress != "192.168.1.62" || byID["printer_zebra"].Port != 9100 {
+		t.Errorf("physical printer lost its transport metadata: %+v", byID["printer_zebra"])
+	}
+}

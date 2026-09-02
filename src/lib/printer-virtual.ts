@@ -56,30 +56,96 @@ function isVirtualPortMonitor(port: unknown): boolean {
 }
 
 /**
- * Software-writer / session-redirect name families. Used ONLY as a fallback
- * for legacy rows that carry no metadata — the agent's classifier is the
- * primary authority and works from port monitors, drivers and PnP ids.
+ * Driver / PnP / name families that only ever produce a file or hand the job
+ * to an application. Mirrors the Windows agent's `softwareWriterTokens`.
+ *
+ * These are matched against the driver name and PnP ids as well as the
+ * printer name: a redirected or software queue is identified by its driver
+ * far more reliably than by its display name.
  */
-const VIRTUAL_NAME_PATTERNS = [
+const SOFTWARE_WRITER_TOKENS = [
+  // Microsoft in-box software writers
   "microsoft print to pdf",
   "microsoft xps document writer",
   "microsoft shared fax",
   "microsoft enhanced point and print compatibility driver",
   "send to onenote",
   "onenote",
+  // Semantic families (language independent)
   "document writer",
+  "documentwriter",
   "print to pdf",
+  "topdf",
   "pdf writer",
+  "pdfwriter",
+  "pdf printer",
   "pdf creator",
   "pdf converter",
+  "pdf architect",
   "virtual printer",
   "software printer",
+  "image printer",
+  // Widely deployed third-party software writers
+  "foxit",
+  "anydesk",
+  "cutepdf",
+  "pdf995",
+  "novapdf",
+  "bullzip",
+  "pdfcreator",
+  "pdfforge",
+  "doro pdf",
+  "biopdf",
+  "nitro pdf",
+  "adobe pdf",
+  "bluebeam",
+  "tinypdf",
+  "7-pdf",
+  "icecream pdf",
+  "pdf24",
+];
+
+/**
+ * Queues tunnelled from another desktop session: Remote Desktop, Citrix,
+ * VMware, ThinPrint. Mirrors the agent's `sessionRedirectTokens`.
+ */
+const SESSION_REDIRECT_TOKENS = [
   "remote desktop easy print",
   "terminal services easy print",
+  "ts easy print",
+  "easy print",
+  "citrix",
+  "vmware virtual print",
+  "thinprint",
+  "safeguard print",
 ];
 
 function lower(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+/**
+ * Everything that identifies the device, lowercased, so one substring scan
+ * covers the driver, the PnP ids and the comment — the same haystack the
+ * Windows agent classifies from.
+ */
+function identityHaystack(caps: Record<string, unknown> | null): string {
+  if (!caps) return "";
+  const parts: string[] = [];
+  for (const key of ["driver_name", "driverName", "comment", "device_id", "deviceId"]) {
+    const value = lower(caps[key]);
+    if (value) parts.push(value);
+  }
+  for (const key of ["hardware_ids", "hardwareIds", "compatible_ids", "compatibleIds"]) {
+    const value = caps[key];
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const text = lower(entry);
+        if (text) parts.push(text);
+      }
+    }
+  }
+  return parts.join(" ");
 }
 
 function capabilitiesRecord(capabilities: unknown): Record<string, unknown> | null {
@@ -111,11 +177,22 @@ export function isVirtualPrinterRecord(printer: PrinterLike | null | undefined):
     if (isVirtualPortMonitor(caps.port_name ?? caps["portName"])) return true;
   }
 
-  // Legacy fallback: a row persisted before the metadata existed.
+  // Session redirect: Remote Desktop / Citrix / VMware. Windows names these
+  // "HP LaserJet (redirected 3)"; Citrix uses "… (from WKS12) in session 4".
   const name = lower(printer.name);
+  if (name.includes("(redirected") || name.includes(" in session ")) return true;
+
+  // The driver (and PnP ids) identify a software writer or a session tunnel
+  // far more reliably than the display name does.
+  const hay = identityHaystack(caps);
+  if (hay) {
+    if (SOFTWARE_WRITER_TOKENS.some((token) => hay.includes(token))) return true;
+    if (SESSION_REDIRECT_TOKENS.some((token) => hay.includes(token))) return true;
+  }
+
+  // Legacy fallback: a row persisted before any metadata existed.
   if (!name) return false;
-  if (name.includes("(redirected")) return true;
-  return VIRTUAL_NAME_PATTERNS.some((pattern) => name.includes(pattern));
+  return SOFTWARE_WRITER_TOKENS.some((pattern) => name.includes(pattern));
 }
 
 /** A printer row that may be routed to, bound and used for jobs. */

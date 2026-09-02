@@ -68,6 +68,12 @@ func loadRegistryPartitioned(registryPath string) (production, hidden []DeviceIn
 			removed++
 			continue
 		}
+		// A record persisted by this agent (or an earlier version) is
+		// deliberate operator state. Mark it so that a queue whose metadata is
+		// simply too thin to classify is kept instead of silently dropping
+		// working hardware. Virtual / redirected evidence still outranks this
+		// — see IsProductionPrinter.
+		d = withRegistrationSource(d, "registry")
 		if !IsProductionPrinter(d) {
 			hidden = append(hidden, d)
 			continue
@@ -80,6 +86,18 @@ func loadRegistryPartitioned(registryPath string) (production, hidden []DeviceIn
 		_ = SaveRegistry(registryPath, concatDevices(production, hidden))
 	}
 	return production, hidden, removed, nil
+}
+
+// withRegistrationSource records where a device came from, without overwriting
+// an existing (more specific) source such as "manual" or "config".
+func withRegistrationSource(d DeviceInfo, source string) DeviceInfo {
+	if d.Capabilities == nil {
+		d.Capabilities = map[string]interface{}{}
+	}
+	if _, ok := d.Capabilities["registration_source"]; !ok {
+		d.Capabilities["registration_source"] = source
+	}
+	return d
 }
 
 func concatDevices(a, b []DeviceInfo) []DeviceInfo {

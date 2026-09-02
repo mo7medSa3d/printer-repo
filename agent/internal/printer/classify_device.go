@@ -39,9 +39,47 @@ import (
    they are never listed, never registered with the Gateway and
    never selectable for a binding or a job.
 
-   An `unknown` device is one we cannot attach to any transport.
-   Discovery must not promote it to a production printer, so it is
-   hidden too — unless the operator registered it explicitly.
+   ------------------------------------------------------------
+   THE `unknown` POLICY
+   ------------------------------------------------------------
+   `unknown` means "no evidence either way": we could not attach
+   the queue to a transport AND we found no proof that it is
+   software. It is NOT treated as virtual.
+
+   Automatic discovery does not promote `unknown` to a production
+   printer, because a queue we cannot tie to any hardware is far
+   more likely to be a leftover software queue than a printer.
+   That decision is deliberate and conservative, and it is
+   recoverable rather than destructive:
+
+     * the record is never deleted — it is hidden but still on
+       disk, and a future classifier can promote it;
+     * explicit operator intent always wins. A device is surfaced
+       despite being `unknown` when it came from
+
+           registration_source = manual   (`printers add`)
+           registration_source = config   (config.yaml)
+           registration_source = registry (already persisted
+                                           locally by this agent)
+
+       so a printer an operator deliberately added, or one that a
+       previous version already stored, does not silently vanish
+       just because its Windows metadata is thin or unusual.
+
+   Crucially this rescue applies ONLY to `unknown`. Virtual and
+   redirected evidence is evaluated first and always rejects the
+   device, so none of the above lets an operator bypass the
+   safety check by registering "Microsoft Print to PDF" by hand,
+   and a stale virtual row in the registry stays hidden.
+
+   ------------------------------------------------------------
+   ORDER OF AUTHORITY (virtual beats physical)
+   ------------------------------------------------------------
+   ClassifyDevice evaluates redirect evidence first, then virtual
+   evidence, then physical evidence. Adding a permissive physical
+   rule can therefore never un-hide a software queue that carries
+   virtual evidence; it only stops real hardware from being
+   dropped for want of metadata.
 
    Everything here is pure and platform independent, so the whole
    matrix is unit-testable on any OS.
@@ -175,9 +213,19 @@ func IsProductionPrinter(d DeviceInfo) bool {
 	}
 }
 
-// IsExplicitlyRegistered reports whether this device came from an explicit
-// operator action (manual registration, YAML config) rather than automatic
-// discovery. Such queues are trusted even when we cannot prove a transport.
+// IsExplicitlyRegistered reports whether this device reached us through an
+// explicit operator action rather than through automatic discovery:
+//
+//	manual    — `printers add` / RegisterManual
+//	config    — a printer declared in config.yaml
+//	registry  — a record already persisted locally by this agent
+//
+// Such queues are trusted even when we cannot prove a transport.
+//
+// NOTE: this only ever rescues a device classified `unknown`. A device with
+// virtual or redirected evidence is rejected before this is consulted, so an
+// operator cannot bypass the safety check by registering "Microsoft Print to
+// PDF" by hand, and a stale virtual row in the registry stays hidden.
 func IsExplicitlyRegistered(d DeviceInfo) bool {
 	if d.Capabilities == nil {
 		return false
@@ -187,7 +235,7 @@ func IsExplicitlyRegistered(d DeviceInfo) bool {
 	}
 	if v, ok := d.Capabilities["registration_source"].(string); ok {
 		switch spoolerToLowerTrim(v) {
-		case "manual", "config":
+		case "manual", "config", "registry":
 			return true
 		}
 	}
@@ -359,10 +407,16 @@ func physicalEvidence(f DeviceFacts) (bool, string, string) {
 	if isPrinterUSBDevice(f.HardwareIDs, f.CompatibleIDs, f.DeviceClass) {
 		return true, "usb-print-class", "high"
 	}
+	// A USB device path is proof that Plug and Play enumerated real hardware,
+	// even when the vendor's ids do not advertise the print class and no
+	// VID/PID/serial could be parsed from the instance id.
+	conn := spoolerToLowerTrim(f.ConnectionType)
+	if conn == "usb" && strings.TrimSpace(f.Endpoint) != "" {
+		return true, "usb-device-path", "high"
+	}
 	if strings.TrimSpace(f.NetworkAddress) != "" && f.Port != 0 {
 		return true, "network-endpoint", "high"
 	}
-	conn := spoolerToLowerTrim(f.ConnectionType)
 	proto := spoolerToLowerTrim(f.Protocol)
 	if (conn == "ipp" || conn == "ipps" || proto == "ipp" || proto == "ipps") &&
 		strings.TrimSpace(f.Endpoint) != "" {
