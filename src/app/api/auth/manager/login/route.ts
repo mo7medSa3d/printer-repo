@@ -45,10 +45,10 @@ export async function POST(req: Request) {
       return tooMany(pre.retryAfterSec);
     }
   } catch (e) {
-    // A limiter outage must not fail open into an unbounded brute-force
-    // window, but it also must not take the dashboard down. Log and continue
-    // with password verification; the next request will retry the limiter.
+    // Fail closed: a limiter outage must not open an unbounded brute-force
+    // window. Login is unavailable until the shared counter store is back.
     logWarn("auth.login.rate_limit_unavailable", { requestId, error: e instanceof Error ? e.message : "unknown" });
+    return NextResponse.json({ error: "Authentication temporarily unavailable" }, { status: 503 });
   }
 
   if (!verifyManagerPassword(username, password)) {

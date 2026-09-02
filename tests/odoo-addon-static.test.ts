@@ -34,6 +34,9 @@ describe("Odoo addon static contracts", () => {
     expect(src.indexOf("Job.create", createFn)).toBeLessThan(src.indexOf("requests.post", createFn));
     expect(src).toContain("for attempt in (1, 2)");
     expect(src).toContain("uuid.uuid4().hex");
+    expect(src).toContain("with self.env.cr.savepoint()");
+    const jobModel = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
+    expect(jobModel).toContain("unique(branch_id, idempotency_key)");
   });
 
   it("records per-branch sync failure instead of claiming distributed atomicity", () => {

@@ -17,7 +17,7 @@ Everything the automated suites do and do not cover is listed in [docs/TESTING.m
 | Printer | At least one real printer, installed as a Windows printer (spooler queue) and printing correctly from Notepad |
 | PDF handler | A PDF application registered for the `printto` verb (Adobe Reader, SumatraPDF …) **or** a helper configured through `agent.pdf_print_command` |
 | Second printer (optional but recommended) | A RAW/ESC-POS thermal printer on TCP :9100 for the capability-mismatch test |
-| Gateway | Reachable over HTTPS from the Windows PC, with a PostgreSQL database migrated through `drizzle/0004_add_job_delivery_tracking.sql` |
+| Gateway | Reachable over HTTPS from the Windows PC, with a PostgreSQL database migrated through `drizzle/0005_auth_rate_limits.sql` |
 | Odoo | A live instance with the `print_gateway` addon installed |
 | Artifacts | `Odoo Print Manager` MSI or NSIS EXE from the `Build Windows Installer` workflow (or a local `cargo tauri build`) |
 
@@ -62,10 +62,11 @@ printer make/model and driver, PDF handler and version.
 
 1. Wait ≤ 30 s.
 2. Dashboard: the agent shows `online` and `lastSeenAt` advances.
-3. `GET /api/health` (no auth) returns `agents.online ≥ 1`.
-4. `agent.log` contains periodic heartbeat lines with no errors.
+3. `GET /api/health` (no auth) returns `{ok:true}` (liveness only — no inventory counts).
+4. Dashboard / `GET /api/agents` (manager session) shows the agent `online`.
+5. `agent.log` contains periodic heartbeat lines with no errors.
 
-**Record:** first heartbeat time, `agents.online` value.
+**Record:** first heartbeat time, agent status from the authenticated agents list.
 
 ## 5. Printer discovery
 

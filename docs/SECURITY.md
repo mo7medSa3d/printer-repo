@@ -29,8 +29,9 @@ branch-scoped Odoo key, because the addon's Test Print button has no manager ses
   (`src/lib/auth-rate-limit.ts`, table `auth_rate_limits`) so multiple gateway
   instances share the same counters. Repeated failures return HTTP 429 with
   `Retry-After` and a generic message (no user enumeration). A successful login
-  clears the account bucket. Set `TRUST_PROXY=1` when a reverse proxy forwards
-  `X-Forwarded-For`.
+  clears the account bucket. If the limiter store is unreachable, login returns
+  HTTP 503 rather than verifying the password without a counter. Set
+  `TRUST_PROXY=1` when a reverse proxy forwards `X-Forwarded-For`.
 * Manager sessions are **global**, not branch-scoped — a manager sees every branch.
 
 ## 3. Odoo API keys
@@ -136,8 +137,13 @@ fragments, and requires `http://` or `https://`.
 
 ## 12. Known limitations
 
-* No rate limiting on authentication endpoints.
 * `Content-Length` is not checked before `req.json()`; the 5 MiB cap is enforced during
   validation.
 * No audit log of manager actions beyond the job/printer rows themselves.
 * Manager authorization is coarse (one global role).
+* Auth rate-limit counters live in PostgreSQL. A limiter-table outage fails closed
+  (HTTP 503 on login) rather than failing open.
+* Print identity is a per-operation UUID persisted before the Gateway HTTP call and
+  reused on the in-process retry. A brand-new user click after both retries have
+  already failed mints a new UUID (intentional reprint). Agent crash mid-print is
+  at-least-once (`AGENT_RESTART_DURING_PRINT`); no exactly-once guarantee.

@@ -38,6 +38,12 @@ class PrintGatewayPrintJob(models.Model):
     report_name = fields.Char(string='Report Name', help='Technical report name, e.g., sale.report_saleorder_document')
     report_id = fields.Many2one('ir.actions.report', string='Report', ondelete='set null', help='Linked Odoo report')
 
+    _sql_constraints = [
+        ('branch_idempotency_unique',
+         'unique(branch_id, idempotency_key)',
+         'This print operation was already submitted for this branch.'),
+    ]
+
     def action_sync_status(self):
         for job in self:
             if not job.gateway_job_id:

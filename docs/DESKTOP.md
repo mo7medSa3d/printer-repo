@@ -27,10 +27,10 @@ system in `src/app/globals.css` and the primitives in `src/components/ui.tsx`).
 
 | Page | Contents |
 |---|---|
-| **Overview** | Local agent state, gateway reachability, printer/job counters, "needs attention" list |
+| **Overview** | Local agent state, gateway reachability, "needs attention" list |
 | **Printers** | Discovered/registered printers, discovery, test print, manual registration (spooler / network / USB) |
 | **Print Jobs** | Queue view with tabs (all / pending / printing / completed / failed) |
-| **Agents** | This PC's agent plus fleet counters from the gateway health endpoint |
+| **Agents** | This PC's agent. Fleet inventory is not read from unauthenticated `/api/health`. |
 | **Settings** | Gateway URL, pairing, agent service control, autostart, runtime paths, app version |
 
 ## 3. Gateway connection
@@ -38,7 +38,7 @@ system in `src/app/globals.css` and the primitives in `src/components/ui.tsx`).
 * The gateway URL is validated before it is stored (`normalizeGatewayUrl`): `http://` or
   `https://` only, no whitespace, no embedded credentials, no query string or fragment.
 * `GET /api/health` — unauthenticated, 8-second abort timeout; drives the "gateway
-  connected" state and the fleet counters.
+  connected" state. Response is `{ok:true}` / `{ok:false}` only.
 * `GET /api/jobs?limit=50` — **requires a manager session**. The desktop app has no session
   of its own, so this returns 401 until the user signs in at the gateway dashboard; the UI
   surfaces that instead of hiding it.

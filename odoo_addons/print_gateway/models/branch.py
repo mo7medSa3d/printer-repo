@@ -306,8 +306,10 @@ class PrintGatewayBranch(models.Model):
         # Resolve destination and persist the operation ID BEFORE the HTTP
         # call so a timeout after Gateway acceptance retries with the same
         # key instead of minting a second logical job.
-        dest = self.env['print_gateway.destination'].search(
-            [('gateway_destination_id', '=', str(destination_id))], limit=1)
+        dest = self.env['print_gateway.destination'].search([
+            ('gateway_destination_id', '=', str(destination_id)),
+            ('branch_id', '=', self.id),
+        ], limit=1)
         if not dest:
             try:
                 odoo_id = int(destination_id)
@@ -315,7 +317,10 @@ class PrintGatewayBranch(models.Model):
                 odoo_id = 0
             if odoo_id > 0:
                 candidate = self.env['print_gateway.destination'].browse(odoo_id)
-                dest = candidate.exists()
+                if candidate.exists() and candidate.branch_id.id == self.id:
+                    dest = candidate
+                else:
+                    dest = False
             else:
                 dest = False
 
@@ -326,7 +331,7 @@ class PrintGatewayBranch(models.Model):
             ('idempotency_key', '=', idempotency_key),
         ], limit=1)
         if not existing:
-            existing = Job.create({
+            vals = {
                 'branch_id': self.id,
                 'gateway_job_id': False,
                 'destination_id': dest.id if dest else False,
@@ -338,7 +343,21 @@ class PrintGatewayBranch(models.Model):
                 'odoo_record_id': odoo_record_id or False,
                 'report_xml_id': report_xml_id or False,
                 'report_name': report_name or False,
-            })
+            }
+            # Unique (branch_id, idempotency_key) is the concurrent-safety
+            # gate on the Odoo side. Two workers that both miss the search
+            # collide here; the loser re-reads the winner inside a savepoint
+            # so the surrounding transaction is not aborted.
+            try:
+                with self.env.cr.savepoint():
+                    existing = Job.create(vals)
+            except Exception:
+                existing = Job.search([
+                    ('branch_id', '=', self.id),
+                    ('idempotency_key', '=', idempotency_key),
+                ], limit=1)
+                if not existing:
+                    raise
         # Gateway IDs are string columns. Odoo int ids (record ids) MUST be
         # stringified here: a bare int in JSON would make the Gateway's
         # branchId/destinationId comparisons fail against its text columns

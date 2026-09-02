@@ -206,7 +206,9 @@ Auth: agent. Sent every 30 s.
 ```
 
 Updates `agents.status`/`lastSeenAt` and upserts each printer **scoped to the calling
-agent** — a printer row owned by another agent is skipped, never overwritten. Values are
+agent** — a printer row owned by another agent is skipped, never overwritten. An existing
+printer's `enabled` flag is operator-controlled and is **not** overwritten by a heartbeat
+(a disabled printer stays disabled). Values are
 normalised/whitelisted: `type` ∈ `network|usb|spooler|tcp|ipp|ipps`, `connectionType` ∈
 `tcp|network|usb|spooler|ipp|ipps`, `protocol` ∈ `raw|escpos|ipp|ipps|spooler|windows_spooler`,
 `status` ∈ `online|offline|busy|error|unknown`. `capabilities.supported_protocols` is what
@@ -262,10 +264,10 @@ All require a manager session unless stated otherwise.
 
 | Endpoint | Notes |
 |---|---|
-| `POST /api/auth/manager/login` | `{username,password}` → `{ok:true,expiresAt}` + `Set-Cookie: mgr_session` (httpOnly, 8 h). 400 missing fields, 401 bad credentials, 500 when manager auth is not configured |
+| `POST /api/auth/manager/login` | `{username,password}` → `{ok:true,expiresAt}` + `Set-Cookie: mgr_session` (httpOnly, 8 h). 400 missing fields, 401 bad credentials, 429 too many attempts (`Retry-After`), 503 limiter store unavailable, 500 when manager auth is not configured |
 | `POST /api/auth/manager/logout` | Revokes the session row, clears the cookie |
 | `GET /api/auth/manager/me` | `{authenticated:true,jti,exp}` or 401 |
-| `GET /api/health` | **No auth.** `{ok:true, agents:{total,online}, printers:{total,online}, jobs:{queued,failed}}`; `{ok:false}` + 500 when the database is unreachable. Counts are best-effort |
+| `GET /api/health` | **No auth.** Liveness only: `{ok:true}` when PostgreSQL answers `select 1`; `{ok:false}` + 500 when the database is unreachable. Inventory/job counts are **not** returned. |
 | `GET /api/agents` | List agents (secrets stripped) |
 | `GET /api/agents/:id` | `{agent, printers, jobCount}` (secret stripped), 404 unknown |
 | `GET /api/branches` · `POST /api/branches` | List / create a branch (`{name,description,location,timezone,enabled}` → 201 `{id,name}`) |
