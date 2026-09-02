@@ -114,10 +114,43 @@ export const printers = pgTable("printers", {
   id: text("id").primaryKey(), // printer_...
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
-  type: text("type").notNull().default("network"), // legacy compatibility; prefer printerType/connectionType/protocol
+  /* ---------------------------------------------------------------------
+   * Printer transport model — exactly three canonical fields:
+   *
+   *   printerType    WHAT the device is        thermal | laser | inkjet |
+   *                                            spooler | other | unknown
+   *   connectionType HOW the gateway reaches   tcp | usb | spooler | ipp |
+   *                  it (the transport)        ipps | network
+   *   protocol       WHAT BYTES it speaks      raw | escpos | ipp | ipps |
+   *                                            spooler | windows_spooler
+   *
+   * These three are orthogonal — a laser printer reached over IPP speaking
+   * PDF, and a thermal printer reached over TCP speaking ESC/POS, are both
+   * expressible without overlap. All routing, capability checking and virtual
+   * classification read ONLY these.
+   * ------------------------------------------------------------------- */
   printerType: text("printer_type").notNull().default("thermal"),
   connectionType: text("connection_type").notNull().default("tcp"),
   protocol: text("protocol").notNull().default("escpos"),
+
+  /**
+   * LEGACY COMPATIBILITY — READ-ONLY DERIVED DATA. Do not read this in new code.
+   *
+   * `type` predates the three canonical fields above and conflated "what the
+   * device is" with "how we reach it". It is retained ONLY because deployed Go
+   * agents still send it and older rows still contain it; dropping it now would
+   * break agents mid-upgrade.
+   *
+   * It is DERIVED from `connectionType` at the single compatibility boundary
+   * (`normalizePrinter` in the heartbeat route) and written for backwards
+   * compatibility. Nothing in the gateway branches on it. Treat it as an
+   * output, never an input: see `canonicalTypeFor()` in
+   * `src/lib/printer-transport.ts`, which is the only place allowed to compute it.
+   *
+   * Removal requires an agent protocol version boundary — see
+   * docs/DATABASE.md "Legacy printer fields".
+   */
+  type: text("type").notNull().default("network"),
   status: text("status").notNull().default("unknown"),
   config: jsonb("config").$type<{
     ip?: string;

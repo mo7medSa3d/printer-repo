@@ -104,6 +104,44 @@ branches <- agents.branch_id <- printers.agent_id
   source of truth. A job keeps the branch it was printed for even if the agent
   is moved afterwards.
 
+#### Printer transport fields (canonical) and the legacy `type` column
+
+Exactly three orthogonal fields describe a printer, and all gateway logic reads
+only these:
+
+| Field | Meaning | Values |
+|---|---|---|
+| `printer_type` | WHAT the device is | `thermal`, `laser`, `inkjet`, `spooler`, `other`, `unknown` |
+| `connection_type` | HOW it is reached (transport) | `tcp`, `usb`, `spooler`, `ipp`, `ipps`, `network` |
+| `protocol` | WHAT BYTES it accepts | `raw`, `escpos`, `ipp`, `ipps`, `spooler`, `windows_spooler` |
+
+They are orthogonal by design: "a laser printer over IPP accepting PDF" and "a
+thermal printer over raw TCP accepting ESC/POS" are both expressible with no
+field encoding another's meaning.
+
+##### Legacy printer fields
+
+`printers.type` predates that model and conflated device kind with transport.
+It is retained as **read-only compatibility data** for one reason: deployed Go
+agents still send it, and dropping it now would break them mid-upgrade.
+
+Its rules are absolute:
+
+1. It is **derived** from `connection_type` — never the reverse — and only by
+   `canonicalTypeFor()` in `src/lib/printer-transport.ts`.
+2. That derivation happens at exactly **one** compatibility boundary,
+   `normalizePrinter()` in the agent heartbeat route, where legacy payloads are
+   converted into the canonical model immediately.
+3. **No gateway logic branches on it.** Routing, capability matching and virtual
+   classification read the canonical fields only. A test enforces this.
+4. It is written for backwards compatibility and otherwise ignored.
+
+The mapping is lossy in one direction (several transports collapse onto
+`network`), which is exactly why it cannot be used to recover the transport.
+
+**Removal path:** bump the agent protocol version, wait out the support window
+for agents still sending `type`, then drop the column in a new migration.
+
 `capabilities.supported_protocols` is the list the routing capability check uses; the agent
 reports it in the heartbeat unless the operator pinned it in the agent config.
 

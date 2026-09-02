@@ -28,14 +28,24 @@ class PrintGatewayPrinter(models.Model):
 
     gateway_printer_id = fields.Char(string='Gateway Printer ID', required=True, help='ID in Gateway, e.g., printer_xxx')
     name = fields.Char(required=True)
-    # The one and only ownership link. Deleting the agent removes its printers,
-    # exactly as the Gateway does.
+    # The one and only ownership link.
+    #
+    # ondelete='restrict', NOT 'cascade'. A printer is not a detail of its agent
+    # that can be discarded with it: it is a runtime record that print jobs
+    # reference and that operators audit. Cascading would mean that deleting one
+    # agent row silently destroys every printer it ever owned — and, through
+    # print_job.printer_id, blanks the printer out of that job history too.
+    #
+    # Deletion is refused while printers exist; retire the agent instead
+    # (see `unlink` below and `action_retire`).
     agent_id = fields.Many2one(
-        'print_gateway.agent', string='Agent', required=True, ondelete='cascade', index=True,
+        'print_gateway.agent', string='Agent', required=True, ondelete='restrict', index=True,
         help='Agent that owns this printer. The printer\'s branch is derived from this agent.')
+    # No ondelete on a stored related field: it follows agent_id, and the
+    # restrict above is what actually protects the chain.
     branch_id = fields.Many2one(
         'print_gateway.branch', string='Branch',
-        related='agent_id.branch_id', store=True, readonly=True, index=True, ondelete='cascade',
+        related='agent_id.branch_id', store=True, readonly=True, index=True,
         help='Derived from the printer\'s agent (Branch -> Agent -> Printer). Read-only: '
              'move the agent to another branch, or hand the printer to an agent in the '
              'target branch, to change it.')
@@ -69,6 +79,9 @@ class PrintGatewayPrinter(models.Model):
         ('busy', 'Busy'),
         ('error', 'Error'),
         ('unknown', 'Unknown'),
+        # TERMINAL. The physical device is gone. Never set by a sync/heartbeat,
+        # only by an operator, and never transitioned out of.
+        ('retired', 'Retired'),
     ], default='unknown')
     ip_address = fields.Char(help='Network IP if TCP')
     port = fields.Integer(help='Network port if TCP')
@@ -163,3 +176,61 @@ class PrintGatewayPrinter(models.Model):
             'tag': 'display_notification',
             'params': {'title': _('Test Print Queued'), 'message': _('Job %s created') % job_id, 'type': 'success'},
         }
+
+    # ------------------------------------------------------------------
+    # Lifecycle and deletion
+    # ------------------------------------------------------------------
+
+    def action_retire(self):
+        """Mark the physical device as permanently gone.
+
+        TERMINAL: there is no un-retire. Reversing it would let a
+        decommissioned printer's identity — and every job that claims to have
+        been printed on it — be silently transferred to different hardware.
+        Register the replacement as a new printer instead; the owning agent's
+        next sync does that automatically.
+        """
+        for rec in self:
+            if rec.status == 'retired':
+                raise ValidationError(
+                    _('Printer %s is already retired. Retirement is permanent.') % rec.display_name)
+            rec.write({'status': 'retired', 'enabled': False})
+        return True
+
+    def write(self, vals):
+        # Guard the terminal state at the ORM level, so it also holds for
+        # imports, server actions and anything else that bypasses the button.
+        if 'status' in vals and vals['status'] != 'retired':
+            retired = self.filtered(lambda r: r.status == 'retired')
+            if retired:
+                raise ValidationError(_(
+                    'Cannot change the status of retired printer(s): %s.\n\n'
+                    'Retirement is permanent — it records that the physical device is gone. '
+                    'Register the replacement as a new printer so its job history stays distinct.'
+                ) % ', '.join(retired.mapped('display_name')))
+        return super().write(vals)
+
+    def unlink(self):
+        """Refuse to delete a printer that carries history.
+
+        print_job.printer_id is ondelete='set null', so deleting a printer does
+        not remove its jobs — it blanks them, which is worse: the jobs survive
+        as orphans that no longer say what they printed on. Retire instead.
+        """
+        Job = self.env['print_gateway.print_job']
+        Binding = self.env['print_gateway.printer_binding']
+        for rec in self:
+            job_count = Job.search_count([('printer_id', '=', rec.id)])
+            if job_count:
+                raise ValidationError(_(
+                    'Printer %s has %s print job(s) in its history and cannot be deleted.\n\n'
+                    'Deleting it would strip those jobs of the printer they ran on. '
+                    'Use Retire instead — it stops all new routing and preserves the audit trail.'
+                ) % (rec.display_name, job_count))
+            bindings = Binding.search([('printer_id', '=', rec.id)])
+            if bindings:
+                raise ValidationError(_(
+                    'Printer %s is still referenced by %s routing binding(s): %s.\n\n'
+                    'Remove or repoint those bindings first, or retire the printer.'
+                ) % (rec.display_name, len(bindings), ', '.join(bindings.mapped('display_name'))))
+        return super().unlink()

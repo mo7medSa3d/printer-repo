@@ -15,7 +15,10 @@ class PrintGatewayPrintJob(models.Model):
     # was routed through at creation time. Preserved verbatim for auditability,
     # idempotency scoping (unique(branch_id, idempotency_key)) and branch-scoped
     # authorization, even if the printer's agent later moves to another branch.
-    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
+    # ondelete='restrict': a print job is an audit record. Deleting a branch
+    # must not erase the history of everything ever printed for it. Branch
+    # deletion is refused while jobs exist (see branch.unlink).
+    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='restrict')
     destination_id = fields.Many2one('print_gateway.destination', ondelete='set null')
     document_type = fields.Char()
     printer_id = fields.Many2one('print_gateway.printer', ondelete='set null')

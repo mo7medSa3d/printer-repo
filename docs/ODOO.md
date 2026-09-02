@@ -58,6 +58,43 @@ schema is applied. It refuses to upgrade — naming the offending records — if
 has no agent, or if a printer's stored branch disagrees with its agent's branch. Resolve
 those in the old version first; the migration never guesses which branch was intended.
 
+### Lifecycle and deletion
+
+`retired` is a **terminal** status on both `print_gateway.agent` and
+`print_gateway.printer`. `action_retire()` sets it; `write()` refuses to move
+any record out of it, so imports and server actions cannot bypass the button.
+Retiring an agent retires its printers too — a printer is only reachable
+through its agent.
+
+Deletion is deliberately restricted so it can never trade audit history for a
+tidy delete:
+
+| Relation | `ondelete` | Effect |
+|---|---|---|
+| `printer.agent_id` | `restrict` | deleting an agent no longer destroys its printers |
+| `agent.branch_id` | `restrict` | deleting a branch no longer wipes a site's agents/printers |
+| `print_job.branch_id` | `restrict` | print history survives a branch delete |
+| `print_job.printer_id` / `agent_id` | `set null` | unchanged, but `unlink()` prevents reaching this |
+
+`printer.unlink()`, `agent.unlink()` and `branch.unlink()` refuse when jobs,
+printers or bindings exist, naming the blocker. Retire instead.
+
+### Moving an agent between branches
+
+Because a printer's branch is derived from its agent, moving an agent moves all
+of its printers — and any binding routing to them stays behind in the old
+branch, instantly becoming cross-branch.
+
+`_check_branch_consistency` is an `@api.constrains` on the **binding**, and a
+branch move changes no binding field, so it never fires. The validation
+therefore lives in `agent.write()`, which collects the affected bindings before
+the write and validates within the same transaction:
+
+* **Default: refuse**, listing every offending binding with its branch and printer.
+* **Opt-in:** `action_move_to_branch_disabling_bindings(branch_id)` moves the
+  agent and **disables** the bindings (never deletes them), recording the reason
+  in the agent chatter, each binding's notes and the server log.
+
 ## 3. Configuration order
 
 1. **Branch** — set `gateway_url` and the branch-scoped `gateway_api_key`

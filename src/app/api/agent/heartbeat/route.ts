@@ -3,6 +3,7 @@ import { agents, printers } from "@/db/schema";
 import { validateAgent } from "@/lib/agent-auth";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { canonicalTypeFor } from "@/lib/printer-transport";
 
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
 const VALID_PRINTER_TYPES = new Set(["network", "usb", "spooler", "tcp", "ipp", "ipps"]);
@@ -72,8 +73,13 @@ function sanitizePrinter(p: ReportedPrinter): {
     config.protocol = protocol;
   }
   const capabilities = p.capabilities && typeof p.capabilities === "object" ? (p.capabilities as Record<string, unknown>) : null;
-  // Map legacy type to still store for backward compat
-  const legacyType = connType === "network" ? "network" : connType === "spooler" ? "spooler" : connType;
+  // LEGACY COMPATIBILITY BOUNDARY.
+  //
+  // This is the one and only place the deprecated `type` value is produced.
+  // It is DERIVED from the canonical connectionType — never read back, never
+  // used for a decision — so the legacy column can never disagree with the
+  // canonical fields. See src/lib/printer-transport.ts.
+  const legacyType = canonicalTypeFor(connType);
   return { id: p.id, name: p.name, type: legacyType, printerType, connectionType: connType, protocol, status, enabled, config, capabilities };
 }
 
@@ -111,9 +117,19 @@ export async function POST(req: Request) {
           skipped.push(p.id);
           continue;
         }
+        // `retired` is a TERMINAL, operator-asserted state meaning the physical
+        // device is gone for good. A heartbeat must never overwrite it: if the
+        // agent still enumerates a stale queue (a Windows spooler entry that
+        // was never removed, say), reporting it as `online` would silently
+        // resurrect a decommissioned printer and make it look routable again.
+        if (existing.status === "retired") {
+          skipped.push(p.id);
+          continue;
+        }
         await db.update(printers)
           .set({
             name: p.name,
+            // Legacy compatibility column, derived (see normalizePrinter).
             type: p.type as any,
             printerType: p.printerType as any,
             connectionType: p.connectionType as any,

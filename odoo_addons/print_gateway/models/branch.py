@@ -108,6 +108,41 @@ class PrintGatewayBranch(models.Model):
         except requests.RequestException as e:
             raise ValidationError(_('Cannot reach Gateway: %s') % str(e))
 
+    def unlink(self):
+        """Refuse to delete a branch that still has runtime records or history.
+
+        Every child relation used to be ondelete='cascade', so deleting one
+        branch row removed its destinations, document types, bindings, agents,
+        printers AND print jobs in a single silent sweep — the entire operating
+        and audit history of a site. Agents, printers and jobs now restrict the
+        delete; this method turns the resulting database error into an
+        actionable message naming what is in the way.
+        """
+        Agent = self.env['print_gateway.agent']
+        Printer = self.env['print_gateway.printer']
+        Job = self.env['print_gateway.print_job']
+        for rec in self:
+            blockers = []
+            agents = Agent.search([('branch_id', '=', rec.id)])
+            if agents:
+                blockers.append(_('%s agent(s): %s') % (
+                    len(agents), ', '.join(agents.mapped('display_name'))))
+            printers = Printer.search([('branch_id', '=', rec.id)])
+            if printers:
+                blockers.append(_('%s printer(s): %s') % (
+                    len(printers), ', '.join(printers.mapped('display_name'))))
+            job_count = Job.search_count([('branch_id', '=', rec.id)])
+            if job_count:
+                blockers.append(_('%s print job(s) of history') % job_count)
+            if blockers:
+                raise ValidationError(_(
+                    'Branch %s cannot be deleted because it still has:\n  - %s\n\n'
+                    'Deleting it would destroy the runtime topology and the print audit '
+                    'trail for this site. Retire its agents (which retires their printers) '
+                    'and disable the branch instead.'
+                ) % (rec.display_name, '\n  - '.join(blockers)))
+        return super().unlink()
+
     def action_sync_from_gateway(self):
         """Pull agents and printers from the Gateway (Gateway -> Odoo). Idempotent.
 

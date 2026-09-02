@@ -32,9 +32,20 @@
 --   c) accept the agent's branch as authoritative
 --        UPDATE printers SET branch_id = (SELECT branch_id FROM agents WHERE agents.id = printers.agent_id)
 --        WHERE id = '<printer>';
---   d) retire the record
---        DELETE FROM printer_bindings WHERE printer_id = '<printer>';  -- check print_jobs first
---        DELETE FROM printers WHERE id = '<printer>';
+--   d) RETIRE the record (the correct option for hardware that is gone)
+--        UPDATE printer_bindings SET enabled = false WHERE printer_id = '<printer>';
+--        UPDATE printers SET enabled = false, status = 'retired' WHERE id = '<printer>';
+--      Retirement is terminal and preserves everything: print_jobs.printer_id
+--      is a NOT NULL foreign key, so the job history keeps pointing at a real
+--      row that still says what it was. A retired printer is never selected for
+--      routing again.
+--
+-- DO NOT DELETE printers, agents or bindings to resolve a migration conflict.
+-- Deleting a printer either fails outright (print_jobs references it) or, where
+-- a reference is nullable, silently strips finished jobs of the printer they
+-- ran on — destroying the audit trail to fix a metadata disagreement. Retire or
+-- reassign; never delete.
+--
 -- Never silently pick one of these for the operator: each moves real hardware
 -- between real business locations.
 -- ============================================================================
@@ -68,7 +79,7 @@ BEGIN
     RAISE EXCEPTION
       'MIGRATION 0006 ABORTED: % printer(s) have no valid agent. A printer''s branch is derived through its agent, so an agent-less printer cannot be migrated.%s%s',
       bad_count, E'\n', report
-      USING HINT = 'Assign each printer to an agent in the correct branch (UPDATE printers SET agent_id = ...) or delete the stale printer, then re-run.';
+      USING HINT = 'Reassign each printer to an agent in the correct branch (UPDATE printers SET agent_id = ...), or retire it (UPDATE printers SET enabled = false, status = ''retired''). Do not delete printers: print_jobs reference them and the history would be lost. Then re-run.';
   END IF;
 
   -- ---------------------------------------------------------------- step 2

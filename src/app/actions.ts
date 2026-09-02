@@ -167,12 +167,32 @@ export async function createTestPrintJob(printerId: string) {
  *
  *   active   — normal operation
  *   disabled — temporarily out of service; credentials still valid, but no new
- *              work is routed to it. Reversible.
- *   retired  — permanently decommissioned; runtime credentials revoked.
+ *              work is routed to it. REVERSIBLE.
+ *   retired  — permanently decommissioned; runtime credentials destroyed.
+ *              TERMINAL — there is no way back.
  *
  * Both states preserve every job, binding and relationship needed to inspect
  * history. Retiring an agent cascades to its printers, because a printer that
  * cannot be reached through its agent cannot print.
+ *
+ * WHY `retired` IS TERMINAL
+ * -------------------------
+ * Retirement destroys the agent's credential (`secret` is set to NULL, not
+ * archived). Nothing can restore it, so "un-retiring" could only ever produce
+ * an agent that no device can authenticate as — an entity that looks live in
+ * the console but is permanently unreachable. That is strictly worse than
+ * having no record at all, because it invites an operator to route work to it.
+ *
+ * Retirement is also the state operators use to assert "this hardware is gone".
+ * Allowing it to be reversed would let a decommissioned machine's identity be
+ * silently resurrected and pointed at a different physical device, while its
+ * historical jobs still claim to have been printed by "that" agent.
+ *
+ * The correct way to bring a machine back is to create a NEW agent in the
+ * intended branch and pair it. It gets a fresh id, a fresh credential and a
+ * clean audit trail, and the retired record stays an honest historical fact.
+ *
+ * Use `disabled` for anything temporary.
  * ------------------------------------------------------------------------ */
 
 export type AgentLifecycleState = "active" | "disabled" | "retired";
@@ -192,6 +212,16 @@ export async function setAgentLifecycle(id: string, state: AgentLifecycleState) 
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
   if (!agent) throw new Error("Agent not found");
 
+  // `retired` is TERMINAL. Refuse every transition out of it, including
+  // retired -> retired, so the intent of the refusal is unambiguous.
+  if (agent.status === "retired") {
+    throw new Error(
+      `agent ${id} is retired: retirement is permanent and cannot be undone. ` +
+      `Its credential was destroyed, so no device could authenticate as it again. ` +
+      `Create a new agent in the target branch and pair it instead.`
+    );
+  }
+
   await db.transaction(async (tx) => {
     if (state === "retired") {
       await tx.update(agents).set({
@@ -210,9 +240,10 @@ export async function setAgentLifecycle(id: string, state: AgentLifecycleState) 
       await tx.update(agents).set({ status: "disabled", updatedAt: new Date() }).where(eq(agents.id, id));
       await tx.update(printers).set({ enabled: false, updatedAt: new Date() }).where(eq(printers.agentId, id));
     } else {
-      // Reactivation restores the agent only. Printers are re-enabled
-      // deliberately, one at a time: a printer disabled for its own reason
-      // (paper jam, decommissioned hardware) must not silently come back.
+      // Reactivation from `disabled` only (retired was rejected above).
+      // Printers are re-enabled deliberately, one at a time: a printer disabled
+      // for its own reason (paper jam, decommissioned hardware) must not
+      // silently come back.
       await tx.update(agents).set({ status: "offline", updatedAt: new Date() }).where(eq(agents.id, id));
     }
   });
@@ -224,6 +255,12 @@ export async function setAgentLifecycle(id: string, state: AgentLifecycleState) 
  * Move a printer through its lifecycle. A disabled or retired printer is never
  * selected for new jobs (routing checks `enabled`), but its historical jobs and
  * bindings remain intact and queryable.
+ *
+ * As with agents, `retired` is TERMINAL: it records that the physical device is
+ * gone. Reversing it would let a decommissioned printer's identity — and its
+ * job history — be silently transferred to different hardware. Register the
+ * replacement as a new printer instead; the agent's next heartbeat does this
+ * automatically.
  */
 export async function setPrinterLifecycle(id: string, state: PrinterLifecycleState) {
   await requireManager();
@@ -233,18 +270,22 @@ export async function setPrinterLifecycle(id: string, state: PrinterLifecycleSta
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
   if (!printer) throw new Error("Printer not found");
 
+  // Terminal: no transition out of `retired`, in either direction.
+  if (printer.status === "retired") {
+    throw new Error(
+      `printer ${id} is retired: retirement is permanent and cannot be undone. ` +
+      `Register the replacement device as a new printer (the owning agent's next ` +
+      `heartbeat will do this automatically) so its job history stays distinct.`
+    );
+  }
+
   if (state === "retired") {
     await db.update(printers).set({ enabled: false, status: "retired", updatedAt: new Date() }).where(eq(printers.id, id));
   } else if (state === "disabled") {
     await db.update(printers).set({ enabled: false, updatedAt: new Date() }).where(eq(printers.id, id));
   } else {
-    if (printer.status === "retired") {
-      // Un-retiring is deliberate and separate: reactivate resets to unknown
-      // and lets the next heartbeat establish the real status.
-      await db.update(printers).set({ enabled: true, status: "unknown", updatedAt: new Date() }).where(eq(printers.id, id));
-    } else {
-      await db.update(printers).set({ enabled: true, updatedAt: new Date() }).where(eq(printers.id, id));
-    }
+    // Re-enable from `disabled`. The next heartbeat establishes the real status.
+    await db.update(printers).set({ enabled: true, updatedAt: new Date() }).where(eq(printers.id, id));
   }
   revalidatePath("/dashboard");
 }

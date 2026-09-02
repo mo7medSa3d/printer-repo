@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { printers, agents } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
 import { z } from "zod";
+import { canonicalTypeFor } from "@/lib/printer-transport";
 import { idField, nameField, MAX_ID_LENGTH, MAX_NAME_LENGTH } from "@/lib/limits";
 import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -25,6 +26,11 @@ const createPrinterSchema = z.object({
   /** Optional cross-check only — see above. Never persisted. */
   branchId: z.string().max(MAX_ID_LENGTH).optional(),
   name: nameField(),
+  /**
+   * LEGACY. Accepted only so older callers keep working; it is normalized into
+   * `connectionType` immediately and never stored as supplied. The stored
+   * `type` column is derived via `canonicalTypeFor()`. Prefer `connectionType`.
+   */
   type: z.enum(["network", "usb", "spooler", "tcp", "ipp", "ipps"]).optional(),
   connectionType: z.enum(["tcp", "usb", "spooler", "ipp", "ipps", "network"]).optional(),
   printerType: z.enum(["thermal", "laser", "inkjet", "spooler", "other", "unknown"]).optional(),
@@ -147,7 +153,9 @@ export async function POST(req: Request) {
     // Ownership: agent only. The branch follows from agents.branch_id.
     agentId: data.agentId,
     name: data.name,
-    type: connectionType as any,
+    // Legacy compatibility column: DERIVED from the canonical connectionType,
+    // never taken from the request. See src/lib/printer-transport.ts.
+    type: canonicalTypeFor(connectionType) as any,
     printerType: printerType as any,
     connectionType: connectionType as any,
     protocol: protocol as any,

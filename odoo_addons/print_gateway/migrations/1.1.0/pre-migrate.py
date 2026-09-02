@@ -50,8 +50,10 @@ def migrate(cr, version):
         raise Exception(
             "print_gateway migration aborted: the same Gateway agent is mirrored in several "
             "branches, which the new Branch -> Agent -> Printer model forbids: %s. "
-            "Keep exactly one mirror per agent (delete the duplicates or re-point their printers) "
-            "and upgrade again." % ", ".join("%s x%s" % (a, n) for a, n in dup_agents)
+            "Keep exactly one mirror per agent: re-point the surviving mirror's printers at it "
+            "and RETIRE the redundant mirrors (set status='retired'). Do not delete them — "
+            "print jobs reference agents, and deleting would strip that history. %s"
+            % ", ".join("%s x%s" % (a, n) for a, n in dup_agents)
         )
 
     cr.execute("""
@@ -64,7 +66,9 @@ def migrate(cr, version):
         raise Exception(
             "print_gateway migration aborted: the same Gateway printer is mirrored in several "
             "branches: %s. A printer belongs to exactly one agent (and therefore one branch). "
-            "Delete the stale duplicate mirrors and upgrade again."
+            "Retire the stale duplicate mirrors (set status='retired', enabled=false) and "
+            "upgrade again. Do not delete them: print jobs reference printers, and deleting "
+            "would destroy the record of what those jobs printed on."
             % ", ".join("%s x%s" % (p, n) for p, n in dup_printers)
         )
 
@@ -102,7 +106,8 @@ def migrate(cr, version):
             "print_gateway migration aborted: %s printer mirror(s) cannot be attached to an agent, "
             "so their branch cannot be derived:\n%s\n"
             "Run a Gateway sync first (so the agents exist in Odoo), set gateway_agent_id "
-            "correctly, or delete the stale mirrors, then upgrade again."
+            "correctly, or retire the stale mirrors (status='retired'), then upgrade again. "
+            "Do not delete them — retirement preserves the print history that references them."
             % (
                 len(orphans),
                 "\n".join(

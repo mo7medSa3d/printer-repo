@@ -6,9 +6,22 @@ These two workflow files are **ready to use but not yet installed** at
 ## Why they live here
 
 The automation account that opened the pull request does not hold GitHub's
-`workflows` permission, so its pushes are rejected by the API when they add or
-modify anything under `.github/workflows/`. Rather than drop the work, the
-files are committed here unchanged.
+`workflows` permission. Installing them was attempted and is **blocked at the
+platform level**, by two independent routes:
+
+```
+$ git push origin <branch>
+ ! [remote rejected] refusing to allow a GitHub App to create or update
+   workflow `.github/workflows/gateway-ci.yml` without `workflows` permission
+
+$ gh api -X PUT .../contents/.github/workflows/gateway-ci.yml
+ HTTP 403  Resource not accessible by integration
+```
+
+This is a credential scope, not a repository setting — no change inside the
+repo can work around it. The files are therefore committed here unchanged and
+verified (both parse as valid GitHub Actions YAML: `gateway-ci.yml` defines the
+`gateway` and `agent` jobs, `odoo-ci.yml` defines `odoo-tests`).
 
 ## Installing them
 

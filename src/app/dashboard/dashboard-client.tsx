@@ -304,9 +304,13 @@ export default function DashboardClient({
                     </p>
                   </div>
                   <div className="mt-3 flex justify-end">
-                    <Button variant="ghost" size="sm" onClick={() => setPendingRetire(agent)} icon={<Trash2 className="h-3.5 w-3.5" />} className="text-ink-3 hover:text-bad">
-                      Retire
-                    </Button>
+                    {agent.status === "retired" ? (
+                      <span className="text-[11px] text-ink-3">Retired — permanent</span>
+                    ) : (
+                      <Button variant="ghost" size="sm" onClick={() => setPendingRetire(agent)} icon={<Trash2 className="h-3.5 w-3.5" />} className="text-ink-3 hover:text-bad">
+                        Retire
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -362,7 +366,10 @@ export default function DashboardClient({
                   <Button variant="primary" size="sm" onClick={() => handleTestPrint(printer.id)} disabled={isLoading || !printer.enabled}>Test print</Button>
                 </div>
                 <div className="mt-2 flex justify-end">
-                  {printer.enabled ? (
+                  {/* `retired` is terminal — offer no way out of it. */}
+                  {printer.status === "retired" ? (
+                    <span className="text-[11px] text-ink-3">Retired — permanent</span>
+                  ) : printer.enabled ? (
                     <Button variant="ghost" size="sm" disabled={isLoading} onClick={() => handlePrinterLifecycle(printer.id, "disabled")} className="text-ink-3 hover:text-bad">Disable</Button>
                   ) : (
                     <Button variant="ghost" size="sm" disabled={isLoading} onClick={() => handlePrinterLifecycle(printer.id, "active")} className="text-ink-3 hover:text-ok">Re-enable</Button>
@@ -416,7 +423,10 @@ export default function DashboardClient({
         <p className="text-sm text-ink-2">
           The agent stops polling, printing and reporting heartbeats, and every printer it owns is
           disabled — a printer is only reachable through its agent. All print jobs, printers and
-          history are <strong>preserved</strong> and remain queryable. To bring the machine back,
+          history are <strong>preserved</strong> and remain queryable.
+          {" "}
+          <strong>This is permanent and cannot be undone:</strong> the agent&apos;s credential is
+          destroyed, so no device can ever authenticate as it again. To bring the machine back,
           create a new agent and pair it with a fresh code.
         </p>
       </Modal>

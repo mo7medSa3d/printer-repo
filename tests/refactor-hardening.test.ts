@@ -694,3 +694,219 @@ describeDb("cross-branch safety and lifecycle (real PostgreSQL)", () => {
     if (r && "error" in r) expect(r.error).toBe("PRINTER_DISABLED");
   });
 });
+
+/* ==========================================================================
+ * 13. P0-1 — `retired` is a TERMINAL state
+ * ======================================================================= */
+describe("retired is terminal", () => {
+  const actions = readFileSync("src/app/actions.ts", "utf8");
+
+  it("refuses any transition out of a retired agent", () => {
+    const fn = actions.slice(
+      actions.indexOf("export async function setAgentLifecycle"),
+      actions.indexOf("export async function setPrinterLifecycle")
+    );
+    expect(fn).toContain('agent.status === "retired"');
+    expect(fn).toContain("retirement is permanent and cannot be undone");
+    // The guard must run BEFORE any write.
+    expect(fn.indexOf('agent.status === "retired"')).toBeLessThan(fn.indexOf("db.transaction"));
+  });
+
+  it("refuses any transition out of a retired printer", () => {
+    const fn = actions.slice(actions.indexOf("export async function setPrinterLifecycle"));
+    expect(fn).toContain('printer.status === "retired"');
+    expect(fn).toContain("retirement is permanent and cannot be undone");
+  });
+
+  it("has no un-retire path left in the printer reactivation branch", () => {
+    const fn = actions.slice(actions.indexOf("export async function setPrinterLifecycle"));
+    // The old code reset a retired printer to "unknown" on reactivate.
+    expect(fn).not.toContain('status: "unknown"');
+  });
+
+  it("a heartbeat cannot resurrect a retired printer", () => {
+    const hb = readFileSync("src/app/api/agent/heartbeat/route.ts", "utf8");
+    expect(hb).toContain('existing.status === "retired"');
+    // It must skip, not update.
+    const block = hb.slice(hb.indexOf('existing.status === "retired"'));
+    expect(block.slice(0, 200)).toContain("skipped.push");
+  });
+
+  it("the console offers no way out of retirement", () => {
+    const ui = readFileSync("src/app/dashboard/dashboard-client.tsx", "utf8");
+    expect(ui).toContain("Retired — permanent");
+    expect(ui).toContain("This is permanent and cannot be undone");
+  });
+
+  it("Odoo enforces the same terminal state on both models", () => {
+    for (const f of ["printer.py", "agent.py"]) {
+      const src = readFileSync(`odoo_addons/print_gateway/models/${f}`, "utf8");
+      expect(src).toContain("('retired', 'Retired')");
+      expect(src).toContain("def action_retire");
+      // ORM-level guard, so imports and server actions cannot bypass the button.
+      expect(src).toContain("Cannot change the status of retired");
+    }
+  });
+});
+
+/* ==========================================================================
+ * 14. P0-2 — Odoo deletion must not destroy runtime history
+ * ======================================================================= */
+describe("Odoo deletion semantics", () => {
+  const printer = readFileSync("odoo_addons/print_gateway/models/printer.py", "utf8");
+  const agent = readFileSync("odoo_addons/print_gateway/models/agent.py", "utf8");
+  const branch = readFileSync("odoo_addons/print_gateway/models/branch.py", "utf8");
+  const job = readFileSync("odoo_addons/print_gateway/models/print_job.py", "utf8");
+
+  it("printer.agent_id restricts instead of cascading", () => {
+    const decl = printer.slice(printer.indexOf("agent_id = fields.Many2one"), printer.indexOf("branch_id = fields.Many2one"));
+    expect(decl).toContain("ondelete='restrict'");
+    expect(decl).not.toContain("ondelete='cascade'");
+  });
+
+  it("the derived branch_id no longer carries a cascade", () => {
+    const decl = printer.slice(printer.indexOf("branch_id = fields.Many2one"), printer.indexOf("printer_type = fields.Selection"));
+    expect(decl).toContain("related='agent_id.branch_id'");
+    expect(decl).not.toContain("ondelete='cascade'");
+  });
+
+  it("agent.branch_id restricts, so deleting a branch cannot wipe a site", () => {
+    const decl = agent.slice(agent.indexOf("branch_id = fields.Many2one"), agent.indexOf("status = fields.Selection"));
+    expect(decl).toContain("ondelete='restrict'");
+  });
+
+  it("print_job.branch_id restricts, preserving the audit trail", () => {
+    expect(job).toContain("branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='restrict')");
+  });
+
+  it("deleting a printer with jobs or bindings is refused", () => {
+    const fn = printer.slice(printer.indexOf("def unlink"));
+    expect(fn).toContain("print job(s) in its history and cannot be deleted");
+    expect(fn).toContain("routing binding(s)");
+    expect(fn).toContain("Use Retire instead");
+  });
+
+  it("deleting an agent that owns printers or has history is refused", () => {
+    const fn = agent.slice(agent.indexOf("def unlink"));
+    expect(fn).toContain("still owns");
+    expect(fn).toContain("print job(s) in its history and cannot be deleted");
+  });
+
+  it("deleting a branch with agents, printers or jobs is refused and names them", () => {
+    const fn = branch.slice(branch.indexOf("def unlink"), branch.indexOf("def action_sync_from_gateway"));
+    expect(fn).toContain("agent(s)");
+    expect(fn).toContain("printer(s)");
+    expect(fn).toContain("print job(s) of history");
+    expect(fn).toContain("cannot be deleted because it still has");
+  });
+});
+
+/* ==========================================================================
+ * 15. P0-3 — moving an Odoo agent validates bindings in the same transaction
+ * ======================================================================= */
+describe("Odoo agent branch move", () => {
+  const agent = readFileSync("odoo_addons/print_gateway/models/agent.py", "utf8");
+  const fn = agent.slice(agent.indexOf("def write(self, vals)"), agent.indexOf("def unlink"));
+
+  it("detects bindings that the move would make cross-branch", () => {
+    expect(fn).toContain("('printer_id', 'in', printers.ids)");
+    expect(fn).toContain("('branch_id', '!=', new_branch_id)");
+  });
+
+  it("collects the affected bindings BEFORE the write commits", () => {
+    // The search must happen before super().write, otherwise the printers have
+    // already moved and the comparison is meaningless.
+    expect(fn.indexOf("stale = Binding.search")).toBeLessThan(fn.indexOf("result = super().write(vals)"));
+  });
+
+  it("refuses the move by default, naming every offending binding", () => {
+    expect(fn).toContain("would become");
+    expect(fn).toContain("cross-branch");
+    expect(fn).toContain("raise ValidationError");
+    // Each binding is listed with its branch and printer.
+    expect(fn).toContain("b.branch_id.display_name");
+    expect(fn).toContain("b.printer_id.display_name");
+  });
+
+  it("offers an explicit, audited disable path instead of a silent one", () => {
+    expect(fn).toContain("disable_cross_branch_bindings");
+    expect(fn).toContain("bindings.write({'enabled': False})");
+    expect(fn).toContain("_logger.warning");
+    expect(fn).toContain("message_post");
+    // Disabled, never deleted.
+    expect(fn).not.toContain("bindings.unlink()");
+    expect(agent).toContain("def action_move_to_branch_disabling_bindings");
+  });
+});
+
+/* ==========================================================================
+ * 16. P1-1 — remediation guidance never says DELETE
+ * ======================================================================= */
+describe("migration remediation guidance", () => {
+  it("migration 0006 recommends retirement/reassignment, not deletion", () => {
+    const sql = readFileSync("drizzle/0006_printer_branch_via_agent.sql", "utf8");
+    expect(sql).not.toContain("DELETE FROM printers");
+    expect(sql).not.toContain("DELETE FROM printer_bindings");
+    expect(sql).toContain("DO NOT DELETE printers, agents or bindings");
+    expect(sql).toContain("status = 'retired'");
+    // The abort hint must not suggest deleting either.
+    expect(sql).not.toContain("or delete the stale printer");
+  });
+
+  it("the Odoo pre-migration recommends retirement too", () => {
+    const mig = readFileSync("odoo_addons/print_gateway/migrations/1.1.0/pre-migrate.py", "utf8");
+    expect(mig).not.toContain("Delete the stale duplicate mirrors");
+    expect(mig).toContain("Do not delete");
+    expect(mig).toContain("status='retired'");
+  });
+});
+
+/* ==========================================================================
+ * 17. P1-2 — canonical transport model, legacy `type` is derived output
+ * ======================================================================= */
+describe("canonical printer transport model", () => {
+  it("defines exactly three orthogonal canonical fields", async () => {
+    const m = await import("@/lib/printer-transport");
+    expect(m.PRINTER_TYPES).toContain("thermal");
+    expect(m.CONNECTION_TYPES).toContain("spooler");
+    expect(m.PRINTER_PROTOCOLS).toContain("escpos");
+    expect(m.isConnectionType("tcp")).toBe(true);
+    expect(m.isConnectionType("thermal")).toBe(false);
+    expect(m.isPrinterType("laser")).toBe(true);
+    expect(m.isPrinterProtocol("windows_spooler")).toBe(true);
+  });
+
+  it("derives the legacy type from the canonical connection type", async () => {
+    const { canonicalTypeFor } = await import("@/lib/printer-transport");
+    expect(canonicalTypeFor("usb")).toBe("usb");
+    expect(canonicalTypeFor("spooler")).toBe("spooler");
+    expect(canonicalTypeFor("ipp")).toBe("ipp");
+    expect(canonicalTypeFor("tcp")).toBe("tcp");
+    // Unknown transports collapse to the legacy catch-all.
+    expect(canonicalTypeFor("something-new")).toBe("network");
+  });
+
+  it("marks printers.type as read-only legacy data in the schema", () => {
+    const schema = readFileSync("src/db/schema.ts", "utf8");
+    expect(schema).toContain("LEGACY COMPATIBILITY — READ-ONLY DERIVED DATA");
+    expect(schema).toContain("Do not read this in new code");
+  });
+
+  it("computes the legacy column only via canonicalTypeFor", () => {
+    for (const f of ["src/app/api/agent/heartbeat/route.ts", "src/app/api/printers/route.ts"]) {
+      expect(readFileSync(f, "utf8")).toContain("canonicalTypeFor(");
+    }
+  });
+
+  it("no gateway logic branches on the legacy type field", () => {
+    // Routing, capability checks and virtual classification must read only the
+    // canonical fields. Reading `type` would reintroduce the ambiguity.
+    for (const f of ["src/lib/routing.ts", "src/lib/printer-virtual.ts", "src/lib/printer-branch.ts"]) {
+      const code = readFileSync(f, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      expect(code, `${f} must not read printer.type`).not.toMatch(/printer\.type\b/);
+      expect(code, `${f} must not destructure a bare type field`).not.toMatch(/\btype:\s*string\s*\|\s*null/);
+    }
+  });
+});

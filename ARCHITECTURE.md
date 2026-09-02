@@ -178,11 +178,62 @@ foreign keys, so they are **retired, never deleted**:
 |---|---|---|
 | `active` | polls, heartbeats, receives jobs | eligible for routing |
 | `disabled` | credentials still valid, but authentication is refused and no work is routed | not selected for new jobs |
-| `retired` | credentials **revoked** (`secret` set to NULL); its printers are disabled too | not selected; kept for history |
+| `retired` | credentials **destroyed** (`secret` set to NULL); its printers are retired too | not selected; kept for history |
 
 Both states preserve every job, binding and relationship, so history stays
 queryable. Retiring an agent cascades to its printers in one transaction,
 because a printer is only reachable through its agent.
+
+**`retired` is TERMINAL — there is no way back.** Retirement destroys the
+credential rather than archiving it, so an "un-retired" agent could only ever be
+one that no device can authenticate as: live-looking in the console, permanently
+unreachable, and inviting an operator to route work to it. Retirement is also
+how an operator asserts "this hardware is gone"; reversing it would let a
+decommissioned identity be silently pointed at different physical hardware while
+its historical jobs still claim to have run on "that" device.
+
+The guard is enforced in three places, so no path can bypass it: the server
+actions refuse the transition, the agent heartbeat skips retired printers (a
+stale spooler entry must not resurrect one), and the console offers no control.
+Odoo enforces the same rule in `write()` so imports and server actions cannot
+work around the button.
+
+To bring a machine back, create a **new** agent and pair it. It gets a fresh id,
+a fresh credential and a clean audit trail; the retired record stays an honest
+historical fact. Use `disabled` for anything temporary.
+
+### Deletion never destroys history
+
+Runtime rows are referenced by print jobs, so the relational model refuses to
+trade audit history for a tidy delete:
+
+| Relation | Behaviour | Why |
+|---|---|---|
+| `printer.agent_id` | **restrict** | Cascading meant deleting one agent silently destroyed every printer it owned |
+| `agent.branch_id` | **restrict** | Cascading meant deleting a branch wiped a whole site's topology |
+| `print_job.branch_id` | **restrict** | A job is an audit record; a branch delete must not erase what was printed |
+
+Deleting a printer, agent or branch that still has printers, bindings or job
+history is refused with a message naming the blocker. Hard delete remains
+available only for genuinely unused rows.
+
+### Moving an agent between branches
+
+A printer's branch is derived, so moving an agent moves all of its printers at
+once. Any binding routing to those printers stays behind in the old branch and
+would instantly become cross-branch.
+
+Odoo's `@api.constrains` on the binding cannot catch this — a branch move
+touches no binding field, so nothing re-triggers it, and the inconsistency would
+only surface later as a failed job. The check therefore runs in
+`agent.write()`, collecting affected bindings **before** the write and
+validating **inside the same transaction**:
+
+* **Default: the move is refused**, naming every offending binding with its
+  branch and printer, so an operator repoints them deliberately.
+* **Opt-in:** `action_move_to_branch_disabling_bindings()` performs the move and
+  **disables** those bindings — never deletes them — recording the reason in the
+  agent chatter, the binding notes and the server log.
 
 Hard deletion still exists for genuinely unused entities but is not the normal
 workflow: `deleteAgent` refuses when the agent has any print history or still
