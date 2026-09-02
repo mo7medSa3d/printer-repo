@@ -151,7 +151,7 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
     await client.query("SELECT pg_advisory_xact_lock($1)", [GLOBAL_PG_LOCK]);
     await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2)`, [branchId, `Branch ${suffix}`]);
     await client.query(
-      `INSERT INTO agents (id, branch_id, name, secret, status, lifecycle) VALUES ($1, $2, $3, $4, 'online', 'active')`,
+      `INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now())`,
       [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]
     );
     const hasBranchCol = await client.query(
