@@ -35,8 +35,8 @@ async function bind(f: Fixture, bindingId: string, printerId: string, priority: 
 
 async function addPrinter(f: Fixture, id: string, opts: { lifecycle?: string; status?: string } = {}) {
   await pool().query(
-    `INSERT INTO printers (id, agent_id, name, printer_type, connection_type, protocol, status, lifecycle, config, capabilities)
-     VALUES ($1, $2, $3, 'other', 'spooler', 'spooler', $4, $5, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb)`,
+    `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+     VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', $4, $5, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb)`,
     [id, f.agentId, id, opts.status ?? "online", opts.lifecycle ?? "active"]
   );
 }
