@@ -106,8 +106,10 @@ export async function GET(req: Request) {
   `);
 
   // Every row returned here is already 'claimed' in the database: the agent
-  // never receives a job it does not own.
-  return NextResponse.json(claimed.rows);
+  // never receives a job it does not own. drizzle node-postgres returns
+  // { rows, rowCount } but callers expect a plain array; normalize defensively.
+  const rows = (claimed as unknown as { rows?: unknown[] })?.rows ?? (claimed as unknown as unknown[]);
+  return NextResponse.json(Array.isArray(rows) ? rows : Array.isArray(claimed) ? claimed : []);
 }
 
 export async function PATCH(req: Request) {

@@ -203,7 +203,8 @@ suite("WS claim-before-delivery", () => {
     );
 
     const res = await agentJobsGET(agentRequest(f, "GET"));
-    const rows = await res.json();
+    const payload = await res.json();
+    const rows = Array.isArray(payload) ? payload : Array.isArray((payload as any)?.rows) ? (payload as any).rows : [];
     const reclaimed = rows.find((r: any) => r.id === "job_t3d");
     expect(reclaimed).toBeDefined();
     expect(reclaimed.status).toBe("claimed");
