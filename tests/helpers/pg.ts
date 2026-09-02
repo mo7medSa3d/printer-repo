@@ -145,39 +145,47 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
   const destinationId = `dest_${suffix}`;
   const odooKey = `odoo_${randomBytes(18).toString("base64url")}`;
 
-  // Branch is the root of the hierarchy — must exist before any dependent row.
-  await pool().query(`INSERT INTO branches (id, name) VALUES ($1, $2)`, [branchId, `Branch ${suffix}`]);
-  await pool().query(
-    `INSERT INTO agents (id, branch_id, name, secret, status, lifecycle) VALUES ($1, $2, $3, $4, 'online', 'active')`,
-    [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]
-  );
-  // Printers are owned via Agent only; branch is derived, not stored (post-0006 schema).
-  // Detect legacy column to stay compatible if DB hasn't been migrated yet.
-  const hasBranchCol = await pool().query(
-    `SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`
-  );
-  const legacyBranch = (hasBranchCol.rows?.length ?? 0) > 0 || (hasBranchCol.rowCount ?? 0) > 0;
-  if (legacyBranch) {
-    await pool().query(
-      `INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
-       VALUES ($1, $2, $3, $4, 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`,
-      [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [GLOBAL_PG_LOCK]);
+    await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2)`, [branchId, `Branch ${suffix}`]);
+    await client.query(
+      `INSERT INTO agents (id, branch_id, name, secret, status, lifecycle) VALUES ($1, $2, $3, $4, 'online', 'active')`,
+      [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]
     );
-  } else {
-    await pool().query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
-       VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
-      [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]
+    const hasBranchCol = await client.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`
     );
+    const legacyBranch = (hasBranchCol.rows?.length ?? 0) > 0 || (hasBranchCol.rowCount ?? 0) > 0;
+    if (legacyBranch) {
+      await client.query(
+        `INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+         VALUES ($1, $2, $3, $4, 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`,
+        [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+         VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
+        [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]
+      );
+    }
+    await client.query(
+      `INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos')`,
+      [destinationId, branchId]
+    );
+    await client.query(
+      `INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3)`,
+      [`key_${suffix}`, branchId, sha256(odooKey)]
+    );
+    await client.query("COMMIT");
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw e;
+  } finally {
+    client.release();
   }
-  await pool().query(
-    `INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos')`,
-    [destinationId, branchId]
-  );
-  await pool().query(
-    `INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3)`,
-    [`key_${suffix}`, branchId, sha256(odooKey)]
-  );
 
   return {
     branchId,
