@@ -341,7 +341,10 @@ describe("dashboard", () => {
  * 9. CI actually gates on PostgreSQL
  * ======================================================================= */
 describe("CI configuration", () => {
-  const gateway = readFileSync(".github/workflows/gateway-ci.yml", "utf8");
+  // Staged under ci/workflows/ rather than .github/workflows/: the account that
+  // opens the PR lacks GitHub's `workflows` permission. ci/workflows/README.md
+  // documents the one-command install.
+  const gateway = readFileSync("ci/workflows/gateway-ci.yml", "utf8");
 
   it("runs a real PostgreSQL service", () => {
     expect(gateway).toContain("image: postgres:16");
@@ -361,9 +364,17 @@ describe("CI configuration", () => {
   });
 
   it("does not claim Odoo tests passed unless they ran", () => {
-    const odoo = readFileSync(".github/workflows/odoo-ci.yml", "utf8");
+    const odoo = readFileSync("ci/workflows/odoo-ci.yml", "utf8");
     expect(odoo).toContain("refusing to report success");
     expect(odoo).toContain("--test-enable");
+  });
+
+  it("documents how to install the staged workflows", () => {
+    const readme = readFileSync("ci/workflows/README.md", "utf8");
+    expect(readme).toContain("workflows` permission");
+    expect(readme).toContain("git mv ci/workflows/gateway-ci.yml");
+    // Must not imply the gates are already running.
+    expect(readme).toContain("not running on pull requests yet");
   });
 
   it("preserves the Windows packaging workflow", () => {
