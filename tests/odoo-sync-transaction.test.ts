@@ -253,6 +253,73 @@ suite("Odoo → Gateway sync (dependency-safe, transactional)", () => {
     expect(await count("printer_bindings", "id = 'binding_1'")).toBe(1);
   });
 
+  it("disables destinations omitted from a later full-snapshot sync (deleted printer-side resource)", async () => {
+    const first = await syncPOST(syncRequest(f.odooKey, validPayload()));
+    expect(first.status).toBe(200);
+    const dropped = validPayload({
+      destinations: [{ id: "dest_pos", branchId: f.branchId, name: "POS", type: "pos", enabled: true }],
+      bindings: [
+        { id: "binding_1", branchId: f.branchId, destinationId: "dest_pos", documentType: "receipt", printerId: f.printerId, priority: 1, enabled: true },
+      ],
+    });
+    const res = await syncPOST(syncRequest(f.odooKey, dropped));
+    expect(res.status).toBe(200);
+    const kitchen = await pool().query(`SELECT enabled FROM destinations WHERE id = 'dest_kitchen'`);
+    expect(kitchen.rows[0].enabled).toBe(false);
+    const pos = await pool().query(`SELECT enabled FROM destinations WHERE id = 'dest_pos'`);
+    expect(pos.rows[0].enabled).toBe(true);
+  });
+
+  it("applies a changed destination without creating a duplicate", async () => {
+    expect((await syncPOST(syncRequest(f.odooKey, validPayload()))).status).toBe(200);
+    const changed = validPayload({
+      destinations: [{ id: "dest_kitchen", branchId: f.branchId, name: "Hot Line", type: "kitchen", enabled: true }],
+    });
+    expect((await syncPOST(syncRequest(f.odooKey, changed))).status).toBe(200);
+    expect(await count("destinations", "id = 'dest_kitchen'")).toBe(1);
+    const row = await pool().query(`SELECT name FROM destinations WHERE id = 'dest_kitchen'`);
+    expect(row.rows[0].name).toBe("Hot Line");
+  });
+
+  it("keeps a disabled destination disabled on repeat sync", async () => {
+    const payload = validPayload({
+      destinations: [{ id: "dest_kitchen", branchId: f.branchId, name: "Kitchen", type: "kitchen", enabled: false }],
+    });
+    expect((await syncPOST(syncRequest(f.odooKey, payload))).status).toBe(200);
+    expect((await syncPOST(syncRequest(f.odooKey, payload))).status).toBe(200);
+    const row = await pool().query(`SELECT enabled FROM destinations WHERE id = 'dest_kitchen'`);
+    expect(row.rows[0].enabled).toBe(false);
+  });
+
+  it("rejects a destination id that already belongs to another branch", async () => {
+    const other = await seedFixture();
+    await pool().query(
+      `INSERT INTO destinations (id, branch_id, name, type) VALUES ('shared_dest', $1, 'Other POS', 'pos')`,
+      [other.branchId]
+    );
+    const payload = validPayload({
+      destinations: [{ id: "shared_dest", branchId: f.branchId, name: "Stolen", type: "pos", enabled: true }],
+    });
+    const res = await syncPOST(syncRequest(f.odooKey, payload));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("SYNC_VALIDATION_FAILED");
+    const owner = await pool().query(`SELECT branch_id FROM destinations WHERE id = 'shared_dest'`);
+    expect(owner.rows[0].branch_id).toBe(other.branchId);
+  });
+
+  it("does not leak or mutate the other branch during a successful sync", async () => {
+    const other = await seedFixture();
+    await pool().query(
+      `INSERT INTO destinations (id, branch_id, name, type, enabled) VALUES ('other_dest', $1, 'Stay', 'pos', true)`,
+      [other.branchId]
+    );
+    expect((await syncPOST(syncRequest(f.odooKey, validPayload()))).status).toBe(200);
+    const row = await pool().query(`SELECT branch_id, enabled, name FROM destinations WHERE id = 'other_dest'`);
+    expect(row.rows[0].branch_id).toBe(other.branchId);
+    expect(row.rows[0].enabled).toBe(true);
+    expect(row.rows[0].name).toBe("Stay");
+  });
+
   it("normalizes integer Odoo ids to strings on both sides of every comparison", async () => {
     // Odoo sends record ids as integers; the gateway stores text ids.
     const numericBranch = await seedFixture({ branchId: "4242" });

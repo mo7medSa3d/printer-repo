@@ -121,7 +121,8 @@ export async function POST(req: Request) {
             status: p.status,
             config: p.config as any,
             capabilities: p.capabilities as any,
-            enabled: p.enabled,
+            // `enabled` is operator-controlled on the gateway. A heartbeat
+            // must never resurrect a printer the operator disabled.
             lastSeenAt: new Date(),
             branchId: agent.branchId ?? (existing as any).branchId,
             updatedAt: new Date(),

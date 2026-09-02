@@ -231,7 +231,7 @@ export function AgentsPage({ s }: { s: DesktopState }) {
                   </div>
                 </div>
                 <p className="text-[13px] leading-relaxed text-ink-3">
-                  Fleet counts come from the gateway health endpoint. Full per-agent
+                  The unauthenticated health probe only reports liveness. Full per-agent
                   management — pairing codes, per-agent printers and status history — is
                   available in the gateway dashboard with a manager session.
                 </p>

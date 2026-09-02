@@ -9,6 +9,7 @@ import { claimAndPushJobToAgent } from "@/server/ws";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { logInfo, requestIdFrom } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -112,6 +113,7 @@ async function createQueuedJob({
 }
 
 export async function POST(req: Request) {
+  const requestId = requestIdFrom(req);
   let raw: unknown;
   try { raw = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
 
@@ -230,6 +232,16 @@ export async function POST(req: Request) {
     // Auditable fallback info
     const fallbackInfo = resolved.fallbackUsed ? { fallbackUsed: true, fallbackChain: resolved.fallbackChain } : {};
 
+    logInfo("print.job.created", {
+      requestId,
+      jobId,
+      branchId: parsed.branchId,
+      destinationId: parsed.destinationId,
+      documentType: parsed.documentType,
+      printerId: resolved.printer.id,
+      agentId: resolved.printer.agentId,
+      status: effectiveStatus,
+    });
     return NextResponse.json({
       jobId,
       // Real DB status: a WS-connected agent already owns the job (claimed)

@@ -53,7 +53,8 @@ export async function applyMigrations(): Promise<void> {
 export async function truncateAll(): Promise<void> {
   await pool().query(`
     TRUNCATE TABLE print_jobs, printer_bindings, printers, agents, destinations,
-                   document_types, local_networks, api_keys, manager_sessions, branches
+                   document_types, local_networks, api_keys, manager_sessions,
+                   auth_rate_limits, branches
     RESTART IDENTITY CASCADE
   `);
 }

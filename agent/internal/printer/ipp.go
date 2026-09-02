@@ -309,61 +309,110 @@ func parseIPPStatus(data []byte) (uint16, string) {
 	if len(data) < 8 {
 		return 0xFFFF, "too short"
 	}
-	// Version 2 bytes, status 2 bytes at offset 2, request ID 4 bytes
 	status := binary.BigEndian.Uint16(data[2:4])
-	// Try to extract status-message if present (look for attribute)
-	msg := ""
-	if len(data) > 10 {
-		// Very minimal: search for "status-message" string
-		if idx := bytes.Index(data, []byte("status-message")); idx >= 0 {
-			// Try to extract value after
-			end := idx + 100
-			if end > len(data) {
-				end = len(data)
-			}
-			msg = string(data[idx:end])
-		}
+	attrs := parseIPPAttributes(data)
+	if msg := attrs["status-message"]; msg != "" {
+		return status, msg
 	}
-	return status, msg
+	return status, ""
 }
 
-func parseIPPAttributes(data []byte) map[string]string {
-	out := make(map[string]string)
-	if len(data) < 10 {
+// parseIPPAttributes is a bounds-checked IPP binary attribute parser.
+// It never panics on truncated, malformed or unknown input: any attribute
+// that cannot be decoded is skipped and parsing stops at the first illegal
+// length. Repeated values for the same name are joined with commas.
+func parseIPPAttributes(data []byte) (out map[string]string) {
+	out = make(map[string]string)
+	defer func() {
+		// Parser must never panic on malformed input.
+		if recover() != nil {
+			return
+		}
+	}()
+	if len(data) < 8 {
 		return out
 	}
-	// Minimal parser: look for known attribute names and extract next value
-	// This is not full IPP parser, just for printer-state
-	search := func(name string) (string, bool) {
-		idx := bytes.Index(data, []byte(name))
-		if idx < 0 {
-			return "", false
+	i := 8 // skip version (2) + status/op (2) + request-id (4)
+	currentName := ""
+	for i < len(data) {
+		tag := data[i]
+		i++
+		if tag == 0x03 { // end-of-attributes
+			break
 		}
-		// After name, there is value length 2 bytes then value
-		// Find value length bytes: name len is 2 bytes before name, value len 2 bytes after name
-		// Instead, try to find next non-zero bytes as value
-		// Simplified: look ahead 20 bytes and extract printable
-		start := idx + len(name) + 2
-		if start+2 > len(data) {
-			return "", false
+		if tag <= 0x0F {
+			// Delimiter / group tag (operation, job, printer, unsupported).
+			currentName = ""
+			continue
 		}
-		vlen := int(binary.BigEndian.Uint16(data[start : start+2]))
-		if vlen <= 0 || start+2+vlen > len(data) {
-			return "", false
+		if i+2 > len(data) {
+			break
 		}
-		val := string(data[start+2 : start+2+vlen])
-		return val, true
-	}
-	if v, ok := search("printer-state"); ok {
-		out["printer-state"] = v
-	}
-	if v, ok := search("printer-state-reasons"); ok {
-		out["printer-state-reasons"] = v
-	}
-	if v, ok := search("printer-is-accepting-jobs"); ok {
-		out["printer-is-accepting-jobs"] = v
+		nameLen := int(binary.BigEndian.Uint16(data[i : i+2]))
+		i += 2
+		if nameLen < 0 || i+nameLen > len(data) {
+			break
+		}
+		if nameLen > 0 {
+			currentName = string(data[i : i+nameLen])
+		}
+		i += nameLen
+		if i+2 > len(data) {
+			break
+		}
+		valueLen := int(binary.BigEndian.Uint16(data[i : i+2]))
+		i += 2
+		if valueLen < 0 || i+valueLen > len(data) {
+			break
+		}
+		raw := data[i : i+valueLen]
+		i += valueLen
+		if currentName == "" {
+			continue
+		}
+		val := decodeIPPValue(tag, raw)
+		if val == "" {
+			continue
+		}
+		if existing, ok := out[currentName]; ok && existing != "" {
+			out[currentName] = existing + "," + val
+		} else {
+			out[currentName] = val
+		}
 	}
 	return out
+}
+
+func decodeIPPValue(tag byte, raw []byte) string {
+	switch tag {
+	case 0x10, 0x12, 0x13: // unsupported / unknown / no-value
+		return ""
+	case 0x21, 0x23: // integer / enum
+		if len(raw) != 4 {
+			return ""
+		}
+		return fmt.Sprintf("%d", int32(binary.BigEndian.Uint32(raw)))
+	case 0x22: // boolean
+		if len(raw) != 1 {
+			return ""
+		}
+		if raw[0] != 0 {
+			return "true"
+		}
+		return "false"
+	case 0x30, 0x41, 0x42, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49:
+		// octetString, textWithoutLanguage, nameWithoutLanguage, keyword,
+		// uri, uriScheme, charset, naturalLanguage, mimeMediaType
+		return string(raw)
+	default:
+		// Unknown / unsupported tags: expose printable bytes, otherwise skip.
+		for _, b := range raw {
+			if b < 0x20 || b > 0x7e {
+				return ""
+			}
+		}
+		return string(raw)
+	}
 }
 
 func ippStatusText(status uint16) string {

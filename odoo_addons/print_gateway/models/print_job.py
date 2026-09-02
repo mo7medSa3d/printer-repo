@@ -10,7 +10,7 @@ class PrintGatewayPrintJob(models.Model):
     _description = 'Print Gateway Job'
     _order = 'create_date desc'
 
-    gateway_job_id = fields.Char(string='Gateway Job ID', required=True, copy=False, index=True)
+    gateway_job_id = fields.Char(string='Gateway Job ID', copy=False, index=True, help='Filled once the Gateway accepts the job. Empty while the operation is persisted locally pending the HTTP round-trip.')
     branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
     destination_id = fields.Many2one('print_gateway.destination', ondelete='set null')
     document_type = fields.Char()

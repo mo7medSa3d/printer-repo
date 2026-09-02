@@ -36,6 +36,13 @@
       "when": 1788063485218,
       "tag": "0004_add_job_delivery_tracking",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788063485219,
+      "tag": "0005_auth_rate_limits",
+      "breakpoints": true
     }
   ]
 }

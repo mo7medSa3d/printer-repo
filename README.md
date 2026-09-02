@@ -105,9 +105,9 @@ cd agent && go build ./... && go vet ./... && go test ./... && go test -race ./.
 GOOS=windows go build ./... && GOOS=windows go vet ./...
 ```
 
-Current results: **67 gateway tests without a database, 100 with one** (11 files),
-**88 Go test functions** in 8 packages, race-clean. What each suite covers — and what is
-deliberately not covered — is in [docs/TESTING.md](docs/TESTING.md).
+Current results: **134 gateway tests without a database** (56 skipped pending PostgreSQL).
+What each suite covers — and what is deliberately not covered — is in
+[docs/TESTING.md](docs/TESTING.md).
 
 ## Build and deployment
 

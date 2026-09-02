@@ -25,6 +25,12 @@ branch-scoped Odoo key, because the addon's Test Print button has no manager ses
   `salt:derived-hex` form, falls back to `MANAGER_PASSWORD`; both paths run
   timing-equalising work so a wrong username costs the same as a wrong password.
 * Login fails closed when manager auth is not configured (HTTP 500, never "allow all").
+* Login is rate-limited per IP and per account identifier in PostgreSQL
+  (`src/lib/auth-rate-limit.ts`, table `auth_rate_limits`) so multiple gateway
+  instances share the same counters. Repeated failures return HTTP 429 with
+  `Retry-After` and a generic message (no user enumeration). A successful login
+  clears the account bucket. Set `TRUST_PROXY=1` when a reverse proxy forwards
+  `X-Forwarded-For`.
 * Manager sessions are **global**, not branch-scoped — a manager sees every branch.
 
 ## 3. Odoo API keys
