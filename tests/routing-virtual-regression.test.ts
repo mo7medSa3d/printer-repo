@@ -76,11 +76,15 @@ function bind(printerId: string, priority: number, id = `b_${printerId}`) {
   return { id, branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId, priority, enabled: true };
 }
 
-function printer(id: string, opts: { enabled?: boolean; status?: string; name?: string; capabilities?: unknown; printerType?: string } = {}) {
+function printer(id: string, opts: { enabled?: boolean; status?: string; name?: string; capabilities?: unknown; printerType?: string; branchId?: string } = {}) {
+  const agentId = `agent_${id}`;
   return {
     id,
-    agentId: `agent_${id}`,
-    branchId: "branch_a",
+    agentId,
+    // Branch comes from the agent relation only — printers have no branch
+    // column. The double therefore returns the joined agent, exactly like
+    // `db.query.printers.findFirst({ with: { agent: true } })` does.
+    agent: { id: agentId, branchId: opts.branchId ?? "branch_a" },
     name: opts.name ?? id,
     printerType: opts.printerType ?? "laser",
     connectionType: "spooler",
@@ -99,7 +103,7 @@ const VIRTUAL = {
 
 function setup(printers: any[], bindings: any[]) {
   state.printers = Object.fromEntries(printers.map((p) => [p.id, p]));
-  state.agents = Object.fromEntries(printers.map((p) => [p.agentId, { id: p.agentId, branchId: "branch_a" }]));
+  state.agents = Object.fromEntries(printers.map((p) => [p.agentId, p.agent]));
   state.bindings = bindings;
   state.printerCalls = 0;
 }

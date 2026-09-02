@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { agents, destinations, printerBindings, printers } from "@/db/schema";
+import { destinations, printerBindings } from "@/db/schema";
+import { assertPrinterInBranch, loadPrinterWithBranch } from "@/lib/printer-branch";
 import { validateManager } from "@/lib/manager-auth";
 import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -40,15 +41,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (dest.branchId !== id) {
     return NextResponse.json({ error: "INVALID_DESTINATION: destination belongs to another branch" }, { status: 400 });
   }
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
-  if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printer not found" }, { status: 404 });
-  if ((printer as any).branchId && (printer as any).branchId !== id) {
-    return NextResponse.json({ error: "Printer belongs to another branch; binding cannot connect resources across branches" }, { status: 400 });
+  // `printer_bindings.branch_id` STAYS: a binding is a branch-scoped routing
+  // rule (branch + destination + document type → printer), and the routing
+  // index (branch_id, destination_id, document_type, priority) is the primary
+  // lookup path for every print request. It is routing scope, not printer
+  // ownership. It must, however, agree with the printer's real owner, which is
+  // derived as printer → agent → branch.
+  const loaded = await loadPrinterWithBranch(printerId);
+  if (!loaded.ok) {
+    if (loaded.error === "PRINTER_NOT_FOUND") {
+      return NextResponse.json({ error: "NO_PRINTER_FOUND: printer not found" }, { status: 404 });
+    }
+    return NextResponse.json({ error: loaded.message }, { status: 409 });
   }
-  // Also ensure printer's agent branch matches
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (agent && (agent as any).branchId && (agent as any).branchId !== id) {
-    return NextResponse.json({ error: "Printer's agent belongs to another branch" }, { status: 400 });
+  const consistent = assertPrinterInBranch(loaded.printer.branchId, id, printerId);
+  if (!consistent.ok) {
+    return NextResponse.json(
+      { error: `Cross-branch binding refused: ${consistent.message}` },
+      { status: 400 }
+    );
   }
 
   const bindingId = `binding_${nanoid(8)}`;

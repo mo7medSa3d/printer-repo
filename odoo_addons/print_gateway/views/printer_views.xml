@@ -12,7 +12,12 @@
                 <sheet>
                     <group string="Identity">
                         <field name="name"/>
-                        <field name="branch_id"/>
+                        <field name="agent_id" options="{'no_create': True}"
+                               help="Agent that owns this printer. Changing the agent also changes the printer's branch."/>
+                        <!-- Derived: Branch -> Agent -> Printer. Read-only on
+                             purpose; a printer has no branch of its own. -->
+                        <field name="branch_id" readonly="1"
+                               help="Derived from the agent. To move this printer to another branch, move its agent or assign it to an agent in the target branch."/>
                         <field name="printer_type"/>
                         <field name="enabled" widget="boolean_toggle"/>
                     </group>
@@ -26,7 +31,7 @@
                     </group>
                     <group string="Gateway Sync">
                         <field name="gateway_printer_id" help="Printer identifier as known to the Gateway, e.g. printer_abc123."/>
-                        <field name="gateway_agent_id" readonly="1" help="Agent that currently owns this printer, set by the Gateway."/>
+                        <field name="gateway_agent_id" readonly="1" help="Gateway id of the owning agent (mirrored from the agent record)."/>
                         <field name="status" readonly="1" widget="badge"/>
                         <field name="last_seen_at" readonly="1"/>
                     </group>
@@ -55,7 +60,8 @@
                   decoration-danger="status in ('offline','error')"
                   decoration-muted="status=='unknown'">
                 <field name="name"/>
-                <field name="branch_id"/>
+                <field name="agent_id"/>
+                <field name="branch_id" readonly="1" optional="show"/>
                 <field name="connection_type"/>
                 <field name="protocol"/>
                 <field name="status" widget="badge"/>
@@ -84,7 +90,7 @@
                                         <field name="name"/>
                                     </div>
                                     <div class="o_pg_card_meta text-truncate">
-                                        <field name="branch_id"/>
+                                        <field name="agent_id"/> · <field name="branch_id"/>
                                     </div>
                                 </div>
                                 <span t-attf-class="o_pg_pill #{record.status.raw_value == 'online' ? 'o_pg_pill_ok' : record.status.raw_value == 'busy' ? 'o_pg_pill_warn' : record.status.raw_value == 'offline' or record.status.raw_value == 'error' ? 'o_pg_pill_bad' : ''}">

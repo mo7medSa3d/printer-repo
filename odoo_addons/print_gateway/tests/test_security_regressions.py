@@ -140,9 +140,16 @@ class TestPrintGatewaySecurityPrinterBindingWrite(TransactionCase):
             'enabled': True,
         })
         
-        self.printer = self.env['print_gateway.printer'].create({
-            'name': 'Test Printer',
+        # Branch -> Agent -> Printer: the printer's branch comes from the agent.
+        self.agent = self.env['print_gateway.agent'].create({
+            'gateway_agent_id': 'agt_sec_1',
+            'name': 'Sec Agent',
             'branch_id': self.branch.id,
+        })
+        self.printer = self.env['print_gateway.printer'].create({
+            'gateway_printer_id': 'printer_sec_1',
+            'name': 'Test Printer',
+            'agent_id': self.agent.id,
             'enabled': True,
         })
         

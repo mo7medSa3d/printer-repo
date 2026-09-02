@@ -10,6 +10,7 @@ import { generatePairingCode } from "@/lib/agent-auth";
 import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
 import { claimAndPushJobToAgent } from "@/server/ws";
+import { loadPrinterWithBranch } from "@/lib/printer-branch";
 
 /**
  * Server actions are public HTTP endpoints (POST) like any route handler —
@@ -24,7 +25,17 @@ async function requireManager() {
   return claims;
 }
 
-export async function createAgent(name: string) {
+/**
+ * Create (and pair) an agent.
+ *
+ * The agent IS the branch anchor: every printer it later discovers belongs to
+ * this branch, derived through the agent. The branch is therefore an explicit,
+ * validated input at creation time rather than something guessed afterwards.
+ * A single configured branch is used implicitly (unambiguous); with several
+ * branches the caller must choose, because picking one arbitrarily would place
+ * real hardware in the wrong location.
+ */
+export async function createAgent(name: string, branchId?: string) {
   await requireManager();
   if (typeof name !== "string" || !name.trim() || name.trim().length > 200) {
     throw new Error("invalid agent name");
@@ -32,12 +43,25 @@ export async function createAgent(name: string) {
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
 
-  // Default to 'default' branch for dashboard-created agents; manager can reassign later
-  const defaultBranch = await db.query.branches.findFirst({ where: eq(branches.id, "default") });
-  const branchId = defaultBranch?.id ?? (await db.query.branches.findFirst({}))?.id ?? "default";
+  let resolvedBranchId: string;
+  if (typeof branchId === "string" && branchId.trim()) {
+    const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId.trim()) });
+    if (!branch) throw new Error(`branch ${branchId} not found`);
+    if (branch.enabled === false) throw new Error(`branch ${branchId} is disabled`);
+    resolvedBranchId = branch.id;
+  } else {
+    const all = await db.select({ id: branches.id, enabled: branches.enabled }).from(branches);
+    const enabled = all.filter((b) => b.enabled !== false);
+    if (enabled.length === 0) throw new Error("no branch configured — create a branch before registering an agent");
+    if (enabled.length > 1) {
+      throw new Error("branchId is required: an agent owns its printers' branch, so it must be assigned explicitly when several branches exist");
+    }
+    resolvedBranchId = enabled[0].id;
+  }
+
   await db.insert(agents).values({
     id,
-    branchId,
+    branchId: resolvedBranchId,
     name: name.trim(),
     pairingCode,
     pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30), // 30 mins
@@ -45,16 +69,22 @@ export async function createAgent(name: string) {
   });
 
   revalidatePath("/dashboard");
-  return { id, pairingCode };
+  return { id, pairingCode, branchId: resolvedBranchId };
 }
 
 export async function createPrintJob(printerId: string, payload: unknown) {
   await requireManager();
-  const printer = await db.query.printers.findFirst({
-    where: eq(printers.id, printerId),
-  });
-
-  if (!printer) throw new Error("Printer not found");
+  // The job's branch is the printer's branch, DERIVED through its agent
+  // (printer → agent → branch). There is no printer.branchId and no
+  // "default branch" fallback: an unresolvable chain is a hard error, because
+  // silently stamping a job with the wrong branch would break both routing
+  // audit trails and branch-scoped authorization.
+  const loaded = await loadPrinterWithBranch(printerId);
+  if (!loaded.ok) {
+    if (loaded.error === "PRINTER_NOT_FOUND") throw new Error("Printer not found");
+    throw new Error(loaded.message);
+  }
+  const printer = loaded.printer;
   if (printer.enabled === false) throw new Error("Printer is disabled");
 
   // Reject malformed/unsupported payloads here too (defense in depth) -
@@ -64,7 +94,11 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   const id = `job_${nanoid(10)}`;
   const row = {
     id,
-    branchId: (printer as any).branchId ?? "default",
+    // Historical/routing context on the job row: the branch this job was
+    // actually routed through. Recorded at creation time for auditability and
+    // for branch-scoped authorization of later reads — it is NOT printer
+    // ownership (that lives on the agent).
+    branchId: printer.branchId,
     agentId: printer.agentId,
     printerId: printer.id,
     status: "queued" as const,
@@ -95,16 +129,13 @@ export async function createPrintJob(printerId: string, payload: unknown) {
  */
 export async function createTestPrintJob(printerId: string) {
   await requireManager();
-  const printer = await db.query.printers.findFirst({
-    where: eq(printers.id, printerId),
-  });
-  if (!printer) throw new Error("Printer not found");
-
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, printer.agentId),
-  });
-
-  const payload = buildTestPrintPayload(printer.name, agent?.name ?? printer.agentId);
+  const loaded = await loadPrinterWithBranch(printerId);
+  if (!loaded.ok) {
+    if (loaded.error === "PRINTER_NOT_FOUND") throw new Error("Printer not found");
+    throw new Error(loaded.message);
+  }
+  const printer = loaded.printer;
+  const payload = buildTestPrintPayload(printer.name, printer.agent?.name ?? printer.agentId);
   return createPrintJob(printerId, payload);
 }
 

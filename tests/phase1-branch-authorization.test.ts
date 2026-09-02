@@ -57,8 +57,27 @@ function makeOdooKey(branchId: string | null) {
   };
 }
 
-function makePrinter(branchId: string | null) {
-  return { id: "printer_1", agentId: "agent_1", branchId, enabled: true };
+/**
+ * A printer as the gateway now loads it: WITHOUT a branch column, but WITH the
+ * owning agent joined in. The branch under test is the AGENT's branch — the
+ * only branch a printer has.
+ */
+function makePrinter(agentBranchId: string | null) {
+  return {
+    id: "printer_1",
+    agentId: "agent_1",
+    enabled: true,
+    status: "online",
+    protocol: "raw",
+    connectionType: "network",
+    name: "Printer 1",
+    agent: { id: "agent_1", branchId: agentBranchId },
+  };
+}
+
+/** A printer whose agent row is missing entirely (broken ownership chain). */
+function makePrinterWithoutAgent() {
+  return { id: "printer_1", agentId: "agent_gone", enabled: true, status: "online", agent: null };
 }
 
 function legacyRequest() {
@@ -80,7 +99,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.printJobs.mockReset();
   });
 
-  it("blocks a branch-A-scoped key from creating a legacy job against a branch-B printer", async () => {
+  it("blocks a branch-A-scoped key from creating a legacy job against a printer whose AGENT is in branch B", async () => {
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
     findFirstMocks.printers.mockResolvedValue(makePrinter("branch_b"));
     const { POST } = await import("@/app/api/print/jobs/route");
@@ -89,7 +108,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     expect(res.status).toBe(403);
   });
 
-  it("still allows a branch-A-scoped key against a branch-A printer", async () => {
+  it("still allows a branch-A-scoped key when the printer's agent is in branch A", async () => {
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
     findFirstMocks.printers.mockResolvedValue(makePrinter("branch_a"));
     const { POST } = await import("@/app/api/print/jobs/route");
@@ -105,5 +124,28 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
 
     const res = await POST(legacyRequest());
     expect(res.status).toBe(201);
+  });
+
+  it("fails closed when the printer → agent → branch chain is broken", async () => {
+    // Knowing a printer id must never be enough to print when the printer's
+    // branch cannot be derived: there is no branch to authorize against, so the
+    // request must be refused rather than treated as unscoped.
+    findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
+    findFirstMocks.printers.mockResolvedValue(makePrinterWithoutAgent());
+    const { POST } = await import("@/app/api/print/jobs/route");
+
+    const res = await POST(legacyRequest());
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("branch is derived through its agent");
+  });
+
+  it("fails closed when the owning agent has no branch", async () => {
+    findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
+    findFirstMocks.printers.mockResolvedValue(makePrinter(null));
+    const { POST } = await import("@/app/api/print/jobs/route");
+
+    const res = await POST(legacyRequest());
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("has no branch");
   });
 });

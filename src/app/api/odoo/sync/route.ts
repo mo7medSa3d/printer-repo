@@ -239,8 +239,14 @@ export async function POST(req: Request) {
 
     const referencedPrinterIds = [...new Set(validBindings.map((b) => b.printerId))];
     const existingPrinters = referencedPrinterIds.length
-      ? await db.select({ id: printers.id, branchId: printers.branchId }).from(printers).where(inArray(printers.id, referencedPrinterIds))
+      ? await db
+        .select({ id: printers.id, branchId: agents.branchId })
+        .from(printers)
+        .innerJoin(agents, eq(printers.agentId, agents.id))
+        .where(inArray(printers.id, referencedPrinterIds))
       : [];
+    // printerId → branch DERIVED through the owning agent. A binding may only
+    // reference a printer whose agent lives in the synchronized branch.
     const printerBranchById = new Map(existingPrinters.map((p) => [asId(p.id)!, asId(p.branchId)]));
 
     // Cross-branch primary-key collision: destination/document-type/binding
@@ -322,7 +328,7 @@ export async function POST(req: Request) {
           id: b.id,
           bindingId: b.id,
           printerId: b.printerId,
-          reason: `printer belongs to branch ${printerBranch ?? "none"}, not to the synchronized branch ${branchId}`,
+          reason: `printer belongs to branch ${printerBranch ?? "none"} (derived from its agent), not to the synchronized branch ${branchId}`,
         });
       }
     }
@@ -465,11 +471,23 @@ export async function GET(req: Request) {
   try {
     if (branchFilter) {
       agentRows = await db.select().from(agents).where(eq(agents.branchId, branchFilter)).orderBy(desc(agents.lastSeenAt)).limit(50);
-      printerRows = await db.select().from(printers).where(eq(printers.branchId, branchFilter)).orderBy(desc(printers.updatedAt)).limit(100);
+      // printer branch = agent branch (printer → agent → branch)
+      printerRows = (await db
+        .select({ printer: printers, branchId: agents.branchId })
+        .from(printers)
+        .innerJoin(agents, eq(printers.agentId, agents.id))
+        .where(eq(agents.branchId, branchFilter))
+        .orderBy(desc(printers.updatedAt))
+        .limit(100)).map((r) => ({ ...r.printer, branchId: r.branchId }));
       jobRows = await db.select().from(printJobs).where(eq(printJobs.branchId, branchFilter)).orderBy(desc(printJobs.createdAt)).limit(50);
     } else {
       agentRows = await db.select().from(agents).orderBy(desc(agents.lastSeenAt)).limit(20);
-      printerRows = await db.select().from(printers).orderBy(desc(printers.updatedAt)).limit(20);
+      printerRows = (await db
+        .select({ printer: printers, branchId: agents.branchId })
+        .from(printers)
+        .innerJoin(agents, eq(printers.agentId, agents.id))
+        .orderBy(desc(printers.updatedAt))
+        .limit(20)).map((r) => ({ ...r.printer, branchId: r.branchId }));
       jobRows = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(20);
     }
   } catch (e) {

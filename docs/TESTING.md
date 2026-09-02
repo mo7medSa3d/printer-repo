@@ -20,7 +20,7 @@ Labels used throughout the documentation:
 | `job-status.test.ts` | 4 | no | State machine transitions |
 | `payload.test.ts` | 7 | no | Shared payload contract (types, base64, 5 MiB cap) |
 | `phase1-routing.test.ts` | 3 | no | Binding selection basics |
-| `phase1-branch-authorization.test.ts` | 6 | no | Branch scope + document-type authorization |
+| `phase1-branch-authorization.test.ts` | 8 | no | Branch scope + document-type authorization |
 | `phase2-routing-fallback.test.ts` | 12 | no | Priority fallback, capability matrix |
 | `odoo-simulation.test.ts` | 4 | no | Odoo-side payload/contract simulation |
 | `regression-critical.test.ts` | 32 | no | Contract/source-level regressions: job-id generation, claim-before-send ordering, undelivered-claim release, WS envelope/ack, PDF pipeline properties, sync validation-before-transaction, `PRINTER_DISABLED`, document-type normalization, crash-marker presence |
@@ -32,26 +32,34 @@ Labels used throughout the documentation:
 | `auth-rate-limit.test.ts` | 11 | mixed | Backoff math (no DB); login 429 / cooldown / IP / account / concurrent (DB) |
 | `health.test.ts` | 2 | mixed | Unauthenticated `/api/health` exposes no inventory counts |
 | `heartbeat-enabled.test.ts` | 2 | **yes** | Heartbeat cannot re-enable a disabled printer or update another agent's printer |
-| `odoo-addon-static.test.ts` | 5 | no | Test discovery, fail-closed single-record routing, persist-before-HTTP idempotency, per-branch sync state |
+| `odoo-addon-static.test.ts` | 9 | no | Test discovery, fail-closed single-record routing, persist-before-HTTP idempotency, per-branch sync state, **Branch → Agent → Printer ownership in the addon** (printer `agent_id` + readonly related `branch_id`, globally unique gateway ids, binding validated via `printer.agent_id.branch_id`, agents synced before printers, fail-loud 1.1.0 migration) |
 | `printer-virtual.test.ts` | 49 | no | Virtual/redirected/physical/unknown classification |
 | `routing-virtual-regression.test.ts` | 7 | no | Virtual printers never win routing |
 | `desktop-ui-smoke.test.ts` | 1 | no | Desktop pages boot; virtual queues hidden |
+| `printer-agent-ownership.test.ts` | 31 | **yes** | Architectural regression suite for `Branch → Agent → Printer`: source invariants (no branch in the printers schema, no printer-branch fallbacks, registration/heartbeat never persist a printer branch), `printer-branch.ts` helper units, and against real PostgreSQL — no `printers.branch_id` column, printer requires an agent, heartbeat inherits the agent's branch, an agent cannot hijack another branch's printer, reassigning an agent moves all of its printers atomically, routing honours the derived branch and returns `CROSS_BRANCH_BINDING`, fallback past a cross-branch binding, `PRINTER_DISABLED` preserved, Odoo printer scope + cross-branch key rejection, sync rejects cross-branch bindings, jobs stamped with the derived branch and keeping it after the agent moves |
+| `migration-printer-branch.test.ts` | 6 | **yes** | Migration `0006` on throwaway databases: applies and drops the column while preserving rows; **aborts loudly** naming the printer, both branches and the agent when a printer disagrees with its agent, when a printer has no agent, and when an agent has no branch; idempotent on re-run; `printers.agent_id` stays `NOT NULL` + FK after the drop |
 
-Totals (executed for this documentation pass):
-`npm test` **134 passed / 56 skipped** without a database.
-With `DATABASE_URL` set the skipped DB suites run as well (190 tests across 19 files). The
-database-backed suites were **not executed in this workspace** (no PostgreSQL).
+Totals (executed for this documentation pass, against a real PostgreSQL 18.4):
+`DATABASE_URL=… npx vitest run` → **232 passed / 1 failed / 0 skipped** across 21 files.
+
+The single failure is `auth-rate-limit.test.ts > successful login after cooldown recovers
+the account` (429 instead of 401). It is **pre-existing and unrelated** to printer
+ownership: it reproduces on unmodified `main` against a clean database.
 
 The database-backed suites are skipped (not failed) when `DATABASE_URL` is unset, because
 `FOR UPDATE SKIP LOCKED`, real transactions and concurrent connections cannot be simulated.
 
 ```bash
-npm test                                                     # 67 tests, DB suites skipped
-DATABASE_URL=postgres://postgres@127.0.0.1:5432/printgw_test npm test   # 100 tests
+npm test                                                                # DB suites skipped
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/printgw_test npm test   # full suite
 ```
 
-`tests/helpers/pg.ts` applies `drizzle/*.sql` itself, checks that the delivery-tracking
-columns exist and truncates all tables between tests, so any disposable PostgreSQL works.
+`tests/helpers/pg.ts` applies `drizzle/*.sql` itself and truncates all tables between
+tests, so any disposable PostgreSQL works. It records applied files in a
+`__test_migrations` ledger so each migration runs **exactly once, in order** — without
+that, replaying `0001` would re-create the `printers.branch_id` column that `0006` drops.
+After migrating it asserts both that the delivery-tracking columns exist **and** that
+`printers.branch_id` does not.
 `tests/pg-concurrent-claim.mjs` (+ `scripts/pg-concurrent-claim.sh`) is a standalone
 concurrency harness against a seeded database.
 

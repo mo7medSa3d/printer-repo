@@ -26,12 +26,37 @@ The addon ships 10 views, 2 cron jobs (`data/cron.xml`), 8 default report mappin
 | `print_gateway.branch` | One physical location + its gateway connection | `name`, `company_id`, `gateway_url`, `gateway_api_key` (password), `gateway_branch_id`, `enabled`, `location`, `timezone`, `last_sync_at` |
 | `print_gateway.destination` | Where something prints (POS, kitchen, warehouse…) | `branch_id`, `name`, `destination_type`, `zone`, `gateway_destination_id`, `enabled` |
 | `print_gateway.document_type` | Logical document class (receipt, invoice…) | `branch_id`, `name`, `payload_hint` (`raw/escpos/pcl/ipp/pdf`), `gateway_document_type_id`, `enabled` |
-| `print_gateway.printer` | Read-only mirror of a gateway printer | `branch_id`, `gateway_printer_id`, `printer_type`, `connection_type`, `protocol`, `spooler_name`, `status`; `action_sync_from_gateway`, `action_test_print` |
-| `print_gateway.agent` | Read-only mirror of a gateway agent | `branch_id`, `gateway_agent_id`, `status`, `last_seen_at`; `action_sync_status` |
-| `print_gateway.printer_binding` | Routing rule | `branch_id`, `destination_id`, `document_type_id`/`document_type`, `printer_id`, `priority`, `enabled`; `_check_branch_consistency` |
+| `print_gateway.printer` | Read-only mirror of a gateway printer | `agent_id` (**owner**, required), `branch_id` (stored *related* `agent_id.branch_id`, readonly), `gateway_printer_id`, `printer_type`, `connection_type`, `protocol`, `spooler_name`, `status`; `action_sync_from_gateway`, `action_test_print` |
+| `print_gateway.agent` | Read-only mirror of a gateway agent | `branch_id` (**the** branch owner), `gateway_agent_id`, `printer_ids` (one2many on `printer.agent_id`), `status`, `last_seen_at`; `action_sync_status` |
+| `print_gateway.printer_binding` | Routing rule | `branch_id`, `destination_id`, `document_type_id`/`document_type`, `printer_id`, `priority`, `enabled`; `_check_branch_consistency` (compares `printer_id.agent_id.branch_id`) |
 | `print_gateway.report_mapping` | Which report prints as what | `report_id`, `report_xml_id`, `model_name`, `report_name`, `document_type_id`/`document_type_name`, `branch_id`, `destination_id`, `gateway_enabled`, `payload_type`, `priority`, `fallback_to_normal`, `active` |
 | `print_gateway.print_job` | Local mirror of a gateway job | `gateway_job_id`, branch/destination/document type/printer/agent, `status`, `error`, `odoo_model`, `odoo_record_id`, `report_xml_id`, `report_name`, `report_id`; `action_sync_status`, `cron_sync_pending_jobs` |
 | `ir.actions.report` (inherited) | Per-report gateway switch | `print_gateway_enabled`, `print_gateway_document_type_id`, `print_gateway_branch_id`, `print_gateway_destination_id`; overrides `report_action` |
+
+### Printer ownership: Branch → Agent → Printer
+
+The addon mirrors the gateway's model exactly: **the agent owns the branch, and the
+printer owns nothing but its agent.**
+
+* `print_gateway.printer.agent_id` (Many2one → `print_gateway.agent`, required) is the
+  only ownership link.
+* `print_gateway.printer.branch_id` is a **stored `related='agent_id.branch_id'`,
+  `readonly=True`** field. It exists so the record rules in `security/security.xml` and
+  `branch.printer_ids` can keep filtering by branch, but it cannot be edited and cannot
+  drift — writing the agent rewrites it automatically.
+* In the UI the printer's Branch is displayed but never editable. To move a printer,
+  change its agent (or move the agent's branch in the gateway and re-sync); all of that
+  agent's printers follow in one step.
+* `gateway_printer_id` and `gateway_agent_id` are globally unique
+  (`unique(gateway_printer_id)` / `unique(gateway_agent_id)`), *not* unique per branch —
+  a physical printer must not be mirrored into two branches at once.
+* `printer_binding._check_branch_consistency` validates against
+  `printer_id.agent_id.branch_id`, matching the gateway's `CROSS_BRANCH_BINDING` check.
+
+**Upgrading an existing install:** `migrations/1.1.0/pre-migrate.py` runs before the new
+schema is applied. It refuses to upgrade — naming the offending records — if any printer
+has no agent, or if a printer's stored branch disagrees with its agent's branch. Resolve
+those in the old version first; the migration never guesses which branch was intended.
 
 ## 3. Configuration order
 
@@ -93,8 +118,8 @@ create a second physical job. The gateway enforces uniqueness with a partial uni
 
 | Direction | Trigger | Endpoint | Behaviour |
 |---|---|---|---|
-| Gateway → Odoo | *Sync From Gateway* button, cron **every 5 min** | `GET /api/odoo/agents`, `GET /api/odoo/printers` | Mirrors agents/printers into Odoo (read-only) |
-| Odoo → Gateway | *Sync To Gateway* button, cron **every 5 min** | `POST /api/odoo/sync` | Pushes branches, destinations, document types and bindings |
+| Gateway → Odoo | *Sync From Gateway* button, cron **every 5 min** | `GET /api/odoo/agents`, `GET /api/odoo/printers` | Mirrors agents/printers into Odoo (read-only). **Agents are fetched and upserted first**, then printers are attached to them by `gateway_agent_id`; a printer whose agent is unknown is skipped rather than created branch-less. Matching is by the global gateway id, so a printer or agent moved to another branch in the gateway is *moved* in Odoo too, never duplicated. Mirrors that vanish from the gateway are marked offline/disabled, not deleted |
+| Odoo → Gateway | *Sync To Gateway* button, cron **every 5 min** | `POST /api/odoo/sync` | Pushes branches, destinations, document types and bindings. **Never pushes printers or a printer branch** — printer ownership lives in the gateway, so this direction cannot re-introduce the duplication. A binding whose printer derives (printer → agent → branch) to another branch is rejected |
 | Gateway → Odoo | cron **every 2 min** | `GET /api/print/jobs?id=…` | Updates job status/error for non-terminal jobs (`completed → success`) |
 
 The push is validated and applied atomically by the gateway: it either commits everything or

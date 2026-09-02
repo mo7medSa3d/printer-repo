@@ -16,11 +16,17 @@ The column lists below were dumped from a database built by applying
 | `0003_add_idempotency_key.sql` | `print_jobs.idempotency_key` + partial unique index on `(branch_id, idempotency_key)` |
 | `0004_add_job_delivery_tracking.sql` | `print_jobs.delivery_attempts`, `delivered_at`, `acked_at` + `print_jobs_claimed_at_idx` (all `IF NOT EXISTS`) |
 | `0005_auth_rate_limits.sql` | `auth_rate_limits` table for shared manager-login rate limiting |
+| `0006_printer_branch_via_agent.sql` | Drops `printers.branch_id`. Refuses to apply (raises) if any printer disagrees with its agent's branch, has no agent, or has an agent without a branch — the error names the printer, both branches and the agent. Idempotent: a no-op once the column is gone. |
 
 Applying them in filename order to an empty database produces exactly the schema in
-`schema.ts`. Migrations 0002–0004 are idempotent; 0000/0001 are not (they will raise
+`schema.ts`. Migrations 0002–0004 and 0006 are idempotent; 0000/0001 are not (they will raise
 `duplicate table` if replayed on a populated database — the test harness tolerates that
-explicitly).
+explicitly, and additionally applies each file exactly once via a `__test_migrations`
+ledger so that replaying 0001 cannot re-create the column 0006 removes).
+
+Migration history is append-only: 0006 removes `printers.branch_id` as a **new**
+migration rather than by editing 0000/0001, so existing deployments upgrade forward
+along the same path that produced their current schema.
 
 Apply them with any SQL client, or use Drizzle:
 
@@ -61,11 +67,41 @@ Indexes: branch, name
 Indexes: branch, local network, `agents_last_seen_idx`
 
 ### `printers` — runtime printer registration (owned by the gateway/agent)
-`id` PK · `agent_id` → agents NOT NULL · `branch_id` NOT NULL · `name` NOT NULL ·
+**A printer has no branch column.** Its branch is `printer -> agent -> agents.branch_id`.
+The agent is the single owner of branch context; see "Printer branch derivation" below.
+
+`id` PK · `agent_id` → agents NOT NULL · `name` NOT NULL ·
 `type` NOT NULL · `printer_type` default `thermal` · `connection_type` default `tcp` ·
 `protocol` default `escpos` · `status` default `unknown` · `config` jsonb ·
 `capabilities` jsonb · `enabled` · `last_seen_at` · timestamps
-Indexes: agent, branch, status, printer type
+Indexes: agent, status, printer type
+
+#### Printer branch derivation
+
+There is exactly one path from a printer to a branch:
+
+```
+branches <- agents.branch_id <- printers.agent_id
+```
+
+* `printers.agent_id` is `NOT NULL` and FK-constrained, so every printer resolves
+  to exactly one branch. There is no orphan/unassigned state to fall back from.
+* Application code must never invent a branch for a printer. There is no
+  `printer.branch_id ?? "default"` anywhere; a printer whose branch cannot be
+  resolved is a hard error, not a printer in the default branch.
+* Helpers live in `src/lib/printer-branch.ts`
+  (`branchIdOfPrinter`, `loadPrinterWithBranch`, `branchIdsForPrinters`,
+  `listPrintersInBranch`, `assertPrinterInBranch`). SQL joins `printers` to
+  `agents` rather than reading a denormalised column.
+* **Moving a printer between branches is done by moving its agent** (or by
+  reassigning the printer to an agent in the target branch). Because the branch
+  is derived, every printer on an agent moves atomically with it and the two can
+  never disagree.
+* `printer_bindings.branch_id` and `print_jobs.branch_id` are retained
+  deliberately (routing scope and historical record respectively) and are
+  validated against the derived branch at write time — they are not a second
+  source of truth. A job keeps the branch it was printed for even if the agent
+  is moved afterwards.
 
 `capabilities.supported_protocols` is the list the routing capability check uses; the agent
 reports it in the heartbeat unless the operator pinned it in the agent config.

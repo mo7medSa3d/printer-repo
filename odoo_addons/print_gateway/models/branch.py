@@ -24,7 +24,10 @@ class PrintGatewayBranch(models.Model):
     gateway_branch_id = fields.Char(string='Gateway Branch ID', help='ID in Gateway DB; defaults to Odoo record id if empty', copy=False)
 
     destination_ids = fields.One2many('print_gateway.destination', 'branch_id', string='Destinations')
-    printer_ids = fields.One2many('print_gateway.printer', 'branch_id', string='Printers')
+    # Printers reach the branch through their agent; this one2many uses the
+    # printer's stored *related* branch column (agent_id.branch_id) purely as an
+    # index, so it always agrees with agent ownership.
+    printer_ids = fields.One2many('print_gateway.printer', 'branch_id', string='Printers', readonly=True)
     document_type_ids = fields.One2many('print_gateway.document_type', 'branch_id', string='Document Types')
     binding_ids = fields.One2many('print_gateway.printer_binding', 'branch_id', string='Printer Bindings')
     agent_ids = fields.One2many('print_gateway.agent', 'branch_id', string='Agents')
@@ -106,7 +109,37 @@ class PrintGatewayBranch(models.Model):
             raise ValidationError(_('Cannot reach Gateway: %s') % str(e))
 
     def action_sync_from_gateway(self):
-        """Pull agents and printers status from Gateway (Gateway -> Odoo). Idempotent."""
+        """Pull agents and printers from the Gateway (Gateway -> Odoo). Idempotent.
+
+        Ownership mirrored exactly as the Gateway models it:
+
+            Branch -> Agent -> Printer
+
+        Agents are synced FIRST because a printer cannot exist in Odoo without
+        its owning agent (``agent_id`` is required and the printer's branch is
+        derived from it). Consequences handled explicitly here:
+
+        * new agent            -> created in this branch
+        * reassigned agent     -> the SAME Odoo agent record is moved to this
+                                  branch; all of its printers follow, because
+                                  ``printer.branch_id`` is related to
+                                  ``agent_id.branch_id``. Nothing is duplicated.
+        * new printer          -> created under its agent (branch derived)
+        * reassigned printer   -> ``agent_id`` rewritten; the branch follows
+        * duplicate/legacy id  -> matched by GLOBAL ``gateway_printer_id`` /
+                                  ``gateway_agent_id``, so the same runtime
+                                  object can never be mirrored twice in two
+                                  branches
+        * printer whose agent  -> skipped with a warning rather than being
+          is unknown              attached to an arbitrary agent
+        * removed/stale        -> marked offline+disabled (never deleted, so
+          printers                bindings and job history keep their FKs)
+        * cross-branch record  -> never silently merged; a mirror row whose
+                                  agent now belongs elsewhere simply moves with
+                                  its agent
+        """
+        Agent = self.env['print_gateway.agent']
+        Printer = self.env['print_gateway.printer']
         for branch in self:
             try:
                 headers = branch._gateway_headers()
@@ -115,37 +148,72 @@ class PrintGatewayBranch(models.Model):
                 # before they are used as branchId query params (the Gateway
                 # compares them against text columns and branch-scoped keys).
                 gateway_branch_id = str(branch.gateway_branch_id or branch.id)
-                # Sync agents
+
+                # ---------------------------------------------------- agents
+                agent_by_gateway_id = {}
                 resp = requests.get(f"{base}/api/odoo/agents", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     for ag in resp.json():
-                        existing = branch.env['print_gateway.agent'].search([('gateway_agent_id', '=', ag.get('id')), ('branch_id', '=', branch.id)], limit=1)
+                        gw_agent_id = ag.get('id')
+                        if not gw_agent_id:
+                            continue
+                        # Global lookup: the runtime agent is one object. If it
+                        # was reassigned in the Gateway, we MOVE the existing
+                        # mirror instead of creating a second one in this branch.
+                        existing = Agent.search([('gateway_agent_id', '=', gw_agent_id)], limit=1)
                         vals = {
                             'branch_id': branch.id,
-                            'gateway_agent_id': ag.get('id'),
-                            'name': ag.get('name') or ag.get('id'),
+                            'gateway_agent_id': gw_agent_id,
+                            'name': ag.get('name') or gw_agent_id,
                             'status': ag.get('status') or 'unknown',
                             'last_seen_at': ag.get('lastSeenAt'),
+                            'hostname': (ag.get('metadata') or {}).get('hostname') if isinstance(ag.get('metadata'), dict) else ag.get('hostname'),
+                            'os': (ag.get('metadata') or {}).get('os') if isinstance(ag.get('metadata'), dict) else ag.get('os'),
                         }
                         if existing:
+                            if existing.branch_id.id != branch.id:
+                                _logger.info(
+                                    "Agent %s moved from branch %s to %s; its %s printer(s) move with it",
+                                    gw_agent_id, existing.branch_id.display_name, branch.name, len(existing.printer_ids))
                             existing.write(vals)
+                            agent_by_gateway_id[gw_agent_id] = existing
                         else:
-                            branch.env['print_gateway.agent'].create(vals)
-                # Sync printers
+                            agent_by_gateway_id[gw_agent_id] = Agent.create(vals)
+
+                # -------------------------------------------------- printers
+                seen_printer_ids = []
                 resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     for pr in resp.json():
-                        existing = branch.env['print_gateway.printer'].search([('gateway_printer_id', '=', pr.get('id')), ('branch_id', '=', branch.id)], limit=1)
+                        gw_printer_id = pr.get('id')
+                        if not gw_printer_id:
+                            continue
+                        gw_agent_id = pr.get('agentId') or pr.get('agent_id')
+                        agent = agent_by_gateway_id.get(gw_agent_id)
+                        if not agent and gw_agent_id:
+                            agent = Agent.search([('gateway_agent_id', '=', gw_agent_id)], limit=1)
+                        if not agent:
+                            # A printer with no resolvable agent has no branch.
+                            # Do NOT attach it to an arbitrary agent/branch.
+                            _logger.warning(
+                                "Printer %s references unknown agent %s; skipped (its branch is derived through the agent)",
+                                gw_printer_id, gw_agent_id)
+                            continue
+                        # Global lookup for the same reason as agents: one
+                        # physical printer, one mirror record.
+                        existing = Printer.search([('gateway_printer_id', '=', gw_printer_id)], limit=1)
                         vals = {
-                            'branch_id': branch.id,
-                            'gateway_printer_id': pr.get('id'),
-                            'name': pr.get('name'),
+                            # No branch_id is written: it is a stored related
+                            # field on agent_id.branch_id and follows the agent.
+                            'agent_id': agent.id,
+                            'gateway_printer_id': gw_printer_id,
+                            'name': pr.get('name') or gw_printer_id,
                             'printer_type': pr.get('printerType') or pr.get('printer_type') or 'unknown',
                             'connection_type': pr.get('connectionType') or pr.get('connection_type') or 'tcp',
                             'protocol': pr.get('protocol') or 'raw',
                             'status': pr.get('status') or 'unknown',
                             'enabled': pr.get('enabled', True),
-                            'gateway_agent_id': pr.get('agentId') or pr.get('agent_id'),
+                            'last_seen_at': pr.get('lastSeenAt') or False,
                         }
                         # Extract config
                         cfg = pr.get('config') or {}
@@ -155,9 +223,29 @@ class PrintGatewayBranch(models.Model):
                             'spooler_name': cfg.get('spooler_name'),
                         })
                         if existing:
+                            if existing.agent_id.id != agent.id:
+                                _logger.info(
+                                    "Printer %s reassigned from agent %s to %s (branch %s -> %s)",
+                                    gw_printer_id, existing.agent_id.display_name, agent.display_name,
+                                    existing.branch_id.display_name, agent.branch_id.display_name)
                             existing.write(vals)
+                            seen_printer_ids.append(existing.id)
                         else:
-                            branch.env['print_gateway.printer'].create(vals)
+                            seen_printer_ids.append(Printer.create(vals).id)
+
+                    # Stale mirrors: printers this branch's agents used to own
+                    # but the Gateway no longer reports. They are marked
+                    # offline + disabled, never deleted — bindings and print
+                    # job history must keep their foreign keys, and an operator
+                    # must be able to see what disappeared.
+                    stale = Printer.search([
+                        ('branch_id', '=', branch.id),
+                        ('id', 'not in', seen_printer_ids),
+                    ])
+                    if stale:
+                        _logger.info("Marking %s stale printer mirror(s) offline in branch %s", len(stale), branch.name)
+                        stale.write({'status': 'offline', 'enabled': False})
+
                 branch.last_sync_at = fields.Datetime.now()
                 _logger.info("Branch %s sync from gateway completed", branch.name)
             except requests.RequestException as e:

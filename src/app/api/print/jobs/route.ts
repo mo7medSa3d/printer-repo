@@ -6,6 +6,7 @@ import { validatePrintJobPayload } from "@/lib/payload";
 import { resolvePrinterForJob, validatePayloadForPrinter } from "@/lib/routing";
 import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 import { claimAndPushJobToAgent } from "@/server/ws";
+import { assertPrinterInBranch, loadPrinterWithBranch } from "@/lib/printer-branch";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -49,20 +50,27 @@ async function createQueuedJob({
   idempotencyKey,
 }: {
   jobId: string;
-  printer: { id: string; agentId: string; branchId?: string | null };
+  /**
+   * The routed printer. `branchId` here is the DERIVED branch
+   * (printer → agent → branch) passed in by the caller — printers do not
+   * store one.
+   */
+  printer: { id: string; agentId: string };
   validatedPayload: ReturnType<typeof validatePrintJobPayload>;
   expiresAt: Date;
-  branchId?: string | null;
+  /** Routing/audit context for the job row. Required — never defaulted. */
+  branchId: string;
   destinationId?: string | null;
   documentType?: string | null;
   requestedBy?: string | null;
   idempotencyKey?: string | null;
 }): Promise<"queued" | "claimed"> {
   try {
-    const effectiveBranchId = branchId ?? (printer as any).branchId ?? "default";
+    // No `?? "default"` fallback: a job without a real branch would silently
+    // escape branch-scoped authorization and corrupt the audit trail.
     await db.insert(printJobs).values({
       id: jobId,
-      branchId: effectiveBranchId,
+      branchId,
       destinationId: destinationId ?? null,
       documentType: documentType ?? null,
       agentId: printer.agentId,
@@ -184,6 +192,11 @@ export async function POST(req: Request) {
         NO_PRINTER_FOUND: 404,
         PRINTER_DISABLED: 409,
         PRINTER_VIRTUAL: 409,
+        // A binding points at a printer whose real branch (printer -> agent ->
+        // branch) is not the branch being printed for. This is a configuration
+        // conflict, not "no printer found": surfacing it as 404 would make the
+        // caller think the route is merely missing and hide the inconsistency.
+        CROSS_BRANCH_BINDING: 409,
         PRINTER_OFFLINE: 503,
         CAPABILITY_MISMATCH: 422,
         INTERNAL_ERROR: 500,
@@ -271,8 +284,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: msg }, { status: 400 });
     }
 
-    const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
-    if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
+    // Load printer + owning agent so the branch can be DERIVED. Knowing a
+    // printer id must never be enough to print into another branch.
+    const loaded = await loadPrinterWithBranch(parsed.printerId);
+    if (!loaded.ok) {
+      if (loaded.error === "PRINTER_NOT_FOUND") {
+        return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
+      }
+      // Broken printer → agent → branch chain: fail closed rather than
+      // creating an unscoped (or wrongly scoped) job.
+      return NextResponse.json({ error: `NO_PRINTER_FOUND: ${loaded.message}` }, { status: 409 });
+    }
+    const printer = loaded.printer;
+    const printerBranchId = printer.branchId;
     if (printer.enabled === false) return NextResponse.json({ error: "PRINTER_DISABLED: printer disabled" }, { status: 409 });
     if (isVirtualPrinterRecord(printer)) {
       return NextResponse.json({ error: "PRINTER_VIRTUAL: printer is virtual or redirected" }, { status: 409 });
@@ -289,7 +313,10 @@ export async function POST(req: Request) {
     if (!capLegacy.ok) {
       return NextResponse.json({ error: capLegacy.reason }, { status: 422 });
     }
-    if (odoo.branchId && printer.branchId && odoo.branchId !== printer.branchId) {
+    // Branch authorization derived through the agent, never supplied by the
+    // client and never read off the printer row.
+    const scopeCheck = assertPrinterInBranch(printerBranchId, odoo.branchId ?? null, printer.id);
+    if (!scopeCheck.ok) {
       return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
     }
 
@@ -301,7 +328,7 @@ export async function POST(req: Request) {
     // Legacy path also uses durable (branch_id, idempotency_key) for dedup;
     // jobId is always a full nanoid.
     let jobId: string;
-    const legacyBranchId = (printer as any).branchId as string | null;
+    const legacyBranchId: string = printerBranchId;
     if (parsed.idempotencyKey && legacyBranchId) {
       const existing = await db.query.printJobs.findFirst({
         where: and(eq(printJobs.branchId, legacyBranchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),
@@ -329,13 +356,13 @@ export async function POST(req: Request) {
         printer,
         validatedPayload,
         expiresAt,
-        branchId: printer.branchId,
+        branchId: printerBranchId,
         requestedBy: "odoo-legacy",
         idempotencyKey: parsed.idempotencyKey ?? null,
       });
     } catch (e: any) {
       if (e?.code === "DUPLICATE_JOB") {
-        const dedupBranch = (printer as any).branchId ?? odoo.branchId;
+        const dedupBranch = printerBranchId;
         const existing = parsed.idempotencyKey && dedupBranch
           ? await db.query.printJobs.findFirst({
             where: and(eq(printJobs.branchId, dedupBranch), eq(printJobs.idempotencyKey, parsed.idempotencyKey)),

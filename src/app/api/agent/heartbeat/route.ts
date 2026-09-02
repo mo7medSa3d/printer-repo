@@ -124,15 +124,21 @@ export async function POST(req: Request) {
             // `enabled` is operator-controlled on the gateway. A heartbeat
             // must never resurrect a printer the operator disabled.
             lastSeenAt: new Date(),
-            branchId: agent.branchId ?? (existing as any).branchId,
+            // No branch is written here: the printer's branch IS the agent's
+            // branch (printer → agent → branch). Reassigning the agent to
+            // another branch moves its printers with it, atomically, because
+            // there is nothing else to update.
             updatedAt: new Date(),
           })
           .where(eq(printers.id, p.id));
       } else {
+        // A printer discovered by this agent (spooler, USB, RAW TCP, IPP,
+        // mDNS, SNMP, WSD, …) is registered UNDER THE AGENT and therefore
+        // inherits the agent's branch implicitly. No branch is supplied or
+        // stored, so the agent can never place a printer in another branch.
         await db.insert(printers).values({
           id: p.id,
           agentId: agent.id,
-          branchId: agent.branchId as any,
           name: p.name,
           type: p.type as any,
           printerType: p.printerType as any,

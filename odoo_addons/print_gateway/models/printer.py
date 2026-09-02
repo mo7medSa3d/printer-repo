@@ -7,13 +7,38 @@ import logging
 _logger = logging.getLogger(__name__)
 
 class PrintGatewayPrinter(models.Model):
+    """Mirror of a Gateway printer.
+
+    Ownership model (identical to the Gateway):
+
+        Branch -> Agent -> Printer
+
+    The printer belongs to an Agent (``agent_id``); the Agent belongs to a
+    Branch. ``branch_id`` here is a *related* field on ``agent_id.branch_id``:
+    Odoo maintains it from the agent, it is readonly everywhere, and it can
+    never disagree with the agent. It is stored ONLY so that record rules
+    (``[('branch_id.company_id', '=', ...)]``), search, grouping and the
+    ``branch.printer_ids`` one2many keep working in SQL — it is not a second
+    source of truth and nothing may write it directly.
+    """
+
     _name = 'print_gateway.printer'
     _description = 'Print Gateway Printer'
     _order = 'name'
 
     gateway_printer_id = fields.Char(string='Gateway Printer ID', required=True, help='ID in Gateway, e.g., printer_xxx')
     name = fields.Char(required=True)
-    branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
+    # The one and only ownership link. Deleting the agent removes its printers,
+    # exactly as the Gateway does.
+    agent_id = fields.Many2one(
+        'print_gateway.agent', string='Agent', required=True, ondelete='cascade', index=True,
+        help='Agent that owns this printer. The printer\'s branch is derived from this agent.')
+    branch_id = fields.Many2one(
+        'print_gateway.branch', string='Branch',
+        related='agent_id.branch_id', store=True, readonly=True, index=True, ondelete='cascade',
+        help='Derived from the printer\'s agent (Branch -> Agent -> Printer). Read-only: '
+             'move the agent to another branch, or hand the printer to an agent in the '
+             'target branch, to change it.')
     printer_type = fields.Selection([
         ('thermal', 'Thermal Receipt'),
         ('laser', 'Laser'),
@@ -50,16 +75,34 @@ class PrintGatewayPrinter(models.Model):
     usb_serial = fields.Char(help='USB serial')
     spooler_name = fields.Char(help='Windows spooler printer name')
     enabled = fields.Boolean(default=True)
-    gateway_agent_id = fields.Char(string='Gateway Agent ID')
+    # Kept as the raw Gateway identifier for traceability and for sync
+    # matching; it is a mirror of ``agent_id.gateway_agent_id``, not an
+    # independent ownership pointer.
+    gateway_agent_id = fields.Char(
+        string='Gateway Agent ID', related='agent_id.gateway_agent_id', store=True, readonly=True)
 
     binding_ids = fields.One2many('print_gateway.printer_binding', 'printer_id', string='Bindings')
     binding_count = fields.Integer(compute='_compute_binding_count', string='Binding Count')
     destination_ids = fields.Many2many('print_gateway.destination', compute='_compute_destinations', string='Assigned Destinations')
     last_seen_at = fields.Datetime(readonly=True)
 
+    # Gateway printer ids are globally unique in the Gateway, and a printer has
+    # exactly one owning agent. Uniqueness is therefore global here too: the old
+    # per-branch uniqueness allowed the SAME physical printer to be mirrored in
+    # two branches at once, which is precisely the inconsistency this model
+    # removes.
     _sql_constraints = [
-        ('gateway_printer_id_branch_unique', 'unique(gateway_printer_id, branch_id)', 'Printer ID must be unique per branch'),
+        ('gateway_printer_id_unique', 'unique(gateway_printer_id)',
+         'This Gateway printer is already mirrored; a printer belongs to exactly one agent (and therefore one branch).'),
     ]
+
+    @api.constrains('agent_id')
+    def _check_agent_branch(self):
+        for rec in self:
+            if not rec.agent_id:
+                raise ValidationError(_('A printer must belong to an agent: its branch is derived through the agent.'))
+            if not rec.agent_id.branch_id:
+                raise ValidationError(_('Agent %s has no branch; assign the agent to a branch first.') % rec.agent_id.display_name)
 
     @api.depends('binding_ids')
     def _compute_binding_count(self):

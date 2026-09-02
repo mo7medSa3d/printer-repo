@@ -13,7 +13,8 @@
                         <field name="name"/>
                         <field name="hostname" placeholder="e.g., WKS-CAIRO-01"/>
                         <field name="os" placeholder="e.g., windows"/>
-                        <field name="branch_id"/>
+                        <field name="branch_id"
+                               help="Branch this agent serves. Every printer it reports belongs to this branch; changing it moves all of them."/>
                     </group>
                     <group string="Gateway">
                         <field name="gateway_agent_id"/>
@@ -22,6 +23,8 @@
                     </group>
                     <notebook>
                         <page string="Printers">
+                            <!-- Printers owned by this agent. Their branch is
+                                 this agent's branch, by construction. -->
                             <field name="printer_ids" readonly="1"/>
                         </page>
                     </notebook>
@@ -40,6 +43,7 @@
             <tree string="Agents" class="o_pg_view o_pg_list" decoration-success="status=='online'" decoration-danger="status=='offline'" decoration-muted="status=='unknown'">
                 <field name="name"/>
                 <field name="branch_id"/>
+                <field name="printer_count" optional="show"/>
                 <field name="status" widget="badge"/>
                 <field name="hostname" optional="show"/>
                 <field name="os" optional="show"/>

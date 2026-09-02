@@ -13,7 +13,10 @@
                         <field name="document_type" placeholder="receipt / invoice / label / order (or leave empty for fallback)"/>
                     </group>
                     <group string="Target Printer">
-                        <field name="printer_id" domain="[('branch_id','=',branch_id)]"/>
+                        <!-- Only printers whose AGENT is in this binding's branch are selectable:
+                             printer -> agent -> branch is the only ownership path. -->
+                        <field name="printer_id" domain="[('agent_id.branch_id','=',branch_id)]"
+                               help="Printers of agents assigned to this branch."/>
                         <field name="priority" help="1 = highest. Fallback tries the next priority if the first printer is offline."/>
                         <field name="enabled" widget="boolean_toggle"/>
                     </group>
@@ -41,6 +44,7 @@
                 <field name="destination_id"/>
                 <field name="document_type"/>
                 <field name="printer_id"/>
+                <field name="printer_agent_id" optional="hide"/>
                 <field name="priority"/>
                 <field name="enabled" widget="boolean_toggle"/>
             </tree>

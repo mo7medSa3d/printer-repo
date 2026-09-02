@@ -11,11 +11,20 @@ class PrintGatewayPrintJob(models.Model):
     _order = 'create_date desc'
 
     gateway_job_id = fields.Char(string='Gateway Job ID', copy=False, index=True, help='Filled once the Gateway accepts the job. Empty while the operation is persisted locally pending the HTTP round-trip.')
+    # Historical/routing context, NOT printer ownership: the branch this job
+    # was routed through at creation time. Preserved verbatim for auditability,
+    # idempotency scoping (unique(branch_id, idempotency_key)) and branch-scoped
+    # authorization, even if the printer's agent later moves to another branch.
     branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
     destination_id = fields.Many2one('print_gateway.destination', ondelete='set null')
     document_type = fields.Char()
     printer_id = fields.Many2one('print_gateway.printer', ondelete='set null')
+    # Historical routing context: which agent actually executed the job. Kept
+    # even if the printer is later reassigned, so the audit trail stays true.
     agent_id = fields.Many2one('print_gateway.agent', ondelete='set null')
+    # The branch the job was routed through (see branch_id above). This is
+    # deliberately NOT a related field on printer/agent: a job must keep the
+    # branch it was printed in even if the printer's agent is later moved.
     status = fields.Selection([
         ('queued', 'Queued'),
         ('claimed', 'Claimed'),

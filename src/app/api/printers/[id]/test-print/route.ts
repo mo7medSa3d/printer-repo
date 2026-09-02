@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, printers } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
 import { validateOdooKey } from "@/lib/odoo-auth";
-import { eq } from "drizzle-orm";
+import { loadPrinterWithBranch } from "@/lib/printer-branch";
 import { createPrintJob } from "@/app/actions";
 import { buildTestPrintPayload } from "@/lib/payload";
 
@@ -19,15 +17,24 @@ export const dynamic = "force-dynamic";
 //     Odoo-key path the addon's Test Print button always got 401.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
-  if (!printer) return NextResponse.json({ error: "Printer not found" }, { status: 404 });
+  // Authorization is branch-scoped, and the branch is DERIVED through the
+  // printer's agent — never read off the printer row and never taken from the
+  // client. Knowing a printer_id alone must not grant cross-branch access.
+  const loaded = await loadPrinterWithBranch(id);
+  if (!loaded.ok) {
+    if (loaded.error === "PRINTER_NOT_FOUND") return NextResponse.json({ error: "Printer not found" }, { status: 404 });
+    // A broken printer → agent → branch chain must fail closed, not fall back
+    // to an unscoped check.
+    return NextResponse.json({ error: loaded.message }, { status: 409 });
+  }
+  const printer = loaded.printer;
 
   const claims = await validateManager(req);
   const odoo = claims ? null : await validateOdooKey(req, printer.branchId);
   if (!claims && !odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (printer.enabled === false) return NextResponse.json({ error: "printer disabled" }, { status: 409 });
 
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+  const agent = printer.agent;
 
   const payload = buildTestPrintPayload(printer.name, (agent as unknown as { name?: string })?.name ?? printer.agentId);
 

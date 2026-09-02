@@ -1,5 +1,5 @@
 import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, boolean } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 export const branches = pgTable("branches", {
   id: text("id").primaryKey(),
@@ -94,9 +94,20 @@ export const agents = pgTable("agents", {
   lastSeenIdx: index("agents_last_seen_idx").on(table.lastSeenAt),
 }));
 
+/**
+ * Printers are owned by exactly one Agent, and an Agent belongs to exactly one
+ * Branch:
+ *
+ *     Branch → Agent → Printer
+ *
+ * There is deliberately NO `branch_id` column here. A printer's branch is
+ * ALWAYS derived through its agent (`printer.agent_id → agents.branch_id`).
+ * Re-introducing a branch column (under any name) would recreate the two
+ * conflicting sources of truth this schema was migrated away from
+ * (drizzle/0006_printer_branch_via_agent.sql).
+ */
 export const printers = pgTable("printers", {
   id: text("id").primaryKey(), // printer_...
-  branchId: text("branch_id").references(() => branches.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
   type: text("type").notNull().default("network"), // legacy compatibility; prefer printerType/connectionType/protocol
@@ -128,7 +139,6 @@ export const printers = pgTable("printers", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-  branchIdIdx: index("printers_branch_id_idx").on(table.branchId),
   agentIdx: index("printers_agent_id_idx").on(table.agentId),
   printerTypeIdx: index("printers_printer_type_idx").on(table.printerType),
   statusIdx: index("printers_status_idx").on(table.status),
@@ -221,4 +231,71 @@ export const printJobs = pgTable("print_jobs", {
   destinationIdIdx: index("print_jobs_destination_id_idx").on(table.destinationId),
   branchIdempotencyIdx: index("print_jobs_branch_idempotency_idx").on(table.branchId, table.idempotencyKey),
   branchIdempotencyUnique: uniqueIndex("print_jobs_branch_idempotency_unique").on(table.branchId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
+}));
+
+/* ---------------------------------------------------------------------------
+ * Relations
+ *
+ * Canonical ownership chain:
+ *
+ *     branches ──< agents ──< printers
+ *
+ * `printers` has no branch column: use `printer.agent.branchId`. The relation
+ * below is what makes `db.query.printers.findFirst({ with: { agent: true } })`
+ * (and therefore every branch derivation in the gateway) possible.
+ * ------------------------------------------------------------------------ */
+
+export const branchesRelations = relations(branches, ({ many }) => ({
+  agents: many(agents),
+  destinations: many(destinations),
+  documentTypes: many(documentTypes),
+  localNetworks: many(localNetworks),
+  printerBindings: many(printerBindings),
+  printJobs: many(printJobs),
+  apiKeys: many(apiKeys),
+}));
+
+export const agentsRelations = relations(agents, ({ one, many }) => ({
+  branch: one(branches, { fields: [agents.branchId], references: [branches.id] }),
+  localNetwork: one(localNetworks, { fields: [agents.localNetworkId], references: [localNetworks.id] }),
+  printers: many(printers),
+  printJobs: many(printJobs),
+}));
+
+export const printersRelations = relations(printers, ({ one, many }) => ({
+  /** The ONLY path from a printer to its branch: printer → agent → branch. */
+  agent: one(agents, { fields: [printers.agentId], references: [agents.id] }),
+  bindings: many(printerBindings),
+  printJobs: many(printJobs),
+}));
+
+export const destinationsRelations = relations(destinations, ({ one, many }) => ({
+  branch: one(branches, { fields: [destinations.branchId], references: [branches.id] }),
+  bindings: many(printerBindings),
+}));
+
+export const documentTypesRelations = relations(documentTypes, ({ one }) => ({
+  branch: one(branches, { fields: [documentTypes.branchId], references: [branches.id] }),
+}));
+
+export const localNetworksRelations = relations(localNetworks, ({ one, many }) => ({
+  branch: one(branches, { fields: [localNetworks.branchId], references: [branches.id] }),
+  agents: many(agents),
+}));
+
+export const printerBindingsRelations = relations(printerBindings, ({ one }) => ({
+  branch: one(branches, { fields: [printerBindings.branchId], references: [branches.id] }),
+  destination: one(destinations, { fields: [printerBindings.destinationId], references: [destinations.id] }),
+  printer: one(printers, { fields: [printerBindings.printerId], references: [printers.id] }),
+}));
+
+export const printJobsRelations = relations(printJobs, ({ one }) => ({
+  branch: one(branches, { fields: [printJobs.branchId], references: [branches.id] }),
+  destination: one(destinations, { fields: [printJobs.destinationId], references: [destinations.id] }),
+  agent: one(agents, { fields: [printJobs.agentId], references: [agents.id] }),
+  printer: one(printers, { fields: [printJobs.printerId], references: [printers.id] }),
+}));
+
+export const apiKeysRelations = relations(apiKeys, ({ one }) => ({
+  branch: one(branches, { fields: [apiKeys.branchId], references: [branches.id] }),
 }));

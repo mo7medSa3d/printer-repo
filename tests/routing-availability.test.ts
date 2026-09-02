@@ -34,9 +34,10 @@ async function bind(f: Fixture, bindingId: string, printerId: string, priority: 
 
 async function addPrinter(f: Fixture, id: string, opts: { enabled?: boolean; status?: string } = {}) {
   await pool().query(
-    `INSERT INTO printers (id, agent_id, branch_id, name, type, connection_type, protocol, status, config, capabilities, enabled)
-     VALUES ($1, $2, $3, $4, 'spooler', 'spooler', 'spooler', $5, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb, $6)`,
-    [id, f.agentId, f.branchId, id, opts.status ?? "online", opts.enabled ?? true]
+    // No branch column: the printer inherits the agent's branch.
+    `INSERT INTO printers (id, agent_id, name, type, connection_type, protocol, status, config, capabilities, enabled)
+     VALUES ($1, $2, $3, 'spooler', 'spooler', 'spooler', $4, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb, $5)`,
+    [id, f.agentId, id, opts.status ?? "online", opts.enabled ?? true]
   );
 }
 

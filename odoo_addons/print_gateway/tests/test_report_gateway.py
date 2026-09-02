@@ -49,14 +49,24 @@ class TestReportGateway(TransactionCase):
             'branch_id': self.branch.id,
             'enabled': True,
         })
-        # Create printer
+        # Create the owning agent first: Branch -> Agent -> Printer.
+        self.agent = self.env['print_gateway.agent'].create({
+            'gateway_agent_id': 'agt_test_123',
+            'name': 'Test Agent',
+            'branch_id': self.branch.id,
+            'status': 'online',
+        })
+        # The printer takes NO branch_id: it is derived from the agent.
         self.printer = self.env['print_gateway.printer'].create({
             'gateway_printer_id': 'printer_test_123',
             'name': 'Test Printer',
-            'branch_id': self.branch.id,
+            'agent_id': self.agent.id,
             'status': 'online',
             'enabled': True,
         })
+        self.assertEqual(
+            self.printer.branch_id, self.branch,
+            "printer branch must be derived through its agent")
         # Create binding
         self.binding = self.env['print_gateway.printer_binding'].create({
             'branch_id': self.branch.id,

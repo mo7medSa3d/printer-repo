@@ -32,8 +32,19 @@ import {
   type Tone,
 } from "@/components/ui";
 
+type Branch = {
+  id: string;
+  name: string;
+  enabled: boolean;
+};
+
 type Agent = {
   id: string;
+  /**
+   * The agent's branch. This is the SINGLE source of branch truth for the
+   * agent and for every printer it owns (Branch → Agent → Printer).
+   */
+  branchId: string;
   name: string;
   pairingCode: string | null;
   status: string;
@@ -49,6 +60,12 @@ type Printer = {
   type: string;
   status: string;
   config: any;
+  /**
+   * DERIVED from the owning agent (printer → agent → branch) by the server.
+   * Display only — a printer has no branch of its own and the UI intentionally
+   * offers no way to edit it.
+   */
+  branchId: string | null;
 };
 
 type Job = {
@@ -77,12 +94,18 @@ export default function DashboardClient({
   initialAgents,
   initialPrinters,
   initialJobs,
+  initialBranches,
 }: {
   initialAgents: Agent[];
   initialPrinters: Printer[];
   initialJobs: Job[];
+  initialBranches: Branch[];
 }) {
+  const enabledBranches = initialBranches.filter((b) => b.enabled !== false);
   const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentBranchId, setNewAgentBranchId] = useState<string>(enabledBranches[0]?.id ?? "");
+  const branchName = (id: string | null | undefined) =>
+    (id ? initialBranches.find((b) => b.id === id)?.name ?? id : null);
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
@@ -92,9 +115,11 @@ export default function DashboardClient({
     if (!newAgentName) return;
     setIsLoading(true);
     try {
-      await createAgent(newAgentName);
+      await createAgent(newAgentName, newAgentBranchId || undefined);
       setNewAgentName("");
       window.location.reload();
+    } catch (err) {
+      setNotice({ text: `Failed to create agent: ${err instanceof Error ? err.message : "unknown error"}`, tone: "bad" });
     } finally {
       setIsLoading(false);
     }
@@ -169,19 +194,38 @@ export default function DashboardClient({
           icon={<Activity className="h-4 w-4 text-brand" aria-hidden />}
         />
         <div className="px-5 pb-5 space-y-4">
-          <form onSubmit={handleCreateAgent} className="flex gap-2" aria-label="Register a new agent">
-            <input
-              type="text"
-              placeholder="Agent name, e.g. Cairo Branch"
-              className={`flex-1 ${inputClass}`}
-              value={newAgentName}
-              onChange={(e) => setNewAgentName(e.target.value)}
-              disabled={isLoading}
-              aria-label="Agent name"
-            />
-            <Button variant="primary" type="submit" disabled={isLoading || !newAgentName} icon={<Plus className="h-4 w-4" />} aria-label="Create agent">
-              Add
-            </Button>
+          {/* Pairing establishes Agent → Branch. Every printer this agent
+              discovers inherits this branch, so it is chosen here, once. */}
+          <form onSubmit={handleCreateAgent} className="space-y-2" aria-label="Register a new agent">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Agent name, e.g. Cairo Front Desk"
+                className={`flex-1 ${inputClass}`}
+                value={newAgentName}
+                onChange={(e) => setNewAgentName(e.target.value)}
+                disabled={isLoading}
+                aria-label="Agent name"
+              />
+              <Button variant="primary" type="submit" disabled={isLoading || !newAgentName || !newAgentBranchId} icon={<Plus className="h-4 w-4" />} aria-label="Create agent">
+                Add
+              </Button>
+            </div>
+            <select
+              className={`w-full ${inputClass}`}
+              value={newAgentBranchId}
+              onChange={(e) => setNewAgentBranchId(e.target.value)}
+              disabled={isLoading || enabledBranches.length === 0}
+              aria-label="Agent branch"
+            >
+              {enabledBranches.length === 0 && <option value="">No branch configured — create a branch first</option>}
+              {enabledBranches.map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-ink-3">
+              The agent owns the branch for all printers it reports: Branch → Agent → Printer.
+            </p>
           </form>
 
           {initialAgents.length === 0 ? (
@@ -214,6 +258,7 @@ export default function DashboardClient({
                     ) : (
                       <p className="text-ink-3">Paired — no active pairing code</p>
                     )}
+                    <p className="text-ink-3">Branch: {branchName(agent.branchId) ?? "unassigned"}</p>
                     <p className="text-ink-3">
                       {(agent.metadata as unknown as { hostname?: string })?.hostname ?? "Host unknown"} · {(agent.metadata as unknown as { os?: string })?.os ?? ""} {(agent.metadata as unknown as { version?: string })?.version ?? ""}
                     </p>
@@ -256,6 +301,10 @@ export default function DashboardClient({
                     <span className="uppercase">{printer.type}</span>
                   </div>
                   <p className="text-ink-3">Agent: {initialAgents.find(a => a.id === printer.agentId)?.name || printer.agentId}</p>
+                  {/* Read-only: derived through the agent, never editable here. */}
+                  <p className="text-ink-3" title="Derived from the owning agent — a printer has no branch of its own">
+                    Branch: {branchName(printer.branchId) ?? "—"} <span className="text-ink-3">(via agent)</span>
+                  </p>
                   {printer.config?.ip && <p className="font-mono text-ink-2">{printer.config.ip}</p>}
                   {printer.config?.address && <p className="font-mono text-ink-2">{printer.config.address}</p>}
                 </div>

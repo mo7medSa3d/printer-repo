@@ -81,6 +81,7 @@ when a fallback binding was used. The legacy body returns
 | 403 | `{"error":"API key is not allowed to create this document type"}` | `allowedDocumentTypes` / `read_only` scope; legacy path also 403 on cross-branch printer |
 | 404 | `{"error":"NO_ROUTE: …"}` / `NO_PRINTER_FOUND` | no matching binding / no printer row |
 | 409 | `{"error":"PRINTER_DISABLED: …","code":"PRINTER_DISABLED"}` | every candidate printer is administratively disabled |
+| 409 | `{"error":"CROSS_BRANCH_BINDING: …","code":"CROSS_BRANCH_BINDING"}` | a binding in this branch points at a printer whose derived branch (printer → agent → branch) is different or unresolvable. Reported distinctly rather than as 404, so a misconfiguration is not mistaken for a missing route |
 | 422 | `{"error":"CAPABILITY_MISMATCH: …","code":"CAPABILITY_MISMATCH"}` | payload type cannot be rendered by the routed printer |
 | 503 | `{"error":"PRINTER_OFFLINE: …","code":"PRINTER_OFFLINE"}` | candidates are offline/error |
 | 500 | `{"error":"INTERNAL_ERROR: …"}` | routing/database failure (never disguised as 404) |
@@ -185,7 +186,9 @@ No auth (the pairing code is the credential).
 ```
 
 The code is uppercased/trimmed, must be unexpired, and is consumed atomically (a racing
-second registration gets 409). `branchId` is optional but validated when present.
+second registration gets 409). `branchId` is optional but validated when present, and it
+sets the branch of the **agent** — the sole owner of branch context. There is no
+per-printer branch to register: printers reported by this agent inherit its branch.
 
 **200** `{"agentId":"agt_7f3c","secret":"<shown once>"}` — only the SHA-256 hash is stored.
 400 invalid/expired code, 404 unknown branch, 409 disabled branch or code already used,
@@ -206,7 +209,10 @@ Auth: agent. Sent every 30 s.
 ```
 
 Updates `agents.status`/`lastSeenAt` and upserts each printer **scoped to the calling
-agent** — a printer row owned by another agent is skipped, never overwritten. An existing
+agent** — a printer row owned by another agent is skipped, never overwritten (so an agent
+cannot pull another branch's printer into its own branch). The heartbeat **never writes a
+branch onto a printer**: the printer's branch is whatever its owning agent's branch is at
+read time. An existing
 printer's `enabled` flag is operator-controlled and is **not** overwritten by a heartbeat
 (a disabled printer stays disabled). Values are
 normalised/whitelisted: `type` ∈ `network|usb|spooler|tcp|ipp|ipps`, `connectionType` ∈
@@ -272,9 +278,9 @@ All require a manager session unless stated otherwise.
 | `GET /api/agents/:id` | `{agent, printers, jobCount}` (secret stripped), 404 unknown |
 | `GET /api/branches` · `POST /api/branches` | List / create a branch (`{name,description,location,timezone,enabled}` → 201 `{id,name}`) |
 | `GET/POST /api/branches/:id/destinations` | List / create destinations for the branch |
-| `GET/POST /api/branches/:id/printer-bindings` | List / create bindings. POST validates that the destination, the printer and the printer's agent all belong to the branch (400/404 otherwise) |
-| `GET /api/printers` · `POST /api/printers` | List / manually create a printer. Validates ids, `type`, `connectionType`, `printerType`, `protocol`, `config` (network needs `ip`+`port`, spooler needs `spooler_name`/`address`) and that the printer's branch matches the agent's branch. 404 unknown agent, 409 duplicate id |
-| `GET/PATCH/DELETE /api/printers/:id` | Read / update / delete a printer |
+| `GET/POST /api/branches/:id/printer-bindings` | List / create bindings. POST validates that the destination belongs to the branch and that the printer's **derived** branch (printer → agent → branch) matches it (400/404 otherwise) |
+| `GET /api/printers` · `POST /api/printers` | List / manually create a printer. **A printer is created against an agent only** — `agentId` is required and the branch is derived from it (`printer → agent → branch`); the response echoes the derived `branchId`, which is not stored on the printer row. A `branchId` in the body is accepted purely as an optional *assertion*: if it disagrees with the agent's branch the request is rejected 400, and it is never persisted. Also validates ids, `type`, `connectionType`, `printerType`, `protocol`, `config` (network needs `ip`+`port`, spooler needs `spooler_name`/`address`). 404 unknown agent, 400 agent without a branch, 409 duplicate id |
+| `GET/PATCH/DELETE /api/printers/:id` | Read / update / delete a printer. `branchId` is **read-only/derived** and is returned but not settable: PATCHing it returns 400. To move a printer between branches, move its agent or set `agentId` to an agent in the target branch |
 | `POST /api/printers/:id/test-connection` | **Diagnostic RPC, creates no job.** Returns `{reachable, latencyMs, agentOnline, error}`. `latencyMs` is always `null`: the value comes from the last heartbeat, the gateway cannot dial the LAN. A live agent probe is not implemented |
 | `POST /api/printers/:id/test-print` | **Real job.** Accepts a manager session *or* a branch-scoped Odoo key (used by the addon's Test Print button). Builds an ESC/POS test payload and runs the normal pipeline → 201 `{ok:true,jobId,printerId}`. 404 unknown printer, 409 disabled printer |
 | `GET /api/jobs?status=&printerId=&agentId=&limit=` | Job list for the manager UI; filters are applied in SQL before `LIMIT` (max 200). 400 on an unknown status |

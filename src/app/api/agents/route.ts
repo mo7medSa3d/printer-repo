@@ -11,8 +11,11 @@ export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  // `branchId` is the agent's OWN column and the single source of branch truth
+  // for everything it owns: Branch → Agent → Printer.
   const rows = await db.select({
     id: agents.id,
+    branchId: agents.branchId,
     name: agents.name,
     status: agents.status,
     metadata: agents.metadata,

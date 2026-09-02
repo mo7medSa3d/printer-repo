@@ -70,7 +70,7 @@ local discovery/registration.
 | Document type (receipt, invoice…) | **Odoo** | `POST /api/odoo/sync` | Matched case-insensitively during routing |
 | Printer binding (destination + document type → printer) | **Odoo** | `POST /api/odoo/sync`, manager `POST /api/branches/:id/printer-bindings` | Carries `priority` for fallback |
 | Agent | **Gateway** | Manager creates a pairing code → `POST /api/agent/register` | Odoo can only read agents |
-| Printer (runtime registration + status) | **Gateway/Agent** | `POST /api/agent/heartbeat` (discovery), manager `POST /api/printers` | **Never created by the Odoo sync** (`src/app/api/odoo/sync/route.ts`) |
+| Printer (runtime registration + status) | **Gateway/Agent** | `POST /api/agent/heartbeat` (discovery), manager `POST /api/printers` | **Never created by the Odoo sync** (`src/app/api/odoo/sync/route.ts`). Always belongs to an agent; its branch is derived, never stored |
 | Print job | **Gateway** | `POST /api/print/jobs`, manager test print | Odoo keeps a mirror record `print_gateway.print_job` |
 
 The sync endpoint enforces this split: it upserts branches/destinations/document
@@ -95,6 +95,41 @@ print_jobs → branch, destination, agent, printer      (jobs are always branch-
 manager_sessions                                       (dashboard/JWT session rows)
 ```
 
+### Branch → Agent → Printer is the only ownership chain
+
+`printers` has **no `branch_id` column**. A printer belongs to an agent
+(`printers.agent_id`, `NOT NULL`), and the agent belongs to a branch
+(`agents.branch_id`). The printer's branch is therefore always computed:
+
+```
+printerBranch = printer.agent.branch_id
+```
+
+Why there is no printer-level branch:
+
+* **One writer.** With two columns, `printers.branch_id` and `agents.branch_id`
+  could disagree, and every consumer had to pick a winner. Deriving removes the
+  possibility of disagreement instead of adding a check for it.
+* **Moves are atomic.** Re-homing an agent moves all of its printers in one
+  write. There is no second update that can fail halfway.
+* **No fallbacks.** Because `agent_id` is `NOT NULL` and FK-constrained, the
+  derivation always succeeds for a valid row. Code never writes
+  `printer.branch_id ?? "default"`; an unresolvable branch is a loud error.
+
+Helpers: `src/lib/printer-branch.ts`. Queries join `printers → agents` rather
+than reading a denormalised column.
+
+Two branch columns are deliberately **kept**, and neither is a second source of
+truth for printer ownership:
+
+* `printer_bindings.branch_id` — routing scope (a binding is looked up by
+  branch + destination + document type). Validated against the derived printer
+  branch on write and during Odoo sync; a mismatch is refused with
+  `CROSS_BRANCH_BINDING` (HTTP 409).
+* `print_jobs.branch_id` — historical/routing context and the scope of the
+  idempotency key. A job records the branch it was printed for and keeps it even
+  if the printer's agent is later moved.
+
 Routing walks the chain `branch → destination (+ document type) → printer_bindings
 ordered by priority → printer → agent`, skipping candidates that are missing,
 cross-branch, disabled, offline or capability-incompatible
@@ -108,16 +143,18 @@ Branch scoping is enforced at every layer, not just in the UI:
 
 * **Odoo API keys** may be branch-scoped (`api_keys.branch_id`). `validateOdooKey(req, branchId)`
   rejects a key used for another branch (`src/lib/odoo-auth.ts`).
-* **Job creation** resolves the printer only inside the requested branch and refuses a
-  binding whose printer, or whose printer's agent, belongs to a different branch
-  (`src/lib/routing.ts`).
+* **Job creation** resolves the printer only inside the requested branch. A binding
+  whose printer resolves (via its agent) to a different branch is refused with
+  `CROSS_BRANCH_BINDING` → 409 rather than being reported as "no printer found",
+  so a misconfiguration is never mistaken for a missing route (`src/lib/routing.ts`).
 * **Agent endpoints** filter by `agent.branchId` when the agent is scoped
   (`branchFilter` in `src/app/api/agent/jobs/route.ts`); an agent cannot claim, read or
   update another branch's or another agent's jobs (identical 404 for both cases).
 * **Odoo sync** accepts exactly one branch per payload and rejects cross-branch
-  destinations/printers (`src/app/api/odoo/sync/route.ts`).
-* **Manager bindings API** validates destination, printer and the printer's agent all
-  share the branch (`src/app/api/branches/[id]/printer-bindings/route.ts`).
+  destinations, and bindings whose printer derives to another branch
+  (`src/app/api/odoo/sync/route.ts`).
+* **Manager bindings API** validates that the destination and the printer's derived
+  branch (printer → agent → branch) both match the branch in the URL (`src/app/api/branches/[id]/printer-bindings/route.ts`).
 
 Manager sessions are **global**, not per-branch: a signed-in manager sees every branch.
 

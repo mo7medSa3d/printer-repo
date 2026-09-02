@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '1.0.0',
+    'version': '1.1.0',
     'summary': 'Multi-branch print gateway integration: branches, destinations, document types, printer bindings',
     'description': """
 Odoo Print Gateway — End-to-End Print Routing

@@ -1,6 +1,6 @@
 import { db } from "@/db";
-import { agents, printers, printJobs } from "@/db/schema";
-import { desc } from "drizzle-orm";
+import { agents, branches, printers, printJobs } from "@/db/schema";
+import { desc, eq } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
@@ -21,6 +21,7 @@ export default async function DashboardPage() {
   // this view is manager-only.
   let allAgents: Array<{
     id: string;
+    branchId: string;
     name: string;
     pairingCode: string | null;
     status: string;
@@ -28,12 +29,16 @@ export default async function DashboardPage() {
     lastSeenAt: Date | null;
     createdAt: Date;
   }> = [];
-  let allPrinters: Array<(typeof printers.$inferSelect)> = [];
+  // Printer rows carry a DERIVED branchId (from the owning agent), never a
+  // stored one — printers have no branch column.
+  let allPrinters: Array<(typeof printers.$inferSelect) & { branchId: string | null }> = [];
+  let allBranches: Array<{ id: string; name: string; enabled: boolean }> = [];
   let allJobs: Array<(typeof printJobs.$inferSelect)> = [];
   try {
     allAgents = await db
       .select({
         id: agents.id,
+        branchId: agents.branchId,
         name: agents.name,
         pairingCode: agents.pairingCode,
         status: agents.status,
@@ -43,7 +48,13 @@ export default async function DashboardPage() {
       })
       .from(agents)
       .orderBy(desc(agents.createdAt));
-    allPrinters = await db.select().from(printers).orderBy(desc(printers.createdAt));
+    // branch → agent → printer: the join IS the branch derivation.
+    allPrinters = (await db
+      .select({ printer: printers, branchId: agents.branchId })
+      .from(printers)
+      .innerJoin(agents, eq(printers.agentId, agents.id))
+      .orderBy(desc(printers.createdAt))).map((r) => ({ ...r.printer, branchId: r.branchId }));
+    allBranches = await db.select({ id: branches.id, name: branches.name, enabled: branches.enabled }).from(branches).orderBy(desc(branches.createdAt));
     allJobs = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(50);
   } catch {
     // DB momentarily unreachable — render empty shell; runtime will populate
@@ -63,7 +74,7 @@ export default async function DashboardPage() {
           Agents, printers and the job queue, straight from PostgreSQL. A manager session (8h httpOnly, revocable) is required for this page and its actions.
         </p>
       </header>
-      <DashboardClient initialAgents={allAgents} initialPrinters={allPrinters} initialJobs={allJobs} />
+      <DashboardClient initialAgents={allAgents} initialPrinters={allPrinters} initialJobs={allJobs} initialBranches={allBranches} />
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { db } from "@/db";
-import { agents, branches, destinations, printerBindings, printers } from "@/db/schema";
+import { branches, destinations, printerBindings, printers } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { isVirtualPrinterRecord, type PrinterLike } from "./printer-virtual";
+import { branchIdOfPrinter } from "./printer-branch";
 
 export type BindingCandidate = {
   id: string;
@@ -127,6 +128,7 @@ export type ResolveErrorCode =
   | "PRINTER_VIRTUAL"
   | "PRINTER_OFFLINE"
   | "CAPABILITY_MISMATCH"
+  | "CROSS_BRANCH_BINDING"
   | "INTERNAL_ERROR";
 
 export async function resolvePrinterForJob({
@@ -175,13 +177,20 @@ export async function resolvePrinterForJob({
     let lastDisabledPrinter: string | null = null;
     let lastVirtualPrinter: string | null = null;
     let lastCapabilityReason: string | null = null;
+    let crossBranchPrinter: string | null = null;
 
     for (let idx = 0; idx < candidates.length; idx++) {
       const binding = candidates[idx];
       fallbackChain.push(binding.printerId);
 
+      // Load the printer WITH its owning agent: the agent is the sole owner of
+      // branch context, so the join is what makes the branch check possible at
+      // all. There is no branch column on the printer row to read, and
+      // therefore no printer-branch fallback that could silently pick the
+      // requested branch instead of the real one.
       const printer = await db.query.printers.findFirst({
         where: eq(printers.id, binding.printerId),
+        with: { agent: true },
       });
 
       if (!printer) {
@@ -189,9 +198,14 @@ export async function resolvePrinterForJob({
         continue;
       }
 
-      // Branch consistency: printer must belong to same branch
-      if (printer.branchId && printer.branchId !== branchId) {
-        // This binding violates isolation — skip and continue fallback
+      // Branch consistency, derived: printer → agent → branch. A printer whose
+      // agent is missing or branch-less has NO branch and is never routable.
+      const owningAgent = ((printer as any).agent ?? null) as { id: string; branchId: string | null } | null;
+      const derivedBranchId = branchIdOfPrinter(printer as any, owningAgent);
+      if (!derivedBranchId || derivedBranchId !== branchId) {
+        // Cross-branch (or unresolvable) binding — never route it, try the
+        // next fallback candidate instead.
+        crossBranchPrinter = printer.id;
         continue;
       }
 
@@ -230,19 +244,16 @@ export async function resolvePrinterForJob({
         }
       }
 
-      // Agent branch consistency: ensure printer's agent is in same branch
-      const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-      if (agent && agent.branchId && agent.branchId !== branchId) {
-        continue; // cross-branch printer binding invalid
-      }
-
       const fallbackUsed = idx > 0;
       // Auditable: include fallbackChain
       return {
         branch,
         destination,
         binding,
-        printer,
+        // `branchId` here is DERIVED (printer → agent → branch) and is exposed
+        // read-only for logging/auditing. It is never written back to the
+        // printers table, which has no branch column.
+        printer: { ...(printer as any), branchId: derivedBranchId },
         fallbackUsed,
         fallbackChain,
       };
@@ -265,6 +276,15 @@ export async function resolvePrinterForJob({
       return {
         error: "PRINTER_VIRTUAL",
         message: `All candidate printers are virtual or redirected (last tried ${lastVirtualPrinter}). Register a physical printer on the agent.`,
+      };
+    }
+    if (crossBranchPrinter) {
+      // A binding pointed at a printer whose agent lives in another branch (or
+      // whose agent/branch chain is broken). This is a data-integrity fault,
+      // not "no printer": report it distinctly instead of masking it.
+      return {
+        error: "CROSS_BRANCH_BINDING",
+        message: `Binding(s) in branch ${branchId} reference printer ${crossBranchPrinter}, whose branch (derived via its agent) is different or unresolvable`,
       };
     }
     return { error: "NO_PRINTER_FOUND", message: `No available printer after evaluating ${candidates.length} bindings` };

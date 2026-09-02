@@ -9,9 +9,19 @@ import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Printer registration contract.
+ *
+ * `agentId` is the ONLY ownership input: the printer's branch is derived as
+ * `agent.branchId`. `branchId` is accepted purely as an OPTIONAL assertion
+ * (older clients still send it) and is validated against the agent's branch —
+ * a mismatch is a 400. It is never stored, and never used to place the printer
+ * anywhere. Clients therefore cannot create a cross-branch printer.
+ */
 const createPrinterSchema = z.object({
   id: z.string().regex(/^[a-z0-9_][a-z0-9_-]*$/).optional(),
   agentId: z.string().min(1),
+  /** Optional cross-check only — see above. Never persisted. */
   branchId: z.string().optional(),
   name: z.string().min(1).max(100),
   type: z.enum(["network", "usb", "spooler", "tcp", "ipp", "ipps"]).optional(),
@@ -65,10 +75,21 @@ function validateNetworkConfig(cfg: Record<string, unknown>, type: string) {
 export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const rows = await db.select().from(printers).orderBy(desc(printers.createdAt));
+  // Branch is DERIVED through the owning agent (printer → agent → branch) and
+  // returned read-only so the dashboard can display it without implying the
+  // printer owns it.
+  const rows = await db
+    .select({ printer: printers, agentBranchId: agents.branchId, agentName: agents.name })
+    .from(printers)
+    .innerJoin(agents, eq(printers.agentId, agents.id))
+    .orderBy(desc(printers.createdAt));
   // Virtual / redirected queues are preserved in the database but are never
   // presented as selectable production printers.
-  return NextResponse.json(rows.filter((r) => !isVirtualPrinterRecord(r)));
+  return NextResponse.json(
+    rows
+      .filter((r) => !isVirtualPrinterRecord(r.printer))
+      .map((r) => ({ ...r.printer, branchId: r.agentBranchId, agentName: r.agentName }))
+  );
 }
 
 export async function POST(req: Request) {
@@ -85,10 +106,21 @@ export async function POST(req: Request) {
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, data.agentId) });
   if (!agent) return NextResponse.json({ error: "agentId not found" }, { status: 404 });
 
-  // branch consistency
-  const branchId = (data.branchId as string) ?? (agent as any).branchId ?? null;
-  if (branchId && (agent as any).branchId && branchId !== (agent as any).branchId) {
-    return NextResponse.json({ error: "Printer branch must match agent branch" }, { status: 400 });
+  // Branch is derived from the agent; a supplied branchId may only CONFIRM it.
+  const agentBranchId = (agent as any).branchId as string | null;
+  if (!agentBranchId) {
+    return NextResponse.json(
+      { error: "agent has no branch; assign the agent to a branch before registering printers" },
+      { status: 409 }
+    );
+  }
+  if (data.branchId !== undefined && String(data.branchId) !== String(agentBranchId)) {
+    return NextResponse.json(
+      {
+        error: `Printer branch is derived from its agent: agent ${agent.id} is in branch ${agentBranchId}, but branchId ${data.branchId} was supplied`,
+      },
+      { status: 400 }
+    );
   }
 
   const cfg = (data.config ?? {}) as Record<string, unknown>;
@@ -111,8 +143,8 @@ export async function POST(req: Request) {
 
   const [row] = await db.insert(printers).values({
     id,
+    // Ownership: agent only. The branch follows from agents.branch_id.
     agentId: data.agentId,
-    branchId: branchId as any,
     name: data.name,
     type: connectionType as any,
     printerType: printerType as any,
@@ -124,5 +156,7 @@ export async function POST(req: Request) {
     enabled: data.enabled ?? true,
   } as any).returning();
 
-  return NextResponse.json(row, { status: 201 });
+  // Echo the derived branch so callers still see the printer's branch, clearly
+  // sourced from the agent rather than from the printer row.
+  return NextResponse.json({ ...row, branchId: agentBranchId }, { status: 201 });
 }

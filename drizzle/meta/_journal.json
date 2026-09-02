@@ -43,6 +43,13 @@
       "when": 1788063485219,
       "tag": "0005_auth_rate_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788063485220,
+      "tag": "0006_printer_branch_via_agent",
+      "breakpoints": true
     }
   ]
 }
