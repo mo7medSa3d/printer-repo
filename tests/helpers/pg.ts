@@ -26,21 +26,13 @@ export async function applyMigrations(): Promise<void> {
   try {
     await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
     try {
-      // For test DBs, ensure we start from a clean state before the branch-ownership check in 0001.
-      // Previous test files may have left rows with NULL branch_id (from direct INSERTs that omitted the column
-      // when it still existed). Truncate now so the migration sees an empty DB and passes deterministically.
-      // Use the same alphabetical truncation as truncateAll() but keep it inside the migration lock.
-      try {
-        const existing = await client.query(`
-          SELECT tablename FROM pg_tables
-          WHERE schemaname='public'
-            AND tablename IN ('agents','api_keys','auth_rate_limits','branches','destinations','discovered_devices','discovery_sessions','document_types','local_networks','manager_sessions','printer_bindings','printers','print_jobs')
-        `);
-        const tables = (existing.rows as { tablename: string }[]).map((r) => r.tablename).sort();
-        if (tables.length > 0) {
-          await client.query(`TRUNCATE TABLE ${tables.join(", ")} RESTART IDENTITY CASCADE`);
-        }
-      } catch {}
+      // Clean slate for the migration's branch-ownership check. Any leftover rows with
+      // NULL branch_id from a previous file's direct INSERT (that omitted the column when it
+      // still existed) would cause the check to fail. Truncate deterministically.
+      const allTables = ["agents","api_keys","auth_rate_limits","branches","destinations","discovered_devices","discovery_sessions","document_types","local_networks","manager_sessions","printer_bindings","printers","print_jobs"];
+      for (const tbl of allTables) {
+        try { await client.query(`TRUNCATE TABLE "${tbl}" RESTART IDENTITY CASCADE`); } catch (e: any) { if (e?.code !== "42P01") throw e; }
+      }
       const dir = path.resolve(process.cwd(), "drizzle");
       const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
       for (const file of files) {

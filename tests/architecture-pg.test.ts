@@ -44,7 +44,14 @@ suite("real PostgreSQL architecture gate", () => {
     await pool().query(`INSERT INTO branches (id,name) VALUES ('br_unique','Unique')`);
     await pool().query(`INSERT INTO agents (id,branch_id,name) VALUES ('agt_unique','br_unique','Agent')`);
     await expect(pool().query(`INSERT INTO agents (id,branch_id,name) VALUES ('agt_unique','br_unique','Duplicate')`)).rejects.toThrow();
-    await pool().query(`INSERT INTO printers (id,agent_id,name) VALUES ('prn_unique','agt_unique','Printer')`);
-    await expect(pool().query(`INSERT INTO printers (id,agent_id,name) VALUES ('prn_unique','agt_unique','Duplicate')`)).rejects.toThrow();
+    const hasBranch2 = await pool().query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`);
+    const legacy2 = (hasBranch2.rows?.length ?? 0) > 0 || (hasBranch2.rowCount ?? 0) > 0;
+    if (legacy2) {
+      await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name) VALUES ('prn_unique','agt_unique','br_unique','Printer')`);
+      await expect(pool().query(`INSERT INTO printers (id,agent_id,branch_id,name) VALUES ('prn_unique','agt_unique','br_unique','Duplicate')`)).rejects.toThrow();
+    } else {
+      await pool().query(`INSERT INTO printers (id,agent_id,name) VALUES ('prn_unique','agt_unique','Printer')`);
+      await expect(pool().query(`INSERT INTO printers (id,agent_id,name) VALUES ('prn_unique','agt_unique','Duplicate')`)).rejects.toThrow();
+    }
   });
 });
