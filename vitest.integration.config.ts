@@ -18,7 +18,9 @@ export default defineConfig({
     pool: "forks",
     // @ts-expect-error vitest 4 types still use poolOptions.forks.singleFork
     poolOptions: { forks: { singleFork: true } } as any,
-    sequence: { concurrent: false },
+    sequence: { concurrent: false, concurrentSnapshot: false },
+    maxConcurrency: 1,
+    maxWorkers: 1,
     testTimeout: 30000,
     hookTimeout: 30000,
   },
