@@ -19,13 +19,13 @@ table filled in, do not describe the system as production-verified.
 | Area | Evidence |
 |---|---|
 | Type checking, linting, production build | `npm run typecheck`, `npm run lint`, `npm run build` — clean |
-| Gateway unit + contract tests | `npm test` → 67 passed, 33 skipped (database suites skipped without `DATABASE_URL`) |
-| Gateway database-backed tests | `DATABASE_URL=… npm test` → **100 passed, 0 skipped** across 11 files against real PostgreSQL 18 |
+| Gateway unit + contract tests | `npm test` → 134 passed, 56 skipped (database suites skipped without `DATABASE_URL`) |
+| Gateway database-backed tests | `DATABASE_URL=… npm test` — **not executed in this workspace** (PostgreSQL unavailable) |
 | Claim-before-delivery, ack, requeue, lease reclaim, concurrency | `tests/ws-claim-delivery.test.ts` (real WS client + real DB) |
 | Odoo sync validation, rollback, idempotency, concurrency | `tests/odoo-sync-transaction.test.ts` |
 | Routing availability + document-type authorization | `tests/routing-availability.test.ts` |
 | Odoo → gateway → agent socket → status (software only) | `tests/e2e-job-flow.test.ts` |
-| Agent build/vet/test/race | `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` — 8 packages, 88 test functions, no data races |
+| Agent build/vet/test/race | **not executed in this workspace** (Go toolchain unavailable). IPP parser tests added in `ipp_test.go`. Windows CI is the execution gate. |
 | PDF pipeline: validation, secure temp file lifecycle, argv safety, backend matrix | `agent/internal/printer/pdf_test.go` |
 | Crash recovery marking and reprint policy | `agent/internal/agent/ws_delivery_test.go`, `agent/internal/queue/queue_test.go` |
 | Windows cross-compilation | `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=windows go vet ./...` — clean |
@@ -71,8 +71,9 @@ Procedure to close these: [../WINDOWS_PHYSICAL_E2E.md](../WINDOWS_PHYSICAL_E2E.m
    instances a job created on another instance reaches the agent through polling (≤ 10 s)
    instead of an immediate push. Claiming remains correct (`FOR UPDATE SKIP LOCKED`).
 5. **Manager authorization is coarse** — one global role, not branch-scoped.
-6. **No rate limiting** on authentication endpoints; no `Content-Length` pre-check before
-   JSON parsing (the 5 MiB cap is enforced during validation).
+6. **No `Content-Length` pre-check** before JSON parsing (the 5 MiB cap is enforced during
+   validation). Manager login is rate-limited per IP and per account in PostgreSQL
+   (`auth_rate_limits`, migration `0005`).
 7. **PDF on non-Windows hosts** requires an explicit `pdf_print_command`; otherwise it fails
    loudly (the spooler stub only simulates and says so).
 8. **Odoo addon tests** require a live Odoo runner; only syntax/XML checks run here.

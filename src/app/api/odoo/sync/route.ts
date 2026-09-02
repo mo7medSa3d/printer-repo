@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { agents, branches, destinations, printerBindings, documentTypes, printers, printJobs } from "@/db/schema";
 import { validateOdooKey } from "@/lib/odoo-auth";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, and, notInArray } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -224,6 +224,9 @@ export async function POST(req: Request) {
   // ------------------------------------------------- cross-reference checks
   // These read the current database state; nothing has been written yet.
   const missingDependencies: Detail[] = [];
+  const hasDestinations = Array.isArray(body.destinations);
+  const hasDocumentTypes = Array.isArray(body.documentTypes) || Array.isArray(body.document_types);
+  const hasBindings = Array.isArray(body.bindings);
   try {
     const referencedDestinationIds = [...new Set(validBindings.map((b) => b.destinationId))];
     const payloadDestinationIds = new Set(validDestinations.map((d) => d.id));
@@ -239,6 +242,43 @@ export async function POST(req: Request) {
       ? await db.select({ id: printers.id, branchId: printers.branchId }).from(printers).where(inArray(printers.id, referencedPrinterIds))
       : [];
     const printerBranchById = new Map(existingPrinters.map((p) => [asId(p.id)!, asId(p.branchId)]));
+
+    // Cross-branch primary-key collision: destination/document-type/binding
+    // ids are globally unique. Re-using an id that already belongs to another
+    // branch would silently steal the row on ON CONFLICT DO UPDATE.
+    if (validDestinations.length > 0) {
+      const destIds = validDestinations.map((d) => d.id);
+      const existing = await db.select({ id: destinations.id, branchId: destinations.branchId }).from(destinations).where(inArray(destinations.id, destIds));
+      for (const row of existing) {
+        const id = asId(row.id)!;
+        const owner = asId(row.branchId);
+        if (owner && owner !== branchId) {
+          details.push({ entity: "destination", id, branchId: owner, reason: `destination id ${id} already belongs to branch ${owner}; cross-branch id reuse is not allowed` });
+        }
+      }
+    }
+    if (validDocumentTypes.length > 0) {
+      const dtIds = validDocumentTypes.map((d) => d.id);
+      const existing = await db.select({ id: documentTypes.id, branchId: documentTypes.branchId }).from(documentTypes).where(inArray(documentTypes.id, dtIds));
+      for (const row of existing) {
+        const id = asId(row.id)!;
+        const owner = asId(row.branchId);
+        if (owner && owner !== branchId) {
+          details.push({ entity: "documentType", id, branchId: owner, reason: `document type id ${id} already belongs to branch ${owner}; cross-branch id reuse is not allowed` });
+        }
+      }
+    }
+    if (validBindings.length > 0) {
+      const bindingIds = validBindings.map((b) => b.id);
+      const existing = await db.select({ id: printerBindings.id, branchId: printerBindings.branchId }).from(printerBindings).where(inArray(printerBindings.id, bindingIds));
+      for (const row of existing) {
+        const id = asId(row.id)!;
+        const owner = asId(row.branchId);
+        if (owner && owner !== branchId) {
+          details.push({ entity: "binding", id, bindingId: id, branchId: owner, reason: `binding id ${id} already belongs to branch ${owner}; cross-branch id reuse is not allowed` });
+        }
+      }
+    }
 
     for (const b of validBindings) {
       if (!payloadDestinationIds.has(b.destinationId)) {
@@ -356,6 +396,32 @@ export async function POST(req: Request) {
               updatedAt: now,
             },
           });
+      }
+
+      // Full-snapshot reconciliation for collections present in the payload.
+      // Resources omitted from an explicit array are disabled (not deleted,
+      // so historical print_jobs keep their FKs) and stay in this branch.
+      // Printers and agents are gateway-owned and are never disabled here.
+      if (hasDestinations) {
+        const keep = validDestinations.map((d) => d.id);
+        const where = keep.length === 0
+          ? eq(destinations.branchId, branchId)
+          : and(eq(destinations.branchId, branchId), notInArray(destinations.id, keep));
+        await tx.update(destinations).set({ enabled: false, updatedAt: now }).where(where);
+      }
+      if (hasDocumentTypes) {
+        const keep = validDocumentTypes.map((d) => d.id);
+        const where = keep.length === 0
+          ? eq(documentTypes.branchId, branchId)
+          : and(eq(documentTypes.branchId, branchId), notInArray(documentTypes.id, keep));
+        await tx.update(documentTypes).set({ enabled: false, updatedAt: now }).where(where);
+      }
+      if (hasBindings) {
+        const keep = validBindings.map((b) => b.id);
+        const where = keep.length === 0
+          ? eq(printerBindings.branchId, branchId)
+          : and(eq(printerBindings.branchId, branchId), notInArray(printerBindings.id, keep));
+        await tx.update(printerBindings).set({ enabled: false, updatedAt: now }).where(where);
       }
     });
   } catch (e) {

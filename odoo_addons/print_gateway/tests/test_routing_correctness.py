@@ -221,9 +221,15 @@ class TestMultiRecordRouting(TransactionCase):
             'name': 'Test Partner',
             'company_id': self.company.id,
         })
-        
-        groups = report._validate_recordset_routing_consistency(partner, {})
+
+        mapping_info = {
+            'branch_id': self.branch_1,
+            'destination_id': self.dest_1,
+        }
+        groups = report._validate_recordset_routing_consistency(partner, mapping_info)
         self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['branch'].id, self.branch_1.id)
+        self.assertEqual(groups[0]['destination'].id, self.dest_1.id)
 
     def test_homogeneous_multi_record_passes(self):
         """Multiple records with identical routing should pass."""
@@ -544,6 +550,65 @@ class TestGatewayErrorHandling(TransactionCase):
                 {'type': 'pdf', 'encoding': 'base64', 'data': 'test'},
             )
         self.assertIn('timeout', str(cm.exception).lower())
+
+
+class TestMultiBranchSyncPartialFailure(TransactionCase):
+    """Per-branch sync is independent; a middle failure is recorded and retryable."""
+
+    def setUp(self):
+        super().setUp()
+        self.company = self.env['res.company'].create({'name': 'Sync Co'})
+        self.branches = self.env['print_gateway.branch']
+        for name in ('Branch A', 'Branch B', 'Branch C'):
+            self.branches |= self.env['print_gateway.branch'].create({
+                'name': name,
+                'company_id': self.company.id,
+                'gateway_url': 'https://gateway.example.com',
+                'gateway_api_key': 'key-%s' % name,
+                'enabled': True,
+            })
+
+    @patch('odoo.addons.print_gateway.models.branch.requests.post')
+    def test_middle_branch_failure_is_recorded_and_others_continue(self, mock_post):
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.text = '{"success": true}'
+        fail = MagicMock()
+        fail.status_code = 500
+        fail.text = 'boom'
+        fail.json.side_effect = ValueError('not json')
+        mock_post.side_effect = [ok, fail, ok]
+
+        with self.assertRaises(ValidationError) as cm:
+            self.branches.action_sync_to_gateway()
+        self.assertIn('partially failed', str(cm.exception).lower())
+
+        a, b, c = self.branches
+        self.assertEqual(a.last_sync_status, 'success')
+        self.assertEqual(b.last_sync_status, 'failed')
+        self.assertTrue(b.last_sync_error)
+        self.assertEqual(c.last_sync_status, 'success')
+
+    @patch('odoo.addons.print_gateway.models.branch.requests.post')
+    def test_retry_after_partial_failure_converges(self, mock_post):
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.text = '{"success": true}'
+        mock_post.return_value = ok
+        self.branches.action_sync_to_gateway()
+        for branch in self.branches:
+            self.assertEqual(branch.last_sync_status, 'success')
+            self.assertFalse(branch.last_sync_error)
+
+    @patch('odoo.addons.print_gateway.models.branch.requests.post')
+    def test_duplicate_sync_is_idempotent(self, mock_post):
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.text = '{"success": true}'
+        mock_post.return_value = ok
+        self.branches.action_sync_to_gateway()
+        self.branches.action_sync_to_gateway()
+        self.assertEqual(mock_post.call_count, 6)
 
 
 if __name__ == '__main__':

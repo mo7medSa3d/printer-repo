@@ -36,7 +36,7 @@ PORT=3000
 Create the schema by applying the migrations in order
 (`drizzle/0000_simple_tigra.sql` → `0001_phase1_branch_foundation.sql` →
 `0002_add_document_types.sql` → `0003_add_idempotency_key.sql` →
-`0004_add_job_delivery_tracking.sql`), for example:
+`0004_add_job_delivery_tracking.sql` → `0005_auth_rate_limits.sql`), for example:
 
 ```bash
 for f in drizzle/0*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done
@@ -53,7 +53,7 @@ npm start            # http://0.0.0.0:3000, agent WS at /api/agent/ws
 
 `next build` tolerates a missing `DATABASE_URL`; the runtime does not.
 
-Verify: `curl -s http://localhost:3000/api/health` → `{"ok":true,…}`, then sign in at
+Verify: `curl -s http://localhost:3000/api/health` → `{"ok":true}`, then sign in at
 `/login` with the manager credentials.
 
 ## 2. Windows Agent + Desktop Manager
@@ -155,7 +155,7 @@ Printing then uses the **standard Odoo Print button**; no custom button is requi
 ## 4. Upgrading
 
 * Gateway: pull, `npm ci`, apply any new `drizzle/*.sql`, rebuild, restart.
-  Migration `0004` is additive and safe to apply to a running database.
+  Migrations `0004` and `0005` are additive and safe to apply to a running database.
 * Agent: install the new MSI/EXE (stop the service first); `config.yaml`, `printers.json`
   and `agent.db` are preserved.
 * Odoo: `-u print_gateway`.

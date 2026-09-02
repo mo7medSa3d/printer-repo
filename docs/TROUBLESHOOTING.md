@@ -70,6 +70,8 @@ Nothing is ever partially applied: a rejected sync writes no rows at all.
 |---|---|
 | `DATABASE_URL is required at runtime` | The build succeeded without a database; set `DATABASE_URL` before `npm start` |
 | Login returns 500 "Manager auth not configured" | Set `MANAGER_USERNAME` and `MANAGER_PASSWORD`/`MANAGER_PASSWORD_HASH` |
+| Login returns 429 | Too many failed attempts from this IP or account; wait for `Retry-After` |
+| Login returns 503 "Authentication temporarily unavailable" | PostgreSQL/`auth_rate_limits` unreachable — login fails closed until the limiter store is back |
 | Signing fails / sessions rejected | `GATEWAY_JWT_SECRET` missing or shorter than 32 characters |
 | `/api/health` returns `{"ok":false}` with 500 | PostgreSQL unreachable |
 | WebSocket clients get 401 | The agent's `Authorization: Bearer <id>:<secret>` is wrong; re-pair |
@@ -77,7 +79,7 @@ Nothing is ever partially applied: a rejected sync writes no rows at all.
 
 ## Diagnostics checklist
 
-1. `GET /api/health` — database reachable, agent/printer/job counts.
+1. `GET /api/health` — database reachable (`{ok:true}`). Inventory counts require manager auth.
 2. Dashboard → agent `lastSeenAt` (heartbeat is every 30 s).
 3. `GET /api/jobs?limit=50` (manager) or `GET /api/print/jobs?id=…` (Odoo key) — real status,
    `retries`, `delivery_attempts`, `error`.

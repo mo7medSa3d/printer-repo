@@ -4,8 +4,7 @@ PostgreSQL, accessed through Drizzle ORM. Schema definition: `src/db/schema.ts`.
 Migrations: plain SQL files in `drizzle/`, tracked in `drizzle/meta/_journal.json`.
 
 The column lists below were dumped from a database built by applying
-`drizzle/0000 → 0004` in order, and cross-checked against `src/db/schema.ts`
-(10/10 tables match, no drift).
+`drizzle/0000 → 0005` in order, and cross-checked against `src/db/schema.ts`.
 
 ## Migrations
 
@@ -16,6 +15,7 @@ The column lists below were dumped from a database built by applying
 | `0002_add_document_types.sql` | `document_types` table + FK/index (guarded with `IF NOT EXISTS` / `pg_constraint` checks) |
 | `0003_add_idempotency_key.sql` | `print_jobs.idempotency_key` + partial unique index on `(branch_id, idempotency_key)` |
 | `0004_add_job_delivery_tracking.sql` | `print_jobs.delivery_attempts`, `delivered_at`, `acked_at` + `print_jobs_claimed_at_idx` (all `IF NOT EXISTS`) |
+| `0005_auth_rate_limits.sql` | `auth_rate_limits` table for shared manager-login rate limiting |
 
 Applying them in filename order to an empty database produces exactly the schema in
 `schema.ts`. Migrations 0002–0004 are idempotent; 0000/0001 are not (they will raise
@@ -86,6 +86,11 @@ writes) · `name` NOT NULL · `description` · `hashed_key` UNIQUE NOT NULL ·
 ### `manager_sessions` — dashboard sessions
 `jti` PK · `created_at` · `expires_at` NOT NULL · `revoked_at`
 Index: `manager_sessions_expires_idx`
+
+### `auth_rate_limits` — manager login throttling (shared across gateway instances)
+`key` PK (`ip:<addr>` or `acct:<username>`) · `failures` · `window_started_at` ·
+`locked_until` · `updated_at`
+Index: `auth_rate_limits_locked_until_idx`
 
 ### `print_jobs` — the durable job queue
 | Column | Notes |

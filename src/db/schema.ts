@@ -177,6 +177,16 @@ export const managerSessions = pgTable("manager_sessions", {
   expiresIdx: index("manager_sessions_expires_idx").on(table.expiresAt),
 }));
 
+export const authRateLimits = pgTable("auth_rate_limits", {
+  key: text("key").primaryKey(),
+  failures: integer("failures").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at").defaultNow().notNull(),
+  lockedUntil: timestamp("locked_until"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  lockedUntilIdx: index("auth_rate_limits_locked_until_idx").on(table.lockedUntil),
+}));
+
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
   branchId: text("branch_id").references(() => branches.id).notNull(),

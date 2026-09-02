@@ -123,12 +123,7 @@ describe("desktop manager", () => {
     };
     (globalThis as unknown as Record<string, unknown>).fetch = async (url: string) => {
       const body = url.includes("/api/health")
-        ? {
-            ok: true,
-            agents: { total: 4, online: 3 },
-            printers: { total: 7, online: 6 },
-            jobs: { queued: 2, failed: 1 },
-          }
+        ? { ok: true }
         : jobs;
       return new Response(JSON.stringify(body), {
         status: 200,

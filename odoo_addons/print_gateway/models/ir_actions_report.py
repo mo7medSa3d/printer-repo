@@ -294,12 +294,12 @@ class IrActionsReport(models.Model):
         """
         if not records:
             raise ValidationError(_("Cannot print an empty report."))
-        
-        if len(records) == 1:
-            # Single record - always valid
-            return [{'records': records, 'branch': None, 'destination': None, 'document_type': None}]
-        
-        # Multiple records - check if routing is consistent
+
+        # Resolve routing for EVERY record, including a single-record
+        # report. Returning branch=None for len==1 used to make
+        # _route_via_gateway fail closed with "No print branch configured"
+        # even when a unique branch existed — or, worse, skip validation
+        # and fall through to records[0] elsewhere. Fail closed here.
         routing_groups = []
         for record in records:
             branch = self._determine_branch(record, mapping_info)
@@ -465,7 +465,7 @@ class IrActionsReport(models.Model):
             # Could be a string ID
             try:
                 docids = [int(docids)]
-            except:
+            except (TypeError, ValueError):
                 return super().report_action(docids, data=data, config=config)
         
         try:

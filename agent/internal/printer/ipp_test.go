@@ -1,7 +1,9 @@
 package printer
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +130,156 @@ func TestFactoryIPP(t *testing.T) {
 		if !tc.shouldSucceed && err == nil {
 			t.Errorf("expected failure for %+v", tc)
 		}
+	}
+}
+
+func TestParseIPPAttributesRealistic(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write([]byte{0x02, 0x00})                     // version 2.0
+	binary.Write(&buf, binary.BigEndian, uint16(0))   // successful-ok
+	binary.Write(&buf, binary.BigEndian, uint32(1))   // request id
+	buf.WriteByte(0x01)                               // operation attributes
+	writeIPPAttribute(&buf, 0x47, "attributes-charset", "utf-8")
+	writeIPPAttribute(&buf, 0x48, "attributes-natural-language", "en")
+	writeIPPAttribute(&buf, 0x41, "status-message", "successful-ok")
+	buf.WriteByte(0x04) // printer attributes
+	writeIPPIntAttr(&buf, 0x23, "printer-state", 3)
+	writeIPPAttribute(&buf, 0x44, "printer-state-reasons", "none")
+	// Additional value for printer-state-reasons (name-length 0) MUST follow
+	// the named attribute immediately, per RFC 8010.
+	buf.WriteByte(0x44)
+	binary.Write(&buf, binary.BigEndian, uint16(0))
+	media := "media-low"
+	binary.Write(&buf, binary.BigEndian, uint16(len(media)))
+	buf.WriteString(media)
+	writeIPPBoolAttr(&buf, "printer-is-accepting-jobs", true)
+	writeIPPAttribute(&buf, 0x42, "printer-name", "HP LaserJet")
+	writeIPPAttribute(&buf, 0x45, "printer-uri", "ipp://192.168.1.60/ipp/print")
+	writeIPPAttribute(&buf, 0x41, "printer-info", "Front desk")
+	writeIPPIntAttr(&buf, 0x21, "copies-default", 1)
+	// Unknown attribute with a text tag should still be captured.
+	writeIPPAttribute(&buf, 0x41, "vendor-extension", "ok")
+	buf.WriteByte(0x03)
+
+	attrs := parseIPPAttributes(buf.Bytes())
+	if attrs["printer-state"] != "3" {
+		t.Fatalf("printer-state=%q want 3", attrs["printer-state"])
+	}
+	if attrs["printer-is-accepting-jobs"] != "true" {
+		t.Fatalf("accepting=%q", attrs["printer-is-accepting-jobs"])
+	}
+	if attrs["printer-name"] != "HP LaserJet" {
+		t.Fatalf("name=%q", attrs["printer-name"])
+	}
+	if attrs["printer-uri"] != "ipp://192.168.1.60/ipp/print" {
+		t.Fatalf("uri=%q", attrs["printer-uri"])
+	}
+	if attrs["printer-info"] != "Front desk" {
+		t.Fatalf("info=%q", attrs["printer-info"])
+	}
+	if attrs["copies-default"] != "1" {
+		t.Fatalf("copies=%q", attrs["copies-default"])
+	}
+	if !strings.Contains(attrs["printer-state-reasons"], "none") || !strings.Contains(attrs["printer-state-reasons"], "media-low") {
+		t.Fatalf("reasons=%q", attrs["printer-state-reasons"])
+	}
+	if attrs["vendor-extension"] != "ok" {
+		t.Fatalf("unknown attr dropped: %v", attrs)
+	}
+	status, msg := parseIPPStatus(buf.Bytes())
+	if status != 0 {
+		t.Fatalf("status 0x%04x", status)
+	}
+	if msg != "successful-ok" {
+		t.Fatalf("status-message=%q", msg)
+	}
+}
+
+func TestParseIPPAttributesMalformedNeverPanics(t *testing.T) {
+	cases := [][]byte{
+		nil,
+		{},
+		{0x02, 0x00},
+		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+		append([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04, 0x21}, bytes.Repeat([]byte{0xff}, 8)...),
+		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x20}, // truncated name
+		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x01, 'a', 0xFF, 0xFF}, // huge value length
+		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x99, 0x00, 0x03, 'f', 'o', 'o', 0x00, 0x01, 0x01},
+	}
+	for i, c := range cases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("case %d panicked: %v", i, r)
+				}
+			}()
+			_ = parseIPPAttributes(c)
+			_, _ = parseIPPStatus(c)
+		}()
+	}
+}
+
+func TestParseIPPAttributesMultiplePrinterGroups(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01})
+	buf.WriteByte(0x01)
+	writeIPPAttribute(&buf, 0x47, "attributes-charset", "utf-8")
+	buf.WriteByte(0x04)
+	writeIPPIntAttr(&buf, 0x23, "printer-state", 4)
+	buf.WriteByte(0x04)
+	writeIPPAttribute(&buf, 0x44, "printer-state-reasons", "moving-to-paused")
+	buf.WriteByte(0x03)
+	attrs := parseIPPAttributes(buf.Bytes())
+	if attrs["printer-state"] != "4" {
+		t.Fatalf("state=%q", attrs["printer-state"])
+	}
+	if attrs["printer-state-reasons"] != "moving-to-paused" {
+		t.Fatalf("reasons=%q", attrs["printer-state-reasons"])
+	}
+}
+
+func TestIPPStatusUsesParsedPrinterState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		buf.Write([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01})
+		buf.WriteByte(0x01)
+		writeIPPAttribute(&buf, 0x47, "attributes-charset", "utf-8")
+		writeIPPAttribute(&buf, 0x48, "attributes-natural-language", "en")
+		buf.WriteByte(0x04)
+		writeIPPIntAttr(&buf, 0x23, "printer-state", 3)
+		writeIPPAttribute(&buf, 0x44, "printer-state-reasons", "none")
+		writeIPPBoolAttr(&buf, "printer-is-accepting-jobs", true)
+		buf.WriteByte(0x03)
+		w.Header().Set("Content-Type", "application/ipp")
+		w.Write(buf.Bytes())
+	}))
+	defer server.Close()
+	p, err := NewIPPPrinter(server.URL, "State")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Status(); got != "online" {
+		t.Fatalf("status=%q want online", got)
+	}
+}
+
+func writeIPPIntAttr(buf *bytes.Buffer, tag byte, name string, value int32) {
+	buf.WriteByte(tag)
+	binary.Write(buf, binary.BigEndian, uint16(len(name)))
+	buf.WriteString(name)
+	binary.Write(buf, binary.BigEndian, uint16(4))
+	binary.Write(buf, binary.BigEndian, value)
+}
+
+func writeIPPBoolAttr(buf *bytes.Buffer, name string, value bool) {
+	buf.WriteByte(0x22)
+	binary.Write(buf, binary.BigEndian, uint16(len(name)))
+	buf.WriteString(name)
+	binary.Write(buf, binary.BigEndian, uint16(1))
+	if value {
+		buf.WriteByte(0x01)
+	} else {
+		buf.WriteByte(0x00)
 	}
 }
 

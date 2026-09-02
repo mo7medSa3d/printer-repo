@@ -25,13 +25,22 @@ Labels used throughout the documentation:
 | `odoo-simulation.test.ts` | 4 | no | Odoo-side payload/contract simulation |
 | `regression-critical.test.ts` | 32 | no | Contract/source-level regressions: job-id generation, claim-before-send ordering, undelivered-claim release, WS envelope/ack, PDF pipeline properties, sync validation-before-transaction, `PRINTER_DISABLED`, document-type normalization, crash-marker presence |
 | `ws-claim-delivery.test.ts` | 12 | **yes** | Claim-before-delivery, ack, fast-agent rejection, requeue/lease recovery, duplicate push, concurrent claimers/polls, terminal jobs |
-| `odoo-sync-transaction.test.ts` | 11 | **yes** | Valid sync commit, rollback on invalid binding, in-transaction DB failure rollback, missing/cross-branch printer and destination, idempotency, concurrent syncs, integer-id normalization |
+| `odoo-sync-transaction.test.ts` | 16 | **yes** | Valid sync commit, rollback, missing/cross-branch printer and destination, deleted-resource disable, changed destination, disabled remains disabled, cross-branch id collision, branch isolation, idempotency, concurrent syncs |
 | `routing-availability.test.ts` | 6 | **yes** | `PRINTER_DISABLED` (409) vs `PRINTER_OFFLINE` (503), disabled→healthy fallback, case-insensitive document-type authorization |
 | `e2e-job-flow.test.ts` | 3 | **yes** | Odoo → gateway → real WebSocket agent → status, PDF capability mismatch (422), no-socket job stays queued |
+| `print-idempotency.test.ts` | 8 | **yes** | First create, retry, concurrent retries, timeout-after-accept, two intentional prints, different reports/records, same record printed twice |
+| `auth-rate-limit.test.ts` | 11 | mixed | Backoff math (no DB); login 429 / cooldown / IP / account / concurrent (DB) |
+| `health.test.ts` | 2 | mixed | Unauthenticated `/api/health` exposes no inventory counts |
+| `heartbeat-enabled.test.ts` | 2 | **yes** | Heartbeat cannot re-enable a disabled printer or update another agent's printer |
+| `odoo-addon-static.test.ts` | 5 | no | Test discovery, fail-closed single-record routing, persist-before-HTTP idempotency, per-branch sync state |
+| `printer-virtual.test.ts` | 49 | no | Virtual/redirected/physical/unknown classification |
+| `routing-virtual-regression.test.ts` | 7 | no | Virtual printers never win routing |
+| `desktop-ui-smoke.test.ts` | 1 | no | Desktop pages boot; virtual queues hidden |
 
 Totals (executed for this documentation pass):
-`npm test` **67 passed / 33 skipped** without a database,
-**100 passed / 0 skipped** with `DATABASE_URL` set — 11 files.
+`npm test` **134 passed / 56 skipped** without a database.
+With `DATABASE_URL` set the skipped DB suites run as well (190 tests across 19 files). The
+database-backed suites were **not executed in this workspace** (no PostgreSQL).
 
 The database-backed suites are skipped (not failed) when `DATABASE_URL` is unset, because
 `FOR UPDATE SKIP LOCKED`, real transactions and concurrent connections cannot be simulated.

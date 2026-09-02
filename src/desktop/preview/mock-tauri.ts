@@ -215,12 +215,7 @@ export function installPreviewBackend(): void {
         headers: { "content-type": "application/json" },
       });
     if (url.includes("/api/health")) {
-      return json({
-        ok: true,
-        agents: { total: 4, online: 3 },
-        printers: { total: 7, online: 6 },
-        jobs: { queued: 2, failed: 1 },
-      });
+      return json({ ok: true });
     }
     if (url.includes("/api/jobs")) {
       return json(demoJobs);

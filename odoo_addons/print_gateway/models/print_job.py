@@ -10,7 +10,7 @@ class PrintGatewayPrintJob(models.Model):
     _description = 'Print Gateway Job'
     _order = 'create_date desc'
 
-    gateway_job_id = fields.Char(string='Gateway Job ID', required=True, copy=False, index=True)
+    gateway_job_id = fields.Char(string='Gateway Job ID', copy=False, index=True, help='Filled once the Gateway accepts the job. Empty while the operation is persisted locally pending the HTTP round-trip.')
     branch_id = fields.Many2one('print_gateway.branch', required=True, ondelete='cascade')
     destination_id = fields.Many2one('print_gateway.destination', ondelete='set null')
     document_type = fields.Char()
@@ -37,6 +37,12 @@ class PrintGatewayPrintJob(models.Model):
     report_xml_id = fields.Char(string='Report XML ID', help='e.g., sale.action_report_saleorder', index=True)
     report_name = fields.Char(string='Report Name', help='Technical report name, e.g., sale.report_saleorder_document')
     report_id = fields.Many2one('ir.actions.report', string='Report', ondelete='set null', help='Linked Odoo report')
+
+    _sql_constraints = [
+        ('branch_idempotency_unique',
+         'unique(branch_id, idempotency_key)',
+         'This print operation was already submitted for this branch.'),
+    ]
 
     def action_sync_status(self):
         for job in self:

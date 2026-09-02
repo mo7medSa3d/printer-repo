@@ -56,7 +56,8 @@ Print payloads are up to 5 MiB base64 — allow a request body of at least ~8 MB
 
 ### Health and monitoring
 
-* `GET /api/health` — unauthenticated liveness plus agent/printer/job counters.
+* `GET /api/health` — unauthenticated liveness (`{ok:true}` / `{ok:false}`). Inventory
+  counts are not exposed without manager authentication.
 * Useful queries: jobs stuck in `claimed` (`claimed_at < now() - interval '90 seconds'`),
   jobs with `retries >= 3`, jobs with `error like 'AGENT_RESTART_DURING_PRINT%'`.
 * Gateway logs warn on failed WebSocket pushes, sync rollbacks and unknown acks.
