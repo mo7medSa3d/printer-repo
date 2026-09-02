@@ -50,7 +50,7 @@ export function normalizeLegacyPrinterInput(value: unknown): CanonicalPrinterInp
   // Legacy clients used printerType for hardware class. Normalize that alias
   // once at the input boundary instead of persisting two writable meanings.
   const legacyPrinterType = typeof input.printerType === "string" ? input.printerType.toLowerCase().trim() : "";
-  if (legacyPrinterType && !PRINTER_TYPES.includes(legacyPrinterType as any) && DEVICE_CLASSES.includes(legacyPrinterType as any)) {
+  if (legacyPrinterType && !(PRINTER_TYPES as readonly string[]).includes(legacyPrinterType) && (DEVICE_CLASSES as readonly string[]).includes(legacyPrinterType)) {
     if (input.deviceClass === undefined) input.deviceClass = legacyPrinterType;
     input.printerType = "physical";
   }

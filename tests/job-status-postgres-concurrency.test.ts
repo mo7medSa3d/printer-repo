@@ -21,7 +21,7 @@ suite("atomic Agent job status transitions", () => {
         a.query(`UPDATE print_jobs SET status='success', updated_at=now() WHERE id=$1 AND agent_id=$2 AND status=$3 RETURNING status`, ["job_race", f.agentId, expected]),
         b.query(`UPDATE print_jobs SET status='failed', updated_at=now() WHERE id=$1 AND agent_id=$2 AND status=$3 RETURNING status`, ["job_race", f.agentId, expected]),
       ]);
-      expect(ra.rowCount + rb.rowCount).toBe(1);
+      expect((ra.rowCount ?? 0) + (rb.rowCount ?? 0)).toBe(1);
       const row = await pool().query(`SELECT status FROM print_jobs WHERE id='job_race'`);
       expect(["success", "failed"]).toContain(row.rows[0].status);
     } finally { a.release(); b.release(); }

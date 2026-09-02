@@ -153,7 +153,6 @@ export async function POST(req: Request) {
     const id = asId(d?.id);
     const dBranch = asId(d?.branchId ?? d?.branch_id);
     const name = asText(d?.name);
-    const payloadHint = asText(d?.payloadHint ?? d?.payload_hint);
     const type = asText(d?.type ?? d?.destination_type);
     if (!id) { details.push({ entity: "destination", id: null, reason: "destination id is required" }); continue; }
     if (!name) { details.push({ entity: "destination", id, reason: "destination name is required" }); continue; }
@@ -179,6 +178,7 @@ export async function POST(req: Request) {
     const id = asId(d?.id);
     const dBranch = asId(d?.branchId ?? d?.branch_id);
     const name = asText(d?.name);
+    const payloadHint = asText(d?.payloadHint ?? d?.payload_hint);
     if (!id) { details.push({ entity: "documentType", id: null, reason: "document type id is required" }); continue; }
     if (!name) { details.push({ entity: "documentType", id, reason: "document type name is required" }); continue; }
     if (!dBranch) { details.push({ entity: "documentType", id, reason: "document type branchId is required" }); continue; }
@@ -332,7 +332,8 @@ export async function POST(req: Request) {
       }
     }
   } catch (e) {
-    console.error("[odoo/sync] dependency validation failed:", e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "odoo.sync.dependency_validation_failed", error: msg.slice(0, 500) }));
     return NextResponse.json({ success: false, error: "SYNC_INTERNAL_ERROR", message: "database error while validating sync dependencies" }, { status: 500 });
   }
 
@@ -430,8 +431,8 @@ export async function POST(req: Request) {
       }
     });
   } catch (e) {
-    console.error("[odoo/sync] transaction rolled back:", e);
     const message = e instanceof Error ? e.message : "unknown database error";
+    console.warn(JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "odoo.sync.transaction_rolled_back", error: message.slice(0, 500) }));
     return NextResponse.json(
       { success: false, error: "SYNC_INTERNAL_ERROR", branchId, message: `synchronization rolled back: ${message}` },
       { status: 500 }

@@ -98,7 +98,7 @@ const VIRTUAL = {
 
 function setup(printers: any[], bindings: any[]) {
   state.printers = Object.fromEntries(printers.map((p) => [p.id, p]));
-  state.agents = Object.fromEntries(printers.map((p) => [p.agentId, { id: p.agentId, branchId: state.branch.id, lifecycle: "active" }]));
+  state.agents = Object.fromEntries(printers.map((p) => [p.agentId, { id: p.agentId, branchId: state.branch.id, lifecycle: "active", status: "online", lastSeenAt: new Date() }]));
   state.bindings = bindings;
   state.printerCalls = 0;
 }

@@ -127,12 +127,12 @@ const demoJobs = [
   },
 ];
 
-function transformCallback(callback?: (...args: any[]) => void, once = false): number {
+function transformCallback(callback?: (...args: unknown[]) => void, once = false): number {
   const id = Math.floor(Math.random() * 2 ** 31);
-  const w = window as any;
-  w[`_preview_cb_${id}`] = (...args: any[]) => {
-    if (once) delete w[`_preview_cb_${id}`];
-    callback?.(...args);
+  const w = window as unknown as Record<string, unknown>;
+  (w as Record<string, unknown>)[`_preview_cb_${id}`] = (...args: unknown[]) => {
+    if (once) delete (w as Record<string, unknown>)[`_preview_cb_${id}`];
+    (callback as (...a: unknown[]) => void)?.(...args);
   };
   return id;
 }
@@ -189,29 +189,29 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): P
     case "restart_agent":
       return "Agent restarted" as unknown as T;
     case "pair_agent":
-      return `Agent paired with ${String((args as any)?.args?.gateway_url ?? "gateway")}` as unknown as T;
+      return `Agent paired with ${String((args as Record<string, unknown>)?.args && ((args as Record<string, unknown>).args as Record<string, unknown>)?.gateway_url ? String(((args as Record<string, unknown>).args as Record<string, unknown>).gateway_url) : "gateway")}` as unknown as T;
     default:
       throw new Error(`preview: unhandled command ${cmd}`);
   }
 }
 
 export function installPreviewBackend(): void {
-  const w = window as any;
-  w.__TAURI_INTERNALS__ = {
+  const w = window as unknown as Record<string, unknown>;
+  (w as Record<string, unknown>).__TAURI_INTERNALS__ = {
     invoke: mockInvoke,
     transformCallback,
     unregisterCallback: () => {},
     convertFileSrc: (p: string) => p,
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
   };
-  w.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+  (w as Record<string, unknown>).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
     registerListener: () => {},
     unregisterListener: () => {},
   };
 
   // Fake the two gateway HTTP calls the manager makes.
-  const realFetch = w.fetch.bind(w);
-  w.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const realFetch = (w as unknown as Window).fetch.bind(window);
+  (w as unknown as Window).fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const json = (body: unknown) =>
       new Response(JSON.stringify(body), {

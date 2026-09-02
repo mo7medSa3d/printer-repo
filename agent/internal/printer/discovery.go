@@ -444,6 +444,105 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 		add(infos)
 	}()
 
+	// 7. LPR/LPD (515) — bounded, safe probe
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("lpr discovery panic: %v", r)) } }()
+		log.Printf("[discovery] starting LPR discovery")
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		// reuse network targets for 515
+		var lprTargets []string
+		if ifaces, err := net.Interfaces(); err == nil {
+			for _, iface := range ifaces {
+				if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+					continue
+				}
+				addrs, _ := iface.Addrs()
+				for _, addr := range addrs {
+					if ipNet, ok := addr.(*net.IPNet); ok {
+						if ip := ipNet.IP.To4(); ip != nil && ip.IsPrivate() {
+							hosts := generateHosts(ipNet)
+							for _, h := range hosts {
+								lprTargets = append(lprTargets, h.String())
+							}
+						}
+					}
+				}
+			}
+		}
+		if len(lprTargets) > 254 {
+			lprTargets = lprTargets[:254]
+		}
+		infos := discoverLPRPrinters(ctx, lprTargets)
+		if len(infos) > 0 {
+			log.Printf("[discovery] LPR found %d printers", len(infos))
+		}
+		add(infos)
+	}()
+
+	// 8. SNMP (161) — read-only, public community
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("snmp discovery panic: %v", r)) } }()
+		log.Printf("[discovery] starting SNMP discovery")
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		var snmpTargets []string
+		if ifaces, err := net.Interfaces(); err == nil {
+			for _, iface := range ifaces {
+				if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+					continue
+				}
+				addrs, _ := iface.Addrs()
+				for _, addr := range addrs {
+					if ipNet, ok := addr.(*net.IPNet); ok {
+						if ip := ipNet.IP.To4(); ip != nil && ip.IsPrivate() {
+							hosts := generateHosts(ipNet)
+							for _, h := range hosts {
+								snmpTargets = append(snmpTargets, h.String())
+							}
+						}
+					}
+				}
+			}
+		}
+		if len(snmpTargets) > 100 {
+			snmpTargets = snmpTargets[:100]
+		}
+		infos := discoverSNMPPrinters(ctx, snmpTargets)
+		if len(infos) > 0 {
+			log.Printf("[discovery] SNMP found %d printers", len(infos))
+		}
+		add(infos)
+	}()
+
+	// 9. WSD (WS-Discovery multicast) — platform independent probe
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("wsd discovery panic: %v", r)) } }()
+		log.Printf("[discovery] starting WSD discovery")
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		infos := discoverWSDPrinters(ctx)
+		add(infos)
+	}()
+
+	// 10. mDNS full (224.0.0.251) — supplements IPP mDNS stub
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("mdns discovery panic: %v", r)) } }()
+		log.Printf("[discovery] starting mDNS discovery")
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		infos := discoverFullMDNS(ctx)
+		add(infos)
+	}()
+
 	wg.Wait()
 	log.Printf("[discovery] discovery completed: %d printers (errors: %d)", len(all), len(errors))
 

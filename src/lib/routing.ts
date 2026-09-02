@@ -239,9 +239,9 @@ export async function resolvePrinterForJob({
       // Capability validation
       if (payloadType) {
         const cap = validatePayloadForPrinter(payloadType, {
-          protocol: (printer as any).protocol,
-          connectionType: (printer as any).connectionType,
-          capabilities: (printer as any).capabilities,
+          protocol: (printer as { protocol: string | null }).protocol,
+          connectionType: (printer as { connectionType: string | null }).connectionType,
+          capabilities: (printer as { capabilities: { supported_protocols?: string[] } | null }).capabilities,
         });
         if (!cap.ok) {
           lastCapabilityReason = cap.reason;

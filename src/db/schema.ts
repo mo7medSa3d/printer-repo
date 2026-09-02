@@ -193,6 +193,71 @@ export const authRateLimits = pgTable("auth_rate_limits", {
   updatedAtIdx: index("auth_rate_limits_updated_at_idx").on(table.updatedAt),
 }));
 
+export const discoverySessions = pgTable("discovery_sessions", {
+  id: text("id").primaryKey(),
+  agentId: text("agent_id").references(() => agents.id).notNull(),
+  branchId: text("branch_id").references(() => branches.id).notNull(),
+  status: text("status").notNull().default("running"),
+  config: jsonb("config").$type<{
+    cidr?: string;
+    protocols?: string[];
+    timeoutMs?: number;
+    concurrency?: number;
+  }>().default({}).notNull(),
+  stats: jsonb("stats").$type<{
+    candidates?: number;
+    verified?: number;
+    errors?: number;
+    durationMs?: number;
+  }>().default({}).notNull(),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  agentIdIdx: index("discovery_sessions_agent_id_idx").on(table.agentId),
+  branchIdIdx: index("discovery_sessions_branch_id_idx").on(table.branchId),
+  statusIdx: index("discovery_sessions_status_idx").on(table.status),
+}));
+
+export const discoveredDevices = pgTable("discovered_devices", {
+  id: text("id").primaryKey(),
+  discoveryId: text("discovery_id").references(() => discoverySessions.id).notNull(),
+  agentId: text("agent_id").references(() => agents.id).notNull(),
+  branchId: text("branch_id").references(() => branches.id).notNull(),
+  source: text("source").array().notNull().default(sql`ARRAY[]::text[]`),
+  protocol: text("protocol").notNull().default("unknown"),
+  ipAddress: text("ip_address"),
+  hostname: text("hostname"),
+  port: integer("port"),
+  macAddress: text("mac_address"),
+  deviceName: text("device_name"),
+  manufacturer: text("manufacturer"),
+  model: text("model"),
+  serialNumber: text("serial_number"),
+  firmwareVersion: text("firmware_version"),
+  printerState: text("printer_state"),
+  uri: text("uri"),
+  transport: text("transport"),
+  confidence: text("confidence").notNull().default("low"),
+  verification: text("verification").notNull().default("candidate"),
+  deviceClass: text("device_class").notNull().default("unknown"),
+  capabilities: jsonb("capabilities").$type<Record<string, unknown>>(),
+  rawMetadata: jsonb("raw_metadata").$type<Record<string, unknown>>(),
+  provisionedPrinterId: text("provisioned_printer_id").references(() => printers.id),
+  candidateStatus: text("candidate_status").notNull().default("discovered"),
+  discoveredAt: timestamp("discovered_at").defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  discoveryIdIdx: index("discovered_devices_discovery_id_idx").on(table.discoveryId),
+  agentIdIdx: index("discovered_devices_agent_id_idx").on(table.agentId),
+  branchIdIdx: index("discovered_devices_branch_id_idx").on(table.branchId),
+  candidateStatusIdx: index("discovered_devices_candidate_status_idx").on(table.candidateStatus),
+  confidenceIdx: index("discovered_devices_confidence_idx").on(table.confidence),
+}));
+
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
   branchId: text("branch_id").references(() => branches.id).notNull(),

@@ -105,7 +105,7 @@ cd agent && go build ./... && go vet ./... && go test ./... && go test -race ./.
 GOOS=windows go build ./... && GOOS=windows go vet ./...
 ```
 
-Current local verification: Node test/lint/build commands are **blocked by missing npm dependencies**; PostgreSQL-backed suites were not executable because PostgreSQL is unavailable.
+Current local verification (2026-09-02): `typecheck`/`lint`/`test:unit`/`build`/`go vet`/`go test` pass locally; PostgreSQL-backed suites (`test:integration`) require `DATABASE_URL` and are enforced as a required gate in `.github/workflows/ci.yml`.
 What each suite covers — and what is deliberately not covered — is in
 [docs/TESTING.md](docs/TESTING.md).
 

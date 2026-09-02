@@ -18,7 +18,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const agentPrinters = await db.query.printers.findMany({ where: eq(printers.agentId, id), orderBy: [desc(printers.createdAt)] });
   const [jobs] = await db.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, id));
-  const { secret: _secret, pairingCode: _pc, pairingCodeExpiresAt: _exp, ...safe } = agent as any;
+  const { secret: _secret, pairingCode: _pc, pairingCodeExpiresAt: _exp, ...safe } = agent as Record<string, unknown>;
   return NextResponse.json({ agent: safe, printers: agentPrinters, jobCount: jobs?.c ?? 0 });
 }
 

@@ -169,7 +169,7 @@ export async function POST(req: Request) {
       branchId: parsed.branchId,
       destinationId: parsed.destinationId,
       documentType: parsed.documentType,
-      payloadType: (validatedPayload as any)?.type ?? null,
+      payloadType: (validatedPayload as { type?: string | null })?.type ?? null,
     });
     if (!resolved) {
       // resolvePrinterForJob no longer returns null; kept as a defensive
@@ -281,14 +281,14 @@ export async function POST(req: Request) {
     if (isVirtualPrinterRecord(printer)) {
       return NextResponse.json({ error: "PRINTER_VIRTUAL: printer is virtual or redirected" }, { status: 409 });
     }
-    if ((printer as any).status === "offline" || (printer as any).status === "error") {
+    if ((printer as { status: string }).status === "offline" || (printer as { status: string }).status === "error") {
       return NextResponse.json({ error: "PRINTER_OFFLINE: printer is offline" }, { status: 503 });
     }
     // Capability validation for legacy path as well
-    const capLegacy = validatePayloadForPrinter((validatedPayload as any)?.type, {
-      protocol: (printer as any).protocol,
-      connectionType: (printer as any).connectionType,
-      capabilities: (printer as any).capabilities,
+    const capLegacy = validatePayloadForPrinter((validatedPayload as { type?: string | null })?.type, {
+      protocol: (printer as { protocol: string | null }).protocol,
+      connectionType: (printer as { connectionType: string | null }).connectionType,
+      capabilities: (printer as { capabilities: { supported_protocols?: string[] } | null }).capabilities,
     });
     if (!capLegacy.ok) {
       return NextResponse.json({ error: capLegacy.reason }, { status: 422 });

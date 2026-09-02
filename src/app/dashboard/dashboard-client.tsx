@@ -58,6 +58,86 @@ function jobTone(status: string): Tone {
   return "neutral";
 }
 
+function DiscoveryPanel({ agents, branchesById }: { agents: Agent[]; branchesById: Map<string, Branch> }) {
+  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [devices, setDevices] = useState<any[]>([]);
+  const [discoveryId, setDiscoveryId] = useState<string | null>(null);
+
+  const start = async () => {
+    if (!agentId) { setMsg("Select an agent"); return; }
+    setBusy(true); setMsg(null); setDevices([]);
+    try {
+      const res = await fetch(`/api/agents/${agentId}/discovery`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "start failed");
+      setDiscoveryId(data.discoveryId);
+      setMsg(`Scanning ${agents.find(a=>a.id===agentId)?.name ?? agentId} (${branchesById.get(agents.find(a=>a.id===agentId)?.branchId ?? "")?.name ?? ""}) — ${data.discoveryId}`);
+      // poll for results every 3s for 35s
+      for (let i=0;i<12;i++) {
+        await new Promise(r=>setTimeout(r,3000));
+        const r2 = await fetch(`/api/agents/${agentId}/discovery/${data.discoveryId}`);
+        if (!r2.ok) continue;
+        const j = await r2.json();
+        if (j.devices) setDevices(j.devices);
+        if (j.session?.status && j.session.status !== "running") { setMsg(`Status: ${j.session.status} — ${j.devices?.length ?? 0} candidates`); break; }
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+  const provision = async (deviceId: string) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/agents/${agentId}/discovered-printers/${deviceId}/provision`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "provision failed");
+      setMsg(data.already ? `Already configured as ${data.printerId}` : `Provisioned ${data.printerId}`);
+      setDevices(prev => prev.map(d => d.id===deviceId ? {...d, candidateStatus:"provisioned"} : d));
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+  const refresh = async () => {
+    if (!discoveryId || !agentId) return;
+    const r = await fetch(`/api/agents/${agentId}/discovery/${discoveryId}`);
+    if (r.ok) { const j = await r.json(); if (j.devices) setDevices(j.devices); }
+  };
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <select value={agentId} onChange={e=>setAgentId(e.target.value)} className={inputClass} aria-label="Discovery agent">
+          {agents.filter(a=>a.lifecycle==="active").map(a=> <option key={a.id} value={a.id}>{a.name} — {branchesById.get(a.branchId)?.name ?? a.branchId}</option>)}
+        </select>
+        <Button variant="primary" onClick={start} disabled={busy || !agentId}>Scan Network</Button>
+        {discoveryId && <Button variant="secondary" onClick={refresh} disabled={busy}>Refresh</Button>}
+      </div>
+      {msg && <p className="text-xs text-ink-2 border border-edge rounded px-2 py-1">{msg}</p>}
+      {devices.length===0 ? <p className="text-xs text-ink-3">No candidates yet — start a scan. Private /24 only, no Internet scan, no print jobs during discovery.</p> : (
+        <div className="space-y-2 max-h-[32rem] overflow-auto pr-1">
+          {devices.map((d:any)=> (
+            <div key={d.id} className="rounded-lg border border-edge p-3 text-xs">
+              <div className="flex justify-between gap-2">
+                <span className="font-medium text-ink truncate">{d.deviceName ?? d.model ?? d.ipAddress ?? d.id}</span>
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${d.confidence==="high"?"bg-ok-bg text-ok border border-ok-edge":d.confidence==="medium"?"bg-warn-bg text-warn border border-warn-edge":"bg-surface text-ink-3 border"}`}>{d.confidence ?? "low"}</span>
+              </div>
+              <div className="text-ink-3">Sources: {(d.source ?? []).join(" + ") || "—"} · Protocol: {d.protocol} · {d.ipAddress ? `${d.ipAddress}:${d.port ?? ""}` : d.uri ?? ""}</div>
+              <div className="text-ink-3">Verification: {d.verification === "verified" ? "Verified" : "Candidate"} · Status: {d.candidateStatus ?? "discovered"}</div>
+              {d.manufacturer || d.model ? <div className="text-ink-2">{d.manufacturer ?? ""} {d.model ?? ""}</div> : null}
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="primary" onClick={()=>provision(d.id)} disabled={busy || d.candidateStatus==="provisioned"}>{d.candidateStatus==="provisioned" ? "Configured" : "Configure"}</Button>
+                <span className="text-[11px] text-ink-3 self-center">{d.deviceName ? d.deviceName : d.id.slice(0,12)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-ink-3">Discovery is read-only, bounded (32 workers, 500ms per host, private subnets only) and never prints. Branch is derived via Agent → Branch.</p>
+    </div>
+  );
+}
+
 export default function DashboardClient({
   initialBranches,
   initialAgents,
@@ -267,6 +347,18 @@ export default function DashboardClient({
               </div>
             ))
           )}
+        </div>
+      </Card>
+
+      {/* Discovery */}
+      <Card className="overflow-hidden">
+        <CardHeader
+          title="Discovery"
+          subtitle="Find printers on the agent's local network"
+          icon={<Network className="h-4 w-4 text-brand" aria-hidden />}
+        />
+        <div className="px-5 pb-5 space-y-3">
+          <DiscoveryPanel agents={initialAgents} branchesById={branchesById} />
         </div>
       </Card>
 

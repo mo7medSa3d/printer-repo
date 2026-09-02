@@ -50,12 +50,12 @@ function sanitizePrinter(p: ReportedPrinter): {
   if (!connectionType) return null;
   let printerType = typeof p.printerType === "string" ? p.printerType.trim().toLowerCase() : "";
   let deviceClass = typeof p.deviceClass === "string" ? p.deviceClass.trim().toLowerCase() : "unknown";
-  if (!PRINTER_TYPES.includes(printerType as any) && DEVICE_CLASSES.includes(printerType as any)) {
+  if (!(PRINTER_TYPES as readonly string[]).includes(printerType) && (DEVICE_CLASSES as readonly string[]).includes(printerType)) {
     deviceClass = printerType;
     printerType = "physical";
   }
-  if (!PRINTER_TYPES.includes(printerType as any) || !DEVICE_CLASSES.includes(deviceClass as any)) return null;
-  const protocol = normalizeProtocol(p.protocol ?? (p.config as any)?.protocol);
+  if (!(PRINTER_TYPES as readonly string[]).includes(printerType) || !(DEVICE_CLASSES as readonly string[]).includes(deviceClass)) return null;
+  const protocol = normalizeProtocol(p.protocol ?? (p.config as Record<string, unknown>)?.protocol);
   if (!protocol) return null;
   const config = p.config && typeof p.config === "object" ? { ...(p.config as Record<string, unknown>) } : {};
   delete config.protocol;
@@ -104,13 +104,13 @@ export async function POST(req: Request) {
         await db.update(printers)
           .set({
             name: p.name,
-            printerType: p.printerType as any,
-            deviceClass: p.deviceClass as any,
-            connectionType: p.connectionType as any,
-            protocol: p.protocol as any,
+            printerType: p.printerType as typeof printers.$inferInsert.printerType,
+            deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
+            connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
+            protocol: p.protocol as typeof printers.$inferInsert.protocol,
             status: p.status,
-            config: p.config as any,
-            capabilities: p.capabilities as any,
+            config: p.config as typeof printers.$inferInsert.config,
+            capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
             // Heartbeat updates telemetry only; lifecycle remains operator-owned.
             lastSeenAt: new Date(),
             updatedAt: new Date(),
@@ -121,13 +121,13 @@ export async function POST(req: Request) {
           id: p.id,
           agentId: agent.id,
           name: p.name,
-          printerType: p.printerType as any,
-          connectionType: p.connectionType as any,
-          protocol: p.protocol as any,
+          printerType: p.printerType as typeof printers.$inferInsert.printerType,
+          connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
+          protocol: p.protocol as typeof printers.$inferInsert.protocol,
           status: p.status,
           lifecycle: "active",
-          config: p.config as any,
-          capabilities: p.capabilities as any,
+          config: p.config as typeof printers.$inferInsert.config,
+          capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
           lastSeenAt: new Date(),
         });
       }

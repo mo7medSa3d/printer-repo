@@ -390,12 +390,15 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	heartbeatTicker := time.NewTicker(30 * time.Second)
 	pollTicker := time.NewTicker(10 * time.Second) // Fallback poll
+	discoveryTicker := time.NewTicker(30 * time.Second)
 	defer heartbeatTicker.Stop()
 	defer pollTicker.Stop()
+	defer discoveryTicker.Stop()
 
 	// Send an immediate heartbeat/poll on startup instead of waiting a full tick.
 	go a.sendHeartbeatGuarded()
 	go a.pollJobsGuarded(ctx)
+	go a.pollDiscovery(ctx)
 
 	// Counts poll ticks skipped because the WebSocket is connected.
 	wsSafetyPollTicks := 0
@@ -432,6 +435,8 @@ func (a *Agent) Run(ctx context.Context) error {
 					go a.pollJobsGuarded(ctx)
 				}
 			}
+		case <-discoveryTicker.C:
+			go a.pollDiscovery(ctx)
 		}
 	}
 }

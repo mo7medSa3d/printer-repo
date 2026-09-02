@@ -5,6 +5,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { isJobStatus, canTransition, isTerminal, type JobStatus } from "@/lib/job-status";
 import { CLAIM_LEASE_SECONDS } from "@/lib/job-delivery";
+import { logInfo, logWarn, requestIdFrom } from "@/lib/log";
+import { incrementMetric } from "@/lib/metrics";
 
 // A claimed/printing job that hasn't been updated in this long is assumed
 // to belong to a crashed or disconnected agent and becomes reclaimable.

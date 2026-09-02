@@ -39,13 +39,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const existing = await db.query.printers.findFirst({ where: eq(printers.id, id) });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
   let body: unknown; try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
-  if (body && typeof body === "object" && ("branchId" in body || "enabled" in body || "type" in body || ("config" in body && typeof (body as any).config === "object" && (body as any).config && "protocol" in (body as any).config))) {
+  if (body && typeof body === "object" && ("branchId" in body || "enabled" in body || "type" in body || ("config" in body && typeof (body as Record<string, unknown>).config === "object" && (body as Record<string, unknown>).config && "protocol" in ((body as Record<string, unknown>).config as Record<string, unknown>)))) {
     // Legacy aliases can be normalized by create/import boundaries, but mutation of ownership or compatibility state is forbidden.
     return NextResponse.json({ error: "Unsupported legacy/ownership field" }, { status: 400 });
   }
   const parsed = patchSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid body" }, { status: 400 });
-  try { assertPrinterMetadataLimits(parsed.data as any); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "printer metadata exceeds limits" }, { status: 400 }); }
+  try { assertPrinterMetadataLimits(parsed.data as unknown as Parameters<typeof assertPrinterMetadataLimits>[0]); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "printer metadata exceeds limits" }, { status: 400 }); }
   if (parsed.data.lifecycle && !canTransitionLifecycle(existing.lifecycle, parsed.data.lifecycle)) return NextResponse.json({ error: `invalid lifecycle transition: ${existing.lifecycle} -> ${parsed.data.lifecycle}` }, { status: 409 });
   if (parsed.data.lifecycle === "active") {
     const owner = await db.query.agents.findFirst({ where: eq(agents.id, existing.agentId) });
