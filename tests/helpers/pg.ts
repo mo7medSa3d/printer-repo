@@ -22,37 +22,37 @@ const TRUNCATE_LOCK_KEY = 727727727;
 const MIGRATION_LOCK_KEY = 727727728;
 
 export async function applyMigrations(): Promise<void> {
-  // Serialize migrations under advisory lock so parallel workers don't race.
   const client = await pool().connect();
   try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_KEY]);
-    const dir = path.resolve(process.cwd(), "drizzle");
-    const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = readFileSync(path.join(dir, file), "utf8");
-      const statements = sqlText
-        .split("--> statement-breakpoint")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      for (const stmt of statements) {
-        try {
-          await client.query(stmt);
-        } catch (e: any) {
-          if (!DUPLICATE_OBJECT_CODES.has(e?.code)) throw e;
+    // Session-level advisory lock so parallel Vitest workers serialize without
+    // aborting a surrounding transaction on duplicate-object errors.
+    await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+    try {
+      const dir = path.resolve(process.cwd(), "drizzle");
+      const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+      for (const file of files) {
+        const sqlText = readFileSync(path.join(dir, file), "utf8");
+        const statements = sqlText
+          .split("--> statement-breakpoint")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        for (const stmt of statements) {
+          try {
+            await client.query(stmt);
+          } catch (e: any) {
+            if (!DUPLICATE_OBJECT_CODES.has(e?.code)) throw e;
+          }
         }
       }
+      const check = await client.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`
+      );
+      if (check.rowCount !== 3) {
+        throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
+      }
+    } finally {
+      await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_KEY]);
     }
-    const check = await client.query(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`
-    );
-    if (check.rowCount !== 3) {
-      throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
-    }
-    await client.query("COMMIT");
-  } catch (e) {
-    try { await client.query("ROLLBACK"); } catch {}
-    throw e;
   } finally {
     client.release();
   }
