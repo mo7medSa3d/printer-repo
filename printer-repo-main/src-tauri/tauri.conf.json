@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Odoo Print Manager",
+  "version": "1.0.0",
+  "identifier": "com.odoo.printmanager",
+  "build": {
+    "beforeDevCommand": "npm run desktop:dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run desktop:vite:build",
+    "frontendDist": "../dist-desktop"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Odoo Print Manager",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "center": true,
+        "backgroundColor": "#F8FAFC"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self';"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Odoo Print",
+    "copyright": "Copyright © 2026 Odoo Print",
+    "shortDescription": "Local print manager for Odoo POS/ERP",
+    "longDescription": "Odoo Print Manager pairs this Windows PC with the Odoo Print Gateway, runs the local print agent, and shows gateway/agent health from the system tray.",
+    "icon": [
+      "icons/16x16.png",
+      "icons/24x24.png",
+      "icons/32x32.png",
+      "icons/48x48.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": {
+      "../agent/OdooPrintAgent.exe": "resources/OdooPrintAgent.exe",
+      "../agent/odoo-agent-cli.exe": "resources/odoo-agent-cli.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "displayLanguageSelector": false,
+        "startMenuFolder": "Odoo Print Manager"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

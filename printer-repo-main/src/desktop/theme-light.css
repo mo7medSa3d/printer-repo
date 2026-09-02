@@ -1,0 +1,188 @@
+/* ============================================================
+   DESKTOP MANAGER — pinned LIGHT theme
+   ------------------------------------------------------------
+   The shared design system (src/app/globals.css) is authored
+   light-first but also ships a `prefers-color-scheme: dark`
+   variant for the web console. The Desktop Manager is a
+   Windows shell product and must ALWAYS present the light,
+   bright, white-surfaced interface — a user running Windows in
+   dark mode must not get a dark navy manager.
+
+   So this file re-declares the light token values *after* the
+   shared stylesheet and pins `color-scheme: light`, which also
+   makes the WebView render native controls (scrollbars, select
+   popups, form widgets) in their light variant.
+
+   The `prefers-color-scheme: dark` block below is intentional:
+   it makes the pin order-independent, so the desktop app stays
+   light even if the bundler emits this file before globals.css.
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --surface-3: #e2e8f0;
+  --surface-accent: #eff6ff;
+  --surface-accent-2: #dbeafe;
+
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --border-accent: #dbeafe;
+
+  --text: #0f172a;
+  --text-2: #475569;
+  --text-3: #64748b;
+  --text-4: #94a3b8;
+  --text-on-brand: #ffffff;
+  --text-on-solid: #ffffff;
+
+  --brand-50: #eff6ff;
+  --brand-100: #dbeafe;
+  --brand-200: #bfdbfe;
+  --brand-300: #93c5fd;
+  --brand-400: #60a5fa;
+  --brand-500: #3b82f6;
+  --brand-600: #2563eb;
+  --brand-700: #1d4ed8;
+  --brand-800: #1e40af;
+  --brand-900: #1e3a8a;
+  --brand-950: #172554;
+
+  --brand: #2563eb;
+  --brand-hover: #1d4ed8;
+  --brand-active: #1e40af;
+  --brand-contrast: #ffffff;
+  --brand-subtle: #eff6ff;
+  --brand-subtle-hover: #dbeafe;
+  --brand-subtle-border: #dbeafe;
+  --brand-subtle-text: #1d4ed8;
+  --brand-ring: rgba(37, 99, 235, 0.26);
+
+  --success: #15803d;
+  --success-solid: #16a34a;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+
+  --warning: #b45309;
+  --warning-solid: #d97706;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+
+  --danger: #dc2626;
+  --danger-solid: #dc2626;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+
+  --info: #2563eb;
+  --info-solid: #3b82f6;
+  --info-bg: #eff6ff;
+  --info-border: #dbeafe;
+
+  --notice-bg: #fff7ed;
+  --notice-border: #fed7aa;
+  --notice-text: #9a3412;
+  --notice-icon: #d97706;
+
+  --focus-ring: #2563eb;
+  --focus-ring-shadow: 0 0 0 3px rgba(37, 99, 235, 0.26);
+  --overlay: rgba(15, 23, 42, 0.45);
+
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 12px 32px -8px rgba(15, 23, 42, 0.14), 0 4px 10px -4px rgba(15, 23, 42, 0.06);
+  --shadow-xl: 0 24px 56px -16px rgba(15, 23, 42, 0.2), 0 8px 20px -8px rgba(15, 23, 42, 0.08);
+  --shadow-brand: 0 1px 2px rgba(37, 99, 235, 0.24);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --surface-2: #f1f5f9;
+    --surface-3: #e2e8f0;
+    --surface-accent: #eff6ff;
+    --surface-accent-2: #dbeafe;
+
+    --border: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --border-accent: #dbeafe;
+
+    --text: #0f172a;
+    --text-2: #475569;
+    --text-3: #64748b;
+    --text-4: #94a3b8;
+    --text-on-brand: #ffffff;
+    --text-on-solid: #ffffff;
+
+    --brand-50: #eff6ff;
+    --brand-100: #dbeafe;
+    --brand-200: #bfdbfe;
+    --brand-300: #93c5fd;
+    --brand-400: #60a5fa;
+    --brand-500: #3b82f6;
+    --brand-600: #2563eb;
+    --brand-700: #1d4ed8;
+    --brand-800: #1e40af;
+    --brand-900: #1e3a8a;
+    --brand-950: #172554;
+
+    --brand: #2563eb;
+    --brand-hover: #1d4ed8;
+    --brand-active: #1e40af;
+    --brand-contrast: #ffffff;
+    --brand-subtle: #eff6ff;
+    --brand-subtle-hover: #dbeafe;
+    --brand-subtle-border: #dbeafe;
+    --brand-subtle-text: #1d4ed8;
+    --brand-ring: rgba(37, 99, 235, 0.26);
+
+    --success: #15803d;
+    --success-solid: #16a34a;
+    --success-bg: #f0fdf4;
+    --success-border: #bbf7d0;
+
+    --warning: #b45309;
+    --warning-solid: #d97706;
+    --warning-bg: #fffbeb;
+    --warning-border: #fde68a;
+
+    --danger: #dc2626;
+    --danger-solid: #dc2626;
+    --danger-bg: #fef2f2;
+    --danger-border: #fecaca;
+
+    --info: #2563eb;
+    --info-solid: #3b82f6;
+    --info-bg: #eff6ff;
+    --info-border: #dbeafe;
+
+    --notice-bg: #fff7ed;
+    --notice-border: #fed7aa;
+    --notice-text: #9a3412;
+    --notice-icon: #d97706;
+
+    --focus-ring: #2563eb;
+    --focus-ring-shadow: 0 0 0 3px rgba(37, 99, 235, 0.26);
+    --overlay: rgba(15, 23, 42, 0.45);
+
+    --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+    --shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
+    --shadow-lg: 0 12px 32px -8px rgba(15, 23, 42, 0.14), 0 4px 10px -4px rgba(15, 23, 42, 0.06);
+    --shadow-xl: 0 24px 56px -16px rgba(15, 23, 42, 0.2), 0 8px 20px -8px rgba(15, 23, 42, 0.08);
+    --shadow-brand: 0 1px 2px rgba(37, 99, 235, 0.24);
+  }
+}
+
+/* The desktop canvas is a fixed, bright, blue-neutral surface. */
+html,
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}

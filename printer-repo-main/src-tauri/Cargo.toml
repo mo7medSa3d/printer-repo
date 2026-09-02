@@ -1,0 +1,33 @@
+[package]
+name = "odoo-print-manager"
+version = "1.0.0"
+description = "Odoo Print Manager — lightweight management for Odoo Local Print Agent (Tauri 2.x, no Python)"
+authors = ["Odoo Print Agent"]
+license = "MIT"
+repository = "https://github.com/mo7medSa3d/printer-repo"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+url = "2.5.4"
+
+[features]
+default = [ "custom-protocol" ]
+custom-protocol = [ "tauri/custom-protocol" ]
+
+# Production binary: maximize inlining, strip symbols, single codegen unit.
+# Panics stay as unwind so the panic hook in logging.rs can record them
+# before the process terminates.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+debug = false

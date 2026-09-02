@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_printer_form" model="ir.ui.view">
+        <field name="name">print_gateway.printer.form</field>
+        <field name="model">print_gateway.printer</field>
+        <field name="arch" type="xml">
+            <form string="Printer" class="o_pg_view o_pg_form">
+                <header>
+                    <button name="action_test_print" type="object" string="Test Print" class="oe_highlight"/>
+                    <button name="action_sync_from_gateway" type="object" string="Sync Status"/>
+                </header>
+                <sheet>
+                    <group string="Identity">
+                        <field name="name"/>
+                        <field name="branch_id"/>
+                        <field name="printer_type"/>
+                        <field name="device_class"/>
+                        <field name="lifecycle" widget="badge"/>
+                    </group>
+                    <group string="Connection">
+                        <field name="connection_type"/>
+                        <field name="protocol" help="Raw binary, ESC/POS, PCL, IPP/IPPS or Windows spooler — must match what the physical printer accepts."/>
+                        <field name="ip_address" placeholder="192.168.1.50" help="Network IP required for TCP / IPP / IPPS connections."/>
+                        <field name="port" placeholder="9100" help="Network port; 9100 for RAW, 631 for IPP."/>
+                        <field name="usb_serial" placeholder="USB serial" help="USB serial number when connected over USB."/>
+                        <field name="spooler_name" placeholder="e.g., EPSON TM-T88V" help="Windows spooler printer name when using the spooler transport."/>
+                    </group>
+                    <group string="Gateway Sync">
+                        <field name="gateway_printer_id" help="Printer identifier as known to the Gateway, e.g. printer_abc123."/>
+                        <field name="agent_id" readonly="1" help="Agent that currently owns this printer, set by the Gateway."/>
+                        <field name="status" readonly="1" widget="badge"/>
+                        <field name="last_seen_at" readonly="1"/>
+                    </group>
+                    <group string="Summary">
+                        <field name="binding_count" readonly="1"/>
+                    </group>
+                    <notebook>
+                        <page string="Bindings">
+                            <field name="binding_ids"/>
+                        </page>
+                        <page string="Destinations">
+                            <field name="destination_ids" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_print_gateway_printer_tree" model="ir.ui.view">
+        <field name="name">print_gateway.printer.tree</field>
+        <field name="model">print_gateway.printer</field>
+        <field name="arch" type="xml">
+            <tree string="Printers" class="o_pg_view o_pg_list"
+                  decoration-success="status=='online'"
+                  decoration-warning="status=='busy'"
+                  decoration-danger="status in ('offline','error')"
+                  decoration-muted="status=='unknown'">
+                <field name="name"/>
+                <field name="branch_id"/>
+                <field name="connection_type"/>
+                <field name="device_class"/>
+                <field name="protocol"/>
+                <field name="status" widget="badge"/>
+                <field name="lifecycle" widget="badge"/>
+            </tree>
+        </field>
+    </record>
+    <record id="view_print_gateway_printer_kanban" model="ir.ui.view">
+        <field name="name">print_gateway.printer.kanban</field>
+        <field name="model">print_gateway.printer</field>
+        <field name="arch" type="xml">
+            <!-- Branded fleet card: same status vocabulary (dot + label) and
+                 the same card geometry as the desktop manager / web console. -->
+            <kanban class="o_pg_view o_pg_kanban" sample="1">
+                <field name="status"/>
+                <field name="lifecycle"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_global_click p-3">
+                            <div class="d-flex align-items-start gap-2">
+                                <span class="o_pg_card_icon me-2">
+                                    <i class="fa fa-print" role="img" aria-label="Printer"/>
+                                </span>
+                                <div class="flex-grow-1 overflow-hidden">
+                                    <div class="o_pg_card_title text-truncate">
+                                        <field name="name"/>
+                                    </div>
+                                    <div class="o_pg_card_meta text-truncate">
+                                        <field name="branch_id"/>
+                                    </div>
+                                </div>
+                                <span t-attf-class="o_pg_pill #{record.status.raw_value == 'online' ? 'o_pg_pill_ok' : record.status.raw_value == 'busy' ? 'o_pg_pill_warn' : record.status.raw_value == 'offline' or record.status.raw_value == 'error' ? 'o_pg_pill_bad' : ''}">
+                                    <field name="status"/>
+                                </span>
+                            </div>
+                            <div class="o_pg_card_meta mt-2">
+                                <field name="connection_type"/> · <field name="protocol"/>
+                            </div>
+                            <div class="o_pg_card_mono mt-1 text-truncate">
+                                <field name="gateway_printer_id"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+    <record id="action_print_gateway_printer" model="ir.actions.act_window">
+        <field name="name">Printers</field>
+        <field name="res_model">print_gateway.printer</field>
+        <field name="view_mode">tree,kanban,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No printers yet — run <b>Sync Status</b> or a Gateway sync to pull registered printers.
+            </p>
+            <p>
+                Printer records are synced from the Gateway. Green rows are online, amber is busy,
+                red is offline or error, and muted is unknown.
+            </p>
+        </field>
+    </record>
+</odoo>

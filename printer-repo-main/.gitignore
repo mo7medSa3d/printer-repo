@@ -1,0 +1,33 @@
+node_modules/
+.next/
+dist/
+dist-desktop/
+src-tauri/target/
+
+agent/OdooPrintAgent.exe
+agent/odoo-agent-cli.exe
+
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+*.log
+
+# Local agent runtime state
+agent/agent.db
+agent/sudo
+
+# Go build artifacts
+agent/*.exe
+
+# Python / Odoo
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.odoo/
+*.egg-info/
+odoo_addons/**/__pycache__/
+odoo_addons/**/*.pyc
