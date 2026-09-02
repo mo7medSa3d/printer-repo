@@ -90,3 +90,21 @@ def migrate(cr, version):
     # mislabeled payload type. Preserve behavior by normalizing it to the
     # canonical PDF content model rather than retaining an ambiguous choice.
     cr.execute("UPDATE print_gateway_report_mapping SET payload_type = 'pdf' WHERE payload_type = 'raw'")
+
+
+def migrate(cr, version):
+    """Fail closed on unsupported PCL configuration; never rewrite data implicitly."""
+    cr.execute("SELECT id FROM print_gateway_document_type WHERE lower(payload_hint) = 'pcl' LIMIT 20")
+    pcl_docs = [row[0] for row in cr.fetchall()]
+    if pcl_docs:
+        raise RuntimeError(
+            "Migration blocked: PCL document types exist (ids=%s). "
+            "Explicitly reconfigure them as raw, escpos, or pdf before upgrade." % pcl_docs
+        )
+    cr.execute("SELECT id FROM print_gateway_printer WHERE lower(protocol) = 'pcl' LIMIT 20")
+    pcl_printers = [row[0] for row in cr.fetchall()]
+    if pcl_printers:
+        raise RuntimeError(
+            "Migration blocked: PCL printer protocols exist (ids=%s). "
+            "Explicitly reconfigure them before upgrade." % pcl_printers
+        )

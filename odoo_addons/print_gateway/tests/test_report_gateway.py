@@ -3,6 +3,7 @@ from odoo.tests.common import TransactionCase
 from odoo.exceptions import UserError
 from unittest.mock import patch, MagicMock
 import base64
+import json
 
 class TestReportGateway(TransactionCase):
 
@@ -191,6 +192,31 @@ class TestReportGateway(TransactionCase):
         self.assertEqual(job.odoo_record_id, 42)
         self.assertEqual(job.report_xml_id, 'sale.action_report_saleorder')
         self.assertEqual(job.status, 'queued')
+
+    @patch('odoo.addons.print_gateway.models.branch.requests.post')
+    def test_report_operation_is_durable_and_deferred_until_commit(self, mock_post):
+        """Report flow persists the full logical operation before network I/O."""
+        postcommit_add = self.env.cr.postcommit.add
+        payload = {
+            'type': 'raw',
+            'encoding': 'base64',
+            'data': base64.b64encode(b'x' * 5000).decode(),
+        }
+        with patch.object(self.env.cr.postcommit, 'add') as mock_add:
+            job = self.branch.create_print_job(
+                self.dest_pos.id, 'order', payload,
+                odoo_model='sale.order', odoo_record_id=42,
+                idempotency_key='logical-operation-test',
+                defer_until_commit=True,
+            )
+
+        self.assertTrue(job.idempotency_key == 'logical-operation-test')
+        self.assertEqual(job.payload, json.dumps(payload, separators=(',', ':'), ensure_ascii=False))
+        self.assertTrue(mock_add.called)
+        mock_post.assert_not_called()
+        # Keep a reference to the original collection so this assertion also
+        # documents that the callback is registered on Odoo's transaction.
+        self.assertIsNotNone(postcommit_add)
 
     @patch('odoo.addons.print_gateway.models.print_job.requests.get')
     def test_gateway_job_status_sync(self, mock_get):

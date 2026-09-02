@@ -74,22 +74,12 @@ ALTER TABLE "printer_bindings" ADD COLUMN IF NOT EXISTS "document_type" text;
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM "branches") THEN
-    INSERT INTO "branches" ("id", "name", "enabled") VALUES ('default', 'Default Branch', true);
+  IF EXISTS (SELECT 1 FROM "agents" WHERE "branch_id" IS NULL)
+     OR EXISTS (SELECT 1 FROM "printers" WHERE "branch_id" IS NULL)
+     OR EXISTS (SELECT 1 FROM "print_jobs" WHERE "branch_id" IS NULL) THEN
+    RAISE EXCEPTION 'Migration blocked: existing records lack explicit branch ownership. Assign a real branch before enabling the branch invariant; no default branch is created automatically.';
   END IF;
 END $$;
-
-UPDATE "agents"
-SET "branch_id" = 'default'
-WHERE "branch_id" IS NULL;
-
-UPDATE "printers"
-SET "branch_id" = 'default'
-WHERE "branch_id" IS NULL;
-
-UPDATE "print_jobs"
-SET "branch_id" = 'default'
-WHERE "branch_id" IS NULL;
 
 UPDATE "api_keys"
 SET "branch_id" = 'default'

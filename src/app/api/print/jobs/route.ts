@@ -10,6 +10,7 @@ import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { logInfo, requestIdFrom } from "@/lib/log";
+import { incrementMetric } from "@/lib/metrics";
 
 export const dynamic = "force-dynamic";
 
@@ -176,6 +177,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "INTERNAL_ERROR: routing returned no result" }, { status: 500 });
     }
     if ("error" in resolved) {
+      incrementMetric("routing_failures_total");
       const code = (resolved as { error: string }).error;
       const msg = (resolved as { message: string }).message;
       const statusMap: Record<string, number> = {
@@ -233,6 +235,7 @@ export async function POST(req: Request) {
     // Auditable fallback info
     const fallbackInfo = resolved.fallbackUsed ? { fallbackUsed: true, fallbackChain: resolved.fallbackChain } : {};
 
+    incrementMetric("print_jobs_created_total");
     logInfo("print.job.created", {
       requestId,
       jobId,

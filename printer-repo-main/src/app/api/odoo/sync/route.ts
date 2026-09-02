@@ -153,6 +153,7 @@ export async function POST(req: Request) {
     const id = asId(d?.id);
     const dBranch = asId(d?.branchId ?? d?.branch_id);
     const name = asText(d?.name);
+    const payloadHint = asText(d?.payloadHint ?? d?.payload_hint);
     const type = asText(d?.type ?? d?.destination_type);
     if (!id) { details.push({ entity: "destination", id: null, reason: "destination id is required" }); continue; }
     if (!name) { details.push({ entity: "destination", id, reason: "destination name is required" }); continue; }
@@ -185,12 +186,16 @@ export async function POST(req: Request) {
       details.push({ entity: "documentType", id, branchId: dBranch, reason: `document type belongs to branch ${dBranch}, not to the synchronized branch ${branchId}` });
       continue;
     }
+    if (payloadHint !== null && !['raw', 'escpos', 'pdf'].includes(payloadHint.toLowerCase())) {
+      details.push({ entity: "documentType", id, reason: `unsupported payloadHint ${payloadHint}; expected raw, escpos, or pdf` });
+      continue;
+    }
     validDocumentTypes.push({
       id,
       branchId: dBranch,
       name,
       description: asText(d?.description),
-      payloadHint: asText(d?.payloadHint ?? d?.payload_hint),
+      payloadHint: payloadHint ? payloadHint.toLowerCase() : null,
       enabled: asBool(d?.enabled, true),
     });
   }

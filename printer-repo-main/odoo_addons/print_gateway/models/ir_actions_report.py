@@ -333,8 +333,8 @@ class IrActionsReport(models.Model):
         2. Validate routing is deterministic and consistent
         3. Render PDF
         4. Build payload
-        5. Generate idempotency key
-        6. Call Gateway
+        5. Create one persisted logical-operation identity
+        6. Call Gateway using that persisted identity
         """
         self.ensure_one()
 
@@ -398,11 +398,14 @@ class IrActionsReport(models.Model):
         # Step 3: Render PDF (only after routing validation)
         payload = self._generate_payload_for_report(report_ref, res_ids, data)
 
-        # Step 4: Generate idempotency key (stable per logical print operation)
+        # Step 4: Create exactly one logical-operation identity for this manual
+        # print invocation. The key is persisted before the network call by
+        # branch.create_print_job and is reused by timeout/worker retries.
         import uuid as _uuid
         idempotency_key = _uuid.uuid4().hex
 
-        # Step 5: Send to Gateway via branch helper (idempotent)
+        # Step 5: Persist local outbox operation and submit only after the
+        # surrounding Odoo transaction commits. Retries use the persisted key.
         try:
             job = branch.create_print_job(
                 destination.gateway_destination_id or destination.id,
@@ -413,9 +416,10 @@ class IrActionsReport(models.Model):
                 report_xml_id=self.get_external_id().get(self.id, '') if hasattr(self, 'get_external_id') else self.report_name,
                 report_name=self.report_name,
                 idempotency_key=idempotency_key,
+                defer_until_commit=True,
             )
-            _logger.info("Report %s for %s[%s] queued as gateway job %s via %s -> %s (%s)",
-                        self.report_name, model_name, res_ids, job.gateway_job_id, branch.name, destination.name, document_type)
+            _logger.info("Report %s for %s[%s] persisted as logical print operation %s via %s -> %s (%s); Gateway submission is post-commit",
+                        self.report_name, model_name, res_ids, job.idempotency_key[:8], branch.name, destination.name, document_type)
             return job
         except ValidationError:
             raise
@@ -466,9 +470,9 @@ class IrActionsReport(models.Model):
                     'type': 'ir.actions.client',
                     'tag': 'display_notification',
                     'params': {
-                        'title': _('Print Job Sent to Gateway'),
-                        'message': _('Report %s for %d record(s) queued as job %s (%s -> %s). Status: %s') % (
-                            self.name, len(docids), job.gateway_job_id,
+                        'title': _('Print Job Queued'),
+                        'message': _('Report %s for %d record(s) persisted as operation %s (%s -> %s). Gateway submission will run after commit.') % (
+                            self.name, len(docids), job.idempotency_key[:8],
                             job.branch_id.name, job.destination_id.name if job.destination_id else 'N/A',
                             job.status
                         ),

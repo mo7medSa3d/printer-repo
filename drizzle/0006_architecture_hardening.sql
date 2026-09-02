@@ -51,6 +51,20 @@ END $$;
 CREATE INDEX IF NOT EXISTS agents_lifecycle_idx ON agents(lifecycle);
 CREATE INDEX IF NOT EXISTS printers_lifecycle_idx ON printers(lifecycle);
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM printers
+    WHERE config ? 'protocol'
+      AND config->>'protocol' IS NOT NULL
+      AND protocol IS NOT NULL
+      AND lower(config->>'protocol') <> lower(protocol)
+  ) THEN
+    RAISE EXCEPTION 'Migration blocked: legacy config.protocol conflicts with canonical printers.protocol. Remediate each printer explicitly before upgrade.';
+  END IF;
+END $$;
+
 UPDATE printers SET config = CASE WHEN config IS NULL THEN NULL ELSE config - 'protocol' END;
 
 -- Legacy printer_type values (thermal/laser/...) were device classes.

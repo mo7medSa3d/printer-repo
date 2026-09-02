@@ -12,8 +12,6 @@ class PrintGatewayDocumentType(models.Model):
     payload_hint = fields.Selection([
         ('raw', 'Raw Binary'),
         ('escpos', 'ESC/POS'),
-        ('pcl', 'PCL'),
-        ('ipp', 'IPP'),
         ('pdf', 'PDF'),
     ], string='Payload Hint')
     enabled = fields.Boolean(default=True)

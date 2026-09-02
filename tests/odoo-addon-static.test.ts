@@ -33,7 +33,7 @@ describe("Odoo addon static contracts", () => {
     expect(createFn).toBeGreaterThan(-1);
     expect(src.indexOf("Job.create", createFn)).toBeLessThan(src.indexOf("requests.post", createFn));
     expect(src).toContain("for attempt in (1, 2)");
-    expect(src).toContain("uuid.uuid4().hex");
+    expect(src).toContain("idempotency_key = uuid.uuid4().hex");
     expect(src).toContain("with self.env.cr.savepoint()");
     const jobModel = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(jobModel).toContain("unique(branch_id, idempotency_key)");
@@ -61,9 +61,23 @@ describe("Odoo addon static contracts", () => {
     expect(agent).toContain("Retired agents are terminal");
   });
 
-  it("does not use (model + record_ids + report_id + current_minute) as identity", () => {
+  it("persists logical-operation identity and retries it after restart", () => {
     const report = readFileSync(path.join(ADDON, "models/ir_actions_report.py"), "utf8");
+    const job = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(report).not.toContain("current_minute");
     expect(report).toContain("idempotency_key = _uuid.uuid4().hex");
+    expect(job).toContain("def action_submit_pending");
+    expect(job).toContain("idempotency_key=job.idempotency_key");
+    expect(job).toContain("json.loads(payload_raw)");
+    expect(readFileSync(path.join(ADDON, "models/branch.py"), "utf8")).toContain("self.env.cr.postcommit.add(_submit_after_commit)");
+  });
+
+  it("syncs canonical payloadHint and removes unsupported PCL", () => {
+    const branch = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
+    const documentType = readFileSync(path.join(ADDON, "models/document_type.py"), "utf8");
+    const printer = readFileSync(path.join(ADDON, "models/printer.py"), "utf8");
+    expect(branch).toContain("'payloadHint': dt.payload_hint or False");
+    expect(documentType).not.toContain("('pcl', 'PCL')");
+    expect(printer).not.toContain("('pcl', 'PCL')");
   });
 });

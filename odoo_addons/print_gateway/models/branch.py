@@ -5,6 +5,7 @@ import requests
 import logging
 import time
 import uuid
+import json
 
 _logger = logging.getLogger(__name__)
 
@@ -98,6 +99,24 @@ class PrintGatewayBranch(models.Model):
         if not self.gateway_url:
             raise ValidationError(_('Gateway URL not configured for branch %s') % self.name)
         return self.gateway_url.rstrip('/')
+
+    def cron_retry_pending_print_jobs(self):
+        """Retry persisted Odoo print operations that have no Gateway job id.
+
+        The persisted idempotency_key is the logical operation identity, so a
+        process restart can retry safely without minting a second operation.
+        A new manual print creates a separate print_job row/key.
+        """
+        Job = self.env['print_gateway.print_job']
+        pending = Job.search([('gateway_job_id', '=', False), ('status', '=', 'queued')], order='id asc', limit=100)
+        retried = 0
+        for job in pending: 
+            try:
+                job.action_submit_pending()
+                retried += 1
+            except Exception as exc:
+                _logger.warning("Pending Gateway print retry failed for operation %s: %s", job.id, str(exc))
+        return retried
 
     def action_test_connection(self):
         self.ensure_one()
@@ -304,6 +323,7 @@ class PrintGatewayBranch(models.Model):
                         'name': dt.name,
                         'description': dt.description,
                         'enabled': dt.enabled,
+                        'payloadHint': dt.payload_hint or False,
                     } for dt in branch.document_type_ids],
                     'bindings': [{
                         'id': str(b.gateway_binding_id or b.id),
@@ -324,7 +344,7 @@ class PrintGatewayBranch(models.Model):
                     raise ValidationError(_('Gateway returned malformed JSON for sync response'))
                 if not isinstance(result, dict) or result.get('success') is not True:
                     raise ValidationError(_('Gateway returned a non-success sync result'))
-                _logger.info("Branch %s sync to gateway OK: %s", branch.name, resp.text[:500])
+                _logger.info("Branch %s sync to gateway OK", branch.name)
                 branch.write({
                     'last_sync_at': fields.Datetime.now(),
                     'last_sync_status': 'success',
@@ -386,19 +406,27 @@ class PrintGatewayBranch(models.Model):
             return '%s\n%s' % (code, '\n'.join('- %s' % line for line in lines))
         return code
 
-    def create_print_job(self, destination_id, document_type, payload, odoo_model=None, odoo_record_id=None, report_xml_id=None, report_name=None, report_id=None, idempotency_key=None):
+    def create_print_job(self, destination_id, document_type, payload, odoo_model=None, odoo_record_id=None, report_xml_id=None, report_name=None, report_id=None, idempotency_key=None, defer_until_commit=False):
         """Helper to create a Gateway print job from Odoo business logic.
         Resolves branch/destination/document_type and sends to Gateway.
         Never hardcodes physical printer IDs.
         Stores Odoo report metadata for tracing.
-        Idempotency: one logical Odoo print operation must produce ONE stable
-        idempotency key. The key is generated once per logical operation
-        (uuid4) and reused on retry so a timeout/retry never creates a
-        duplicate physical print. Gateway enforces uniqueness via
+        Idempotency: one persisted print_job row represents one logical Odoo
+        print operation. Its idempotency key is generated exactly once when
+        that local operation is created and is reused by all gateway retries.
+        A genuinely new manual print creates a new local print_job and therefore
+        a new key. Gateway enforces uniqueness via
         PostgreSQL partial unique index on (branch_id, idempotency_key)
         and handles concurrent duplicate inserts as 200 with the same
         existing job returned. The jobId itself is a collision-safe
         nanoid(12) and never truncated.
+
+        When ``defer_until_commit`` is true, this method implements the
+        outbox boundary used by Odoo report actions: the durable logical
+        operation is created in the current transaction, and the Gateway HTTP
+        call is registered as a post-commit callback using a fresh cursor.
+        A process crash before the callback runs leaves a queued row that the
+        scheduled retry worker can submit with the same idempotency key.
         """
         self.ensure_one()
         # SECURITY: Verify user has access to this branch's company
@@ -407,12 +435,6 @@ class PrintGatewayBranch(models.Model):
             raise ValidationError(_('destination and document_type required'))
         headers = self._gateway_headers()
         base = self._gateway_base()
-        # Stable idempotency key per logical operation. Caller (ir_actions_report)
-        # should generate it once per report_action invocation; if not provided
-        # we generate one here so every job is still idempotent against retries.
-        if not idempotency_key:
-            idempotency_key = uuid.uuid4().hex
-
         # Resolve destination and persist the operation ID BEFORE the HTTP
         # call so a timeout after Gateway acceptance retries with the same
         # key instead of minting a second logical job.
@@ -434,8 +456,16 @@ class PrintGatewayBranch(models.Model):
             else:
                 dest = False
 
-        payload_meta = str(payload)[:2000] if payload else ''
+        try:
+            payload_meta = json.dumps(payload, separators=(',', ':'), ensure_ascii=False) if payload is not None else ''
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(_('Print payload is not JSON serializable')) from exc
+        if len(payload_meta.encode('utf-8')) > 8 * 1024 * 1024:
+            raise ValidationError(_('Print payload is too large to persist safely (maximum 8 MiB serialized)'))
         Job = self.env['print_gateway.print_job']
+        if not idempotency_key:
+            idempotency_key = uuid.uuid4().hex
+
         existing = Job.search([
             ('branch_id', '=', self.id),
             ('idempotency_key', '=', idempotency_key),
@@ -468,6 +498,33 @@ class PrintGatewayBranch(models.Model):
                 ], limit=1)
                 if not existing:
                     raise
+        if defer_until_commit:
+            registry = self.env.registry
+            dbname = self.env.cr.dbname
+            uid = self.env.uid
+            context = dict(self.env.context)
+            operation_id = existing.id
+
+            def _submit_after_commit():
+                try:
+                    with registry.cursor() as cr:
+                        env = api.Environment(cr, uid, context)
+                        operation = env['print_gateway.print_job'].browse(operation_id).exists()
+                        if not operation:
+                            return
+                        operation.action_submit_pending()
+                        cr.commit()
+                except Exception as exc:
+                    # The local outbox row remains durable. The scheduled
+                    # retry job will submit the same idempotency key later.
+                    _logger.error(
+                        "Post-commit Gateway submission failed for operation %s on db %s: %s",
+                        operation_id, dbname, str(exc), exc_info=True,
+                    )
+
+            self.env.cr.postcommit.add(_submit_after_commit)
+            return existing
+
         # Gateway IDs are string columns. Odoo int ids (record ids) MUST be
         # stringified here: a bare int in JSON would make the Gateway's
         # branchId/destinationId comparisons fail against its text columns

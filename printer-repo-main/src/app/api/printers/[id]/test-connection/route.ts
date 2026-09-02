@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { printers, agents } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
 import { eq } from "drizzle-orm";
+import { getAgentAvailability } from "@/lib/agent-availability";
 
 export const dynamic = "force-dynamic";
 
@@ -41,10 +42,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
   }
 
-  // Freshness: agent seen in last 2 minutes is considered online
-  const lastSeen = agent.lastSeenAt ? new Date(agent.lastSeenAt).getTime() : 0;
-  const stale = Date.now() - lastSeen > 2 * 60 * 1000;
-  const agentOnline = agent.status === "online" && !stale;
+  const availability = getAgentAvailability(agent);
+  const agentOnline = availability.available;
 
   if (!agentOnline) {
     return NextResponse.json({ reachable: false, latencyMs: null, agentOnline: false, error: "agent offline — printer reachability unknown until agent reconnects" });

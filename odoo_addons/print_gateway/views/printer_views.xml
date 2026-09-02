@@ -19,7 +19,7 @@
                     </group>
                     <group string="Connection">
                         <field name="connection_type"/>
-                        <field name="protocol" help="Raw binary, ESC/POS, PCL, IPP/IPPS or Windows spooler — must match what the physical printer accepts."/>
+                        <field name="protocol" help="Raw binary, ESC/POS, IPP/IPPS or Windows spooler — must match what the physical printer accepts."/>
                         <field name="ip_address" placeholder="192.168.1.50" help="Network IP required for TCP / IPP / IPPS connections."/>
                         <field name="port" placeholder="9100" help="Network port; 9100 for RAW, 631 for IPP."/>
                         <field name="usb_serial" placeholder="USB serial" help="USB serial number when connected over USB."/>

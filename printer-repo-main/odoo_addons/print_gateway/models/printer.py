@@ -38,7 +38,6 @@ class PrintGatewayPrinter(models.Model):
     protocol = fields.Selection([
         ('raw', 'Raw Binary'),
         ('escpos', 'ESC/POS'),
-        ('pcl', 'PCL'),
         ('ipp', 'IPP Protocol'),
         ('ipps', 'IPPS Protocol'),
         ('spooler', 'Windows Spooler'),

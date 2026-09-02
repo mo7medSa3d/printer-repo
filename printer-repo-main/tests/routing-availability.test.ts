@@ -9,7 +9,8 @@ import {
   sha256,
   type Fixture,
 } from "./helpers/pg";
-import { resolvePrinterForJob } from "@/lib/routing";
+import { resolvePrinterForJob, selectBestBinding } from "@/lib/routing";
+import { getAgentAvailability } from "@/lib/agent-availability";
 import { POST as printJobsPOST } from "@/app/api/print/jobs/route";
 
 /**
@@ -166,4 +167,21 @@ suite("routing availability + document-type authorization", () => {
     }));
     expect(denied.status).toBe(403);
   });
+
+  it("prefers exact document binding before generic binding regardless of priority", () => {
+    const rows = [
+      { id: "generic-low", branchId: f.branchId, destinationId: f.destinationId, documentType: null, printerId: "p-generic", priority: 1, enabled: true },
+      { id: "exact-high", branchId: f.branchId, destinationId: f.destinationId, documentType: "receipt", printerId: "p-exact", priority: 10, enabled: true },
+    ];
+    expect(selectBestBinding(rows, "receipt")?.id).toBe("exact-high");
+  });
+
+  it("marks an active offline agent unavailable", () => {
+    expect(getAgentAvailability({ lifecycle: "active", status: "offline", lastSeenAt: new Date() }).available).toBe(false);
+  });
+
+  it("marks an active stale agent unavailable", () => {
+    expect(getAgentAvailability({ lifecycle: "active", status: "online", lastSeenAt: new Date(Date.now() - 120_000) }).available).toBe(false);
+  });
+
 });

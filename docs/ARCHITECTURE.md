@@ -37,3 +37,13 @@ One logical print operation uses one stable idempotency key across retries. Post
 ## Synchronization
 
 Odoo pull synchronization follows Branch -> Agents -> Printers -> Bindings. Non-2xx responses, timeouts and malformed JSON are failures. Complete synchronization is `success`; a failed optional runtime section is `partial`; required endpoint failure is `failed`.
+## Production Engineering Semantics
+
+- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
+- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
+- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
+- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
+- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
+- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
+- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
+

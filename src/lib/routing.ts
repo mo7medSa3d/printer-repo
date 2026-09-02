@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { agents, branches, destinations, printerBindings, printers } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { isVirtualPrinterRecord, type PrinterLike } from "./printer-virtual";
+import { getAgentAvailability } from "./agent-availability";
 
 export type BindingCandidate = {
   id: string;
@@ -22,7 +23,11 @@ export function selectBestBinding(bindingRows: BindingCandidate[], requestedDocu
       const bindingType = (binding.documentType ?? "").trim().toLowerCase();
       return bindingType === "" || bindingType === normalized || normalized === "";
     })
-    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0) || a.id.localeCompare(b.id));
+    .sort((a, b) => {
+      const aExact = normalized !== "" && (a.documentType ?? "").trim().toLowerCase() === normalized ? 0 : 1;
+      const bExact = normalized !== "" && (b.documentType ?? "").trim().toLowerCase() === normalized ? 0 : 1;
+      return aExact - bExact || Number(a.priority ?? 0) - Number(b.priority ?? 0) || a.id.localeCompare(b.id);
+    });
 
   return candidates[0] ?? null;
 }
@@ -35,7 +40,11 @@ export function selectFallbackBindings(bindingRows: BindingCandidate[], requeste
       const bindingType = (binding.documentType ?? "").trim().toLowerCase();
       return bindingType === "" || bindingType === normalized || normalized === "";
     })
-    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0) || a.id.localeCompare(b.id));
+    .sort((a, b) => {
+      const aExact = normalized !== "" && (a.documentType ?? "").trim().toLowerCase() === normalized ? 0 : 1;
+      const bExact = normalized !== "" && (b.documentType ?? "").trim().toLowerCase() === normalized ? 0 : 1;
+      return aExact - bExact || Number(a.priority ?? 0) - Number(b.priority ?? 0) || a.id.localeCompare(b.id);
+    });
 }
 
 export type CapabilityCheckResult = { ok: true } | { ok: false; reason: string };
@@ -73,7 +82,7 @@ export function validatePayloadForPrinter(
   // IPP is now a first-class transport with real IPP client (ipp.go).
   // IPP printers accept raw/escpos via application/octet-stream (Print-Job).
   if (proto === "ipp" || conn === "ipp" || proto === "ipps" || conn === "ipps") {
-    if (pt === "raw" || pt === "escpos" || pt === "ipp" || pt === "ipps" || pt === "pdf" || pt === "pcl") {
+    if (pt === "raw" || pt === "escpos" || pt === "ipp" || pt === "ipps" || pt === "pdf") {
       return { ok: true };
     }
     // For unknown payload types, allow IPP if it declares support
@@ -95,7 +104,7 @@ export function validatePayloadForPrinter(
     // Thermal/label printers via raw TCP must not receive PDF
     return { ok: false, reason: `CAPABILITY_MISMATCH: pdf payload requires spooler or IPP printer (got ${proto}/${conn})` };
   }
-  // For other unknown payload types (e.g., pcl), only spooler/IPP are assumed capable
+  // Other payload types are rejected unless they are explicitly handled above.
   if (conn === "spooler" || proto === "spooler") return { ok: true };
   if (proto === "ipp" || conn === "ipp" || proto === "ipps" || conn === "ipps") return { ok: true };
   return { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} incompatible with printer ${proto}/${conn}` };
@@ -198,6 +207,13 @@ export async function resolvePrinterForJob({
         return { error: "INTERNAL_ERROR", message: `cross-branch routing rejected for binding ${binding.id}` };
       }
       if (agent.lifecycle !== "active") {
+        continue;
+      }
+      const availability = getAgentAvailability(agent);
+      if (!availability.available) {
+        if (availability.reason === "offline" || availability.reason === "stale" || availability.reason === "missing-heartbeat") {
+          lastOfflinePrinter = printer.id;
+        }
         continue;
       }
 

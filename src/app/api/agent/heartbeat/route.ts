@@ -3,6 +3,7 @@ import { agents, printers } from "@/db/schema";
 import { validateAgent } from "@/lib/agent-auth";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { incrementMetric } from "@/lib/metrics";
 import { DEVICE_CLASSES, PRINTER_TYPES } from "@/lib/printer-model";
 
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);

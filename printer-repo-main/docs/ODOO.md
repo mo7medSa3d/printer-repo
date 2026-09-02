@@ -25,7 +25,7 @@ The addon ships 10 views, 2 cron jobs (`data/cron.xml`), 8 default report mappin
 |---|---|---|
 | `print_gateway.branch` | One physical location + its gateway connection | `name`, `company_id`, `gateway_url`, `gateway_api_key` (password), `gateway_branch_id`, `enabled`, `location`, `timezone`, `last_sync_at` |
 | `print_gateway.destination` | Where something prints (POS, kitchen, warehouse…) | `branch_id`, `name`, `destination_type`, `zone`, `gateway_destination_id`, `enabled` |
-| `print_gateway.document_type` | Logical document class (receipt, invoice…) | `branch_id`, `name`, `payload_hint` (`raw/escpos/pcl/ipp/pdf`), `gateway_document_type_id`, `enabled` |
+| `print_gateway.document_type` | Logical document class (receipt, invoice…) | `branch_id`, `name`, `payload_hint` (`raw/escpos/pdf`), `gateway_document_type_id`, `enabled` |
 | `print_gateway.printer` | Read-only mirror of a gateway printer | `branch_id`, `gateway_printer_id`, `printer_type`, `connection_type`, `protocol`, `spooler_name`, `status`; `action_sync_from_gateway`, `action_test_print` |
 | `print_gateway.agent` | Read-only mirror of a gateway agent | `branch_id`, `gateway_agent_id`, `status`, `last_seen_at`; `action_sync_status` |
 | `print_gateway.printer_binding` | Routing rule | `branch_id`, `destination_id`, `document_type_id`/`document_type`, `printer_id`, `priority`, `enabled`; `_check_branch_consistency` |
@@ -143,3 +143,16 @@ Bindings are valid only when the destination/document type and `printer.agent_id
 Pull sync is strict: HTTP errors, timeouts and malformed JSON are recorded as `failed`; if Agent synchronization succeeds but the optional Printer runtime section fails, the result is `partial`. Only complete synchronization is marked `success`. The last successful synchronization timestamp is preserved separately.
 
 The old printer `branch_id`/`gateway_agent_id` ownership representation is migrated by `migrations/1.1.0/pre-migrate.py`. It validates every relationship and duplicate ID before removing obsolete columns. It never deletes printers. Legacy Odoo report mappings that mislabeled rendered PDF bytes as `raw` are normalized to `pdf` during migration.
+## Production Engineering Semantics
+
+- **Odoo print outbox:** report actions persist the logical operation and idempotency key inside the Odoo transaction. Gateway submission is registered as a post-commit job; a process crash before submission leaves the durable queued operation for the retry cron.
+- **Metrics:** manager-authenticated `GET /api/metrics` exposes process-local Prometheus counters; logs remain the authoritative event stream and never contain payload bytes or credentials.
+
+- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
+- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
+- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
+- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
+- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
+- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
+- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
+

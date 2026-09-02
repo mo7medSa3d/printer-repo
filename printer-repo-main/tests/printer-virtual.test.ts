@@ -178,12 +178,12 @@ const PHYSICAL = [
 ];
 
 describe("virtual printers are never production routes", () => {
-  it.each(VIRTUAL)("hides $name", ({ record }) => {
+  it.each(VIRTUAL)("hides $name", ({ record }: (typeof VIRTUAL)[number]) => {
     expect(isVirtualPrinterRecord(record)).toBe(true);
     expect(isRoutablePrinterRecord(record)).toBe(false);
   });
 
-  it.each(PHYSICAL)("keeps $name", ({ record }) => {
+  it.each(PHYSICAL)("keeps $name", ({ record }: (typeof PHYSICAL)[number]) => {
     expect(isVirtualPrinterRecord(record)).toBe(false);
     expect(isRoutablePrinterRecord(record)).toBe(true);
   });

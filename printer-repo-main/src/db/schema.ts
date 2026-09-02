@@ -53,6 +53,7 @@ export const documentTypes = pgTable("document_types", {
 }, (table) => ({
   branchIdIdx: index("document_types_branch_id_idx").on(table.branchId),
   nameIdx: index("document_types_name_idx").on(table.name),
+  payloadHintCheck: check("document_types_payload_hint_check", sql`${table.payloadHint} IS NULL OR ${table.payloadHint} IN ('raw','escpos','pdf')`),
 }));
 
 export const localNetworks = pgTable("local_networks", {

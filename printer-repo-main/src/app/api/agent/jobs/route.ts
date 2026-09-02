@@ -109,70 +109,64 @@ export async function GET(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const requestId = requestIdFrom(req);
   const agent = await validateAgent(req.headers.get("Authorization"));
-  if (!agent) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!agent) {
+    logWarn("job.status.unauthorized", { requestId });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   let body: { jobId?: unknown; status?: unknown; error?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
 
   const { jobId, status: requestedStatus, error: rawError } = body;
-
-  if (typeof jobId !== "string" || !jobId) {
-    return NextResponse.json({ error: "jobId is required" }, { status: 400 });
-  }
-  if (!isJobStatus(requestedStatus)) {
-    return NextResponse.json({ error: "status must be a valid job status" }, { status: 400 });
-  }
-  const errorMessage =
-    typeof rawError === "string" && rawError.length > 0
-      ? rawError.slice(0, MAX_ERROR_LENGTH)
-      : null;
+  if (typeof jobId !== "string" || !jobId) return NextResponse.json({ error: "jobId is required" }, { status: 400 });
+  if (!isJobStatus(requestedStatus)) return NextResponse.json({ error: "status must be a valid job status" }, { status: 400 });
+  const errorMessage = typeof rawError === "string" && rawError.length > 0 ? rawError.slice(0, MAX_ERROR_LENGTH) : null;
 
   const whereClause = agent.branchId
     ? and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id), eq(printJobs.branchId, agent.branchId))
     : and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id));
-
-  const job = await db.query.printJobs.findFirst({
-    where: whereClause,
-  });
-
-  if (!job) {
-    // Either the job doesn't exist, or it belongs to a different agent -
-    // both cases are reported identically so agents can't probe for
-    // other agents' job ids.
-    return NextResponse.json({ error: "Job not found" }, { status: 404 });
-  }
+  const job = await db.query.printJobs.findFirst({ where: whereClause });
+  if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
 
   const currentStatus = job.status as JobStatus;
 
-  // TTL always wins: if the deadline has passed, the job is expired
-  // regardless of what the agent is trying to report, unless it's
-  // already terminal.
+  // Expiration is itself an atomic compare-and-set. If another request wins
+  // the race, this update affects zero rows and we re-read the winner.
   if (!isTerminal(currentStatus) && new Date(job.expiresAt).getTime() <= Date.now()) {
-    await db.update(printJobs)
+    const expired = await db.update(printJobs)
       .set({ status: "expired", updatedAt: new Date() })
-      .where(eq(printJobs.id, jobId));
-    return NextResponse.json({ error: "Job has expired", status: "expired" }, { status: 409 });
+      .where(and(whereClause, eq(printJobs.status, currentStatus)))
+      .returning({ status: printJobs.status });
+    if (expired.length === 1) {
+      incrementMetric("print_jobs_expired_total");
+      logInfo("print.job.expired", { requestId, jobId, agentId: agent.id });
+      return NextResponse.json({ error: "Job has expired", status: "expired" }, { status: 409 });
+    }
+    const winner = await db.query.printJobs.findFirst({ where: whereClause });
+    const winnerStatus = winner?.status as JobStatus | undefined;
+    return NextResponse.json({ error: `Job transition raced with another update${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
   }
 
   if (!canTransition(currentStatus, requestedStatus)) {
-    return NextResponse.json(
-      { error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` },
-      { status: 409 }
-    );
+    return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
   }
 
-  await db.update(printJobs)
-    .set({
-      status: requestedStatus,
-      error: errorMessage,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id)));
+  // Atomic compare-and-set: the status observed above is part of the UPDATE
+  // predicate. Exactly one conflicting concurrent transition can therefore win.
+  const updated = await db.update(printJobs)
+    .set({ status: requestedStatus, error: errorMessage, updatedAt: new Date() })
+    .where(and(whereClause, eq(printJobs.status, currentStatus)))
+    .returning({ status: printJobs.status });
 
+  if (updated.length !== 1) {
+    const winner = await db.query.printJobs.findFirst({ where: whereClause });
+    const winnerStatus = winner?.status as JobStatus | undefined;
+    return NextResponse.json({ error: `Concurrent status transition rejected${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
+  }
+
+  incrementMetric(`print_jobs_${requestedStatus}_total`);
+  logInfo(`print.job.${requestedStatus}`, { requestId, jobId, agentId: agent.id });
   return NextResponse.json({ success: true, status: requestedStatus });
 }

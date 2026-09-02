@@ -161,3 +161,16 @@ detection and terminal-result replay possible. Details in
 * Odoo 16/17/18-compatible Python addon.
 * Vitest for gateway tests, `go test` for the agent, GitHub Actions
   (`.github/workflows/build-windows.yml`) for the Windows build and installer.
+## Production Engineering Semantics
+
+- **Odoo print outbox:** report actions persist the logical operation and idempotency key inside the Odoo transaction. Gateway submission is registered as a post-commit job; a process crash before submission leaves the durable queued operation for the retry cron.
+- **Metrics:** manager-authenticated `GET /api/metrics` exposes process-local Prometheus counters; logs remain the authoritative event stream and never contain payload bytes or credentials.
+
+- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
+- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
+- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
+- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
+- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
+- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
+- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
+
