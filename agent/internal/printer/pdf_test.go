@@ -280,7 +280,9 @@ func TestESCPOSPayloadUsesByteStreamPathNotPDFPath(t *testing.T) {
 	}
 
 	// An ESC/POS job on a PDF-capable mock spooler must NOT take the PDF path.
-	// Use mock spooler to avoid OpenPrinterW dependency on unavailable "Office Laser".
+	// The mock spooler stands in for a real Windows queue so the test does not
+	// depend on OpenPrinterW, and therefore does not need a printer installed
+	// on the machine running the suite.
 	rec := &recordingPDFPath{}
 	mockSp := newMockSpoolerPrinter("Mock Spooler")
 	mockSp.pdfPrintFn = rec.fn

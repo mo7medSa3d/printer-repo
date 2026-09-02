@@ -282,9 +282,170 @@ pub struct DiscoverResult {
     pub errors: Vec<String>,
 }
 
-fn is_valid_printer_for_ui(p: &PrinterInfo) -> bool {
+/// Virtual / software / RDP-redirected queue detection — desktop safety net.
+///
+/// The authoritative filter is the Windows agent, which classifies every queue
+/// during discovery (port monitor, driver, PnP ids, transport) and never
+/// registers a non-physical printer. This only guards the UI against a record
+/// that an older version already persisted.
+/// Windows port monitors whose output never reaches hardware: they write a
+/// file, discard the job or dial a modem. This is device metadata (like the
+/// agent's `virtualPortMonitors`), not a printer name.
+const VIRTUAL_PORT_MONITORS: &[&str] = &[
+    "portprompt:", // Microsoft Print to PDF / print-to-file prompt
+    "xpsport:",    // Microsoft XPS Document Writer
+    "file:",       // print to file
+    "nul:",
+    "null:",
+    "shrfax:", // Windows Shared Fax
+    "fax:",
+];
+
+/// Driver / PnP families that only ever produce a file or hand the job to an
+/// application. Mirrors the Windows agent's `softwareWriterTokens`.
+const SOFTWARE_WRITER_TOKENS: &[&str] = &[
+    // Microsoft in-box software writers
+    "microsoft print to pdf",
+    "microsoft xps document writer",
+    "microsoft shared fax",
+    "microsoft enhanced point and print compatibility driver",
+    "send to onenote",
+    "onenote",
+    // Semantic families (language independent)
+    "document writer",
+    "documentwriter",
+    "print to pdf",
+    "topdf",
+    "pdf writer",
+    "pdfwriter",
+    "pdf printer",
+    "pdf creator",
+    "pdf converter",
+    "pdf architect",
+    "virtual printer",
+    "software printer",
+    "image printer",
+    // Widely deployed third-party software writers
+    "foxit",
+    "anydesk",
+    "cutepdf",
+    "pdf995",
+    "novapdf",
+    "bullzip",
+    "pdfcreator",
+    "pdfforge",
+    "doro pdf",
+    "biopdf",
+    "nitro pdf",
+    "adobe pdf",
+    "bluebeam",
+    "tinypdf",
+    "7-pdf",
+    "icecream pdf",
+    "pdf24",
+];
+
+/// Queues tunnelled from another desktop session. Mirrors the agent's
+/// `sessionRedirectTokens`.
+const SESSION_REDIRECT_TOKENS: &[&str] = &[
+    "remote desktop easy print",
+    "terminal services easy print",
+    "ts easy print",
+    "easy print",
+    "citrix",
+    "vmware virtual print",
+    "thinprint",
+    "safeguard print",
+];
+
+fn is_virtual_printer_for_ui(p: &PrinterInfo) -> bool {
     if p.isVirtual.unwrap_or(false) {
         return true;
+    }
+    if let Some(t) = p.printer_type.as_ref() {
+        if t.trim().to_lowercase() == "virtual" {
+            return true;
+        }
+    }
+    if let Some(c) = p.connection_type.as_ref() {
+        if c.trim().to_lowercase() == "virtual" {
+            return true;
+        }
+    }
+    if let Some(proto) = p.protocol.as_ref() {
+        if proto.trim().to_lowercase() == "virtual" {
+            return true;
+        }
+    }
+
+    let caps = p.capabilities.as_ref();
+    if let Some(caps) = caps {
+        for key in ["virtual", "is_virtual"].iter() {
+            if caps.get(*key).and_then(|v| v.as_bool()) == Some(true) {
+                return true;
+            }
+        }
+        let class = caps
+            .get("printer_class")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if class == "virtual" || class == "redirected" {
+            return true;
+        }
+        // Port monitor. "IP_192.168.1.50,SNMP" -> "ip_192.168.1.50".
+        if let Some(port) = caps.get("port_name").and_then(|v| v.as_str()) {
+            let lowered = port.to_lowercase();
+            let head = lowered.split(',').next().unwrap_or("").trim();
+            if VIRTUAL_PORT_MONITORS
+                .iter()
+                .any(|m| head == *m || head.starts_with(m))
+            {
+                return true;
+            }
+        }
+    }
+
+    let name_lower = p.name.to_lowercase();
+    // Windows: "HP LaserJet (redirected 3)". Citrix: "… (from WKS12) in session 4".
+    if name_lower.contains("(redirected") || name_lower.contains(" in session ") {
+        return true;
+    }
+
+    // The driver, the comment and the PnP ids identify a software writer or a
+    // session tunnel far more reliably than the display name does.
+    let mut hay = String::new();
+    if let Some(caps) = caps {
+        for key in ["driver_name", "comment", "device_id"].iter() {
+            if let Some(v) = caps.get(*key).and_then(|v| v.as_str()) {
+                hay.push(' ');
+                hay.push_str(&v.to_lowercase());
+            }
+        }
+        for key in ["hardware_ids", "compatible_ids"].iter() {
+            if let Some(list) = caps.get(*key).and_then(|v| v.as_array()) {
+                for item in list {
+                    if let Some(v) = item.as_str() {
+                        hay.push(' ');
+                        hay.push_str(&v.to_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    hay.push(' ');
+    hay.push_str(&name_lower);
+
+    if SOFTWARE_WRITER_TOKENS.iter().any(|t| hay.contains(t)) {
+        return true;
+    }
+    SESSION_REDIRECT_TOKENS.iter().any(|t| hay.contains(t))
+}
+
+fn is_valid_printer_for_ui(p: &PrinterInfo) -> bool {
+    // Virtual, software and redirected queues are never production printers.
+    if is_virtual_printer_for_ui(p) {
+        return false;
     }
     let name_lower = p.name.to_lowercase();
     let driver_lower = p.capabilities.as_ref()

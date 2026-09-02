@@ -76,32 +76,18 @@ func isValidSpoolerPrinter(portName, driverName, printerName string) bool {
 	return true
 }
 
+// isVirtualSpooler reports whether a Windows spooler queue is software-only.
+//
+// Deprecated: use ClassifyDevice / ClassifyDeviceInfo, which decide from the
+// full device metadata (port monitor, driver, PnP identifiers, transport)
+// instead of matching a fixed list of printer names. This wrapper only exists
+// so existing call sites and their tests keep their meaning.
 func isVirtualSpooler(portName, driverName, printerName string) bool {
-	portLower := spoolerToLowerTrim(portName)
-	driverLower := spoolerToLowerTrim(driverName)
-	nameLower := spoolerToLowerTrim(printerName)
-	virtualPorts := []string{"portprompt:", "xpsport:", "file:", "nul:", "shrfax:"}
-	for _, p := range virtualPorts {
-		if portLower == p || spoolerHasPrefix(portLower, p) {
-			return true
-		}
-	}
-	virtualDrivers := []string{"microsoft print to pdf", "print to pdf", "xps document writer", "onenote", " fax", "fax ", "anydesk", "foxit reader pdf", "foxit", "microsoft xps", "pdf995", "cutepdf", "doro pdf"}
-	for _, d := range virtualDrivers {
-		if strings.Contains(driverLower, d) || strings.Contains(nameLower, d) {
-			return true
-		}
-	}
-	virtualNames := []string{"onenote", "xps document writer", "fax", "microsoft print to pdf", "anydesk printer"}
-	for _, n := range virtualNames {
-		if nameLower == n || strings.Contains(nameLower, n) {
-			return true
-		}
-	}
-	if strings.Contains(driverLower, "pdf") && (strings.Contains(portLower, "portprompt") || strings.Contains(portLower, "xpsport")) {
-		return true
-	}
-	return false
+	return ClassifyDevice(DeviceFacts{
+		Name:       printerName,
+		DriverName: driverName,
+		PortName:   portName,
+	}).IsVirtual
 }
 
 // classifySpoolerPrinter infers printerType and connectionType from PortName and DriverName.
