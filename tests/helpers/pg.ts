@@ -17,16 +17,14 @@ export function pool(): Pool {
 
 const DUPLICATE_OBJECT_CODES = new Set(["42P07", "42710", "42701"]);
 
-// Deterministic advisory lock key for truncate/migration serialization under parallel Vitest.
-const TRUNCATE_LOCK_KEY = 727727727;
-const MIGRATION_LOCK_KEY = 727727728;
+// Single advisory key for both migrations and truncation so they never run
+// concurrently and deadlock on AccessShare vs AccessExclusive locks.
+const GLOBAL_PG_LOCK = 727727;
 
 export async function applyMigrations(): Promise<void> {
   const client = await pool().connect();
   try {
-    // Session-level advisory lock so parallel Vitest workers serialize without
-    // aborting a surrounding transaction on duplicate-object errors.
-    await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+    await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
     try {
       const dir = path.resolve(process.cwd(), "drizzle");
       const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
@@ -45,13 +43,13 @@ export async function applyMigrations(): Promise<void> {
         }
       }
       const check = await client.query(
-        `SELECT column_name FROM information_schema.columns WHERE table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`
-      );
-      if (check.rowCount !== 3) {
-        throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
-      }
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`
+    );
+    if (check.rowCount !== 3) {
+      throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
+    }
     } finally {
-      await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_KEY]);
+      await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]);
     }
   } finally {
     client.release();
@@ -64,7 +62,7 @@ export async function truncateAll(): Promise<void> {
     const client = await pool().connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock($1)", [TRUNCATE_LOCK_KEY]);
+      await client.query("SELECT pg_advisory_xact_lock($1)", [GLOBAL_PG_LOCK]);
       // Discover which application tables actually exist (handles pre-migration DBs where
       // discovery tables haven't been created yet). Truncate only those that exist, in
       // alphabetical order for deterministic lock ordering.
@@ -84,12 +82,11 @@ export async function truncateAll(): Promise<void> {
       const isDeadlock = e?.code === "40P01" || e?.code === "55P03";
       const isMissingTable = e?.code === "42P01";
       if (isMissingTable && attempt === 0) {
-        // Fallback: truncate core tables only
         try {
           const fallback = await pool().connect();
           try {
             await fallback.query("BEGIN");
-            await fallback.query("SELECT pg_advisory_xact_lock($1)", [TRUNCATE_LOCK_KEY + 1]);
+            await fallback.query("SELECT pg_advisory_xact_lock($1)", [GLOBAL_PG_LOCK]);
             await fallback.query(`
               TRUNCATE TABLE print_jobs, printer_bindings, printers, agents, destinations, document_types, local_networks, api_keys, manager_sessions, auth_rate_limits, branches
               RESTART IDENTITY CASCADE
@@ -140,11 +137,12 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
     [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]
   );
   // Printers are owned via Agent only; branch is derived, not stored (post-0006 schema).
-  // Detect whether legacy column branch_id still exists (pre-0006 DB) and adapt.
+  // Detect legacy column to stay compatible if DB hasn't been migrated yet.
   const hasBranchCol = await pool().query(
-    `SELECT 1 FROM information_schema.columns WHERE table_name='printers' AND column_name='branch_id' LIMIT 1`
+    `SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`
   );
-  if ((hasBranchCol.rowCount ?? 0) > 0) {
+  const legacyBranch = (hasBranchCol.rows?.length ?? 0) > 0 || (hasBranchCol.rowCount ?? 0) > 0;
+  if (legacyBranch) {
     await pool().query(
       `INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
        VALUES ($1, $2, $3, $4, 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`,
