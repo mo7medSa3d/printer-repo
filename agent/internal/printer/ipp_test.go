@@ -1,7 +1,9 @@
 package printer
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"strings"
