@@ -77,13 +77,14 @@ BEGIN
   IF EXISTS (SELECT 1 FROM "agents" WHERE "branch_id" IS NULL)
      OR EXISTS (SELECT 1 FROM "printers" WHERE "branch_id" IS NULL)
      OR EXISTS (SELECT 1 FROM "print_jobs" WHERE "branch_id" IS NULL) THEN
-    RAISE EXCEPTION 'Migration blocked: existing records lack explicit branch ownership. Assign a real branch before enabling the branch invariant; no default branch is created automatically.';
+    RAISE EXCEPTION 'Migration blocked: existing records lack explicit branch ownership. Assign a real branch before enabling the branch invariant; no default branch is created automatically. Affected counts: agents=% print_jobs=% printers=%',
+      (SELECT count(*) FROM "agents" WHERE "branch_id" IS NULL),
+      (SELECT count(*) FROM "print_jobs" WHERE "branch_id" IS NULL),
+      (SELECT count(*) FROM "printers" WHERE "branch_id" IS NULL);
   END IF;
 END $$;
 
-UPDATE "api_keys"
-SET "branch_id" = 'default'
-WHERE "branch_id" IS NULL AND "name" IS NOT NULL;
+-- api_keys.branch_id intentionally remains nullable (global keys). No default assignment.
 
 ALTER TABLE "agents" ALTER COLUMN "branch_id" SET NOT NULL;
 ALTER TABLE "printers" ALTER COLUMN "branch_id" SET NOT NULL;
