@@ -47,11 +47,11 @@ suite("real PostgreSQL architecture gate", () => {
     const hasBranch2 = await pool().query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`);
     const legacy2 = (hasBranch2.rows?.length ?? 0) > 0 || (hasBranch2.rowCount ?? 0) > 0;
     if (legacy2) {
-      await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name) VALUES ('prn_unique','agt_unique','br_unique','Printer')`);
-      await expect(pool().query(`INSERT INTO printers (id,agent_id,branch_id,name) VALUES ('prn_unique','agt_unique','br_unique','Duplicate')`)).rejects.toThrow();
+      await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,printer_type,device_class,connection_type,protocol) VALUES ('prn_unique','agt_unique','br_unique','Printer','physical','other','spooler','spooler')`);
+      await expect(pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,printer_type,device_class,connection_type,protocol) VALUES ('prn_unique','agt_unique','br_unique','Duplicate','physical','other','spooler','spooler')`)).rejects.toThrow();
     } else {
-      await pool().query(`INSERT INTO printers (id,agent_id,name) VALUES ('prn_unique','agt_unique','Printer')`);
-      await expect(pool().query(`INSERT INTO printers (id,agent_id,name) VALUES ('prn_unique','agt_unique','Duplicate')`)).rejects.toThrow();
+      await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol) VALUES ('prn_unique','agt_unique','Printer','physical','other','spooler','spooler')`);
+      await expect(pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol) VALUES ('prn_unique','agt_unique','Duplicate','physical','other','spooler','spooler')`)).rejects.toThrow();
     }
   });
 });
