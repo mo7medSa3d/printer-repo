@@ -1,7 +1,7 @@
 "use server";
 
 import { db } from "@/db";
-import { agents, branches, printers, printJobs } from "@/db/schema";
+import { agents, branches, localNetworks, printers, printJobs } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
@@ -35,33 +35,51 @@ async function requireManager() {
  * branches the caller must choose, because picking one arbitrarily would place
  * real hardware in the wrong location.
  */
-export async function createAgent(name: string, branchId?: string) {
+/**
+ * Create an agent.
+ *
+ * `branchId` is REQUIRED and never inferred. The agent is the single owner of
+ * branch context for every printer it reports, so guessing the branch (the
+ * "default", or the only branch that happens to exist today) would silently
+ * decide printer ownership on the operator's behalf — and would quietly start
+ * being wrong the moment a second branch is created.
+ *
+ * `localNetworkId` is optional, but if given it must belong to the SAME branch:
+ * otherwise the agent would sit in one branch while being discovered on another
+ * branch's network, re-introducing a cross-branch ownership inconsistency.
+ */
+export async function createAgent(name: string, branchId: string, localNetworkId?: string) {
   await requireManager();
   if (typeof name !== "string" || !name.trim() || name.trim().length > 200) {
     throw new Error("invalid agent name");
   }
+  if (typeof branchId !== "string" || !branchId.trim()) {
+    throw new Error("branchId is required: an agent must be created in an explicit branch");
+  }
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
 
-  let resolvedBranchId: string;
-  if (typeof branchId === "string" && branchId.trim()) {
-    const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId.trim()) });
-    if (!branch) throw new Error(`branch ${branchId} not found`);
-    if (branch.enabled === false) throw new Error(`branch ${branchId} is disabled`);
-    resolvedBranchId = branch.id;
-  } else {
-    const all = await db.select({ id: branches.id, enabled: branches.enabled }).from(branches);
-    const enabled = all.filter((b) => b.enabled !== false);
-    if (enabled.length === 0) throw new Error("no branch configured — create a branch before registering an agent");
-    if (enabled.length > 1) {
-      throw new Error("branchId is required: an agent owns its printers' branch, so it must be assigned explicitly when several branches exist");
+  const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId.trim()) });
+  if (!branch) throw new Error(`branch ${branchId} not found`);
+  if (branch.enabled === false) throw new Error(`branch ${branchId} is disabled`);
+  const resolvedBranchId = branch.id;
+
+  let resolvedLocalNetworkId: string | null = null;
+  if (typeof localNetworkId === "string" && localNetworkId.trim()) {
+    const net = await db.query.localNetworks.findFirst({ where: eq(localNetworks.id, localNetworkId.trim()) });
+    if (!net) throw new Error(`local network ${localNetworkId} not found`);
+    if (net.branchId !== resolvedBranchId) {
+      throw new Error(
+        `local network ${net.id} belongs to branch ${net.branchId}, not to branch ${resolvedBranchId}: an agent and its local network must be in the same branch`
+      );
     }
-    resolvedBranchId = enabled[0].id;
+    resolvedLocalNetworkId = net.id;
   }
 
   await db.insert(agents).values({
     id,
     branchId: resolvedBranchId,
+    localNetworkId: resolvedLocalNetworkId,
     name: name.trim(),
     pairingCode,
     pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30), // 30 mins
@@ -139,8 +157,124 @@ export async function createTestPrintJob(printerId: string) {
   return createPrintJob(printerId, payload);
 }
 
+/* ---------------------------------------------------------------------------
+ * Lifecycle
+ *
+ * Agents and printers are RUNTIME entities that historical print jobs point at
+ * (print_jobs.agent_id / printer_id are NOT NULL foreign keys). Hard-deleting
+ * them either fails outright or would require destroying audit history, so the
+ * supported operations are lifecycle transitions, not deletion:
+ *
+ *   active   — normal operation
+ *   disabled — temporarily out of service; credentials still valid, but no new
+ *              work is routed to it. Reversible.
+ *   retired  — permanently decommissioned; runtime credentials revoked.
+ *
+ * Both states preserve every job, binding and relationship needed to inspect
+ * history. Retiring an agent cascades to its printers, because a printer that
+ * cannot be reached through its agent cannot print.
+ * ------------------------------------------------------------------------ */
+
+export type AgentLifecycleState = "active" | "disabled" | "retired";
+export type PrinterLifecycleState = "active" | "disabled" | "retired";
+
+/**
+ * Move an agent through its lifecycle. Retiring revokes the agent's runtime
+ * credentials (so heartbeat/poll/WS auth stops working) and cascades to its
+ * printers in the SAME transaction — leaving printers active under a retired
+ * agent would advertise routes that can never be delivered.
+ */
+export async function setAgentLifecycle(id: string, state: AgentLifecycleState) {
+  await requireManager();
+  if (state !== "active" && state !== "disabled" && state !== "retired") {
+    throw new Error(`invalid agent lifecycle state: ${state}`);
+  }
+  const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
+  if (!agent) throw new Error("Agent not found");
+
+  await db.transaction(async (tx) => {
+    if (state === "retired") {
+      await tx.update(agents).set({
+        status: "retired",
+        // Revoke runtime credentials: the stored value is a hash, and no hash
+        // input produces NULL, so every future authenticated call fails.
+        secret: null,
+        pairingCode: null,
+        pairingCodeExpiresAt: null,
+        updatedAt: new Date(),
+      }).where(eq(agents.id, id));
+      // A retired agent's printers are unreachable by definition.
+      await tx.update(printers).set({ enabled: false, status: "retired", updatedAt: new Date() })
+        .where(eq(printers.agentId, id));
+    } else if (state === "disabled") {
+      await tx.update(agents).set({ status: "disabled", updatedAt: new Date() }).where(eq(agents.id, id));
+      await tx.update(printers).set({ enabled: false, updatedAt: new Date() }).where(eq(printers.agentId, id));
+    } else {
+      // Reactivation restores the agent only. Printers are re-enabled
+      // deliberately, one at a time: a printer disabled for its own reason
+      // (paper jam, decommissioned hardware) must not silently come back.
+      await tx.update(agents).set({ status: "offline", updatedAt: new Date() }).where(eq(agents.id, id));
+    }
+  });
+
+  revalidatePath("/dashboard");
+}
+
+/**
+ * Move a printer through its lifecycle. A disabled or retired printer is never
+ * selected for new jobs (routing checks `enabled`), but its historical jobs and
+ * bindings remain intact and queryable.
+ */
+export async function setPrinterLifecycle(id: string, state: PrinterLifecycleState) {
+  await requireManager();
+  if (state !== "active" && state !== "disabled" && state !== "retired") {
+    throw new Error(`invalid printer lifecycle state: ${state}`);
+  }
+  const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
+  if (!printer) throw new Error("Printer not found");
+
+  if (state === "retired") {
+    await db.update(printers).set({ enabled: false, status: "retired", updatedAt: new Date() }).where(eq(printers.id, id));
+  } else if (state === "disabled") {
+    await db.update(printers).set({ enabled: false, updatedAt: new Date() }).where(eq(printers.id, id));
+  } else {
+    if (printer.status === "retired") {
+      // Un-retiring is deliberate and separate: reactivate resets to unknown
+      // and lets the next heartbeat establish the real status.
+      await db.update(printers).set({ enabled: true, status: "unknown", updatedAt: new Date() }).where(eq(printers.id, id));
+    } else {
+      await db.update(printers).set({ enabled: true, updatedAt: new Date() }).where(eq(printers.id, id));
+    }
+  }
+  revalidatePath("/dashboard");
+}
+
+/**
+ * Hard delete, restricted to genuinely unused agents.
+ *
+ * This is NOT the normal decommissioning path — use `setAgentLifecycle(id,
+ * "retired")`. Deletion is only permitted when nothing references the agent,
+ * so it can never destroy print history. Each dependency is reported
+ * explicitly rather than surfacing an opaque foreign-key error.
+ */
 export async function deleteAgent(id: string) {
   await requireManager();
+  const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
+  if (!agent) throw new Error("Agent not found");
+
+  const jobs = await db.select({ id: printJobs.id }).from(printJobs).where(eq(printJobs.agentId, id)).limit(1);
+  if (jobs.length > 0) {
+    throw new Error(
+      `agent ${id} has print history and cannot be deleted — retire it instead (its jobs, printers and audit trail are preserved)`
+    );
+  }
+  const ownedPrinters = await db.select({ id: printers.id }).from(printers).where(eq(printers.agentId, id));
+  if (ownedPrinters.length > 0) {
+    throw new Error(
+      `agent ${id} still owns ${ownedPrinters.length} printer(s) (${ownedPrinters.map((p) => p.id).join(", ")}) — a printer cannot exist without an agent, so remove or reassign them first, or retire the agent instead`
+    );
+  }
+
   await db.delete(agents).where(eq(agents.id, id));
   revalidatePath("/dashboard");
 }

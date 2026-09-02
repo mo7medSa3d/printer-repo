@@ -181,3 +181,66 @@ export async function recordAuthSuccess(username: string): Promise<void> {
     DELETE FROM auth_rate_limits WHERE key = ${accountKey(username)}
   `);
 }
+
+/* ---------------------------------------------------------------------------
+ * Retention / cleanup
+ *
+ * Every distinct source IP and every attempted username creates a row, so an
+ * untended `auth_rate_limits` table grows without bound — a slow credential
+ * spray from a botnet is effectively an unauthenticated disk-fill vector.
+ *
+ * A bucket is only needed while it can still affect a decision:
+ *   - its 15-minute failure window is still open, OR
+ *   - it is still locked (`locked_until` in the future).
+ *
+ * Anything older than both is dead weight and is safe to delete: re-creating it
+ * on the next failure yields exactly the same decision, because an expired
+ * window resets `failures` to 0 anyway.
+ *
+ * Cleanup is bounded (`CLEANUP_BATCH`) so it can never turn into a long
+ * table-wide lock on a hot authentication path, and it is opportunistic: it
+ * runs on a small fraction of login attempts. `cleanupAuthRateLimits` is also
+ * exported for a scheduled maintenance job.
+ * ------------------------------------------------------------------------ */
+
+/** Rows deleted per cleanup pass. Bounded to keep the statement short. */
+export const CLEANUP_BATCH = 1000;
+
+/** Grace period beyond the failure window before a bucket becomes deletable. */
+export const RETENTION_GRACE_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Delete rate-limit buckets that can no longer influence any decision.
+ * Returns the number of rows removed. Safe to run concurrently: the
+ * `ctid`-limited subquery makes overlapping passes delete disjoint batches.
+ */
+export async function cleanupAuthRateLimits(now: Date = new Date()): Promise<number> {
+  const staleBefore = new Date(now.getTime() - AUTH_RATE_WINDOW_MS - RETENTION_GRACE_MS);
+  const res = await db.execute(sql`
+    DELETE FROM auth_rate_limits
+    WHERE ctid IN (
+      SELECT ctid FROM auth_rate_limits
+      WHERE (locked_until IS NULL OR locked_until < ${now})
+        AND updated_at < ${staleBefore}
+      LIMIT ${CLEANUP_BATCH}
+    )
+  `);
+  return res.rowCount ?? 0;
+}
+
+/**
+ * Fire-and-forget cleanup on ~1% of calls.
+ *
+ * Rate limiting MUST NOT depend on this succeeding: cleanup failures are
+ * swallowed (and logged by the caller's own error path if it cares), because a
+ * maintenance problem must never turn into an authentication outage or, worse,
+ * an open door.
+ */
+export async function maybeCleanupAuthRateLimits(): Promise<void> {
+  if (Math.random() >= 0.01) return;
+  try {
+    await cleanupAuthRateLimits();
+  } catch {
+    // Intentionally ignored: enforcement correctness does not depend on it.
+  }
+}

@@ -9,14 +9,23 @@ Odoo → print_gateway addon → Cloud Gateway (Next.js + PostgreSQL) → Window
                                      └────────── job status ◄─────────────────┘
 ```
 
+* **One ownership chain** — `Branch → Agent → Printer`. The agent is the single owner of
+  branch context; a printer has no branch of its own, it inherits its agent's. Moving an
+  agent moves all of its printers atomically, so the two can never disagree.
 * **Multi-branch by design** — routing is `branch → destination → document type → printer
-  binding`, so Odoo never needs to know a physical printer id.
+  binding`, so Odoo never needs to know a physical printer id. Ties on binding priority are
+  broken deterministically by binding id, so the same request always picks the same printer.
 * **Exactly one owner per job** — a job is claimed in a database transaction *before* it is
   handed to an agent, so an agent can never execute a job the gateway still calls `queued`.
 * **Honest payload types** — `raw`, `escpos` and `pdf` are distinct; a PDF is printed through
   a real PDF path or refused with `CAPABILITY_MISMATCH`, never dumped as raw bytes.
 * **Recoverable delivery** — lost deliveries are requeued under the *same* job id; stale
   claims are reclaimed after a 90 s lease; duplicates are acknowledged but not reprinted.
+  Physical printing is **at-least-once**, not exactly-once: a crash between sending bytes
+  and recording the ack can produce a duplicate page. Job *creation* is exactly-once.
+* **Retire, never delete** — agents and printers carry print history, so they move through
+  `active → disabled → retired` instead of being deleted. Retiring revokes credentials and
+  disables the agent's printers; all history is preserved.
 
 ## Repository layout
 

@@ -119,7 +119,7 @@ suite("manager login rate limiting", () => {
     expect(ok.status).toBe(200);
   });
 
-  it("successful login after cooldown recovers the account", async () => {
+  it("successful login after cooldown recovers the account bucket", async () => {
     for (let i = 0; i < 5; i++) {
       await login(USER, "wrong", "198.51.100.70");
     }
@@ -127,8 +127,36 @@ suite("manager login rate limiting", () => {
     const ok = await login(USER, PASS, "198.51.100.70");
     expect(ok.status).toBe(200);
 
-    const after = await login(USER, "wrong", "198.51.100.70");
-    expect(after.status).toBe(401);
+    // The ACCOUNT bucket is cleared by a successful login, so the legitimate
+    // user recovers immediately.
+    const acct = await pool().query(`SELECT failures FROM auth_rate_limits WHERE key = $1`, [
+      accountKey(USER),
+    ]);
+    expect(acct.rowCount).toBe(0);
+
+    // The IP bucket is deliberately NOT cleared: one user proving their
+    // password on a shared address must not wipe the evidence of an attack
+    // against other accounts from that same address. Its counter therefore
+    // survives, and the next failure from this IP re-locks it.
+    const ipRow = await pool().query(`SELECT failures FROM auth_rate_limits WHERE key = $1`, [
+      ipKey("198.51.100.70"),
+    ]);
+    expect(Number(ipRow.rows[0].failures)).toBeGreaterThanOrEqual(5);
+  });
+
+  it("a successful login does NOT reset the IP bucket", async () => {
+    // Regression guard for the asymmetry above — it is a security property,
+    // not an accident.
+    for (let i = 0; i < 5; i++) {
+      await login(USER, "wrong", "198.51.100.71");
+    }
+    await pool().query(`UPDATE auth_rate_limits SET locked_until = now() - interval '1 second'`);
+    expect((await login(USER, PASS, "198.51.100.71")).status).toBe(200);
+
+    // Next wrong attempt from the same IP trips the IP lock again (6th failure
+    // is inside the 5-9 band => 30s lock) rather than starting from zero.
+    const after = await login(USER, "wrong", "198.51.100.71");
+    expect(after.status).toBe(429);
   });
 
   it("concurrent attempts cannot bypass the limiter", async () => {

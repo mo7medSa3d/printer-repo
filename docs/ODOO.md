@@ -131,6 +131,28 @@ a raw JSON blob. Typical case: a binding references a printer that no agent has 
 yet — register/discover the printer, then sync again. **The gateway never creates printers
 from Odoo data.**
 
+### Sync result semantics
+
+`branch.last_sync_status` is one of:
+
+| Status | Meaning |
+|---|---|
+| `success` | every **required** resource was fetched and applied |
+| `partial` | an **optional** resource failed; required ones succeeded |
+| `failed` | a **required** resource could not be fetched |
+
+Agents and printers are both required — they are the entire point of the pull.
+A non-200, a timeout, a transport error or unparseable JSON on either one marks
+the sync `failed`, records the per-resource detail in `last_sync_error`, and
+raises.
+
+This matters because of the previous behaviour: a failed HTTP request was
+ignored, and the sync still reported success with a fresh `last_sync_at`. A
+gateway that had been returning 500 for a week looked perfectly healthy. Worse,
+the stale-mirror cleanup would have run with an empty printer list and disabled
+**every printer in the branch**. Cleanup is now inside the success path, so a
+failed fetch can never be mistaken for "the gateway reports no printers".
+
 ## 7. Security model inside Odoo
 
 * Branch/destination/document-type/binding **writes** are restricted to `base.group_system`;

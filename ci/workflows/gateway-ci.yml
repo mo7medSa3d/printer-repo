@@ -1,0 +1,146 @@
+name: Gateway CI
+
+# The gateway's correctness guarantees — FOR UPDATE SKIP LOCKED claim ordering,
+# transactional Odoo sync, the partial-unique idempotency index, migration 0006's
+# fail-loud validation — cannot be simulated. They are only meaningful against a
+# real PostgreSQL, so this workflow runs one as a service and FAILS if the
+# database-backed suites do not execute.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: gateway-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: printgw_test
+        ports:
+          - 5432:5432
+        # Without a healthcheck the job races the database and the suites would
+        # skip (or fail) for the wrong reason.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/printgw_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ----------------------------------------------------------------
+      # Guard: the DB-backed suites skip themselves when DATABASE_URL is
+      # unset. That is correct for a laptop, but in CI a silent skip would
+      # turn this job into a no-op that reports green. Prove the database
+      # is actually reachable before trusting any test result.
+      # ----------------------------------------------------------------
+      - name: Verify PostgreSQL is reachable
+        run: |
+          node -e "
+            const { Client } = require('pg');
+            const c = new Client({ connectionString: process.env.DATABASE_URL });
+            c.connect()
+              .then(() => c.query('select version()'))
+              .then(r => { console.log(r.rows[0].version); return c.end(); })
+              .catch(e => { console.error('PostgreSQL unreachable:', e.message); process.exit(1); });
+          "
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Applies drizzle/*.sql in order through the test harness ledger, then
+      # runs every suite. No suite may skip: see the assertion below.
+      - name: Test (PostgreSQL-backed)
+        run: npm test -- --reporter=verbose --reporter=json --outputFile=vitest-report.json
+
+      - name: Assert no test was skipped
+        run: |
+          node -e "
+            const r = require('./vitest-report.json');
+            const skipped = r.numPendingTests ?? 0;
+            const todo = r.numTodoTests ?? 0;
+            console.log('passed=' + r.numPassedTests + ' failed=' + r.numFailedTests + ' skipped=' + skipped);
+            if (skipped + todo > 0) {
+              console.error('FAIL: ' + (skipped + todo) + ' test(s) skipped. With a real PostgreSQL service, the database-backed suites must run.');
+              process.exit(1);
+            }
+            if (r.numPassedTests === 0) {
+              console.error('FAIL: no tests ran.');
+              process.exit(1);
+            }
+          "
+
+      - name: Production build
+        run: npm run build
+
+  # Go agent: build, vet, and the race detector. Kept separate from the Windows
+  # packaging workflow so a packaging-only failure does not mask a logic bug.
+  agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Build
+        working-directory: agent
+        run: go build ./...
+
+      - name: Vet
+        working-directory: agent
+        run: go vet ./...
+
+      - name: Test
+        working-directory: agent
+        run: go test ./...
+
+      - name: Test (race detector)
+        working-directory: agent
+        run: go test -race ./...
+
+      # The agent ships on Windows; a Linux-only build would not catch
+      # platform-specific compilation errors in the spooler backend.
+      - name: Cross-compile for Windows
+        working-directory: agent
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: go build ./... && go vet ./...

@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { branches, destinations, printerBindings, printers } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { isVirtualPrinterRecord, type PrinterLike } from "./printer-virtual";
 import { branchIdOfPrinter } from "./printer-branch";
 
@@ -14,6 +14,35 @@ export type BindingCandidate = {
   enabled: boolean;
 };
 
+/**
+ * Total ordering for routing candidates.
+ *
+ * Priority alone is NOT a total order: two bindings in the same
+ * (branch, destination, documentType) routing key may legitimately share a
+ * priority, and in that case `Array.prototype.sort` plus PostgreSQL's
+ * unspecified row order would let the chosen printer vary between identical
+ * requests — the same receipt could come out of a different printer each time.
+ *
+ * The documented rule is therefore:
+ *
+ *   1. priority ASC        (lower number wins; the operator's intent)
+ *   2. binding.id ASC      (stable, unique tie-break)
+ *
+ * Because binding ids are unique, this is a strict total order: the same set of
+ * candidates always yields the same winner, regardless of row order.
+ *
+ * A more specific document type still beats a wildcard — that is handled by the
+ * caller's filtering, not here.
+ */
+export function compareBindings(a: BindingCandidate, b: BindingCandidate): number {
+  const byPriority = Number(a.priority ?? 0) - Number(b.priority ?? 0);
+  if (byPriority !== 0) return byPriority;
+  // Deterministic tie-break. Never fall through to input order.
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
 export function selectBestBinding(bindingRows: BindingCandidate[], requestedDocumentType?: string | null) {
   const normalized = (requestedDocumentType ?? "").trim().toLowerCase();
 
@@ -23,7 +52,7 @@ export function selectBestBinding(bindingRows: BindingCandidate[], requestedDocu
       const bindingType = (binding.documentType ?? "").trim().toLowerCase();
       return bindingType === "" || bindingType === normalized || normalized === "";
     })
-    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0));
+    .sort(compareBindings);
 
   return candidates[0] ?? null;
 }
@@ -36,7 +65,7 @@ export function selectFallbackBindings(bindingRows: BindingCandidate[], requeste
       const bindingType = (binding.documentType ?? "").trim().toLowerCase();
       return bindingType === "" || bindingType === normalized || normalized === "";
     })
-    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0));
+    .sort(compareBindings);
 }
 
 export type CapabilityCheckResult = { ok: true } | { ok: false; reason: string };
@@ -161,6 +190,9 @@ export async function resolvePrinterForJob({
         eq(printerBindings.destinationId, destinationId),
         eq(printerBindings.enabled, true)
       ),
+      // Deterministic at the SQL level too, matching compareBindings(). Row
+      // order from PostgreSQL is otherwise unspecified.
+      orderBy: [asc(printerBindings.priority), asc(printerBindings.id)],
     });
 
     if (!rows || rows.length === 0) {

@@ -5,6 +5,7 @@ import {
   inspectAuthRateLimit,
   recordAuthFailure,
   recordAuthSuccess,
+  maybeCleanupAuthRateLimits,
 } from "@/lib/auth-rate-limit";
 import { logWarn, logInfo, requestIdFrom } from "@/lib/log";
 
@@ -66,6 +67,9 @@ export async function POST(req: Request) {
 
   try {
     await recordAuthSuccess(username);
+    // Opportunistic, bounded retention pass. Never awaited for correctness and
+    // never allowed to fail the login.
+    void maybeCleanupAuthRateLimits();
   } catch (e) {
     logWarn("auth.login.rate_limit_clear_failed", { requestId, error: e instanceof Error ? e.message : "unknown" });
   }

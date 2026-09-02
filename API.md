@@ -81,10 +81,20 @@ when a fallback binding was used. The legacy body returns
 | 403 | `{"error":"API key is not allowed to create this document type"}` | `allowedDocumentTypes` / `read_only` scope; legacy path also 403 on cross-branch printer |
 | 404 | `{"error":"NO_ROUTE: …"}` / `NO_PRINTER_FOUND` | no matching binding / no printer row |
 | 409 | `{"error":"PRINTER_DISABLED: …","code":"PRINTER_DISABLED"}` | every candidate printer is administratively disabled |
+| 400 | `{"error":"…payload declares type \"raw\" but the data is a PDF document…"}` | the declared payload type does not match the actual bytes (PDF masquerading as raw/escpos, or vice versa) |
 | 409 | `{"error":"CROSS_BRANCH_BINDING: …","code":"CROSS_BRANCH_BINDING"}` | a binding in this branch points at a printer whose derived branch (printer → agent → branch) is different or unresolvable. Reported distinctly rather than as 404, so a misconfiguration is not mistaken for a missing route |
 | 422 | `{"error":"CAPABILITY_MISMATCH: …","code":"CAPABILITY_MISMATCH"}` | payload type cannot be rendered by the routed printer |
 | 503 | `{"error":"PRINTER_OFFLINE: …","code":"PRINTER_OFFLINE"}` | candidates are offline/error |
 | 500 | `{"error":"INTERNAL_ERROR: …"}` | routing/database failure (never disguised as 404) |
+
+**Input limits.** `branchId`, `destinationId` and `printerId` are capped at 128 chars,
+`documentType` at 64, `idempotencyKey` at 200, names at 200 and agent `metadata` at 8 KiB
+serialized. The payload cap is unchanged at 5 MiB decoded. Oversized input is rejected with
+400 before it reaches the database.
+
+**Delivery guarantee.** Job creation is exactly-once per idempotency key; physical printing
+is **at-least-once** (see ARCHITECTURE.md §8b). Retry an ambiguous failure with the *same*
+idempotency key — a new key means a new logical print operation and a second physical page.
 
 Branch-routed errors include a machine-readable `code`; the legacy path returns the code as
 part of the `error` string.
@@ -181,17 +191,24 @@ Secrets are stripped; 500 on a database error.
 No auth (the pairing code is the credential).
 
 ```json
-{ "pairingCode": "AB12CD", "branchId": "branch_cairo",
+{ "pairingCode": "AB12CD",
   "metadata": {"hostname":"pos-pc-1","os":"windows","version":"1.0.0"} }
 ```
 
+> **`branchId` is not part of this contract and is actively rejected.** The
+> schema is strict: sending `branchId` returns **400**, naming the field. A
+> device must not be able to choose which branch it joins — the branch is a
+> property of the Agent record that a manager created deliberately, and every
+> printer the agent reports derives its branch from it. Clients that previously
+> sent the field must simply stop sending it; the value was already ignored in
+> favour of the persisted agent branch.
+
 The code is uppercased/trimmed, must be unexpired, and is consumed atomically (a racing
-second registration gets 409). `branchId` is optional but validated when present, and it
-sets the branch of the **agent** — the sole owner of branch context. There is no
-per-printer branch to register: printers reported by this agent inherit its branch.
+second registration gets 409). The agent keeps the branch it was created with; pairing
+never moves an agent between branches. `metadata` is capped at 8 KiB.
 
 **200** `{"agentId":"agt_7f3c","secret":"<shown once>"}` — only the SHA-256 hash is stored.
-400 invalid/expired code, 404 unknown branch, 409 disabled branch or code already used,
+400 invalid/expired code **or a rejected `branchId`/unknown field**, 409 code already used,
 500 internal error.
 
 ### `POST /api/agent/heartbeat`

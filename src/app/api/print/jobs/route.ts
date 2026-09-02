@@ -10,24 +10,25 @@ import { assertPrinterInBranch, loadPrinterWithBranch } from "@/lib/printer-bran
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { idField, documentTypeField, idempotencyKeyField } from "@/lib/limits";
 import { logInfo, requestIdFrom } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
 const legacyBodySchema = z.object({
-  printerId: z.string().min(1),
+  printerId: idField(),
   payload: z.unknown(),
-  expiresAt: z.string().optional(),
-  idempotencyKey: z.string().optional(),
+  expiresAt: z.string().max(64).optional(),
+  idempotencyKey: idempotencyKeyField(),
 });
 
 const branchBodySchema = z.object({
-  branchId: z.string().min(1),
-  destinationId: z.string().min(1),
-  documentType: z.string().min(1),
+  branchId: idField(),
+  destinationId: idField(),
+  documentType: documentTypeField(),
   payload: z.unknown(),
-  expiresAt: z.string().optional(),
-  idempotencyKey: z.string().optional(),
+  expiresAt: z.string().max(64).optional(),
+  idempotencyKey: idempotencyKeyField(),
 });
 
 function parseExpiresAt(str?: string) {

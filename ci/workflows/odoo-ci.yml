@@ -1,0 +1,133 @@
+name: Odoo Addon CI
+
+# Runs the print_gateway addon's own test suite inside a real Odoo instance
+# against a real PostgreSQL.
+#
+# Scope and honesty about what this proves:
+#
+#   * It DOES exercise the Odoo ORM for real: field definitions, the stored
+#     related branch_id, @api.constrains validation, SQL uniqueness constraints
+#     and the 1.1.0 pre-migration all run under Odoo itself.
+#   * It does NOT talk to a live gateway. The addon's HTTP calls are exercised
+#     against mocks inside the tests, because a CI job cannot depend on a
+#     deployed gateway. Gateway-side behaviour is covered by gateway-ci.yml.
+#   * It does NOT print to hardware. See WINDOWS_PHYSICAL_E2E.md.
+#
+# Odoo is installed from the nightly .deb-free source tarball for the pinned
+# series so the job does not depend on a third-party Docker image.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: odoo-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  odoo-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # Odoo 17 is the series this addon targets (see __manifest__.py).
+    env:
+      ODOO_VERSION: "17.0"
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: odoo
+      PGPASSWORD: odoo
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U odoo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          path: repo
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Odoo's wheels need these headers; without them psycopg2 and lxml fail
+      # to build and the job dies with an unhelpful compiler error.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential python3-dev libxml2-dev libxslt1-dev \
+            libldap2-dev libsasl2-dev libssl-dev libpq-dev \
+            libjpeg-dev zlib1g-dev
+
+      - name: Check out Odoo ${{ env.ODOO_VERSION }}
+        run: |
+          git clone --depth 1 --branch "$ODOO_VERSION" \
+            https://github.com/odoo/odoo.git "$GITHUB_WORKSPACE/odoo"
+
+      - name: Install Odoo requirements
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -r "$GITHUB_WORKSPACE/odoo/requirements.txt"
+
+      - name: Create database
+        run: |
+          psql -h 127.0.0.1 -U odoo -d postgres -c "CREATE DATABASE odoo_test OWNER odoo;"
+
+      # -u installs the addon (running its migrations), --test-enable runs every
+      # tagged test in it. --stop-after-init makes it a batch job.
+      - name: Install addon and run its tests
+        run: |
+          python "$GITHUB_WORKSPACE/odoo/odoo-bin" \
+            --database odoo_test \
+            --db_host 127.0.0.1 --db_port 5432 --db_user odoo --db_password odoo \
+            --addons-path "$GITHUB_WORKSPACE/odoo/addons,$GITHUB_WORKSPACE/repo/odoo_addons" \
+            --init print_gateway \
+            --test-enable \
+            --test-tags /print_gateway \
+            --log-level test \
+            --stop-after-init \
+            --without-demo=all 2>&1 | tee odoo-test.log
+
+      # odoo-bin's exit code does not reliably reflect test failures across
+      # series, so the log is the authority. Anything logged at ERROR/CRITICAL,
+      # or an explicit failed-test line, fails the job.
+      - name: Assert tests passed
+        run: |
+          if grep -E "^[0-9-]+ [0-9:,]+ [0-9]+ (ERROR|CRITICAL)" odoo-test.log; then
+            echo "::error::Odoo reported ERROR/CRITICAL during the test run"
+            exit 1
+          fi
+          if grep -Ei "FAIL: |tests? failed|Module print_gateway: [0-9]+ failures" odoo-test.log; then
+            echo "::error::Odoo addon tests failed"
+            exit 1
+          fi
+          if ! grep -q "Module print_gateway" odoo-test.log; then
+            echo "::error::print_gateway tests did not run — refusing to report success"
+            exit 1
+          fi
+          echo "Odoo addon tests passed."
+
+      - name: Upload Odoo log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: odoo-test-log
+          path: odoo-test.log

@@ -77,6 +77,9 @@ export const agents = pgTable("agents", {
   name: text("name").notNull(),
   pairingCode: text("pairing_code"),
   pairingCodeExpiresAt: timestamp("pairing_code_expires_at"),
+  // Nullable BY DESIGN: retiring an agent revokes its credential by setting
+  // this to NULL. No hash input produces NULL, so every authenticated call
+  // from a retired agent fails closed.
   secret: text("secret"),
   status: text("status").notNull().default("offline"),
   metadata: jsonb("metadata").$type<{
@@ -91,6 +94,7 @@ export const agents = pgTable("agents", {
 }, (table) => ({
   branchIdIdx: index("agents_branch_id_idx").on(table.branchId),
   localNetworkIdIdx: index("agents_local_network_id_idx").on(table.localNetworkId),
+  statusIdx: index("agents_status_idx").on(table.status),
   lastSeenIdx: index("agents_last_seen_idx").on(table.lastSeenAt),
 }));
 
@@ -159,6 +163,9 @@ export const printerBindings = pgTable("printer_bindings", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   routingIdx: index("printer_bindings_routing_idx").on(table.branchId, table.destinationId, table.documentType, table.priority),
+  // Matches compareBindings(): priority ASC then id ASC, so PostgreSQL can
+  // return routing candidates already in the deterministic order.
+  routingDeterministicIdx: index("printer_bindings_routing_deterministic_idx").on(table.branchId, table.destinationId, table.documentType, table.priority, table.id),
   printerIdIdx: index("printer_bindings_printer_id_idx").on(table.printerId),
   enabledIdx: index("printer_bindings_enabled_idx").on(table.enabled),
 }));
@@ -195,6 +202,8 @@ export const authRateLimits = pgTable("auth_rate_limits", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   lockedUntilIdx: index("auth_rate_limits_locked_until_idx").on(table.lockedUntil),
+  // Retention sweep selects on (locked_until, updated_at).
+  updatedAtIdx: index("auth_rate_limits_updated_at_idx").on(table.updatedAt),
 }));
 
 export const printJobs = pgTable("print_jobs", {

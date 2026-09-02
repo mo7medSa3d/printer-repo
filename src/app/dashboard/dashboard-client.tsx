@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { createAgent, createTestPrintJob, deleteAgent } from "@/app/actions";
+import { useMemo, useState } from "react";
+import { createAgent, createTestPrintJob, setAgentLifecycle, setPrinterLifecycle } from "@/app/actions";
 import { cn } from "@/lib/utils";
+import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 import {
   Plus,
   Trash2,
@@ -58,6 +59,8 @@ type Printer = {
   agentId: string;
   name: string;
   type: string;
+  connectionType: string;
+  enabled: boolean;
   status: string;
   config: any;
   /**
@@ -104,18 +107,37 @@ export default function DashboardClient({
   const enabledBranches = initialBranches.filter((b) => b.enabled !== false);
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentBranchId, setNewAgentBranchId] = useState<string>(enabledBranches[0]?.id ?? "");
+  // O(1) lookups. Rendering N printers previously did N linear scans over the
+  // agent and branch arrays (O(n*m)); build the maps once instead.
+  const branchNameById = useMemo(
+    () => new Map(initialBranches.map((b) => [b.id, b.name])),
+    [initialBranches]
+  );
+  const agentNameById = useMemo(
+    () => new Map(initialAgents.map((a) => [a.id, a.name])),
+    [initialAgents]
+  );
   const branchName = (id: string | null | undefined) =>
-    (id ? initialBranches.find((b) => b.id === id)?.name ?? id : null);
+    (id ? branchNameById.get(id) ?? id : null);
+
+  // Virtual / redirected queues (Print to PDF, XPS, RDP redirection) are not
+  // manageable physical devices: they can never receive a physical job, so
+  // offering "Test print" on them would be a lie. They stay in the database.
+  const physicalPrinters = useMemo(
+    () => initialPrinters.filter((p) => !isVirtualPrinterRecord(p)),
+    [initialPrinters]
+  );
+  const hiddenVirtualCount = initialPrinters.length - physicalPrinters.length;
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
+  const [pendingRetire, setPendingRetire] = useState<Agent | null>(null);
 
   const handleCreateAgent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAgentName) return;
     setIsLoading(true);
     try {
-      await createAgent(newAgentName, newAgentBranchId || undefined);
+      await createAgent(newAgentName, newAgentBranchId);
       setNewAgentName("");
       window.location.reload();
     } catch (err) {
@@ -157,14 +179,29 @@ export default function DashboardClient({
     }
   };
 
-  const handleDeleteConfirmed = async () => {
-    if (!pendingDelete) return;
-    const id = pendingDelete.id;
-    setPendingDelete(null);
+  const handleRetireConfirmed = async () => {
+    if (!pendingRetire) return;
+    const id = pendingRetire.id;
+    setPendingRetire(null);
     setIsLoading(true);
     try {
-      await deleteAgent(id);
+      await setAgentLifecycle(id, "retired");
       window.location.reload();
+    } catch (err) {
+      setNotice({ text: `Failed to retire agent: ${err instanceof Error ? err.message : "unknown error"}`, tone: "bad" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePrinterLifecycle = async (printerId: string, state: "active" | "disabled") => {
+    setIsLoading(true);
+    setNotice(null);
+    try {
+      await setPrinterLifecycle(printerId, state);
+      window.location.reload();
+    } catch (err) {
+      setNotice({ text: `Failed to update printer: ${err instanceof Error ? err.message : "unknown error"}`, tone: "bad" });
     } finally {
       setIsLoading(false);
     }
@@ -267,8 +304,8 @@ export default function DashboardClient({
                     </p>
                   </div>
                   <div className="mt-3 flex justify-end">
-                    <Button variant="ghost" size="sm" onClick={() => setPendingDelete(agent)} icon={<Trash2 className="h-3.5 w-3.5" />} className="text-ink-3 hover:text-bad">
-                      Remove
+                    <Button variant="ghost" size="sm" onClick={() => setPendingRetire(agent)} icon={<Trash2 className="h-3.5 w-3.5" />} className="text-ink-3 hover:text-bad">
+                      Retire
                     </Button>
                   </div>
                 </div>
@@ -286,10 +323,15 @@ export default function DashboardClient({
           icon={<Printer className="h-4 w-4 text-brand" aria-hidden />}
         />
         <div className="px-5 pb-5 space-y-3">
-          {initialPrinters.length === 0 ? (
+          {hiddenVirtualCount > 0 && (
+            <p className="text-[11px] text-ink-3">
+              {hiddenVirtualCount} virtual/redirected queue{hiddenVirtualCount === 1 ? "" : "s"} hidden — they cannot print to hardware.
+            </p>
+          )}
+          {physicalPrinters.length === 0 ? (
             <EmptyState icon={<Printer className="h-7 w-7" />} title="No printers yet" description="Printers appear here as soon as an online agent reports them via heartbeat." />
           ) : (
-            initialPrinters.map((printer) => (
+            physicalPrinters.map((printer) => (
               <div key={printer.id} className="card card-interactive p-4 shadow-none">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="truncate font-medium text-ink">{printer.name}</h3>
@@ -298,19 +340,33 @@ export default function DashboardClient({
                 <div className="mt-2 space-y-1.5 text-xs text-ink-2">
                   <div className="flex items-center gap-1.5">
                     {printer.type === "usb" ? <HardDrive className="h-3.5 w-3.5 text-ink-3" aria-hidden /> : <Network className="h-3.5 w-3.5 text-ink-3" aria-hidden />}
-                    <span className="uppercase">{printer.type}</span>
+                    <span className="uppercase">{printer.connectionType}</span>
                   </div>
-                  <p className="text-ink-3">Agent: {initialAgents.find(a => a.id === printer.agentId)?.name || printer.agentId}</p>
+                  <p className="text-ink-3">Agent: {agentNameById.get(printer.agentId) ?? printer.agentId}</p>
                   {/* Read-only: derived through the agent, never editable here. */}
                   <p className="text-ink-3" title="Derived from the owning agent — a printer has no branch of its own">
                     Branch: {branchName(printer.branchId) ?? "—"} <span className="text-ink-3">(via agent)</span>
                   </p>
                   {printer.config?.ip && <p className="font-mono text-ink-2">{printer.config.ip}</p>}
                   {printer.config?.address && <p className="font-mono text-ink-2">{printer.config.address}</p>}
+                  {!printer.enabled && (
+                    <p className="text-warn">
+                      {printer.status === "retired" ? "Retired" : "Disabled"} — not selected for new jobs
+                    </p>
+                  )}
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <Button variant="secondary" size="sm" onClick={() => handleTestConnection(printer.id)} disabled={isLoading}>Test connection</Button>
-                  <Button variant="primary" size="sm" onClick={() => handleTestPrint(printer.id)} disabled={isLoading}>Test print</Button>
+                  {/* A disabled/retired printer is not a routing target, so the
+                      console must not offer to print to it. */}
+                  <Button variant="primary" size="sm" onClick={() => handleTestPrint(printer.id)} disabled={isLoading || !printer.enabled}>Test print</Button>
+                </div>
+                <div className="mt-2 flex justify-end">
+                  {printer.enabled ? (
+                    <Button variant="ghost" size="sm" disabled={isLoading} onClick={() => handlePrinterLifecycle(printer.id, "disabled")} className="text-ink-3 hover:text-bad">Disable</Button>
+                  ) : (
+                    <Button variant="ghost" size="sm" disabled={isLoading} onClick={() => handlePrinterLifecycle(printer.id, "active")} className="text-ink-3 hover:text-ok">Re-enable</Button>
+                  )}
                 </div>
               </div>
             ))
@@ -346,18 +402,23 @@ export default function DashboardClient({
       </Card>
 
       <Modal
-        open={!!pendingDelete}
-        onClose={() => setPendingDelete(null)}
-        title={`Remove agent “${pendingDelete?.name ?? ""}”?`}
-        description="The agent can no longer poll for jobs or report heartbeats. Its printers remain in the database."
+        open={!!pendingRetire}
+        onClose={() => setPendingRetire(null)}
+        title={`Retire agent “${pendingRetire?.name ?? ""}”?`}
+        description="Retiring revokes the agent's credentials and disables the printers it owns. Nothing is deleted."
         footer={
           <>
-            <Button variant="secondary" onClick={() => setPendingDelete(null)}>Cancel</Button>
-            <Button variant="danger" onClick={handleDeleteConfirmed} icon={<Trash2 className="h-4 w-4" />}>Remove agent</Button>
+            <Button variant="secondary" onClick={() => setPendingRetire(null)}>Cancel</Button>
+            <Button variant="danger" onClick={handleRetireConfirmed} icon={<Trash2 className="h-4 w-4" />}>Retire agent</Button>
           </>
         }
       >
-        <p className="text-sm text-ink-2">This action cannot be undone from the console. Pair the agent again later with a new code.</p>
+        <p className="text-sm text-ink-2">
+          The agent stops polling, printing and reporting heartbeats, and every printer it owns is
+          disabled — a printer is only reachable through its agent. All print jobs, printers and
+          history are <strong>preserved</strong> and remain queryable. To bring the machine back,
+          create a new agent and pair it with a fresh code.
+        </p>
       </Modal>
     </div>
   );

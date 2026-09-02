@@ -137,10 +137,51 @@ class PrintGatewayBranch(models.Model):
         * cross-branch record  -> never silently merged; a mirror row whose
                                   agent now belongs elsewhere simply moves with
                                   its agent
+
+        Sync result semantics (``last_sync_status``):
+
+        * ``success`` — every REQUIRED resource was fetched and applied.
+        * ``partial`` — an OPTIONAL resource failed, required ones succeeded.
+        * ``failed``  — a REQUIRED resource could not be fetched.
+
+        Agents and printers are both REQUIRED: they are the entire point of this
+        pull. Previously a non-200 response was ignored and the sync still
+        reported success with a fresh ``last_sync_at`` — so a gateway that had
+        been returning 500 for a week looked perfectly healthy, and the stale
+        cleanup below would have disabled every printer in the branch because
+        none were "seen". Both problems are fixed by treating a failed required
+        fetch as a hard failure and skipping cleanup entirely.
         """
         Agent = self.env['print_gateway.agent']
         Printer = self.env['print_gateway.printer']
         for branch in self:
+            errors = []
+
+            def _fetch(path, required=True):
+                """GET a gateway resource. Returns parsed JSON or None on failure.
+
+                Never raises for a transport/HTTP error: the caller records the
+                per-resource error and the branch-level status reflects it.
+                """
+                url = "%s%s" % (base, path)
+                try:
+                    r = requests.get(url, params={'branchId': gateway_branch_id},
+                                     headers=headers, timeout=10)
+                except requests.Timeout as e:
+                    errors.append((path, 'timeout', str(e), required))
+                    return None
+                except requests.RequestException as e:
+                    errors.append((path, 'transport', str(e), required))
+                    return None
+                if r.status_code != 200:
+                    errors.append((path, 'http_%s' % r.status_code, (r.text or '')[:300], required))
+                    return None
+                try:
+                    return r.json()
+                except ValueError as e:
+                    errors.append((path, 'invalid_json', str(e), required))
+                    return None
+
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
@@ -151,9 +192,9 @@ class PrintGatewayBranch(models.Model):
 
                 # ---------------------------------------------------- agents
                 agent_by_gateway_id = {}
-                resp = requests.get(f"{base}/api/odoo/agents", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    for ag in resp.json():
+                agents_payload = _fetch('/api/odoo/agents', required=True)
+                if agents_payload is not None:
+                    for ag in agents_payload:
                         gw_agent_id = ag.get('id')
                         if not gw_agent_id:
                             continue
@@ -182,9 +223,9 @@ class PrintGatewayBranch(models.Model):
 
                 # -------------------------------------------------- printers
                 seen_printer_ids = []
-                resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': gateway_branch_id}, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    for pr in resp.json():
+                printers_payload = _fetch('/api/odoo/printers', required=True) if agents_payload is not None else None
+                if printers_payload is not None:
+                    for pr in printers_payload:
                         gw_printer_id = pr.get('id')
                         if not gw_printer_id:
                             continue
@@ -246,9 +287,44 @@ class PrintGatewayBranch(models.Model):
                         _logger.info("Marking %s stale printer mirror(s) offline in branch %s", len(stale), branch.name)
                         stale.write({'status': 'offline', 'enabled': False})
 
-                branch.last_sync_at = fields.Datetime.now()
-                _logger.info("Branch %s sync from gateway completed", branch.name)
+                required_failed = [e for e in errors if e[3]]
+                optional_failed = [e for e in errors if not e[3]]
+
+                if required_failed:
+                    detail = '; '.join(
+                        '%s: %s (%s)' % (path, kind, (msg or '')[:120])
+                        for path, kind, msg, _req in required_failed
+                    )
+                    branch.write({
+                        # last_sync_at records the ATTEMPT; the status says it failed.
+                        'last_sync_at': fields.Datetime.now(),
+                        'last_sync_status': 'failed',
+                        'last_sync_error': detail,
+                    })
+                    _logger.error("Branch %s sync FAILED: %s", branch.name, detail)
+                    # No cleanup ran and no partial state was committed as if it
+                    # were complete. Raise so an interactive user sees it and the
+                    # cron logs a real failure.
+                    raise ValidationError(
+                        _('Sync failed for branch %s: %s') % (branch.name, detail))
+
+                branch.write({
+                    'last_sync_at': fields.Datetime.now(),
+                    'last_sync_status': 'partial' if optional_failed else 'success',
+                    'last_sync_error': '; '.join(
+                        '%s: %s' % (path, kind) for path, kind, _m, _r in optional_failed
+                    ) or False,
+                })
+                _logger.info("Branch %s sync from gateway completed (%s)",
+                             branch.name, 'partial' if optional_failed else 'success')
+            except ValidationError:
+                raise
             except requests.RequestException as e:
+                branch.write({
+                    'last_sync_at': fields.Datetime.now(),
+                    'last_sync_status': 'failed',
+                    'last_sync_error': str(e)[:500],
+                })
                 _logger.error("Branch %s sync failed: %s", branch.name, str(e))
                 raise ValidationError(_('Sync failed: %s') % str(e))
         return True

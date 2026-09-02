@@ -61,6 +61,38 @@ database, and the desktop app never talks to a printer directly — it always go
 Desktop → Gateway → Agent → printer, or Desktop → local agent CLI over Tauri IPC for
 local discovery/registration.
 
+## 2b. Branch authority: who owns business configuration
+
+**Odoo is the source of truth for business configuration. The Gateway is the
+runtime control plane.** This is the rule the rest of the system is built on,
+and it is now stated once, here, rather than implied in three places.
+
+| Concern | Authority | Why |
+|---|---|---|
+| Branches, destinations, document types, printer bindings | **Odoo** | They are business decisions (which shop, which counter, which document goes where) |
+| Agents, printers, print jobs, delivery state | **Gateway** | They are runtime facts discovered from real machines; Odoo cannot know them |
+
+Configuration flows Odoo → Gateway (`POST /api/odoo/sync`). Runtime state flows
+Gateway → Odoo (`GET /api/odoo/agents`, `GET /api/odoo/printers`, job status).
+Neither direction ever writes what the other owns: the sync endpoint refuses to
+create printers, and Odoo never pushes a printer or a printer's branch.
+
+### The Gateway's branch endpoints are a bootstrap facility
+
+`POST /api/branches` exists so an operator can stand up a gateway *before* Odoo
+is connected (and so the test suite can build fixtures). It is a **controlled
+bootstrap operation, not a second source of truth**:
+
+* A branch created here has no `gateway_branch_id` linkage until Odoo syncs.
+* Once Odoo syncs a branch with the same id, Odoo's values win — the sync is an
+  upsert keyed on the branch id.
+* Operationally you should create branches in Odoo and let the sync create
+  them. Use the gateway endpoint only for bootstrap or recovery.
+
+If both sides create branches independently and routinely, they will drift.
+That is a process failure, not something the software can resolve for you —
+which is exactly why the authority is written down.
+
 ## 3. Source of truth per entity
 
 | Entity | Owner | Created by | Notes |
@@ -69,7 +101,7 @@ local discovery/registration.
 | Destination (POS, kitchen, warehouse…) | **Odoo** | `POST /api/odoo/sync`, manager `POST /api/branches/:id/destinations` | Must belong to exactly one branch |
 | Document type (receipt, invoice…) | **Odoo** | `POST /api/odoo/sync` | Matched case-insensitively during routing |
 | Printer binding (destination + document type → printer) | **Odoo** | `POST /api/odoo/sync`, manager `POST /api/branches/:id/printer-bindings` | Carries `priority` for fallback |
-| Agent | **Gateway** | Manager creates a pairing code → `POST /api/agent/register` | Odoo can only read agents |
+| Agent | **Gateway** | Manager creates the agent **in an explicit branch**, then the device pairs via `POST /api/agent/register` | Odoo can only read agents. The device cannot choose its branch: `branchId` is not part of the registration contract |
 | Printer (runtime registration + status) | **Gateway/Agent** | `POST /api/agent/heartbeat` (discovery), manager `POST /api/printers` | **Never created by the Odoo sync** (`src/app/api/odoo/sync/route.ts`). Always belongs to an agent; its branch is derived, never stored |
 | Print job | **Gateway** | `POST /api/print/jobs`, manager test print | Odoo keeps a mirror record `print_gateway.print_job` |
 
@@ -137,6 +169,26 @@ cross-branch, disabled, offline or capability-incompatible
 
 See [docs/DATABASE.md](docs/DATABASE.md) for the full column-level reference.
 
+## 4b. Runtime lifecycle
+
+Agents and printers are runtime entities that print jobs point at with NOT NULL
+foreign keys, so they are **retired, never deleted**:
+
+| State | Agent | Printer |
+|---|---|---|
+| `active` | polls, heartbeats, receives jobs | eligible for routing |
+| `disabled` | credentials still valid, but authentication is refused and no work is routed | not selected for new jobs |
+| `retired` | credentials **revoked** (`secret` set to NULL); its printers are disabled too | not selected; kept for history |
+
+Both states preserve every job, binding and relationship, so history stays
+queryable. Retiring an agent cascades to its printers in one transaction,
+because a printer is only reachable through its agent.
+
+Hard deletion still exists for genuinely unused entities but is not the normal
+workflow: `deleteAgent` refuses when the agent has any print history or still
+owns printers, and names the blocking dependency instead of surfacing a foreign
+key error.
+
 ## 5. Branch isolation
 
 Branch scoping is enforced at every layer, not just in the UI:
@@ -186,6 +238,52 @@ detection and terminal-result replay possible. Details in
 `src/lib/payload.ts` and `agent/internal/payload/payload.go` (both cap the decoded body at
 5 MiB). A PDF is never relabelled as raw bytes; a printer that cannot render a type causes
 `CAPABILITY_MISMATCH`. The full matrix is in [PRINTERS.md](PRINTERS.md).
+
+The declared type must match the actual bytes, and this is **enforced by content
+inspection**, not taken on trust:
+
+| Declared | Content | Result |
+|---|---|---|
+| `pdf` | starts with `%PDF-` | accepted; must route to a printer declaring PDF support |
+| `raw` / `escpos` | not a PDF | accepted |
+| `raw` / `escpos` | starts with `%PDF-` | **rejected (400)** |
+| `pdf` | not a PDF | **rejected (400)** |
+
+Why the third row matters: RAW means "bytes already in the printer's own command
+language". A PDF sent to a RAW or ESC/POS transport is not rendered — the device
+prints the PDF *source* as text, wasting an entire roll, and it looks like a
+hardware fault rather than a mapping mistake. `looksLikePdf()` in
+`src/lib/payload.ts` makes that mislabelling impossible to express.
+
+To print a PDF on a byte-stream printer you must genuinely render it to RAW/ESC-POS
+first; the system will not silently reinterpret the bytes for you.
+
+## 8b. Delivery guarantee: at-least-once
+
+Physical printing is **at-least-once, not exactly-once**, and the system does not
+claim otherwise.
+
+Job *creation* is exactly-once: an idempotency key is unique per
+`(branch_id, idempotency_key)`, and a duplicate request returns the existing job
+rather than creating a second one.
+
+Physical *output* cannot be. If the agent sends bytes to the device and then
+crashes (or the network drops) before it records the acknowledgement, the
+gateway cannot distinguish "printed but unacknowledged" from "never printed".
+It re-delivers, because losing a customer's receipt is worse than printing it
+twice. A duplicate physical page is therefore possible and expected in that
+window.
+
+Mitigations that ARE in place: the job is claimed in a transaction before
+delivery, a 90-second lease reclaims stale claims, duplicate deliveries of an
+already-terminal job are acknowledged but not reprinted, and the agent records a
+crash marker so `reprint_after_crash` is an explicit policy rather than an
+accident.
+
+On an ambiguous failure (timeout, 5xx) a client must **retry with the same
+idempotency key**, which returns the original job instead of starting a new
+logical print operation. Generating a fresh key on retry converts an ambiguous
+single print into two guaranteed prints.
 
 ## 9. Technology stack
 

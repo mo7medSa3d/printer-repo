@@ -17,9 +17,10 @@ The column lists below were dumped from a database built by applying
 | `0004_add_job_delivery_tracking.sql` | `print_jobs.delivery_attempts`, `delivered_at`, `acked_at` + `print_jobs_claimed_at_idx` (all `IF NOT EXISTS`) |
 | `0005_auth_rate_limits.sql` | `auth_rate_limits` table for shared manager-login rate limiting |
 | `0006_printer_branch_via_agent.sql` | Drops `printers.branch_id`. Refuses to apply (raises) if any printer disagrees with its agent's branch, has no agent, or has an agent without a branch — the error names the printer, both branches and the agent. Idempotent: a no-op once the column is gone. |
+| `0007_lifecycle_and_ratelimit_retention.sql` | Retention index on `auth_rate_limits(updated_at)`, deterministic routing index `printer_bindings(branch_id, destination_id, document_type, priority, id)`, `printers(agent_id)`, `agents(status)`; makes `agents.secret` nullable so retiring an agent can revoke its credential. Fully idempotent. |
 
 Applying them in filename order to an empty database produces exactly the schema in
-`schema.ts`. Migrations 0002–0004 and 0006 are idempotent; 0000/0001 are not (they will raise
+`schema.ts`. Migrations 0002–0004, 0006 and 0007 are idempotent; 0000/0001 are not (they will raise
 `duplicate table` if replayed on a populated database — the test harness tolerates that
 explicitly, and additionally applies each file exactly once via a `__test_migrations`
 ledger so that replaying 0001 cannot re-create the column 0006 removes).
@@ -122,6 +123,25 @@ writes) · `name` NOT NULL · `description` · `hashed_key` UNIQUE NOT NULL ·
 ### `manager_sessions` — dashboard sessions
 `jti` PK · `created_at` · `expires_at` NOT NULL · `revoked_at`
 Index: `manager_sessions_expires_idx`
+
+#### Retention
+
+`auth_rate_limits` gains a row for every distinct source IP and every attempted
+username, so it grows with attack traffic. A bucket only matters while it can
+still change a decision — while its 15-minute failure window is open, or while
+`locked_until` is in the future. Anything older than both (plus a 1-hour grace)
+is deleted by `cleanupAuthRateLimits()`:
+
+* **bounded** — at most `CLEANUP_BATCH` (1000) rows per pass, so it can never
+  hold a long lock on the authentication path;
+* **opportunistic** — runs on ~1% of successful logins, and is also exported for
+  a scheduled maintenance job;
+* **non-blocking** — failures are swallowed; a maintenance problem must never
+  become an authentication outage;
+* **never deletes an active lock**, even a stale one, which would hand an
+  attacker an instant reset.
+
+Supported by `auth_rate_limits_updated_at_idx`.
 
 ### `auth_rate_limits` — manager login throttling (shared across gateway instances)
 `key` PK (`ip:<addr>` or `acct:<username>`) · `failures` · `window_started_at` ·

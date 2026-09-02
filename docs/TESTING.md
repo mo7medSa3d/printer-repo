@@ -29,22 +29,28 @@ Labels used throughout the documentation:
 | `routing-availability.test.ts` | 6 | **yes** | `PRINTER_DISABLED` (409) vs `PRINTER_OFFLINE` (503), disabled→healthy fallback, case-insensitive document-type authorization |
 | `e2e-job-flow.test.ts` | 3 | **yes** | Odoo → gateway → real WebSocket agent → status, PDF capability mismatch (422), no-socket job stays queued |
 | `print-idempotency.test.ts` | 8 | **yes** | First create, retry, concurrent retries, timeout-after-accept, two intentional prints, different reports/records, same record printed twice |
-| `auth-rate-limit.test.ts` | 11 | mixed | Backoff math (no DB); login 429 / cooldown / IP / account / concurrent (DB) |
+| `auth-rate-limit.test.ts` | 12 | mixed | Backoff math (no DB); login 429 / cooldown / IP / account / concurrent (DB) |
 | `health.test.ts` | 2 | mixed | Unauthenticated `/api/health` exposes no inventory counts |
 | `heartbeat-enabled.test.ts` | 2 | **yes** | Heartbeat cannot re-enable a disabled printer or update another agent's printer |
 | `odoo-addon-static.test.ts` | 9 | no | Test discovery, fail-closed single-record routing, persist-before-HTTP idempotency, per-branch sync state, **Branch → Agent → Printer ownership in the addon** (printer `agent_id` + readonly related `branch_id`, globally unique gateway ids, binding validated via `printer.agent_id.branch_id`, agents synced before printers, fail-loud 1.1.0 migration) |
 | `printer-virtual.test.ts` | 49 | no | Virtual/redirected/physical/unknown classification |
 | `routing-virtual-regression.test.ts` | 7 | no | Virtual printers never win routing |
 | `desktop-ui-smoke.test.ts` | 1 | no | Desktop pages boot; virtual queues hidden |
+| `refactor-hardening.test.ts` | 59 | **mixed** | Registration cannot carry a branch; agent creation requires an explicit branch and a same-branch local network; lifecycle (retire revokes credentials + cascades, disabled/retired agents cannot authenticate, history preserved, hard delete refuses when history exists); deterministic routing (equal-priority ties, permutation stability, SQL ordering); PDF vs RAW vs ESC/POS content validation incl. **PDF-as-RAW rejected**; input limits; security headers; dashboard DB-failure state and O(1) lookups; Odoo sync failed/partial/success semantics; rate-limit retention against real PostgreSQL |
 | `printer-agent-ownership.test.ts` | 31 | **yes** | Architectural regression suite for `Branch → Agent → Printer`: source invariants (no branch in the printers schema, no printer-branch fallbacks, registration/heartbeat never persist a printer branch), `printer-branch.ts` helper units, and against real PostgreSQL — no `printers.branch_id` column, printer requires an agent, heartbeat inherits the agent's branch, an agent cannot hijack another branch's printer, reassigning an agent moves all of its printers atomically, routing honours the derived branch and returns `CROSS_BRANCH_BINDING`, fallback past a cross-branch binding, `PRINTER_DISABLED` preserved, Odoo printer scope + cross-branch key rejection, sync rejects cross-branch bindings, jobs stamped with the derived branch and keeping it after the agent moves |
 | `migration-printer-branch.test.ts` | 6 | **yes** | Migration `0006` on throwaway databases: applies and drops the column while preserving rows; **aborts loudly** naming the printer, both branches and the agent when a printer disagrees with its agent, when a printer has no agent, and when an agent has no branch; idempotent on re-run; `printers.agent_id` stays `NOT NULL` + FK after the drop |
 
-Totals (executed for this documentation pass, against a real PostgreSQL 18.4):
-`DATABASE_URL=… npx vitest run` → **232 passed / 1 failed / 0 skipped** across 21 files.
+Totals (executed for this pass, against a real PostgreSQL 18.4):
+`DATABASE_URL=… npx vitest run` → **all tests passing, 0 skipped**, across 22 files.
 
-The single failure is `auth-rate-limit.test.ts > successful login after cooldown recovers
-the account` (429 instead of 401). It is **pre-existing and unrelated** to printer
-ownership: it reproduces on unmodified `main` against a clean database.
+A long-standing failure in `auth-rate-limit.test.ts` ("successful login after cooldown
+recovers the account", 429 vs 401) was diagnosed during this work and fixed **in the
+test**, not the limiter. The limiter documents that a successful login clears the
+*account* bucket but deliberately leaves the *IP* bucket alone — so a shared address does
+not get its attack history wiped by one user proving their password. The test's final
+wrong attempt was the IP bucket's 6th failure, which correctly re-locks it (429). The
+assertion contradicted the documented security property; it now asserts the property
+directly, and a second test pins the account/IP asymmetry as a regression guard.
 
 The database-backed suites are skipped (not failed) when `DATABASE_URL` is unset, because
 `FOR UPDATE SKIP LOCKED`, real transactions and concurrent connections cannot be simulated.
@@ -62,6 +68,34 @@ After migrating it asserts both that the delivery-tracking columns exist **and**
 `printers.branch_id` does not.
 `tests/pg-concurrent-claim.mjs` (+ `scripts/pg-concurrent-claim.sh`) is a standalone
 concurrency harness against a seeded database.
+
+### CI gates
+
+| Workflow | Gate |
+|---|---|
+| `.github/workflows/gateway-ci.yml` | PostgreSQL 16 service, migrations, **full vitest suite against a real database**, typecheck, lint, production build. A separate `agent` job runs `go build/vet/test`, `go test -race` and a Windows cross-compile. |
+| `.github/workflows/odoo-ci.yml` | Installs Odoo 17 + the addon into a real PostgreSQL and runs `--test-enable --test-tags /print_gateway`. |
+| `.github/workflows/build-windows.yml` | Unchanged: Windows Go/Tauri/MSI/NSIS packaging. |
+
+`gateway-ci.yml` asserts that **no test skipped**: the DB-backed suites skip themselves
+when `DATABASE_URL` is unset, and in CI a silent skip would make the job a green no-op.
+The workflow parses vitest's JSON report and fails if `numPendingTests > 0`.
+
+`odoo-ci.yml` likewise refuses to report success if `Module print_gateway` never appears
+in the log — an Odoo run that installs nothing must not look like a pass.
+
+### Hardware verification (environment-dependent)
+
+No physical printer exists in CI, and **no workflow claims otherwise**. Coverage is:
+
+* **Deterministic, in CI** — `internal/integration` drives a mock TCP printer end to end,
+  including failure and crash scenarios; transport selection, PDF/RAW/ESC-POS handling and
+  the spooler backend matrix are unit tested.
+* **Manual, documented** — `WINDOWS_PHYSICAL_E2E.md` is the hardware procedure. Go tests
+  that need real hardware are guarded by `RUN_PHYSICAL_PRINTER_TESTS` and skip by default.
+
+Anything that has only been verified against the mock transport is labelled
+**SOFTWARE VERIFIED**, never **VERIFIED**.
 
 ### Agent — Go (`agent/internal/**/*_test.go`)
 

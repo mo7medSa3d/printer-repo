@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
 import DashboardClient from "./dashboard-client";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,7 @@ export default async function DashboardPage() {
   let allPrinters: Array<(typeof printers.$inferSelect) & { branchId: string | null }> = [];
   let allBranches: Array<{ id: string; name: string; enabled: boolean }> = [];
   let allJobs: Array<(typeof printJobs.$inferSelect)> = [];
+  let dbUnavailable = false;
   try {
     allAgents = await db
       .select({
@@ -56,8 +58,49 @@ export default async function DashboardPage() {
       .orderBy(desc(printers.createdAt))).map((r) => ({ ...r.printer, branchId: r.branchId }));
     allBranches = await db.select({ id: branches.id, name: branches.name, enabled: branches.enabled }).from(branches).orderBy(desc(branches.createdAt));
     allJobs = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(50);
-  } catch {
-    // DB momentarily unreachable — render empty shell; runtime will populate
+  } catch (error) {
+    // The database is unreachable. Rendering the normal console with empty
+    // arrays and a green "Live" badge would actively mislead the operator into
+    // believing there are no agents, printers or jobs — which looks identical
+    // to a healthy but empty deployment. Fail visibly instead.
+    //
+    // The real error goes to the server log (structured, for diagnosis); the
+    // page shows no driver text, host, credentials or SQL to the browser.
+    logError("dashboard.db_unavailable", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
+    dbUnavailable = true;
+  }
+
+  if (dbUnavailable) {
+    return (
+      <div className="container mx-auto py-8 px-4">
+        <header className="mb-6 border-b border-edge pb-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-[-0.015em] text-ink">Management console</h1>
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-bad-edge bg-bad-bg px-2.5 py-0.5 text-[11px] font-semibold text-bad"
+              role="status"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-bad" aria-hidden />
+              Database unavailable
+            </span>
+          </div>
+        </header>
+        <div role="alert" className="rounded-lg border border-bad-edge bg-bad-bg px-5 py-4">
+          <h2 className="text-sm font-semibold text-bad">Cannot reach the database</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-ink-2">
+            The console could not read the print topology from PostgreSQL, so it is not showing
+            any agents, printers or jobs. <strong>This is not an empty deployment</strong> — the
+            current state is simply unknown.
+          </p>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-ink-2">
+            Queued jobs are unaffected and are not lost. Check the gateway&apos;s database
+            connectivity; the underlying error has been written to the server log.
+          </p>
+        </div>
+      </div>
+    );
   }
 
   return (

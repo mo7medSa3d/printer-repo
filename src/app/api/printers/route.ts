@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { printers, agents } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
 import { z } from "zod";
+import { idField, nameField, MAX_ID_LENGTH, MAX_NAME_LENGTH } from "@/lib/limits";
 import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
@@ -19,11 +20,11 @@ export const dynamic = "force-dynamic";
  * anywhere. Clients therefore cannot create a cross-branch printer.
  */
 const createPrinterSchema = z.object({
-  id: z.string().regex(/^[a-z0-9_][a-z0-9_-]*$/).optional(),
-  agentId: z.string().min(1),
+  id: z.string().max(MAX_ID_LENGTH).regex(/^[a-z0-9_][a-z0-9_-]*$/).optional(),
+  agentId: idField(),
   /** Optional cross-check only — see above. Never persisted. */
-  branchId: z.string().optional(),
-  name: z.string().min(1).max(100),
+  branchId: z.string().max(MAX_ID_LENGTH).optional(),
+  name: nameField(),
   type: z.enum(["network", "usb", "spooler", "tcp", "ipp", "ipps"]).optional(),
   connectionType: z.enum(["tcp", "usb", "spooler", "ipp", "ipps", "network"]).optional(),
   printerType: z.enum(["thermal", "laser", "inkjet", "spooler", "other", "unknown"]).optional(),
@@ -31,13 +32,13 @@ const createPrinterSchema = z.object({
   enabled: z.boolean().optional(),
   capabilities: z.record(z.string(), z.unknown()).optional(),
   config: z.object({
-    ip: z.string().optional(),
+    ip: z.string().max(64).optional(),
     port: z.number().int().min(1).max(65535).optional(),
     protocol: z.enum(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]).optional(),
-    address: z.string().optional(),
+    address: z.string().max(256).optional(),
     vid: z.number().optional(),
     pid: z.number().optional(),
-    spooler_name: z.string().optional(),
+    spooler_name: z.string().max(MAX_NAME_LENGTH).optional(),
   }).passthrough().optional(),
 });
 

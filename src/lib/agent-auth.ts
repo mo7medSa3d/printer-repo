@@ -61,10 +61,21 @@ export async function validateAgent(authHeader: string | null) {
     where: eq(agents.id, agentId),
   });
 
+  // A retired agent has its secret revoked (set to NULL), so this alone already
+  // fails closed. The explicit status check below is defence in depth: it also
+  // stops a DISABLED agent, whose credential is intentionally still valid so it
+  // can be re-enabled without re-pairing.
   if (!agent || !agent.secret) return null;
 
   const providedHash = hashSecret(secret);
   if (!timingSafeStringEqual(agent.secret, providedHash)) {
+    return null;
+  }
+
+  // Lifecycle gate. A disabled or retired agent must not poll, heartbeat,
+  // claim or complete jobs — it is out of service, and its printers have been
+  // disabled to match.
+  if (agent.status === "disabled" || agent.status === "retired") {
     return null;
   }
 
