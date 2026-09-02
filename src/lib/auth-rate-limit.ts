@@ -116,47 +116,43 @@ export async function inspectAuthRateLimit(ip: string, username: string): Promis
 async function bump(key: string): Promise<{ failures: number; lockedUntil: Date | null }> {
   const now = new Date();
   const windowStartCutoff = new Date(now.getTime() - AUTH_RATE_WINDOW_MS);
-
-  // Insert or reset-if-window-expired, then increment. Two statements in one
-  // round-trip keep concurrent attempts serialised on the row.
-  await db.execute(sql`
-    INSERT INTO auth_rate_limits (key, failures, window_started_at, locked_until, updated_at)
-    VALUES (${key}, 0, ${now}, NULL, ${now})
-    ON CONFLICT (key) DO UPDATE
-      SET failures = CASE
-            WHEN auth_rate_limits.window_started_at < ${windowStartCutoff} THEN 0
-            ELSE auth_rate_limits.failures
-          END,
-          window_started_at = CASE
-            WHEN auth_rate_limits.window_started_at < ${windowStartCutoff} THEN ${now}
-            ELSE auth_rate_limits.window_started_at
-          END,
-          locked_until = CASE
-            WHEN auth_rate_limits.window_started_at < ${windowStartCutoff} THEN NULL
-            ELSE auth_rate_limits.locked_until
-          END,
-          updated_at = ${now}
-  `);
-
-  const updated = await db.execute(sql`
-    UPDATE auth_rate_limits
-    SET failures = failures + 1,
-        updated_at = ${now}
-    WHERE key = ${key}
-    RETURNING failures
-  `);
-  const failures = Number((updated.rows[0] as { failures?: number } | undefined)?.failures ?? 1);
-  const lockMs = lockDurationMs(failures);
-  let lockedUntil: Date | null = null;
-  if (lockMs > 0) {
-    lockedUntil = new Date(now.getTime() + lockMs);
-    await db.execute(sql`
-      UPDATE auth_rate_limits
-      SET locked_until = ${lockedUntil}, updated_at = ${now}
-      WHERE key = ${key}
+  // Single transaction with row-level lock so concurrent bumps for the same key
+  // cannot interleave and lose increments. The window reset and the increment
+  // happen atomically, and locked_until is set based on the new failures count
+  // inside the same transaction.
+  return await db.transaction(async (tx) => {
+    // Ensure row exists and lock it.
+    await tx.execute(sql`
+      INSERT INTO auth_rate_limits (key, failures, window_started_at, locked_until, updated_at)
+      VALUES (${key}, 0, ${now}, NULL, ${now})
+      ON CONFLICT (key) DO UPDATE
+        SET updated_at = ${now}
+        -- keep existing failures/window/lock; the reset is handled in the bump below
     `);
-  }
-  return { failures, lockedUntil };
+    // Lock the row for update to serialize concurrent bumpers on this key.
+    await tx.execute(sql`SELECT * FROM auth_rate_limits WHERE key = ${key} FOR UPDATE`);
+
+    // Read current state to compute reset.
+    const cur = await tx.execute(sql`SELECT failures, window_started_at FROM auth_rate_limits WHERE key = ${key}`);
+    const row = (cur.rows[0] as any) ?? { failures: 0, window_started_at: now };
+    const windowExpired = new Date(row.window_started_at).getTime() < windowStartCutoff.getTime();
+    const newFailures = windowExpired ? 1 : Number(row.failures) + 1;
+    const newWindowStart = windowExpired ? now : new Date(row.window_started_at);
+    const lockMs = lockDurationMs(newFailures);
+    const lockedUntil = lockMs > 0 ? new Date(now.getTime() + lockMs) : null;
+
+    const updated = await tx.execute(sql`
+      UPDATE auth_rate_limits
+      SET failures = ${newFailures},
+          window_started_at = ${newWindowStart},
+          locked_until = ${lockedUntil},
+          updated_at = ${now}
+      WHERE key = ${key}
+      RETURNING failures, locked_until
+    `);
+    const ret = (updated.rows[0] as any) ?? { failures: newFailures, locked_until: lockedUntil };
+    return { failures: Number(ret.failures), lockedUntil: ret.locked_until ? new Date(ret.locked_until) : null };
+  });
 }
 
 
