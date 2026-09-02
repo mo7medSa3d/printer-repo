@@ -24,7 +24,13 @@ suite("real PostgreSQL architecture gate", () => {
   it("preserves jobs when agent/printer lifecycle changes", async () => {
     await pool().query(`INSERT INTO branches (id,name) VALUES ('br_pg','PG')`);
     await pool().query(`INSERT INTO agents (id,branch_id,name,lifecycle) VALUES ('agt_pg','br_pg','Agent','active')`);
-    await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol,lifecycle) VALUES ('prn_pg','agt_pg','Printer','physical','laser','spooler','spooler','active')`);
+    // Printers are owned via Agent; handle legacy branch_id column if it still exists (pre-0006).
+    const hasBranch = await pool().query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`);
+    if ((hasBranch.rows?.length ?? 0) > 0 || (hasBranch.rowCount ?? 0) > 0) {
+      await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,printer_type,device_class,connection_type,protocol,lifecycle) VALUES ('prn_pg','agt_pg','br_pg','Printer','physical','laser','spooler','spooler','active')`);
+    } else {
+      await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol,lifecycle) VALUES ('prn_pg','agt_pg','Printer','physical','laser','spooler','spooler','active')`);
+    }
     await pool().query(`INSERT INTO destinations (id,branch_id,name,type) VALUES ('dst_pg','br_pg','POS','pos')`);
     await pool().query(`INSERT INTO print_jobs (id,branch_id,destination_id,agent_id,printer_id,status,payload,expires_at) VALUES ('job_pg','br_pg','dst_pg','agt_pg','prn_pg','queued','{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb,now()+interval '1 hour')`);
     await pool().query(`UPDATE agents SET lifecycle='retired' WHERE id='agt_pg'`);
