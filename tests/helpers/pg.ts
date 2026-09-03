@@ -23,59 +23,64 @@ export function pool(): Pool {
     const config: any = { connectionString: TEST_DATABASE_URL, max: 8 };
     if (searchPath) config.options = `-c search_path=${searchPath}`;
     adminPool = new Pool(config);
-    // Eagerly ensure the schema exists; ignore errors if it already does.
-    if (schema) {
-      adminPool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`).catch(() => {});
-    }
+    if (schema) adminPool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`).catch(() => {});
   }
   return adminPool;
 }
 
 const DUPLICATE_OBJECT_CODES = new Set(["42P07", "42710", "42701"]);
+const GLOBAL_PG_LOCK = 727727;
 
 export async function applyMigrations(): Promise<void> {
   const schema = getOrCreateWorkerSchema();
   if (schema) {
-    try {
-      await pool().query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
-    } catch (e: any) {
-      if (e?.code !== "23505" && e?.code !== "42P06" && !String(e?.message || "").includes("already exists")) {
-        throw e;
-      }
-    }
+    try { await pool().query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`); } catch (e: any) { if (e?.code !== "23505" && e?.code !== "42P06" && !String(e?.message || "").includes("already exists")) throw e; }
   }
-  const dir = path.resolve(process.cwd(), "drizzle");
-  const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
-  for (const file of files) {
-    const sqlText = readFileSync(path.join(dir, file), "utf8");
-    const statements = sqlText.split("--> statement-breakpoint").map((s) => s.trim()).filter((s) => s.length > 0);
-    for (const stmt of statements) {
-      try {
-        await pool().query(stmt);
-      } catch (e: any) {
-        if (!DUPLICATE_OBJECT_CODES.has(e?.code)) throw e;
-      }
-    }
-  }
-  const check = await pool().query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`);
-  if (check.rowCount !== 3) throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
-}
-
-export async function truncateAll(): Promise<void> {
-  // Even with per-worker schema, use the same session advisory lock as seedFixture
-  // to prevent a truncate in beforeEach from deleting a fixture that another
-  // concurrent test's it block is currently using (Vitest may still run
-  // beforeEach/it interleaved even with singleFork if maxConcurrency >1).
   const client = await pool().connect();
   try {
     await client.query("SELECT pg_advisory_lock($1)", [727727]);
     try {
+      if (schema) await client.query(`SET LOCAL search_path TO "${schema}", public`);
+      await client.query("BEGIN");
+      const dir = path.resolve(process.cwd(), "drizzle");
+      const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+      for (const file of files) {
+        const sqlText = readFileSync(path.join(dir, file), "utf8");
+        const statements = sqlText.split("--> statement-breakpoint").map((s) => s.trim()).filter((s) => s.length > 0);
+        for (const stmt of statements) {
+          try { await client.query(stmt); } catch (e: any) { if (!DUPLICATE_OBJECT_CODES.has(e?.code)) throw e; }
+        }
+      }
+      const check = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`);
+      if (check.rowCount !== 3) throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
+      await client.query("COMMIT");
+    } catch (e) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw e;
+    } finally {
+      try { await client.query("SELECT pg_advisory_unlock($1)", [727727]); } catch {}
+    }
+  } finally { client.release(); }
+}
+
+export async function truncateAll(): Promise<void> {
+  const schema = getOrCreateWorkerSchema();
+  const client = await pool().connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [727727]);
+    try {
+      if (schema) await client.query(`SET LOCAL search_path TO "${schema}", public`);
+      await client.query("BEGIN");
       const tables = ["agents","api_keys","auth_rate_limits","branches","destinations","discovered_devices","discovery_sessions","document_types","local_networks","manager_sessions","printer_bindings","printers","print_jobs"];
       for (const tbl of tables) {
         try { await client.query(`TRUNCATE TABLE "${tbl}" RESTART IDENTITY CASCADE`); } catch (e: any) { if (e?.code !== "42P01") throw e; }
       }
+      await client.query("COMMIT");
+    } catch (e) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw e;
     } finally {
-      await client.query("SELECT pg_advisory_unlock($1)", [727727]);
+      try { await client.query("SELECT pg_advisory_unlock($1)", [727727]); } catch {}
     }
   } finally { client.release(); }
 }
@@ -106,15 +111,17 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
   try {
     await client.query("SELECT pg_advisory_lock($1)", [727727]);
     try {
+      const schema = getOrCreateWorkerSchema();
+      if (schema) await client.query(`SET LOCAL search_path TO "${schema}", public`);
       await client.query("BEGIN");
-    await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, [branchId, `Branch ${suffix}`]);
-    await client.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now()) ON CONFLICT (id) DO NOTHING`, [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]);
-    const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers'`);
-    const has = new Set((cols.rows as { column_name: string }[]).map((r) => r.column_name));
-    const hasBranch = has.has("branch_id");
-    const hasType = has.has("type");
-    const hasEnabled = has.has("enabled");
-    if (hasBranch || hasType || hasEnabled) {
+      await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, [branchId, `Branch ${suffix}`]);
+      await client.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now()) ON CONFLICT (id) DO NOTHING`, [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]);
+      const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers'`);
+      const has = new Set((cols.rows as { column_name: string }[]).map((r) => r.column_name));
+      const hasBranch = has.has("branch_id");
+      const hasType = has.has("type");
+      const hasEnabled = has.has("enabled");
+      if (hasBranch || hasType || hasEnabled) {
         if (hasBranch && hasType && hasEnabled) {
           await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, $4, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $5::jsonb) ON CONFLICT (id) DO NOTHING`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
         } else if (hasBranch && hasType) {
@@ -133,18 +140,16 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
       } else {
         await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb) ON CONFLICT (id) DO NOTHING`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
       }
-    await client.query(`INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos') ON CONFLICT (id) DO NOTHING`, [destinationId, branchId]);
-    await client.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3) ON CONFLICT (id) DO NOTHING`, [`key_${suffix}`, branchId, sha256(odooKey)]);
-    await client.query("COMMIT");
+      await client.query(`INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos') ON CONFLICT (id) DO NOTHING`, [destinationId, branchId]);
+      await client.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3) ON CONFLICT (id) DO NOTHING`, [`key_${suffix}`, branchId, sha256(odooKey)]);
+      await client.query("COMMIT");
     } catch (e) {
       try { await client.query("ROLLBACK"); } catch {}
       throw e;
     } finally {
       try { await client.query("SELECT pg_advisory_unlock($1)", [727727]); } catch {}
     }
-  } finally {
-    client.release();
-  }
+  } finally { client.release(); }
   return { branchId, agentId, agentSecret, agentAuth: `Bearer ${agentId}:${agentSecret}`, printerId, destinationId, odooKey };
 }
 
@@ -153,6 +158,8 @@ export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expire
   try {
     await client.query("SELECT pg_advisory_lock($1)", [727727]);
     try {
+      const schema = getOrCreateWorkerSchema();
+      if (schema) await client.query(`SET LOCAL search_path TO "${schema}", public`);
       await client.query("BEGIN");
       await client.query(`INSERT INTO print_jobs (id, branch_id, destination_id, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, $3, 'receipt', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($6 || ' milliseconds')::interval) ON CONFLICT (id) DO NOTHING`, [jobId, f.branchId, f.destinationId, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
       await client.query("COMMIT");
