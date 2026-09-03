@@ -44,3 +44,20 @@ export function canTransition(from: JobStatus, to: JobStatus): boolean {
   if (isTerminal(from)) return false;
   return ALLOWED_TRANSITIONS[from]?.has(to) ?? false;
 }
+
+/**
+ * Expiration is a time-based transition, not a client-controlled state.
+ * Keeping this predicate separate from the generic state machine makes it
+ * impossible for an agent to expire a live job merely by sending
+ * {status:"expired"} before the business TTL has elapsed.
+ */
+export function canExpireJob(
+  status: JobStatus,
+  expiresAt: Date | string,
+  now = new Date(),
+): boolean {
+  if (isTerminal(status)) return false;
+  const expiryMs = new Date(expiresAt).getTime();
+  if (!Number.isFinite(expiryMs)) return false;
+  return expiryMs <= now.getTime();
+}
