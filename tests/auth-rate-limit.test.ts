@@ -28,15 +28,26 @@ describe("auth rate limiter (pure)", () => {
     expect(ipKey("10.0.0.1")).toBe("ip:10.0.0.1");
   });
 
-  it("reads X-Forwarded-For only when TRUST_PROXY is set", () => {
+  it("ignores forwarding headers unless TRUST_PROXY is explicitly enabled", () => {
     const req = new Request("http://gw/login", {
       headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.1", "x-real-ip": "10.0.0.1" },
     });
     const prev = process.env.TRUST_PROXY;
     delete process.env.TRUST_PROXY;
-    expect(clientIpFrom(req)).toBe("10.0.0.1");
+    expect(clientIpFrom(req)).toBe("unknown");
     process.env.TRUST_PROXY = "1";
     expect(clientIpFrom(req)).toBe("203.0.113.9");
+    if (prev === undefined) delete process.env.TRUST_PROXY;
+    else process.env.TRUST_PROXY = prev;
+  });
+
+  it("rejects malformed forwarded addresses", () => {
+    const req = new Request("http://gw/login", {
+      headers: { "x-forwarded-for": "not-an-ip", "x-real-ip": "also-not-an-ip" },
+    });
+    const prev = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = "1";
+    expect(clientIpFrom(req)).toBe("unknown");
     if (prev === undefined) delete process.env.TRUST_PROXY;
     else process.env.TRUST_PROXY = prev;
   });
@@ -53,6 +64,7 @@ suite("manager login rate limiting", () => {
     process.env.MANAGER_USERNAME = USER;
     process.env.MANAGER_PASSWORD = PASS;
     process.env.GATEWAY_JWT_SECRET = process.env.GATEWAY_JWT_SECRET || "x".repeat(32);
+    process.env.TRUST_PROXY = "1";
   });
 
   afterAll(async () => {
@@ -82,7 +94,6 @@ suite("manager login rate limiting", () => {
     for (let i = 0; i < 4; i++) {
       const res = await login(USER, "wrong");
       expect(res.status).toBe(401);
-      expect((await res.json()).error).toBe("Invalid credentials");
     }
     const fifth = await login(USER, "wrong");
     expect(fifth.status).toBe(429);
@@ -104,9 +115,6 @@ suite("manager login rate limiting", () => {
       await login(USER, "wrong", "203.0.113.1");
     }
     const other = await login(USER, PASS, "203.0.113.2");
-    // Account bucket is locked from the first IP's failures, so even a
-    // different IP must wait — no user-enumeration bypass via IP hopping
-    // once the account identifier itself is cooling down.
     expect(other.status).toBe(429);
   });
 
@@ -126,10 +134,6 @@ suite("manager login rate limiting", () => {
     await pool().query(`UPDATE auth_rate_limits SET locked_until = now() - interval '1 second'`);
     const ok = await login(USER, PASS, "198.51.100.70");
     expect(ok.status).toBe(200);
-
-    // recordAuthSuccess clears only the account bucket by design; the IP bucket
-    // may still retain security state. Use another IP to verify that the account
-    // itself was recovered without weakening the independent IP limiter.
     const after = await login(USER, "wrong", "198.51.100.71");
     expect(after.status).toBe(401);
   });

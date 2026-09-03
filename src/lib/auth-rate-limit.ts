@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
+import { isIP } from "node:net";
 
 /**
  * Database-backed authentication rate limiter.
@@ -36,19 +37,25 @@ export function lockDurationMs(failures: number): number {
   return 60 * 60_000;
 }
 
+/**
+ * Resolve a source address only from proxy-controlled forwarding headers when
+ * `TRUST_PROXY` is explicitly enabled. Without a trusted proxy, framework
+ * `Request` does not expose the TCP peer address, so treating client-supplied
+ * X-Real-IP as authoritative would let an attacker rotate arbitrary IP keys.
+ */
 export function clientIpFrom(req: Request): string {
   const trust = process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
-  if (trust) {
-    const xff = req.headers.get("x-forwarded-for");
-    if (xff) {
-      const first = xff.split(",")[0]?.trim();
-      if (first) return first.slice(0, 128);
-    }
-    const real = req.headers.get("x-real-ip")?.trim();
-    if (real) return real.slice(0, 128);
+  if (!trust) return "unknown";
+
+  const candidates = [
+    ...(req.headers.get("x-forwarded-for")?.split(",") ?? []),
+    req.headers.get("x-real-ip") ?? "",
+  ];
+  for (const candidate of candidates) {
+    const ip = candidate.trim();
+    if (ip && isIP(ip) !== 0) return ip.slice(0, 128);
   }
-  const fallback = req.headers.get("x-real-ip")?.trim();
-  return (fallback || "unknown").slice(0, 128);
+  return "unknown";
 }
 
 export function accountKey(username: string): string {
@@ -116,28 +123,21 @@ export async function inspectAuthRateLimit(ip: string, username: string): Promis
 async function bump(key: string): Promise<{ failures: number; lockedUntil: Date | null }> {
   const now = new Date();
   const windowStartCutoff = new Date(now.getTime() - AUTH_RATE_WINDOW_MS);
-  // Single transaction with row-level lock so concurrent bumps for the same key
-  // cannot interleave and lose increments. The window reset and the increment
-  // happen atomically, and locked_until is set based on the new failures count
-  // inside the same transaction.
   return await db.transaction(async (tx) => {
-    // Ensure row exists and lock it.
     await tx.execute(sql`
       INSERT INTO auth_rate_limits (key, failures, window_started_at, locked_until, updated_at)
       VALUES (${key}, 0, ${now}, NULL, ${now})
       ON CONFLICT (key) DO UPDATE
         SET updated_at = ${now}
-        -- keep existing failures/window/lock; the reset is handled in the bump below
     `);
-    // Lock the row for update to serialize concurrent bumpers on this key.
     await tx.execute(sql`SELECT * FROM auth_rate_limits WHERE key = ${key} FOR UPDATE`);
 
-    // Read current state to compute reset.
     const cur = await tx.execute(sql`SELECT failures, window_started_at FROM auth_rate_limits WHERE key = ${key}`);
-    const row = (cur.rows[0] as any) ?? { failures: 0, window_started_at: now };
-    const windowExpired = new Date(row.window_started_at).getTime() < windowStartCutoff.getTime();
-    const newFailures = windowExpired ? 1 : Number(row.failures) + 1;
-    const newWindowStart = windowExpired ? now : new Date(row.window_started_at);
+    const row = (cur.rows[0] as { failures?: number | string; window_started_at?: Date | string } | undefined)
+      ?? { failures: 0, window_started_at: now };
+    const windowExpired = new Date(row.window_started_at ?? now).getTime() < windowStartCutoff.getTime();
+    const newFailures = windowExpired ? 1 : Number(row.failures ?? 0) + 1;
+    const newWindowStart = windowExpired ? now : new Date(row.window_started_at ?? now);
     const lockMs = lockDurationMs(newFailures);
     const lockedUntil = lockMs > 0 ? new Date(now.getTime() + lockMs) : null;
 
@@ -150,11 +150,11 @@ async function bump(key: string): Promise<{ failures: number; lockedUntil: Date 
       WHERE key = ${key}
       RETURNING failures, locked_until
     `);
-    const ret = (updated.rows[0] as any) ?? { failures: newFailures, locked_until: lockedUntil };
-    return { failures: Number(ret.failures), lockedUntil: ret.locked_until ? new Date(ret.locked_until) : null };
+    const ret = (updated.rows[0] as { failures?: number | string; locked_until?: Date | string | null } | undefined)
+      ?? { failures: newFailures, locked_until: lockedUntil };
+    return { failures: Number(ret.failures ?? newFailures), lockedUntil: ret.locked_until ? new Date(ret.locked_until) : null };
   });
 }
-
 
 export const AUTH_RATE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -184,9 +184,6 @@ export async function recordAuthFailure(ip: string, username: string): Promise<R
 }
 
 export async function recordAuthSuccess(username: string): Promise<void> {
-  // A successful login recovers the account identifier. The IP bucket is not
-  // cleared: a shared NAT should not unlock an attacker targeting another
-  // account from the same address.
   await db.execute(sql`
     DELETE FROM auth_rate_limits WHERE key = ${accountKey(username)}
   `);

@@ -14,7 +14,7 @@ import {
   type Fixture,
 } from "./helpers/pg";
 import { attachAgentWSS, claimAndPushJobToAgent } from "@/server/ws";
-import { claimJobForDelivery, releaseUndeliveredClaim, MAX_DELIVERY_ATTEMPTS } from "@/lib/job-delivery";
+import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS } from "@/lib/job-delivery";
 import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "@/app/api/agent/jobs/route";
 
 /**
@@ -87,8 +87,6 @@ suite("WS claim-before-delivery", () => {
     const observed = new Promise<{ envelope: any; statusWhenReceived: string }>((resolve, reject) => {
       ws.once("message", (data) => {
         const envelope = JSON.parse(data.toString());
-        // Read the row the moment the agent sees the job: the claim must have
-        // already been committed.
         jobRow("job_t1")
           .then((row) => resolve({ envelope, statusWhenReceived: row.status }))
           .catch(reject);
@@ -128,6 +126,18 @@ suite("WS claim-before-delivery", () => {
     expect(row.status).toBe("claimed"); // ack is receipt, not progress
   });
 
+  it("Test 1c: a late ACK cannot mutate terminal delivery bookkeeping", async () => {
+    await insertQueuedJob(f, "job_late_ack");
+    await claimJobForDelivery("job_late_ack", f.agentId);
+    await pool().query(`UPDATE print_jobs SET status = 'success', acked_at = NULL, delivered_at = NULL WHERE id = 'job_late_ack'`);
+
+    expect(await recordJobAck("job_late_ack", f.agentId)).toBe(false);
+    const row = await jobRow("job_late_ack");
+    expect(row.status).toBe("success");
+    expect(row.acked_at).toBeNull();
+    expect(row.delivered_at).toBeNull();
+  });
+
   // ---------------------------------------------------------------- Test 2
   it("Test 2: a fast agent cannot move a job queued -> printing/success before the claim", async () => {
     await insertQueuedJob(f, "job_t2");
@@ -138,7 +148,6 @@ suite("WS claim-before-delivery", () => {
     expect(success.status).toBe(409);
     expect((await jobRow("job_t2")).status).toBe("queued");
 
-    // Once the gateway owns the job, the normal progression is accepted.
     const ws = await connectAgent(f);
     const delivered = new Promise<void>((resolve) => ws.once("message", () => resolve()));
     expect(await claimAndPushJobToAgent({ id: "job_t2", agentId: f.agentId })).toBe("delivered");
@@ -170,12 +179,11 @@ suite("WS claim-before-delivery", () => {
     expect(outcome).toBe("requeued");
 
     const row = await jobRow("job_t3b");
-    expect(row.id).toBe("job_t3b"); // never a new job id
+    expect(row.id).toBe("job_t3b");
     expect(row.status).toBe("queued");
     expect(row.claimed_at).toBeNull();
     expect(row.delivered_at).toBeNull();
 
-    // It is immediately claimable again by the poll path.
     const res = await agentJobsGET(agentRequest(f, "GET"));
     const rows = await res.json();
     expect(rows.map((r: any) => r.id)).toContain("job_t3b");
@@ -197,7 +205,6 @@ suite("WS claim-before-delivery", () => {
   it("Test 3d: a claimed job that goes silent is reclaimed by the poll path (lease backstop)", async () => {
     await insertQueuedJob(f, "job_t3d");
     await claimJobForDelivery("job_t3d", f.agentId);
-    // Simulate a lost delivery: the claim is older than the 90s lease.
     await pool().query(
       `UPDATE print_jobs SET claimed_at = now() - interval '200 seconds', updated_at = now() - interval '200 seconds' WHERE id = 'job_t3d'`
     );
@@ -210,7 +217,7 @@ suite("WS claim-before-delivery", () => {
     expect(reclaimed.status).toBe("claimed");
 
     const row = await jobRow("job_t3d");
-    expect(row.retries).toBe(1); // reclaim increments the retry counter
+    expect(row.retries).toBe(1);
     expect(row.id).toBe("job_t3d");
   });
 

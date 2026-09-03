@@ -86,9 +86,16 @@ printers:                                  # optional/legacy: printers.json is c
 ## 5. Pairing / registration
 
 `internal/agent/pairing.go`: the agent (or the desktop app) POSTs the 6-character pairing
-code to `POST /api/agent/register` together with an optional `branchId` and host metadata,
-receives `{agentId, secret}` **once**, and persists them (DPAPI-sealed on Windows).
+code to `POST /api/agent/register` together with host metadata. The Gateway resolves the
+pairing code to the pre-provisioned agent and therefore derives the branch server-side; the
+client does **not** supply branch ownership. An optional `agentId` compatibility hint may be
+sent and, when present, must match the agent bound to the code. The response contains
+`{agentId, branchId, secret}` once; the secret is persisted locally (DPAPI-sealed on Windows).
 Subsequent requests use `Authorization: Bearer <agentId>:<secret>`.
+
+Pairing attempts are database-rate-limited per source address and pairing identity. Invalid
+codes are intentionally reported with the same generic failure shape; a limiter outage fails
+registration closed rather than opening an unlimited brute-force window.
 
 ## 6. Heartbeat
 
@@ -110,6 +117,8 @@ up.
   reclaimed after the gateway's 90 s lease.
 * Rows returned by either path are already `claimed` server-side; the agent never sees a
   `queued` job.
+* A `job_ack` only updates delivery bookkeeping while the job is `claimed` or `printing`;
+  late acknowledgements cannot mutate a terminal `success`, `failed`, or `expired` row.
 
 ## 8. Job execution
 
