@@ -15,6 +15,7 @@ export default defineConfig({
       "tests/auth-rate-limit.test.ts",
       "tests/heartbeat-enabled.test.ts",
       "tests/health.test.ts",
+      "tests/agent-registration.test.ts",
     ],
     pool: "forks",
     sequence: { concurrent: false },
