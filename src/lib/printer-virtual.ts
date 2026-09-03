@@ -119,6 +119,7 @@ const SESSION_REDIRECT_TOKENS = [
   "easy print",
   "citrix",
   "vmware virtual print",
+  "vmware universal printer",
   "thinprint",
   "safeguard print",
 ];
@@ -195,7 +196,13 @@ export function isVirtualPrinterRecord(printer: PrinterLike | null | undefined):
   // Session redirect: Remote Desktop / Citrix / VMware. Windows names these
   // "HP LaserJet (redirected 3)"; Citrix uses "… (from WKS12) in session 4".
   const name = lower(printer.name);
-  if (name.includes("(redirected") || name.includes(" in session ")) return true;
+  if (
+    name.includes("(redirected") ||
+    name.includes(" in session ") ||
+    name.endsWith(" in session")
+  ) {
+    return true;
+  }
 
   // Top-level port metadata is authoritative just like the nested capability
   // representation. This catches legacy/API printer rows such as FILE: and
