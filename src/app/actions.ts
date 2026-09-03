@@ -12,12 +12,6 @@ import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from 
 import { claimAndPushJobToAgent } from "@/server/ws";
 import { canTransitionLifecycle } from "@/lib/lifecycle";
 
-/**
- * Server actions are public HTTP endpoints (POST) like any route handler —
- * "use server" does NOT authenticate them. Every action here mutates printer
- * state, so require a valid manager session (cookie round-trip, same policy
- * as the management API routes) before touching the DB.
- */
 async function requireManager() {
   const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
   const claims = await validateManagerClaims(token ? verifyManagerToken(token) : null);
@@ -43,7 +37,7 @@ export async function createAgent(name: string, branchId: string) {
     branchId: branch.id,
     name: name.trim(),
     pairingCode,
-    pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30), // 30 mins
+    pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30),
     status: "offline",
     lifecycle: "active",
   });
@@ -61,33 +55,32 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   if (!printer) throw new Error("Printer not found");
   if (printer.lifecycle !== "active") throw new Error(`Printer is ${printer.lifecycle}`);
 
-  // Reject malformed/unsupported payloads here too (defense in depth) -
-  // the agent enforces the same contract independently.
   const validatedPayload = validatePrintJobPayload(payload);
 
-  const id = `job_${nanoid(10)}`;
   const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!ownerAgent) throw new Error("Printer owner agent not found");
   if (ownerAgent.lifecycle !== "active") throw new Error(`Agent is ${ownerAgent.lifecycle}`);
+  if (!ownerAgent.branchId) throw new Error("Printer owner agent has no branch");
+
+  const ownerBranch = await db.query.branches.findFirst({ where: eq(branches.id, ownerAgent.branchId) });
+  if (!ownerBranch) throw new Error("Printer owner branch not found");
+  if (!ownerBranch.enabled) throw new Error("Printer owner branch is disabled");
+
+  const id = `job_${nanoid(10)}`;
   const row = {
     id,
-    branchId: ownerAgent.branchId,
+    branchId: ownerBranch.id,
     agentId: ownerAgent.id,
     printerId: printer.id,
     status: "queued" as const,
     payload: validatedPayload,
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60), // 1 hour
+    expiresAt: new Date(Date.now() + 1000 * 60 * 60),
   };
   await db.insert(printJobs).values(row);
 
-  // Claim-before-delivery push (polling fallback covers an offline agent).
-  // The row is moved queued→claimed inside a transaction *before* the socket
-  // write, so the agent never executes a job the gateway still calls queued.
   try {
     await claimAndPushJobToAgent({ id, agentId: printer.agentId });
   } catch (e) {
-    // Best-effort push; the durable row + agent polling is the fallback.
-    // Log instead of swallowing so persistent push failures are visible.
     console.warn(`[actions] WS push failed for job ${id}:`, e);
   }
 
@@ -95,11 +88,6 @@ export async function createPrintJob(printerId: string, payload: unknown) {
   return { id };
 }
 
-/**
- * A real test print, not just a connectivity check: sends an actual
- * ESC/POS test payload through the same job pipeline every other job
- * uses (queued -> claimed -> printing -> success/failed).
- */
 export async function createTestPrintJob(printerId: string) {
   await requireManager();
   const printer = await db.query.printers.findFirst({
@@ -124,6 +112,9 @@ export async function setPrinterLifecycle(id: string, lifecycle: "active" | "dis
     const owner = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
     if (!owner) throw new Error("Printer owner agent not found");
     if (owner.lifecycle !== "active") throw new Error(`cannot activate printer while agent is ${owner.lifecycle}`);
+    if (!owner.branchId) throw new Error("cannot activate printer without owner branch");
+    const branch = await db.query.branches.findFirst({ where: eq(branches.id, owner.branchId) });
+    if (!branch?.enabled) throw new Error("cannot activate printer while branch is disabled");
   }
   await db.update(printers).set({ lifecycle, updatedAt: new Date() }).where(eq(printers.id, id));
   revalidatePath("/dashboard");
@@ -137,12 +128,15 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
   if (!canTransitionLifecycle(agent.lifecycle, lifecycle)) {
     throw new Error(`invalid lifecycle transition: ${agent.lifecycle} -> ${lifecycle}`);
   }
+  if (lifecycle === "active" && agent.branchId) {
+    const branch = await db.query.branches.findFirst({ where: eq(branches.id, agent.branchId) });
+    if (!branch?.enabled) throw new Error("cannot activate agent while branch is disabled");
+  }
   const reenable = agent.lifecycle === "disabled" && lifecycle === "active";
   const pairingCode = reenable ? generatePairingCode() : null;
   await db.transaction(async (tx) => {
     await tx.update(agents).set({
       lifecycle,
-      // Disabling always revokes credentials. Re-enabling requires fresh pairing.
       secret: null,
       pairingCode,
       pairingCodeExpiresAt: pairingCode ? new Date(Date.now() + 1000 * 60 * 30) : null,
