@@ -83,7 +83,7 @@ suite("agent registration contract", () => {
       const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
         method: "POST",
         headers,
-        body: JSON.stringify({ pairingCode: `BAD${i}2` }),
+        body: JSON.stringify({ pairingCode: `BAD00${i}` }),
       }));
       expect(response.status).toBe(400);
     }
@@ -91,7 +91,7 @@ suite("agent registration contract", () => {
     const limited = await registerPOST(new Request("http://gateway.test/api/agent/register", {
       method: "POST",
       headers,
-      body: JSON.stringify({ pairingCode: "BAD92X" }),
+      body: JSON.stringify({ pairingCode: "BAD999" }),
     }));
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBeTruthy();
