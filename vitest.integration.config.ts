@@ -16,7 +16,11 @@ export default defineConfig({
       "tests/health.test.ts",
     ],
     pool: "forks",
+    // @ts-ignore Vitest 4 singleFork is now top-level, but types lag
+    poolOptions: { forks: { singleFork: true } } as any,
     sequence: { concurrent: false },
+    maxConcurrency: 1 as any,
+    maxWorkers: 1 as any,
     testTimeout: 30000,
     hookTimeout: 30000,
   },
