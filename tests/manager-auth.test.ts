@@ -1,5 +1,5 @@
 import { createHmac, scryptSync } from "node:crypto";
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import {
   hasTestDatabase,
   applyMigrations,
@@ -30,7 +30,11 @@ suite("manager authentication hardening", () => {
 
   beforeEach(async () => {
     await truncateAll();
-    process.env.NODE_ENV = "test";
+    vi.stubEnv("NODE_ENV", "test");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("creates a session that verifies and is backed by a DB session", async () => {
@@ -75,8 +79,7 @@ suite("manager authentication hardening", () => {
   it("rejects plaintext passwords in production", () => {
     delete process.env.MANAGER_PASSWORD_HASH;
     process.env.MANAGER_PASSWORD = "plain-password";
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     expect(verifyManagerPassword("manager", "plain-password")).toBe(false);
-    process.env.NODE_ENV = "test";
   });
 });
