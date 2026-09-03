@@ -26,6 +26,8 @@ export interface PrinterLike {
   deviceClass?: string | null;
   connectionType?: string | null;
   protocol?: string | null;
+  port?: string | null;
+  driverName?: string | null;
   capabilities?: unknown;
 }
 
@@ -130,9 +132,21 @@ function lower(value: unknown): string {
  * covers the driver, the PnP ids and the comment — the same haystack the
  * Windows agent classifies from.
  */
-function identityHaystack(caps: Record<string, unknown> | null): string {
-  if (!caps) return "";
+function identityHaystack(caps: Record<string, unknown> | null, printer?: PrinterLike): string {
+  if (!caps && !printer) return "";
   const parts: string[] = [];
+
+  // Some Gateway/API rows expose normalized driver/port metadata as top-level
+  // fields, while discovery capability bags keep the same values nested.
+  // Accept both representations so the safety net remains effective across
+  // old and new persisted/API shapes.
+  for (const value of [printer?.driverName, printer?.port]) {
+    const text = lower(value);
+    if (text) parts.push(text);
+  }
+
+  if (!caps) return parts.join(" ");
+
   for (const key of ["driver_name", "driverName", "comment", "device_id", "deviceId"]) {
     const value = lower(caps[key]);
     if (value) parts.push(value);
@@ -183,9 +197,14 @@ export function isVirtualPrinterRecord(printer: PrinterLike | null | undefined):
   const name = lower(printer.name);
   if (name.includes("(redirected") || name.includes(" in session ")) return true;
 
+  // Top-level port metadata is authoritative just like the nested capability
+  // representation. This catches legacy/API printer rows such as FILE: and
+  // PORTPROMPT: even when no capabilities object was persisted.
+  if (isVirtualPortMonitor(printer.port)) return true;
+
   // The driver (and PnP ids) identify a software writer or a session tunnel
   // far more reliably than the display name does.
-  const hay = identityHaystack(caps);
+  const hay = identityHaystack(caps, printer);
   if (hay) {
     if (SOFTWARE_WRITER_TOKENS.some((token) => hay.includes(token))) return true;
     if (SESSION_REDIRECT_TOKENS.some((token) => hay.includes(token))) return true;
