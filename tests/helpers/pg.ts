@@ -107,10 +107,10 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
     const hasBranchCol = await client.query(`SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers' AND column_name='branch_id' LIMIT 1`);
     const legacyBranch = (hasBranchCol.rows?.length ?? 0) > 0 || (hasBranchCol.rowCount ?? 0) > 0;
     if (legacyBranch) {
-      await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
-    } else {
-      await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
-    }
+        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      } else {
+        await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      }
     await client.query(`INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos')`, [destinationId, branchId]);
     await client.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3)`, [`key_${suffix}`, branchId, sha256(odooKey)]);
     await client.query("COMMIT");
