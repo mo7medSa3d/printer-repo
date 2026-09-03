@@ -72,7 +72,7 @@ export const localNetworks = pgTable("local_networks", {
 }));
 
 export const agents = pgTable("agents", {
-  id: text("id").primaryKey(), // agt_...
+  id: text("id").primaryKey(),
   branchId: text("branch_id").references(() => branches.id).notNull(),
   localNetworkId: text("local_network_id").references(() => localNetworks.id),
   name: text("name").notNull(),
@@ -95,10 +95,11 @@ export const agents = pgTable("agents", {
   localNetworkIdIdx: index("agents_local_network_id_idx").on(table.localNetworkId),
   lastSeenIdx: index("agents_last_seen_idx").on(table.lastSeenAt),
   lifecycleCheck: check("agents_lifecycle_check", sql`${table.lifecycle} in ('active','disabled','retired')`),
+  statusCheck: check("agents_status_check", sql`${table.status} in ('online','offline')`),
 }));
 
 export const printers = pgTable("printers", {
-  id: text("id").primaryKey(), // printer_...
+  id: text("id").primaryKey(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
   printerType: text("printer_type").notNull().default("physical"),
@@ -137,6 +138,7 @@ export const printers = pgTable("printers", {
   deviceClassCheck: check("printers_device_class_check", sql`${table.deviceClass} in ('thermal','laser','inkjet','label','other','unknown')`),
   connectionTypeCheck: check("printers_connection_type_check", sql`${table.connectionType} in ('network','usb','spooler','ipp','ipps')`),
   protocolCheck: check("printers_protocol_check", sql`${table.protocol} in ('raw','escpos','ipp','ipps','spooler')`),
+  statusCheck: check("printers_status_check", sql`${table.status} in ('online','offline','busy','error','unknown')`),
 }));
 
 export const printerBindings = pgTable("printer_bindings", {
@@ -156,6 +158,7 @@ export const printerBindings = pgTable("printer_bindings", {
   routingIdx: index("printer_bindings_routing_idx").on(table.branchId, table.destinationId, table.documentType, table.priority),
   printerIdIdx: index("printer_bindings_printer_id_idx").on(table.printerId),
   enabledIdx: index("printer_bindings_enabled_idx").on(table.enabled),
+  priorityCheck: check("printer_bindings_priority_check", sql`${table.priority} >= 0`),
 }));
 
 export const apiKeys = pgTable("api_keys", {
@@ -272,11 +275,6 @@ export const printJobs = pgTable("print_jobs", {
   idempotencyKey: text("idempotency_key"),
   retries: integer("retries").notNull().default(0),
   claimedAt: timestamp("claimed_at"),
-  // Delivery bookkeeping for the claim-before-delivery WS protocol:
-  //   deliveryAttempts — how many times the gateway tried to hand the job to
-  //                      an agent (WS send or poll response)
-  //   deliveredAt      — the moment the job actually left the gateway
-  //   ackedAt          — the moment the agent confirmed receipt (WS job_ack)
   deliveryAttempts: integer("delivery_attempts").notNull().default(0),
   deliveredAt: timestamp("delivered_at"),
   ackedAt: timestamp("acked_at"),
@@ -292,4 +290,7 @@ export const printJobs = pgTable("print_jobs", {
   destinationIdIdx: index("print_jobs_destination_id_idx").on(table.destinationId),
   branchIdempotencyIdx: index("print_jobs_branch_idempotency_idx").on(table.branchId, table.idempotencyKey),
   branchIdempotencyUnique: uniqueIndex("print_jobs_branch_idempotency_unique").on(table.branchId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
+  statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
+  retriesCheck: check("print_jobs_retries_check", sql`${table.retries} >= 0`),
+  deliveryAttemptsCheck: check("print_jobs_delivery_attempts_check", sql`${table.deliveryAttempts} >= 0`),
 }));
