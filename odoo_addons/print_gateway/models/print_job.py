@@ -6,6 +6,7 @@ import json
 
 _logger = logging.getLogger(__name__)
 
+
 class PrintGatewayPrintJob(models.Model):
     _name = 'print_gateway.print_job'
     _description = 'Print Gateway Job'
@@ -32,7 +33,6 @@ class PrintGatewayPrintJob(models.Model):
     create_date = fields.Datetime(string='Created At', readonly=True)
     write_date = fields.Datetime(string='Updated At', readonly=True)
     last_sync_at = fields.Datetime(readonly=True)
-    # Generic report tracking fields
     odoo_model = fields.Char(string='Odoo Model', help='Model of printed record, e.g., sale.order', index=True)
     odoo_record_id = fields.Integer(string='Odoo Record ID', help='ID of printed record')
     report_xml_id = fields.Char(string='Report XML ID', help='e.g., sale.action_report_saleorder', index=True)
@@ -45,6 +45,27 @@ class PrintGatewayPrintJob(models.Model):
          'This print operation was already submitted for this branch.'),
     ]
 
+    _VALID_GATEWAY_STATUSES = frozenset({'queued', 'claimed', 'printing', 'success', 'failed', 'expired', 'completed'})
+    _TERMINAL_GATEWAY_STATUSES = frozenset({'success', 'failed', 'expired'})
+
+    @classmethod
+    def _normalize_gateway_status(cls, status):
+        if not isinstance(status, str):
+            return None
+        normalized = status.strip().lower()
+        if normalized == 'completed':
+            normalized = 'success'
+        return normalized if normalized in cls._VALID_GATEWAY_STATUSES - {'completed'} else None
+
+    @classmethod
+    def _should_accept_status_update(cls, current_status, remote_status):
+        """Never allow a remote read to regress a terminal local result."""
+        normalized = cls._normalize_gateway_status(remote_status)
+        if normalized is None:
+            return None
+        if current_status in cls._TERMINAL_GATEWAY_STATUSES:
+            return normalized if normalized == current_status else None
+        return normalized
 
     def action_submit_pending(self):
         """Submit an already-persisted logical operation using its original key."""
@@ -60,8 +81,6 @@ class PrintGatewayPrintJob(models.Model):
                 payload_obj = json.loads(payload_raw)
             except (TypeError, ValueError) as exc:
                 raise ValueError("Persisted print payload is invalid JSON; refusing to retry an ambiguous operation") from exc
-            # This retry path intentionally delegates to the branch helper with
-            # the persisted key; it never generates a new logical-operation id.
             result = job.branch_id.create_print_job(
                 job.destination_id.gateway_destination_id or job.destination_id.id,
                 job.document_type,
@@ -74,9 +93,10 @@ class PrintGatewayPrintJob(models.Model):
                 idempotency_key=job.idempotency_key,
             )
             if result.gateway_job_id and result.gateway_job_id != job.gateway_job_id:
+                normalized = self._normalize_gateway_status(result.status)
                 job.write({
                     'gateway_job_id': result.gateway_job_id,
-                    'status': result.status,
+                    'status': normalized or job.status,
                     'last_sync_at': fields.Datetime.now(),
                     'error': False,
                 })
@@ -93,14 +113,21 @@ class PrintGatewayPrintJob(models.Model):
                 resp = requests.get(f"{base}/api/print/jobs", params={'id': job.gateway_job_id}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     data = resp.json()
+                    remote_status = data.get('status') or data.get('state')
+                    accepted_status = self._should_accept_status_update(job.status, remote_status)
                     vals = {
-                        'status': data.get('status') or data.get('state') or job.status,
                         'error': data.get('error'),
                         'last_sync_at': fields.Datetime.now(),
                     }
-                    # Normalize completed -> success
-                    if vals['status'] == 'completed':
-                        vals['status'] = 'success'
+                    if accepted_status is not None:
+                        vals['status'] = accepted_status
+                    elif remote_status is not None:
+                        _logger.warning(
+                            "Ignoring invalid or regressive Gateway status for job %s: local=%s remote=%s",
+                            job.gateway_job_id,
+                            job.status,
+                            remote_status,
+                        )
                     job.write(vals)
                 else:
                     _logger.warning("Job %s status sync returned %s", job.gateway_job_id, resp.status_code)
