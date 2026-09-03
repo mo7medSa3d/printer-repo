@@ -16,8 +16,6 @@ export default defineConfig({
       "tests/health.test.ts",
     ],
     pool: "forks",
-    // @ts-expect-error vitest 4 types still use poolOptions.forks.singleFork
-    poolOptions: { forks: { singleFork: true } } as any,
     sequence: { concurrent: false },
     testTimeout: 30000,
     hookTimeout: 30000,

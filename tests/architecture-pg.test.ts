@@ -22,14 +22,29 @@ suite("real PostgreSQL architecture gate", () => {
   });
 
   it("preserves jobs when agent/printer lifecycle changes", async () => {
-    await pool().query(`INSERT INTO branches (id,name) VALUES ('br_pg','PG')`);
-    await pool().query(`INSERT INTO agents (id,branch_id,name,lifecycle) VALUES ('agt_pg','br_pg','Agent','active')`);
-    // Printers are owned via Agent; handle legacy branch_id column if it still exists (pre-0006).
-    const hasBranch = await pool().query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='printers' AND column_name='branch_id' LIMIT 1`);
-    if ((hasBranch.rows?.length ?? 0) > 0 || (hasBranch.rowCount ?? 0) > 0) {
-      await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,printer_type,device_class,connection_type,protocol,lifecycle) VALUES ('prn_pg','agt_pg','br_pg','Printer','physical','laser','spooler','spooler','active')`);
+    await pool().query(`INSERT INTO branches (id,name) VALUES ('br_pg','PG') ON CONFLICT (id) DO NOTHING`);
+    await pool().query(`INSERT INTO agents (id,branch_id,name,lifecycle) VALUES ('agt_pg','br_pg','Agent','active') ON CONFLICT (id) DO NOTHING`);
+    const cols = await pool().query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers'`);
+    const has = new Set((cols.rows as { column_name: string }[]).map((r) => r.column_name));
+    if (has.has("type") || has.has("enabled") || has.has("branch_id")) {
+      const hasBranch = has.has("branch_id"), hasType = has.has("type"), hasEnabled = has.has("enabled");
+      if (hasBranch && hasType && hasEnabled) {
+        await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,type,printer_type,device_class,connection_type,protocol,status,lifecycle,enabled,config,capabilities) VALUES ('prn_pg','agt_pg','br_pg','Printer','spooler','physical','laser','spooler','spooler','online','active',true,'{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      } else if (hasBranch && hasType) {
+        await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,type,printer_type,device_class,connection_type,protocol,status,lifecycle,config,capabilities) VALUES ('prn_pg','agt_pg','br_pg','Printer','spooler','physical','laser','spooler','spooler','online','active','{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      } else if (hasBranch && hasEnabled) {
+        await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,printer_type,device_class,connection_type,protocol,status,lifecycle,enabled,config,capabilities) VALUES ('prn_pg','agt_pg','br_pg','Printer','physical','laser','spooler','spooler','online','active',true,'{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      } else if (hasType && hasEnabled) {
+        await pool().query(`INSERT INTO printers (id,agent_id,name,type,printer_type,device_class,connection_type,protocol,status,lifecycle,enabled,config,capabilities) VALUES ('prn_pg','agt_pg','Printer','spooler','physical','laser','spooler','spooler','online','active',true,'{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      } else if (hasBranch) {
+        await pool().query(`INSERT INTO printers (id,agent_id,branch_id,name,printer_type,device_class,connection_type,protocol,status,lifecycle,config,capabilities) VALUES ('prn_pg','agt_pg','br_pg','Printer','physical','laser','spooler','spooler','online','active','{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      } else if (hasType) {
+        await pool().query(`INSERT INTO printers (id,agent_id,name,type,printer_type,device_class,connection_type,protocol,status,lifecycle,config,capabilities) VALUES ('prn_pg','agt_pg','Printer','spooler','physical','laser','spooler','spooler','online','active','{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      } else if (hasEnabled) {
+        await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol,status,lifecycle,enabled,config,capabilities) VALUES ('prn_pg','agt_pg','Printer','physical','laser','spooler','spooler','online','active',true,'{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
+      }
     } else {
-      await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol,lifecycle) VALUES ('prn_pg','agt_pg','Printer','physical','laser','spooler','spooler','active')`);
+      await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol,status,lifecycle,config,capabilities) VALUES ('prn_pg','agt_pg','Printer','physical','laser','spooler','spooler','online','active','{}'::jsonb,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
     }
     await pool().query(`INSERT INTO destinations (id,branch_id,name,type) VALUES ('dst_pg','br_pg','POS','pos')`);
     await pool().query(`INSERT INTO print_jobs (id,branch_id,destination_id,agent_id,printer_id,status,payload,expires_at) VALUES ('job_pg','br_pg','dst_pg','agt_pg','prn_pg','queued','{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb,now()+interval '1 hour')`);
