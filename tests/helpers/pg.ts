@@ -25,11 +25,8 @@ export function pool(): Pool {
   if (!adminPool) {
     const schema = getOrCreateWorkerSchema();
     const searchPath = schema ? schemaSearchPath(schema) : null;
-    const config = {
-      connectionString: TEST_DATABASE_URL,
-      max: 8,
-      ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
-    };
+    const config: any = { connectionString: TEST_DATABASE_URL, max: 8 };
+    if (searchPath) config.options = `-c search_path=${searchPath}`;
     adminPool = new Pool(config);
   }
   return adminPool;
@@ -43,9 +40,9 @@ async function applyMigrationsOnce(): Promise<void> {
   try {
     await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
     try {
-      // Worker schemas are disposable test state. Recreate only the isolated
-      // worker schema so stale objects from a prior worker run can never make
-      // migrations non-deterministic. Never drop public.
+      // Each Vitest worker owns a disposable schema. Recreate only that schema
+      // so stale objects from an earlier process cannot make migrations depend
+      // on previous test state. Never drop public.
       if (schema) {
         await client.query(`DROP SCHEMA IF EXISTS ${quoteIdent(schema)} CASCADE`);
         await client.query(`CREATE SCHEMA ${quoteIdent(schema)}`);
@@ -54,21 +51,17 @@ async function applyMigrationsOnce(): Promise<void> {
 
       await client.query("BEGIN");
       const dir = path.resolve(process.cwd(), "drizzle");
-      const files = readdirSync(dir)
-        .filter((f) => f.endsWith(".sql"))
-        .sort();
-
+      const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
       for (const file of files) {
         const sqlText = readFileSync(path.join(dir, file), "utf8");
         const statements = sqlText
           .split("--> statement-breakpoint")
           .map((s) => s.trim())
           .filter(Boolean);
-
         for (const stmt of statements) {
-          // A fresh worker schema must be migrated exactly once. Swallowing a
-          // duplicate DDL error aborts the PostgreSQL transaction and only
-          // turns the next statement into misleading 25P02 errors.
+          // A fresh schema must be migrated exactly once. Do not swallow DDL
+          // errors: PostgreSQL aborts the transaction after an error, and the
+          // next statement would otherwise fail misleadingly with 25P02.
           await client.query(stmt);
         }
       }
@@ -86,7 +79,6 @@ async function applyMigrationsOnce(): Promise<void> {
         );
       }
 
-      // Prove the worker schema is self-contained before releasing it to tests.
       if (schema) {
         const fkCheck = await client.query(`
           SELECT conname, pg_get_constraintdef(oid) AS definition
@@ -107,9 +99,9 @@ async function applyMigrationsOnce(): Promise<void> {
       }
 
       await client.query("COMMIT");
-    } catch (error) {
+    } catch (e) {
       try { await client.query("ROLLBACK"); } catch {}
-      throw error;
+      throw e;
     } finally {
       try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {}
     }
@@ -118,7 +110,6 @@ async function applyMigrationsOnce(): Promise<void> {
   }
 }
 
-/** Apply migrations once per Vitest worker process. Failed attempts are retryable. */
 export async function applyMigrations(): Promise<void> {
   if (!migrationPromise) {
     migrationPromise = applyMigrationsOnce().catch((error) => {
@@ -130,43 +121,115 @@ export async function applyMigrations(): Promise<void> {
 }
 
 export async function truncateAll(): Promise<void> {
+  const schema = getOrCreateWorkerSchema();
   const client = await pool().connect();
   try {
     await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
     try {
-      await client.query("BEGIN");
-      const schema = getOrCreateWorkerSchema();
       if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
-      const tables = [
-        "agents",
-        "api_keys",
-        "auth_rate_limits",
-         "branches",
-        "destinations",
-        "discovered_devices",
-        "discovery_sessions",
-        "document_types",
-        "local_networks",
-        "manager_sessions",
-        "printer_bindings",
-        "printers",
-        "print_jobs",
-      ];
-      for (const table of tables) {
+      await client.query("BEGIN");
+      const tables = ["agents","api_keys","auth_rate_limits","branches","destinations","discovered_devices","discovery_sessions","document_types","local_networks","manager_sessions","printer_bindings","printers","print_jobs"];
+      for (const tbl of tables) {
         try {
-          await client.query(`TRUNCATE TABLE ${quoteIdent(table)} RESTART IDENTITY ONCAsCADE`);
-        } catch (error: any) {
-          if (error?.code !== "42P01") throw error;
+          await client.query(`TRUNCATE TABLE ${quoteIdent(tbl)} RESTART IDENTITY CASCADE`);
+        } catch (e: any) {
+          if (e?.code !== "42P01") throw e;
         }
       }
       await client.query("COMMIT");
-    } catch (error) {
+    } catch (e) {
       try { await client.query("ROLLBACK"); } catch {}
-      throw error;
+      throw e;
     } finally {
       try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {}
     }
-  } finally {
-    client.release();
-  }
+  } finally { client.release(); }
+}
+
+export function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export type Fixture = {
+  branchId: string;
+  agentId: string;
+  agentSecret: string;
+  agentAuth: string;
+  printerId: string;
+  destinationId: string;
+  odooKey: string;
+};
+
+export async function seedFixture(opts?: { branchId?: string; printerCapabilities?: unknown }): Promise<Fixture> {
+  const suffix = randomBytes(8).toString("hex");
+  const branchId = opts?.branchId ?? `branch_${suffix}`;
+  const agentId = `agt_${suffix}`;
+  const agentSecret = randomBytes(16).toString("base64url");
+  const printerId = `printer_${suffix}`;
+  const destinationId = `dest_${suffix}`;
+  const odooKey = `odoo_${randomBytes(18).toString("base64url")}`;
+  const client = await pool().connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
+    try {
+      const schema = getOrCreateWorkerSchema();
+      if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
+      await client.query("BEGIN");
+      await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, [branchId, `Branch ${suffix}`]);
+      const agentResult = await client.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now()) ON CONFLICT (id) DO NOTHING RETURNING id`, [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]);
+      if (agentResult.rowCount !== 1) throw new Error(`failed to seed agent ${agentId}`);
+
+      const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers'`);
+      const has = new Set((cols.rows as { column_name: string }[]).map((r) => r.column_name));
+      const hasBranch = has.has("branch_id");
+      const hasType = has.has("type");
+      const hasEnabled = has.has("enabled");
+      if (hasBranch && hasType && hasEnabled) {
+        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, $4, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      } else if (hasBranch && hasType) {
+        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      } else if (hasBranch && hasEnabled) {
+        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      } else if (hasType && hasEnabled) {
+        await client.query(`INSERT INTO printers (id, agent_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      } else if (hasBranch) {
+        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      } else {
+        await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+      }
+
+      await client.query(`INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos')`, [destinationId, branchId]);
+      await client.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3)`, [`key_${suffix}`, branchId, sha256(odooKey)]);
+      await client.query("COMMIT");
+    } catch (e) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw e;
+    } finally {
+      try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {}
+    }
+  } finally { client.release(); }
+  return { branchId, agentId, agentSecret, agentAuth: `Bearer ${agentId}:${agentSecret}`, printerId, destinationId, odooKey };
+}
+
+export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expiresInMs?: number }): Promise<void> {
+  const client = await pool().connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
+    try {
+      const schema = getOrCreateWorkerSchema();
+      if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
+      await client.query("BEGIN");
+      await client.query(`INSERT INTO print_jobs (id, branch_id, destination_id, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, $3, 'receipt', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($6 || ' milliseconds')::interval)`, [jobId, f.branchId, f.destinationId, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
+      await client.query("COMMIT");
+    } catch (e) { try { await client.query("ROLLBACK"); } catch {} throw e; } finally { try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {} }
+  } finally { client.release(); }
+}
+
+export async function jobRow(jobId: string): Promise<any> {
+  const res = await pool().query(`SELECT * FROM print_jobs WHERE id = $1`, [jobId]);
+  return res.rows[0];
+}
+
+export async function closePool(): Promise<void> {
+  if (adminPool) { await adminPool.end(); adminPool = null; }
 }
