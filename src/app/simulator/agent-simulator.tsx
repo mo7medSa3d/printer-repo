@@ -6,12 +6,24 @@ import {
   Play,
   Square,
   Terminal,
-  RefreshCcw,
-  Wifi,
-  WifiOff,
+  Trash2,
   Database,
-  Printer as PrinterIcon
+  Printer as PrinterIcon,
+  Wifi,
+  KeyRound,
+  CheckCircle2
 } from "lucide-react";
+import {
+  Button,
+  Card,
+  CardHeader,
+  Field,
+  Input,
+  StatusBadge,
+  StatusDot,
+  Mono,
+  type Tone
+} from "@/components/ui";
 
 type LogEntry = {
   time: string;
@@ -24,8 +36,7 @@ export default function AgentSimulator() {
   const [agentAuth, setAgentAuth] = useState<{ id: string; secret: string } | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [status, setStatus] = useState("idle");
-  const [printers, setPrinters] = useState([
+  const [printers] = useState([
     { id: "sim_p1", name: "Simulated Kitchen Printer", type: "network", status: "online", config: { ip: "192.168.1.100", port: 9100, protocol: "raw" } },
     { id: "sim_p2", name: "Simulated USB Receipt Printer", type: "usb", status: "online", config: { vid: 0x04b8, pid: 0x0202, address: "USB001" } },
   ]);
@@ -137,7 +148,6 @@ export default function AgentSimulator() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        // schedule state update after mount to avoid cascading render lint
         queueMicrotask(() => setAgentAuth(parsed));
       } catch {}
     }
@@ -156,121 +166,123 @@ export default function AgentSimulator() {
   }, [isRunning, agentAuth, heartbeat, pollJobs]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-1 space-y-6">
-        <div className="card p-6">
-          <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold tracking-[-0.01em] text-ink">
+        <Card className="p-6">
+          <h2 className="mb-4 flex items-center gap-2.5 text-base font-semibold text-ink">
             <Database className="w-5 h-5 text-brand" aria-hidden />
             Configuration
           </h2>
 
           {!agentAuth ? (
             <div className="space-y-4">
-              <p className="text-sm text-ink-3">Pair this simulator with the dashboard to start.</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Pairing Code"
-                  className="h-9 flex-1 rounded-md border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)]"
-                  value={pairingCode}
-                  onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
-                />
-                <button
-                  onClick={handleRegister}
-                  className="h-9 rounded-md bg-brand px-4 text-sm font-semibold text-brand-contrast shadow-xs transition-colors duration-150 hover:bg-brand-hover active:bg-brand-active disabled:opacity-50"
-                >
-                  Pair
-                </button>
-              </div>
+              <p className="text-sm text-ink-3">Pair this simulator with the dashboard to start sending heartbeats and claiming jobs.</p>
+              <Field label="Pairing code" htmlFor="sim-pairing-code">
+                <div className="flex gap-2.5">
+                  <Input
+                    id="sim-pairing-code"
+                    placeholder="Enter pairing code"
+                    value={pairingCode}
+                    onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
+                    className="font-mono uppercase tracking-wider"
+                  />
+                  <Button
+                    variant="primary"
+                    onClick={handleRegister}
+                    disabled={!pairingCode}
+                    icon={<KeyRound className="h-4 w-4" />}
+                  >
+                    Pair
+                  </Button>
+                </div>
+              </Field>
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="rounded-md border border-ok-edge bg-ok-bg p-3 font-mono text-sm text-ok">
-                Paired: {agentAuth.id}
+              <div className="rounded-xl border border-ok-edge bg-ok-bg p-4 flex items-center gap-3">
+                <CheckCircle2 className="h-5 w-5 text-ok shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-ok">Paired Agent</div>
+                  <Mono className="text-ink font-semibold truncate block mt-0.5">{agentAuth.id}</Mono>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <button
+              <div className="flex gap-2.5">
+                <Button
+                  variant={isRunning ? "danger" : "primary"}
                   onClick={() => setIsRunning(!isRunning)}
-                  className={cn(
-                    "flex h-9 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold shadow-xs transition-colors duration-150",
-                    isRunning
-                      ? "border border-bad-edge bg-bad-bg text-bad hover:brightness-[0.98]"
-                      : "bg-brand text-brand-contrast hover:bg-brand-hover active:bg-brand-active"
-                  )}
+                  className="flex-1"
+                  icon={isRunning ? <Square className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
                 >
-                  {isRunning ? (
-                    <><Square className="w-4 h-4 fill-current" /> Stop Agent</>
-                  ) : (
-                    <><Play className="w-4 h-4 fill-current" /> Start Agent</>
-                  )}
-                </button>
-                <button
+                  {isRunning ? "Stop Agent" : "Start Agent"}
+                </Button>
+                <Button
+                  variant="ghost"
                   onClick={() => {
                     localStorage.removeItem("sim_agent_auth");
                     setAgentAuth(null);
                     setIsRunning(false);
                     addLog("Agent session cleared.", "warn");
                   }}
-                  className="p-2 text-ink-3 hover:text-bad transition-colors"
                   title="Unpair Agent"
+                  aria-label="Unpair Agent"
                 >
-                  <RefreshCcw className="w-5 h-5" />
-                </button>
+                  Unpair
+                </Button>
               </div>
             </div>
           )}
-        </div>
+        </Card>
 
-        <div className="card p-6">
-          <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold tracking-[-0.01em] text-ink">
+        <Card className="p-6">
+          <h2 className="mb-4 flex items-center gap-2.5 text-base font-semibold text-ink">
             <PrinterIcon className="w-5 h-5 text-brand" aria-hidden />
-            Local Printers
+            Simulated Local Printers
           </h2>
           <div className="space-y-3">
             {printers.map(p => (
-              <div key={p.id} className="rounded-lg border border-edge bg-surface-2 p-3 text-xs">
-                <div className="mb-1 flex items-center justify-between gap-2 font-semibold text-ink">
-                  <span className="truncate">{p.name}</span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-ok-edge bg-ok-bg px-2 py-0.5 text-[10px] uppercase tracking-wide text-ok">
-                    <span className="h-1.5 w-1.5 rounded-full bg-ok-solid" aria-hidden />
-                    {p.status}
-                  </span>
+              <div key={p.id} className="rounded-xl border border-edge bg-surface-2 p-3.5 text-xs space-y-1.5">
+                <div className="flex items-center justify-between gap-2 font-semibold text-ink">
+                  <span className="truncate text-sm">{p.name}</span>
+                  <StatusBadge tone="ok" label={p.status} />
                 </div>
-                <div className="text-ink-3">
+                <div className="text-ink-3 font-mono">
                   {p.type === 'network' ? `IP: ${p.config.ip}:${p.config.port}` : `USB Path: ${p.config.address}`}
                 </div>
               </div>
             ))}
           </div>
-        </div>
+        </Card>
       </div>
 
-      <div className="card flex h-[600px] flex-col overflow-hidden lg:col-span-2">
-        <div className="flex items-center justify-between border-b border-edge bg-surface-2 px-4 py-2.5">
-          <div className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-[0.06em] text-ink-3">
-            <Terminal className="h-4 w-4" aria-hidden />
-            Agent logs
+      <Card className="flex h-[600px] flex-col overflow-hidden lg:col-span-2">
+        <div className="flex items-center justify-between border-b border-edge bg-surface-2 px-5 py-3">
+          <div className="flex items-center gap-2.5 font-mono text-xs font-semibold uppercase tracking-[0.06em] text-ink-3">
+            <Terminal className="h-4 w-4 text-brand" aria-hidden />
+            Agent Console Logs
           </div>
-          <div className="flex items-center gap-2">
-            {isRunning ? (
-              <span className="flex items-center gap-1.5 text-ok text-xs font-medium">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-ok-solid" />
-                Connected
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5 text-ink-2 text-xs font-medium">
-                <span className="h-2 w-2 rounded-full bg-ink-4" />
-                Offline
-              </span>
+          <div className="flex items-center gap-4">
+            <StatusBadge
+              tone={isRunning ? "ok" : "neutral"}
+              label={isRunning ? "Connected" : "Offline"}
+            />
+            {logs.length > 0 && (
+              <button
+                onClick={() => setLogs([])}
+                className="text-ink-3 hover:text-bad p-1 rounded transition-colors"
+                title="Clear logs"
+                aria-label="Clear logs"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
             )}
           </div>
         </div>
-        <div className="flex-1 space-y-1 overflow-y-auto bg-surface-2/60 p-4 font-mono text-xs leading-relaxed">
+        <div className="flex-1 space-y-1.5 overflow-y-auto bg-surface-2/60 p-4 font-mono text-xs leading-relaxed">
           {logs.map((log, i) => (
-            <div key={i} className="flex gap-3">
+            <div key={i} className="flex gap-3 items-start py-0.5">
               <span className="shrink-0 text-ink-3 tabular-nums">[{log.time}]</span>
               <span className={cn(
-                "w-12 shrink-0 font-semibold uppercase tracking-wide",
+                "w-14 shrink-0 font-semibold uppercase tracking-wide text-[11px]",
                 log.level === "info" && "text-info",
                 log.level === "success" && "text-ok",
                 log.level === "warn" && "text-warn",
@@ -278,14 +290,14 @@ export default function AgentSimulator() {
               )}>
                 {log.level}
               </span>
-              <span className="text-ink-2 break-all">{log.message}</span>
+              <span className="text-ink-2 break-all flex-1">{log.message}</span>
             </div>
           ))}
           {logs.length === 0 && (
-            <div className="italic text-ink-3">No logs yet…</div>
+            <div className="italic text-ink-3 p-4 text-center">No logs generated yet. Pair and start the agent simulator.</div>
           )}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

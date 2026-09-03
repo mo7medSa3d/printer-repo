@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import Link from "next/link";
-import { LayoutDashboard, MonitorPlay, LogIn } from "lucide-react";
-import { BrandMark } from "@/components/brand";
+import { HeaderNav } from "@/components/HeaderNav";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,45 +8,23 @@ export const metadata: Metadata = {
   description: "Cloud Print Gateway — Go Agent ↔ Gateway (WS) + Tauri Manager + Odoo (HTTPS)",
 };
 
-const navLinks = [
-  { href: "/dashboard", label: "Console", icon: LayoutDashboard },
-  { href: "/simulator", label: "Simulator", icon: MonitorPlay },
-  { href: "/login", label: "Sign in", icon: LogIn },
-];
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="antialiased bg-app text-ink min-h-screen">
-        <nav className="sticky top-0 z-50 border-b border-edge bg-surface/85 backdrop-blur-md">
-          <div className="container mx-auto flex h-16 items-center justify-between gap-4 px-4">
-            <div className="flex items-center gap-8">
-              <Link
-                href="/"
-                className="rounded-lg focusable transition-opacity hover:opacity-90"
-                aria-label="Print Gateway home"
-              >
-                <BrandMark title="Print Gateway" subtitle="Enterprise print operations" />
-              </Link>
-              <div className="hidden items-center gap-1 text-sm font-medium md:flex">
-                {navLinks.map(({ href, label, icon: Icon }) => (
-                  <Link
-                    key={href}
-                    href={href}
-                    className="flex items-center gap-2 rounded-md px-3 py-1.5 text-ink-2 transition-colors duration-150 hover:bg-brand-subtle hover:text-brand-subtle-text"
-                  >
-                    <Icon className="h-4 w-4" aria-hidden />
-                    {label}
-                  </Link>
-                ))}
-              </div>
+      <body className="antialiased bg-app text-ink min-h-screen flex flex-col">
+        <HeaderNav />
+        <main className="flex-1">{children}</main>
+        <footer className="border-t border-edge bg-surface py-6 mt-auto">
+          <div className="container mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-3">
+            <p>© 2026 Print Gateway · Enterprise Print Operations</p>
+            <div className="flex items-center gap-4">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-ok-solid" aria-hidden /> Gateway operational
+              </span>
+              <span className="font-mono">v1.0.0</span>
             </div>
-            <span className="rounded-sm border border-edge bg-surface-2 px-2 py-1 font-mono text-[11px] font-medium text-ink-3">
-              v1.0.0
-            </span>
           </div>
-        </nav>
-        <main>{children}</main>
+        </footer>
       </body>
     </html>
   );

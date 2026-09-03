@@ -3,12 +3,11 @@ import { ChevronRight } from "lucide-react";
 import { StatusDot, type Tone } from "@/components/ui";
 
 /* ============================================================
-   DESKTOP MANAGER — design system
+   DESKTOP MANAGER — design system layout primitives
    ------------------------------------------------------------
-   Shared layout primitives for the five desktop pages. They sit
-   ON TOP of the product-wide primitives in `src/components/ui`
-   (Card, Button, StatusBadge, EmptyState …) and encode the one
-   rhythm the desktop shell follows:
+   Shared layout primitives for desktop pages, sitting ON TOP
+   of product-wide primitives in `src/components/ui` (Card,
+   Button, StatusBadge, EmptyState …) and encoding standard layout rhythm:
 
      page padding   28px (32px ≥ lg)
      section gap    28px
@@ -100,10 +99,10 @@ export function StatCard({
   return (
     <div className="card p-6">
       <div className="flex items-start justify-between gap-3">
-        <span className="text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-3">
+        <span className="text-[12px] font-semibold uppercase tracking-[0.06em] text-ink-3">
           {label}
         </span>
-        <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
+        <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
           {icon}
         </span>
       </div>
@@ -157,7 +156,7 @@ export function StatusNotice({
   return (
     <div
       role="status"
-      className={`flex flex-col gap-4 rounded-card border p-5 sm:flex-row sm:items-start sm:gap-4 ${noticeStyles[tone]} ${className}`}
+      className={`flex flex-col gap-4 rounded-xl border p-5 sm:flex-row sm:items-start sm:gap-4 ${noticeStyles[tone]} ${className}`}
     >
       <span className={`mt-0.5 flex-shrink-0 ${noticeIconStyles[tone]}`}>{icon}</span>
       <div className="min-w-0 flex-1">
@@ -185,7 +184,7 @@ export function PrinterAvatar({
   tone?: Tone;
 }) {
   const dims =
-    size === "lg" ? "h-12 w-12 text-base" : size === "sm" ? "h-9 w-9 text-[11px]" : "h-11 w-11 text-[13px]";
+    size === "lg" ? "h-11 w-11 text-sm" : size === "sm" ? "h-9 w-9 text-[11px]" : "h-10 w-10 text-[13px]";
   const toneClass =
     tone === "ok"
       ? "border-ok-edge bg-ok-bg text-ok"
