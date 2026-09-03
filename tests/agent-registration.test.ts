@@ -72,6 +72,17 @@ suite("agent registration contract", () => {
     expect(await response.json()).toEqual({ error: "branchId is not accepted during registration" });
   });
 
+  it("rejects branchId deterministically even when pairingCode is missing", async () => {
+    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ branchId: "attacker-branch" }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "branchId is not accepted during registration" });
+  });
+
   it("invalid pairing attempts are rate-limited", async () => {
     await seedFixture();
     const headers = {
