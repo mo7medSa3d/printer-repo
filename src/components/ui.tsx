@@ -1,11 +1,14 @@
+"use client";
+
 import React, { useEffect, useRef } from "react";
+import Link from "next/link";
 import { X, Check, Loader2, Copy, AlertTriangle } from "lucide-react";
 
 /* ============================================================
    Odoo Print Gateway — shared UI primitives
    One source for Button / Badge / Status / Card / Empty &
    error states / Modal / Drawer / Field. Used by the Desktop
-   Manager (vite) and the Web dashboard (Next), so the two
+   Manager (vite) and the Web console (Next), so the two
    surfaces stay visually and semantically consistent.
    ============================================================ */
 
@@ -33,9 +36,37 @@ export const toneDot: Record<Tone, string> = {
   brand: "bg-brand",
 };
 
+/* Tone Mappers for consistent status mapping across Web & Desktop */
+
+export function agentTone(status: string): Tone {
+  const s = String(status).toLowerCase();
+  if (s === "online" || s === "running" || s === "active") return "ok";
+  if (s === "offline" || s === "stopped" || s === "error" || s === "retired") return "bad";
+  if (s === "disabled") return "warn";
+  return "neutral";
+}
+
+export function printerTone(status: string): Tone {
+  const s = String(status).toLowerCase();
+  if (s === "online") return "ok";
+  if (s === "busy" || s === "printing") return "warn";
+  if (s === "offline" || s === "error" || s === "failed") return "bad";
+  return "neutral";
+}
+
+export function jobTone(status: string): Tone {
+  const s = String(status).toLowerCase();
+  if (s === "success" || s === "completed") return "ok";
+  if (s === "failed" || s === "expired") return "bad";
+  if (s === "printing") return "warn";
+  if (s === "claimed") return "info";
+  if (s === "queued") return "neutral";
+  return "neutral";
+}
+
 /* ---------- Buttons ---------- */
 
-type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary:
@@ -46,6 +77,18 @@ const buttonVariants: Record<ButtonVariant, string> = {
     "bg-transparent text-ink-2 border border-transparent hover:bg-brand-subtle hover:text-brand-subtle-text",
   danger:
     "bg-bad-solid text-white border border-transparent shadow-xs hover:brightness-95 active:brightness-90",
+  success:
+    "bg-ok-solid text-white border border-transparent shadow-xs hover:brightness-95 active:brightness-90",
+};
+
+export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: ButtonVariant;
+  size?: "sm" | "md" | "lg";
+  loading?: boolean;
+  icon?: React.ReactNode;
+  href?: string;
+  target?: string;
+  rel?: string;
 };
 
 export function Button({
@@ -55,23 +98,40 @@ export function Button({
   icon,
   children,
   className = "",
+  href,
+  target,
+  rel,
+  disabled,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: ButtonVariant;
-  size?: "sm" | "md" | "lg";
-  loading?: boolean;
-  icon?: React.ReactNode;
-}) {
+}: ButtonProps) {
   const sizes =
     size === "sm"
       ? "h-10 px-3.5 text-[13px] gap-1.5"
       : size === "lg"
       ? "h-12 px-5 text-[15px] gap-2.5"
       : "h-11 px-4 text-sm gap-2";
+
+  const baseClasses = `inline-flex items-center justify-center rounded-lg font-semibold transition-[background-color,border-color,color,box-shadow,filter] duration-150 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${buttonVariants[variant]} ${sizes} ${className}`;
+
+  if (href) {
+    return (
+      <Link
+        href={href}
+        target={target}
+        rel={rel}
+        className={baseClasses}
+        aria-disabled={loading || disabled}
+      >
+        {loading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : icon}
+        {children}
+      </Link>
+    );
+  }
+
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-lg font-semibold transition-[background-color,border-color,color,box-shadow,filter] duration-150 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${buttonVariants[variant]} ${sizes} ${className}`}
-      disabled={loading || props.disabled}
+      className={baseClasses}
+      disabled={loading || disabled}
       {...props}
     >
       {loading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : icon}
@@ -191,9 +251,9 @@ export function EmptyState({
 }) {
   return (
     <div
-      className={`flex flex-col items-center justify-center text-center px-8 py-20 ${className}`}
+      className={`flex flex-col items-center justify-center text-center px-8 py-16 sm:py-20 ${className}`}
     >
-      <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-edge-accent bg-surface-accent text-brand">
+      <div className="flex h-16 w-16 sm:h-20 sm:w-20 items-center justify-center rounded-2xl border border-edge-accent bg-surface-accent text-brand">
         {icon}
       </div>
       <h3 className="mt-5 text-[18px] font-semibold text-ink">{title}</h3>
@@ -254,7 +314,7 @@ export function LoadingState({
         <div
           key={i}
           className="skeleton h-9"
-          style={{ width: `${100 - i * 12}%` }}
+          style={{ width: `${100 - (i % 3) * 12}%` }}
         />
       ))}
       <span className="sr-only">Loading…</span>
@@ -268,12 +328,14 @@ export function Field({
   label,
   hint,
   htmlFor,
+  error,
   children,
   className = "",
 }: {
   label: string;
   hint?: string;
   htmlFor?: string;
+  error?: string;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -286,7 +348,10 @@ export function Field({
         {label}
       </label>
       <div className="mt-2">{children}</div>
-      {hint && (
+      {error && (
+        <p className="mt-1.5 text-[13px] font-medium text-bad">{error}</p>
+      )}
+      {hint && !error && (
         <p className="mt-2 text-[13px] leading-relaxed text-ink-3">{hint}</p>
       )}
     </div>
@@ -298,18 +363,36 @@ export const inputClass =
 
 export function Input({
   className = "",
+  error,
   ...props
-}: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={`${inputClass} ${className}`} {...props} />;
+}: React.InputHTMLAttributes<HTMLInputElement> & { error?: boolean }) {
+  return (
+    <input
+      className={`${inputClass} ${
+        error
+          ? "border-bad-edge focus:border-bad focus:shadow-[0_0_0_3px_var(--danger-border)]"
+          : ""
+      } ${className}`}
+      {...props}
+    />
+  );
 }
 
 export function Select({
   className = "",
+  error,
   children,
   ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+}: React.SelectHTMLAttributes<HTMLSelectElement> & { error?: boolean }) {
   return (
-    <select className={`${inputClass} appearance-none pr-8 ${className}`} {...props}>
+    <select
+      className={`${inputClass} appearance-none pr-8 ${
+        error
+          ? "border-bad-edge focus:border-bad focus:shadow-[0_0_0_3px_var(--danger-border)]"
+          : ""
+      } ${className}`}
+      {...props}
+    >
       {children}
     </select>
   );
@@ -478,7 +561,7 @@ export function Tabs<T extends string>({
             role="tab"
             aria-selected={selected}
             onClick={() => onChange(t)}
-            className={`relative flex items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors ${
+            className={`relative flex items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${
               selected ? "text-ink" : "text-ink-3 hover:text-ink-2"
             }`}
           >
@@ -517,6 +600,8 @@ export function CopyButton({
   label?: string;
   className?: string;
 }) {
+  const [copied, setCopied] = React.useState(false);
+
   return (
     <button
       type="button"
@@ -526,15 +611,26 @@ export function CopyButton({
         e.stopPropagation();
         try {
           await navigator.clipboard.writeText(value);
+          setCopied(true);
           onCopied?.();
+          setTimeout(() => setCopied(false), 2000);
         } catch {
           /* clipboard unavailable inside WebView without focus; ignore */
         }
       }}
       className={`inline-flex h-8 items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle hover:text-brand-subtle-text focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${className}`}
     >
-      <Copy className="h-3 w-3" aria-hidden />
-      {label}
+      {copied ? (
+        <>
+          <Check className="h-3 w-3 text-ok" aria-hidden />
+          <span className="text-ok">Copied</span>
+        </>
+      ) : (
+        <>
+          <Copy className="h-3 w-3" aria-hidden />
+          {label}
+        </>
+      )}
     </button>
   );
 }
@@ -562,7 +658,7 @@ export function Toast({
       className={`pg-toast-in fixed bottom-6 right-6 z-[60] flex max-w-md items-start gap-3 rounded-xl border px-5 py-4 text-sm shadow-lg ${toneBg[tone]}`}
     >
       {toast.type === "success" ? (
-        <Check className="mt-0.5 h-5 w-5 flex-shrink-0" aria-hidden />
+        <Check className="mt-0.5 h-5 w-5 flex-shrink-0 text-ok" aria-hidden />
       ) : (
         <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0" aria-hidden />
       )}
