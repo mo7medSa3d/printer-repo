@@ -97,6 +97,8 @@ suite("heartbeat validation and lifecycle preservation", () => {
         printers: [{
           id: f.printerId,
           name: "Normalized",
+          printerType: "physical",
+          deviceClass: "other",
           connectionType: "spooler",
           protocol: "spooler",
           status: " OFFLINE ",
