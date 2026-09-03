@@ -26,7 +26,9 @@ describe("Phase 2 routing fallback", () => {
     expect(isPrinterAvailableForJob({ lifecycle: "active", status: "online" })).toBe(true);
     expect(isPrinterAvailableForJob({ lifecycle: "active", status: "offline" })).toBe(false);
     expect(isPrinterAvailableForJob({ lifecycle: "disabled", status: "online" })).toBe(false);
-    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "unknown" })).toBe(true);
+    // Unknown telemetry is intentionally unavailable for immediate routing;
+    // only a positively reported online state is considered safe.
+    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "unknown" })).toBe(false);
   });
 
   it("fallback selects next when first printer offline (simulated)", () => {
@@ -77,14 +79,8 @@ describe("Capability validation", () => {
       protocol: "raw",
       capabilities: { supported_protocols: ["raw"] } as any,
     });
-    // raw printer explicitly lists only raw, but escpos is often compatible
-    // Our implementation allows spooler RAW to still handle escpos; for network raw with explicit list, we also allow?
-    // Current policy: if supported_protocols includes raw, escpos is allowed via isPrinterAvailable? Actually validate checks includes pt
-    // For this test, expect false if strictly enforced
-    // But our implementation allows escpos to raw if spooler? Let's check: supported includes raw, request is escpos -> currently returns ok because we check includes pt or includes raw?
-    // Our code: if supported includes pt -> ok, else if conn spooler -> ok, else fail? The code currently checks: if !supported.includes(pt) && !supported.includes("raw") ...
-    // So escpos with supported [raw] would be allowed via raw fallback - we should test that
-    expect(ok.ok).toBe(true); // raw-compatible printers can handle escpos bytes
+    // raw-compatible printers can handle escpos bytes
+    expect(ok.ok).toBe(true);
   });
 
   it("rejects escpos to ipp-only printer", () => {

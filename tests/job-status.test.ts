@@ -10,10 +10,14 @@ describe("job-status", () => {
     expect(canTransition("success", "printing")).toBe(false);
     expect(canTransition("failed", "success")).toBe(false);
   });
-  it("allowed: claimed->printing", () => {
+  it("allowed: claimed->printing and printing->terminal", () => {
     expect(canTransition("claimed", "printing")).toBe(true);
     expect(canTransition("printing", "success")).toBe(true);
     expect(canTransition("printing", "failed")).toBe(true);
+  });
+  it("expiration is server-controlled and cannot be requested by agents", () => {
+    expect(canTransition("claimed", "expired")).toBe(false);
+    expect(canTransition("printing", "expired")).toBe(false);
   });
   it("disallowed: queued is agent never sets", () => {
     expect(canTransition("queued", "printing")).toBe(false);

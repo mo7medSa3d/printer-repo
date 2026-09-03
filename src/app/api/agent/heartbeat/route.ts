@@ -3,13 +3,11 @@ import { agents, printers } from "@/db/schema";
 import { validateAgent } from "@/lib/agent-auth";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { incrementMetric } from "@/lib/metrics";
 import { DEVICE_CLASSES, PRINTER_TYPES } from "@/lib/printer-model";
 
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
-const VALID_PRINTER_TYPES = new Set(PRINTER_TYPES);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
-const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler", ""]);
+const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]);
 const VALID_AGENT_STATUSES = new Set(["online", "offline"]);
 
 type ReportedPrinter = {
@@ -60,7 +58,9 @@ function sanitizePrinter(p: ReportedPrinter): {
   const config = p.config && typeof p.config === "object" ? { ...(p.config as Record<string, unknown>) } : {};
   delete config.protocol;
   const capabilities = p.capabilities && typeof p.capabilities === "object" ? (p.capabilities as Record<string, unknown>) : null;
-  const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status) ? p.status : "unknown";
+  const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status.trim().toLowerCase())
+    ? p.status.trim().toLowerCase()
+    : "unknown";
   return { id: p.id.trim(), name: p.name.trim(), printerType, deviceClass, connectionType, protocol, status, config, capabilities };
 }
 
@@ -71,7 +71,11 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const status = typeof body?.status === "string" && VALID_AGENT_STATUSES.has(body.status) ? body.status : "online";
+    const rawStatus = typeof body?.status === "string" ? body.status.trim().toLowerCase() : "online";
+    if (!VALID_AGENT_STATUSES.has(rawStatus)) {
+      return NextResponse.json({ error: "status must be online or offline" }, { status: 400 });
+    }
+    const status = rawStatus;
     const reportedPrinters = Array.isArray(body?.printers) ? body.printers : [];
     if (reportedPrinters.length > 500) return NextResponse.json({ error: "too many printers in heartbeat" }, { status: 400 });
     if (JSON.stringify(reportedPrinters).length > 256_000) return NextResponse.json({ error: "heartbeat printer metadata exceeds 256KB" }, { status: 400 });
@@ -122,6 +126,7 @@ export async function POST(req: Request) {
           agentId: agent.id,
           name: p.name,
           printerType: p.printerType as typeof printers.$inferInsert.printerType,
+          deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
           connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
           protocol: p.protocol as typeof printers.$inferInsert.protocol,
           status: p.status,

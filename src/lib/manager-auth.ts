@@ -1,22 +1,21 @@
 import { db } from "@/db";
 import { managerSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 
 const COOKIE_NAME = "mgr_session";
-const MAX_AGE_SECONDS = 8 * 60 * 60; // 8h
+const MAX_AGE_SECONDS = 8 * 60 * 60;
 
 function getSecret(): string {
   const s = process.env.GATEWAY_JWT_SECRET;
-  if (!s || s.length < 32) {
-    throw new Error("GATEWAY_JWT_SECRET must be set to >=32 chars");
-  }
+  if (!s || s.length < 32) throw new Error("GATEWAY_JWT_SECRET must be set to >=32 chars");
   return s;
 }
 
 function b64urlEncode(buf: Buffer | string): string {
   return Buffer.from(buf).toString("base64url");
 }
+
 function b64urlDecode(s: string): Buffer {
   return Buffer.from(s, "base64url");
 }
@@ -32,20 +31,41 @@ function sign(claims: ManagerClaims): string {
 }
 
 function verify(token: string): ManagerClaims | null {
+  if (typeof token !== "string" || token.length < 40 || token.length > 4096) return null;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [h, p, s] = parts;
+
+  try {
+    const header = JSON.parse(b64urlDecode(h).toString("utf8")) as { alg?: unknown; typ?: unknown };
+    if (header.alg !== "HS256" || header.typ !== "JWT") return null;
+  } catch {
+    return null;
+  }
+
   const data = `${h}.${p}`;
   const expected = createHmac("sha256", getSecret()).update(data).digest("base64url");
   const a = Buffer.from(s);
   const b = Buffer.from(expected);
-  if (a.length !== b.length) return null;
-  if (!timingSafeEqual(a, b)) return null;
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+
   try {
-    const claims = JSON.parse(b64urlDecode(p).toString("utf8")) as ManagerClaims;
-    if (claims.sub !== "manager" || typeof claims.jti !== "string" || typeof claims.exp !== "number") return null;
-    if (claims.exp * 1000 < Date.now()) return null;
-    return claims;
+    const claims = JSON.parse(b64urlDecode(p).toString("utf8")) as Partial<ManagerClaims>;
+    if (
+      claims.sub !== "manager" ||
+      typeof claims.jti !== "string" ||
+      claims.jti.length < 16 ||
+      claims.jti.length > 128 ||
+      typeof claims.iat !== "number" ||
+      !Number.isSafeInteger(claims.iat) ||
+      typeof claims.exp !== "number" ||
+      !Number.isSafeInteger(claims.exp) ||
+      claims.exp <= claims.iat ||
+      claims.exp - claims.iat > MAX_AGE_SECONDS
+    ) return null;
+    if (claims.exp * 1000 <= Date.now()) return null;
+    if (claims.iat * 1000 > Date.now() + 60_000) return null;
+    return claims as ManagerClaims;
   } catch {
     return null;
   }
@@ -55,22 +75,15 @@ export function getManagerCookieName() {
   return COOKIE_NAME;
 }
 
-/** Verify the HMAC + embedded expiry of a manager token (no DB hit). */
 export function verifyManagerToken(token: string): ManagerClaims | null {
   return verify(token);
 }
 
-/**
- * Server-side session state check for already-verified claims: session row
- * must exist, be unrevoked, and be unexpired. Shared by validateManager
- * (Bearer/cookie middleware paths) and server components/actions that read
- * the cookie store directly (next/headers).
- */
 export async function validateManagerClaims(claims: ManagerClaims | null): Promise<ManagerClaims | null> {
   if (!claims) return null;
   const row = await db.query.managerSessions.findFirst({ where: eq(managerSessions.jti, claims.jti) });
   if (!row || row.revokedAt) return null;
-  if (row.expiresAt.getTime() < Date.now()) return null;
+  if (row.expiresAt.getTime() <= Date.now()) return null;
   return claims;
 }
 
@@ -80,16 +93,11 @@ export async function createManagerSession(): Promise<{ token: string; jti: stri
   const exp = now + MAX_AGE_SECONDS;
   const claims: ManagerClaims = { jti, iat: now, exp, sub: "manager" };
   const token = sign(claims);
-  await db.insert(managerSessions).values({
-    jti,
-    expiresAt: new Date(exp * 1000),
-  });
+  await db.insert(managerSessions).values({ jti, expiresAt: new Date(exp * 1000) });
   return { token, jti, exp: new Date(exp * 1000) };
 }
 
 export async function validateManager(req: Request): Promise<ManagerClaims | null> {
-  // Prefer httpOnly cookie, fallback to Authorization: Bearer mgr_...
-  // Cookie header may contain multiple cookies; extract mgr_session
   let token: string | null = null;
   const cookieHeader = req.headers.get("cookie") ?? "";
   for (const part of cookieHeader.split(";")) {
@@ -106,8 +114,7 @@ export async function validateManager(req: Request): Promise<ManagerClaims | nul
   }
   if (!token) return null;
   const claims = verify(token);
-  if (!claims) return null;
-  return validateManagerClaims(claims);
+  return claims ? validateManagerClaims(claims) : null;
 }
 
 export async function revokeManagerSession(jti: string) {
@@ -115,7 +122,6 @@ export async function revokeManagerSession(jti: string) {
 }
 
 export function managerCookieHeader(token: string, exp: Date): string {
-  // httpOnly, Secure in prod, SameSite Lax, Path /
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax${secure}; Expires=${exp.toUTCString()}; Max-Age=${MAX_AGE_SECONDS}`;
 }
@@ -124,37 +130,39 @@ export function clearManagerCookieHeader(): string {
   return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`;
 }
 
+function compareStringsSafe(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
 export function verifyManagerPassword(username: string, input: string): boolean {
   const expectedUser = process.env.MANAGER_USERNAME;
-  const expectedHash = process.env.MANAGER_PASSWORD_HASH; // scrypt salt:derived
+  const expectedHash = process.env.MANAGER_PASSWORD_HASH;
   const expectedPass = process.env.MANAGER_PASSWORD;
-  if (!expectedUser) return false;
-  // username check timing-safe
-  const ub = Buffer.from(username);
-  const eb = Buffer.from(expectedUser);
-  const userOk = ub.length === eb.length && timingSafeEqual(ub, eb);
+  if (!expectedUser || typeof input !== "string") return false;
+
+  const userOk = compareStringsSafe(username, expectedUser);
   if (!userOk) {
-    // still do work to avoid timing leak on password
+    // Perform a real scrypt calculation even on a bad username when a hash is configured.
     if (expectedHash?.includes(":")) {
-      const { scryptSync } = require("crypto") as typeof import("crypto");
-      scryptSync(input, "0000000000000000", 32);
+      const [salt] = expectedHash.split(":", 1);
+      if (salt) scryptSync(input, salt, 32);
     }
     return false;
   }
+
   if (expectedHash && expectedHash.includes(":")) {
-    const { scryptSync, timingSafeEqual: tse } = require("crypto") as typeof import("crypto");
     const [salt, hash] = expectedHash.split(":");
+    if (!salt || !hash || !/^[0-9a-fA-F]{64}$/.test(hash)) return false;
     const derived = scryptSync(input, salt, 32).toString("hex");
-    if (derived.length !== hash.length) return false;
-    return tse(Buffer.from(derived, "hex"), Buffer.from(hash, "hex"));
+    return compareStringsSafe(derived, hash.toLowerCase());
   }
-  if (expectedPass) {
-    const a = Buffer.from(input);
-    const b = Buffer.from(expectedPass);
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-  }
-  return false;
+
+  // Plaintext password is retained only for existing development setups.
+  // Production deployments must use MANAGER_PASSWORD_HASH.
+  if (process.env.NODE_ENV === "production" || !expectedPass) return false;
+  return compareStringsSafe(input, expectedPass);
 }
 
 export function getManagerUsername(): string | null {

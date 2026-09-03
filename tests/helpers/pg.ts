@@ -34,6 +34,18 @@ export function pool(): Pool {
 
 const GLOBAL_PG_LOCK = 727727;
 
+function rewriteMigrationForSchema(sql: string, schema: string | null): string {
+  if (!schema) return sql;
+  const quotedSchema = quoteIdent(schema);
+  // Historical Drizzle migrations explicitly reference public.*. For isolated
+  // Vitest workers those references must point at the worker schema too;
+  // otherwise the migration creates local tables but tries to attach FKs to
+  // public tables that intentionally do not exist in the test database.
+  return sql
+    .replaceAll('"public".', `${quotedSchema}.`)
+    .replaceAll(/\bpublic\./g, `${schema}.`);
+}
+
 async function applyMigrationsOnce(): Promise<void> {
   const schema = getOrCreateWorkerSchema();
   const client = await pool().connect();
@@ -50,7 +62,7 @@ async function applyMigrationsOnce(): Promise<void> {
       const dir = path.resolve(process.cwd(), "drizzle");
       const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
       for (const file of files) {
-        const sqlText = readFileSync(path.join(dir, file), "utf8");
+        const sqlText = rewriteMigrationForSchema(readFileSync(path.join(dir, file), "utf8"), schema);
         const statements = sqlText
           .split("--> statement-breakpoint")
           .map((s) => s.trim())

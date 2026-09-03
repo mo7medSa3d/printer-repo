@@ -3,7 +3,7 @@
 //
 //   queued -> claimed -> printing -> success
 //                                 -> failed
-//   (any non-terminal state) -> expired   [only once expiresAt has passed]
+//   (any non-terminal state) -> expired   [server-side, only once expiresAt has passed]
 //
 // success / failed / expired are terminal: no further transitions are
 // accepted once a job reaches one of them.
@@ -30,11 +30,11 @@ export function isTerminal(status: JobStatus): boolean {
 
 // Transitions the AGENT is allowed to request via PATCH. Claiming itself
 // (queued -> claimed) only ever happens server-side in the atomic claim
-// query, never via a client-supplied status value.
+// query, and expiration is also server-controlled by the job TTL sweep/CAS.
 const ALLOWED_TRANSITIONS: Record<JobStatus, ReadonlySet<JobStatus>> = {
   queued: new Set([]), // agents never set this themselves
-  claimed: new Set(["printing", "failed", "expired"]),
-  printing: new Set(["success", "failed", "expired"]),
+  claimed: new Set(["printing", "failed"]),
+  printing: new Set(["success", "failed"]),
   success: new Set([]),
   failed: new Set([]),
   expired: new Set([]),
