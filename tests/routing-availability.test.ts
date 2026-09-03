@@ -28,29 +28,33 @@ const suite = describe.skipIf(!hasTestDatabase);
 async function bind(f: Fixture, bindingId: string, printerId: string, priority: number, documentType: string | null = "receipt") {
   const client = await pool().connect();
   try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(727727)");
-    await client.query(
-      `INSERT INTO printer_bindings (id, branch_id, destination_id, document_type, printer_id, priority, enabled)
+    await client.query("SELECT pg_advisory_lock(727727)");
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO printer_bindings (id, branch_id, destination_id, document_type, printer_id, priority, enabled)
      VALUES ($1, $2, $3, $4, $5, $6, true)`,
-      [bindingId, f.branchId, f.destinationId, documentType, printerId, priority]
-    );
-    await client.query("COMMIT");
-  } catch (e) { try { await client.query("ROLLBACK"); } catch {} throw e; } finally { client.release(); }
+        [bindingId, f.branchId, f.destinationId, documentType, printerId, priority]
+      );
+      await client.query("COMMIT");
+    } finally { await client.query("SELECT pg_advisory_unlock(727727)"); }
+  } finally { client.release(); }
 }
 
 async function addPrinter(f: Fixture, id: string, opts: { lifecycle?: string; status?: string } = {}) {
   const client = await pool().connect();
   try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(727727)");
-    await client.query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+    await client.query("SELECT pg_advisory_lock(727727)");
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
      VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', $4, $5, '{}'::jsonb, '{"supported_protocols":["raw","escpos","pdf"]}'::jsonb)`,
-      [id, f.agentId, id, opts.status ?? "online", opts.lifecycle ?? "active"]
-    );
-    await client.query("COMMIT");
-  } catch (e) { try { await client.query("ROLLBACK"); } catch {} throw e; } finally { client.release(); }
+        [id, f.agentId, id, opts.status ?? "online", opts.lifecycle ?? "active"]
+      );
+      await client.query("COMMIT");
+    } finally { await client.query("SELECT pg_advisory_unlock(727727)"); }
+  } finally { client.release(); }
 }
 
 suite("routing availability + document-type authorization", () => {
