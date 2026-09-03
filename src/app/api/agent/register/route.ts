@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { and, eq, gt } from "drizzle-orm";
 import { generateSecret, hashSecret } from "@/lib/agent-auth";
@@ -72,19 +73,20 @@ export async function POST(req: Request) {
     }
 
     const secret = generateSecret();
+    const now = new Date();
     const updated = await db.update(agents).set({
       pairingCode: null,
       pairingCodeExpiresAt: null,
       secret: hashSecret(secret),
       status: "online",
       metadata: parsed.data.metadata ?? {},
-      lastSeenAt: new Date(),
-      updatedAt: new Date(),
+      lastSeenAt: now,
+      updatedAt: now,
     }).where(and(
       eq(agents.id, agent.id),
       eq(agents.pairingCode, normalizedCode),
       eq(agents.lifecycle, "active"),
-      gt(agents.pairingCodeExpiresAt, new Date()),
+      gt(agents.pairingCodeExpiresAt, now),
     )).returning({ id: agents.id });
 
     if (!updated.length) {
