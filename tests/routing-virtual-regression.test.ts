@@ -10,8 +10,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
  */
 
 const state = vi.hoisted(() => ({
-  branch: { id: "branch_a" } as any,
-  destination: { id: "dest_pos", branchId: "branch_a" } as any,
+  branch: { id: "branch_a", enabled: true } as any,
+  destination: { id: "dest_pos", branchId: "branch_a", enabled: true } as any,
   bindings: [] as any[],
   printers: {} as Record<string, any>,
   agents: {} as Record<string, any>,
@@ -97,6 +97,8 @@ const VIRTUAL = {
 };
 
 function setup(printers: any[], bindings: any[]) {
+  state.branch.enabled = true;
+  state.destination.enabled = true;
   state.printers = Object.fromEntries(printers.map((p) => [p.id, p]));
   state.agents = Object.fromEntries(printers.map((p) => [p.agentId, { id: p.agentId, branchId: state.branch.id, lifecycle: "active", status: "online", lastSeenAt: new Date() }]));
   state.bindings = bindings;
@@ -107,6 +109,8 @@ const job = { branchId: "branch_a", destinationId: "dest_pos", documentType: "re
 
 describe("routing regression: physical printers stay routable", () => {
   beforeEach(() => {
+    state.branch.enabled = true;
+    state.destination.enabled = true;
     state.printers = {};
     state.bindings = [];
     state.agents = {};
@@ -136,6 +140,8 @@ describe("routing regression: physical printers stay routable", () => {
 
 describe("routing regression: virtual printers never win", () => {
   beforeEach(() => {
+    state.branch.enabled = true;
+    state.destination.enabled = true;
     state.printers = {};
     state.bindings = [];
     state.agents = {};
