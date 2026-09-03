@@ -1,3 +1,4 @@
+import { createHmac, scryptSync } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import {
   hasTestDatabase,
@@ -23,10 +24,13 @@ suite("manager authentication hardening", () => {
 
   afterAll(async () => {
     await closePool();
+    delete process.env.MANAGER_PASSWORD_HASH;
+    delete process.env.MANAGER_PASSWORD;
   });
 
   beforeEach(async () => {
     await truncateAll();
+    process.env.NODE_ENV = "test";
   });
 
   it("creates a session that verifies and is backed by a DB session", async () => {
@@ -46,25 +50,33 @@ suite("manager authentication hardening", () => {
     expect(verifyManagerToken(tampered)).toBeNull();
   });
 
-  it("rejects a token with an iat too far in the future", async () => {
+  it("rejects a correctly signed token whose iat is too far in the future", async () => {
     const created = await createManagerSession();
     const parts = created.token.split(".");
+    const header = parts[0];
     const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
     payload.iat += 3600;
     const mutatedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
-    const mutated = `${parts[0]}.${mutatedPayload}.${parts[2]}`;
-    expect(verifyManagerToken(mutated)).toBeNull();
+    const data = `${header}.${mutatedPayload}`;
+    const signature = createHmac("sha256", process.env.GATEWAY_JWT_SECRET!)
+      .update(data)
+      .digest("base64url");
+    expect(verifyManagerToken(`${data}.${signature}`)).toBeNull();
   });
 
-  it("accepts hashed passwords and rejects plaintext passwords in production", () => {
-    process.env.MANAGER_PASSWORD_HASH = "salt:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    process.env.MANAGER_PASSWORD = "plain-password";
-    const expectedUser = process.env.MANAGER_USERNAME!;
-    expect(verifyManagerPassword(expectedUser, "plain-password")).toBe(false);
+  it("accepts a valid scrypt password hash", () => {
+    const salt = "principal-audit-salt";
+    const hash = scryptSync("correct-password", salt, 32).toString("hex");
+    process.env.MANAGER_PASSWORD_HASH = `${salt}:${hash}`;
+    expect(verifyManagerPassword("manager", "correct-password")).toBe(true);
+    expect(verifyManagerPassword("manager", "wrong-password")).toBe(false);
+  });
+
+  it("rejects plaintext passwords in production", () => {
     delete process.env.MANAGER_PASSWORD_HASH;
+    process.env.MANAGER_PASSWORD = "plain-password";
     process.env.NODE_ENV = "production";
-    expect(verifyManagerPassword(expectedUser, "plain-password")).toBe(false);
-    delete process.env.MANAGER_PASSWORD;
+    expect(verifyManagerPassword("manager", "plain-password")).toBe(false);
     process.env.NODE_ENV = "test";
   });
 });
