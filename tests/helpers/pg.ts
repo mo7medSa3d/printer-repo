@@ -62,18 +62,22 @@ export async function applyMigrations(): Promise<void> {
 }
 
 export async function truncateAll(): Promise<void> {
-  // Per-worker schema means truncate only touches this worker's tables.
-  // No advisory lock or retry needed — there is no cross-worker contention.
-  // Use a single TRUNCATE that handles all known tables; ignore 42P01 for tables
-  // that haven't been created yet (e.g., discovered_devices before 0010).
-  const tables = ["agents","api_keys","auth_rate_limits","branches","destinations","discovered_devices","discovery_sessions","document_types","local_networks","manager_sessions","printer_bindings","printers","print_jobs"];
-  for (const tbl of tables) {
+  // Even with per-worker schema, use the same session advisory lock as seedFixture
+  // to prevent a truncate in beforeEach from deleting a fixture that another
+  // concurrent test's it block is currently using (Vitest may still run
+  // beforeEach/it interleaved even with singleFork if maxConcurrency >1).
+  const client = await pool().connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [727727]);
     try {
-      await pool().query(`TRUNCATE TABLE "${tbl}" RESTART IDENTITY CASCADE`);
-    } catch (e: any) {
-      if (e?.code !== "42P01") throw e;
+      const tables = ["agents","api_keys","auth_rate_limits","branches","destinations","discovered_devices","discovery_sessions","document_types","local_networks","manager_sessions","printer_bindings","printers","print_jobs"];
+      for (const tbl of tables) {
+        try { await client.query(`TRUNCATE TABLE "${tbl}" RESTART IDENTITY CASCADE`); } catch (e: any) { if (e?.code !== "42P01") throw e; }
+      }
+    } finally {
+      await client.query("SELECT pg_advisory_unlock($1)", [727727]);
     }
-  }
+  } finally { client.release(); }
 }
 
 export function sha256(value: string): string {
@@ -98,12 +102,11 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
   const printerId = `printer_${suffix}`;
   const destinationId = `dest_${suffix}`;
   const odooKey = `odoo_${randomBytes(18).toString("base64url")}`;
-  // With per-worker schema isolation, no global lock is needed. Use a single
-  // transaction so the Branch→Agent→Printer→Destination→api_keys hierarchy is
-  // created atomically per test.
   const client = await pool().connect();
   try {
-    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_lock($1)", [727727]);
+    try {
+      await client.query("BEGIN");
     await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, [branchId, `Branch ${suffix}`]);
     await client.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now()) ON CONFLICT (id) DO NOTHING`, [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]);
     const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers'`);
@@ -133,9 +136,12 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
     await client.query(`INSERT INTO destinations (id, branch_id, name, type) VALUES ($1, $2, 'POS', 'pos') ON CONFLICT (id) DO NOTHING`, [destinationId, branchId]);
     await client.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3) ON CONFLICT (id) DO NOTHING`, [`key_${suffix}`, branchId, sha256(odooKey)]);
     await client.query("COMMIT");
-  } catch (e) {
-    try { await client.query("ROLLBACK"); } catch {}
-    throw e;
+    } catch (e) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw e;
+    } finally {
+      try { await client.query("SELECT pg_advisory_unlock($1)", [727727]); } catch {}
+    }
   } finally {
     client.release();
   }
@@ -143,8 +149,15 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
 }
 
 export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expiresInMs?: number }): Promise<void> {
-  // No advisory lock needed with per-worker schema; the job belongs to the fixture's isolated schema.
-  await pool().query(`INSERT INTO print_jobs (id, branch_id, destination_id, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, $3, 'receipt', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($6 || ' milliseconds')::interval)`, [jobId, f.branchId, f.destinationId, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
+  const client = await pool().connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [727727]);
+    try {
+      await client.query("BEGIN");
+      await client.query(`INSERT INTO print_jobs (id, branch_id, destination_id, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, $3, 'receipt', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($6 || ' milliseconds')::interval) ON CONFLICT (id) DO NOTHING`, [jobId, f.branchId, f.destinationId, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
+      await client.query("COMMIT");
+    } catch (e) { try { await client.query("ROLLBACK"); } catch {} throw e; } finally { try { await client.query("SELECT pg_advisory_unlock($1)", [727727]); } catch {} }
+  } finally { client.release(); }
 }
 
 export async function jobRow(jobId: string): Promise<any> {
