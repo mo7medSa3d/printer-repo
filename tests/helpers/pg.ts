@@ -34,12 +34,13 @@ export function pool(): Pool {
 const DUPLICATE_OBJECT_CODES = new Set(["42P07", "42710", "42701"]);
 
 export async function applyMigrations(): Promise<void> {
-  // With per-worker schema isolation, each worker has its own empty schema.
-  // No global lock is needed — the schema is private to this worker.
-  // Ensure the worker schema exists and is used via search_path (configured on pool).
   const schema = getOrCreateWorkerSchema();
   if (schema) {
-    await pool().query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+    try {
+      await pool().query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+    } catch (e: any) {
+      if (e?.code !== "23505") throw e;
+    }
   }
   const dir = path.resolve(process.cwd(), "drizzle");
   const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
@@ -54,7 +55,7 @@ export async function applyMigrations(): Promise<void> {
       }
     }
   }
-  const check = await pool().query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`);
+  const check = await pool().query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'print_jobs' AND column_name IN ('delivered_at','acked_at','delivery_attempts')`);
   if (check.rowCount !== 3) throw new Error("test database is missing the job delivery columns (drizzle/0004_add_job_delivery_tracking.sql)");
 }
 
