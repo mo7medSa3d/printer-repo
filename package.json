@@ -24,7 +24,7 @@
     "desktop:vite:build": "vite build --config vite.desktop.config.ts",
     "desktop:build": "npm run desktop:vite:build && pwsh -File scripts/build-windows-installer.ps1",
     "desktop:dev": "vite --config vite.desktop.config.ts",
-    "test:unit": "vitest run --config vitest.config.ts --exclude tests/architecture-pg.test.ts --exclude tests/odoo-sync-transaction.test.ts --exclude tests/routing-availability.test.ts --exclude tests/print-idempotency.test.ts --exclude tests/e2e-job-flow.test.ts --exclude tests/ws-claim-delivery.test.ts --exclude tests/job-status-postgres-concurrency.test.ts --exclude tests/auth-rate-limit.test.ts --exclude tests/heartbeat-enabled.test.ts --exclude tests/health.test.ts",
+    "test:unit": "vitest run --config vitest.config.ts --exclude tests/architecture-pg.test.ts --exclude tests/odoo-sync-transaction.test.ts --exclude tests/routing-availability.test.ts --exclude tests/print-idempotency.test.ts --exclude tests/e2e-job-flow.test.ts --exclude tests/ws-claim-delivery.test.ts --exclude tests/job-status-postgres-concurrency.test.ts --exclude tests/auth-rate-limit.test.ts --exclude tests/heartbeat-enabled.test.ts --exclude tests/health.test.ts --exclude tests/agent-registration.test.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "vitest run --config vitest.integration.config.ts --run tests/e2e-job-flow.test.ts"
   },
@@ -51,14 +51,15 @@
     "@types/react-dom": "19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
+    "@tailwindcss/postcss": "4.1.17",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.3.3",
     "jsdom": "^30.0.1",
     "postcss": "^8.5.26",
     "tailwindcss": "4.1.17",
-    "tsx": "^4.23.12",
     "typescript": "5.9.3",
+    "tsx": "^4.23.12",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"
   }
