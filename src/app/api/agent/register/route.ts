@@ -29,13 +29,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "metadata exceeds 32KB" }, { status: 400 });
     }
 
-    const parsed = registrationSchema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json({ error: "pairingCode is required; branchId is not accepted" }, { status: 400 });
-    }
-
+    // Reject branch ownership input before schema validation and before any
+    // database/ownership lookup. This keeps the security contract deterministic
+    // even when the request is otherwise malformed.
     if (body && typeof body === "object" && "branchId" in body) {
       return NextResponse.json({ error: "branchId is not accepted during registration" }, { status: 400 });
+    }
+
+    const parsed = registrationSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "pairingCode is required" }, { status: 400 });
     }
 
     const normalizedCode = parsed.data.pairingCode.toUpperCase();
