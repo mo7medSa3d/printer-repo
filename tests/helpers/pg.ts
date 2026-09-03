@@ -217,7 +217,7 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
       try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {}
     }
   } finally { client.release(); }
-  return { branchId, agentId, agentSecret, printerId, destinationId, odooKey };
+  return { branchId, agentId, agentSecret, agentAuth: `Bearer ${agentId}:${agentSecret}`, printerId, destinationId, odooKey };
 }
 
 export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expiresInMs?: number }): Promise<void> {
