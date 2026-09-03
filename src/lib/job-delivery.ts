@@ -110,13 +110,19 @@ export async function markJobDelivered(jobId: string, agentId: string): Promise<
 
 /**
  * Records the agent's explicit `job_ack`. Acknowledgement means "the agent
- * received the job", never "the job printed": it must not move the status.
+ * received the job", never "the job printed". Late ACKs for terminal jobs are
+ * rejected so delivery bookkeeping cannot be mutated after the job outcome is
+ * already final.
  */
 export async function recordJobAck(jobId: string, agentId: string): Promise<boolean> {
   const res = await db.execute(sql`
     UPDATE print_jobs
-    SET acked_at = now(), delivered_at = COALESCE(delivered_at, now())
-    WHERE id = ${jobId} AND agent_id = ${agentId}
+    SET acked_at = COALESCE(acked_at, now()),
+        delivered_at = COALESCE(delivered_at, now()),
+        updated_at = now()
+    WHERE id = ${jobId}
+      AND agent_id = ${agentId}
+      AND status IN ('claimed', 'printing')
     RETURNING id
   `);
   return res.rows.length > 0;
