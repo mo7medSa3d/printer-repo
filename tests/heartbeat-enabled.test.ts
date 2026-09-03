@@ -74,7 +74,9 @@ suite("heartbeat validation and lifecycle preservation", () => {
     expect(row.rows[0].name).not.toBe("Hijack");
   });
 
-  it("rejects an invalid agent status instead of silently treating it as online", async () => {
+  it("rejects an invalid agent status without mutating the existing agent", async () => {
+    const before = await pool().query(`SELECT status, last_seen_at FROM agents WHERE id = $1`, [f.agentId]);
+
     const res = await heartbeatPOST(new Request("http://gateway.test/api/agent/heartbeat", {
       method: "POST",
       headers: { Authorization: f.agentAuth, "content-type": "application/json" },
@@ -82,8 +84,8 @@ suite("heartbeat validation and lifecycle preservation", () => {
     }));
     expect(res.status).toBe(400);
 
-    const row = await pool().query(`SELECT status FROM agents WHERE id = $1`, [f.agentId]);
-    expect(row.rows[0].status).not.toBe("online");
+    const after = await pool().query(`SELECT status, last_seen_at FROM agents WHERE id = $1`, [f.agentId]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
   });
 
   it("normalizes agent and printer status casing/whitespace", async () => {
@@ -95,6 +97,8 @@ suite("heartbeat validation and lifecycle preservation", () => {
         printers: [{
           id: f.printerId,
           name: "Normalized",
+          printerType: "physical",
+          deviceClass: "other",
           connectionType: "spooler",
           protocol: "spooler",
           status: " OFFLINE ",
@@ -103,7 +107,10 @@ suite("heartbeat validation and lifecycle preservation", () => {
     }));
     expect(res.status).toBe(200);
 
-    const rows = await pool().query(`SELECT a.status AS agent_status, p.status AS printer_status FROM agents a JOIN printers p ON p.agent_id = a.id WHERE a.id = $1`, [f.agentId]);
-    expect(rows.rows[0]).toEqual({ agent_status: "online", printer_status: "offline" });
+    const row = await pool().query(`SELECT status FROM printers WHERE id = $1`, [f.printerId]);
+    expect(row.rows[0].status).toBe("offline");
+
+    const agent = await pool().query(`SELECT status FROM agents WHERE id = $1`, [f.agentId]);
+    expect(agent.rows[0].status).toBe("online");
   });
 });
