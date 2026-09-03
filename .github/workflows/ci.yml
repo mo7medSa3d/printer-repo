@@ -79,7 +79,7 @@ jobs:
       - name: Verify schema invariants
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM information_schema.tables WHERE table_name='branches';"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f drizzle/0009_runtime_invariant_guard.sql || true
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f drizzle/0009_runtime_invariant_guard.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 'schema ok';"
 
       - name: Run integration tests (PostgreSQL)

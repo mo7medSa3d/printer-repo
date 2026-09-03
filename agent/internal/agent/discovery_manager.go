@@ -36,17 +36,35 @@ func (a *Agent) pollDiscovery(ctx context.Context) {
 	}
 }
 
-func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryId string) {
-	log.Printf("[discovery] executing session %s", discoveryId)
-	// Run full discovery with bounded timeout 30s
+func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryID string) {
+	log.Printf("[discovery] executing session %s", discoveryID)
+
+	// Enforce a hard orchestration bound even though individual detectors have
+	// their own shorter network timeouts. The result channel is buffered so a
+	// detector that finishes just after cancellation cannot block forever.
 	discoveryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	result := printer.Discover(a.cfg, a.registryPath)
-	// Enrich with SNMP/LPR/WSD already included in Discover (extended)
-	// Build payload for gateway: map to discoveredDevices schema
+
+	resultCh := make(chan printer.DiscoveryResult, 1)
+	go func() {
+		resultCh <- printer.Discover(a.cfg, a.registryPath)
+	}()
+
+	var result printer.DiscoveryResult
+	select {
+	case result = <-resultCh:
+	case <-discoveryCtx.Done():
+		status := "failed"
+		if discoveryCtx.Err() == context.Canceled {
+			status = "cancelled"
+		}
+		log.Printf("[discovery] session %s exceeded 30s bound: %v", discoveryID, discoveryCtx.Err())
+		a.reportDiscoveryResult(ctx, discoveryID, status, nil)
+		return
+	}
+
 	var devices []map[string]interface{}
 	for _, di := range result.Printers {
-		// Determine verification: if IPP or spooler with model, verified else candidate
 		verification := "candidate"
 		if di.Protocol == "ipp" || di.Protocol == "ipps" || di.ConnectionType == "spooler" {
 			verification = "verified"
@@ -62,7 +80,7 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryId string)
 				verification = "verified"
 			}
 		}
-		// confidence heuristic
+
 		sources := []string{}
 		if di.Capabilities != nil {
 			if v, ok := di.Capabilities["discovered_via"]; ok {
@@ -72,6 +90,7 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryId string)
 		if di.Protocol == "ipp" {
 			sources = append(sources, "ipp")
 		}
+
 		confidence := "low"
 		if verification == "verified" && len(sources) >= 1 {
 			confidence = "medium"
@@ -79,6 +98,7 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryId string)
 				confidence = "high"
 			}
 		}
+
 		dev := map[string]interface{}{
 			"source":       sources,
 			"protocol":     di.Protocol,
@@ -92,36 +112,55 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryId string)
 			"capabilities": di.Capabilities,
 			"rawMetadata":  map[string]interface{}{"endpoint": di.Endpoint, "connectionType": di.ConnectionType},
 		}
-		// enrich model via caps
-		if m, ok := di.Capabilities["model"]; ok && m != nil {
-			dev["model"] = fmt.Sprint(m)
+
+		if di.Capabilities != nil {
+			if m, ok := di.Capabilities["model"]; ok && m != nil {
+				dev["model"] = fmt.Sprint(m)
+			}
 		}
 		devices = append(devices, dev)
 	}
-	// Also include network/LPR/SNMP/WSD/mDNS candidates that were not in printers? Discover already includes them.
-	// Deduplicate already done by Discover.
+
 	status := "completed"
 	if len(result.Errors) > 0 && len(devices) > 0 {
 		status = "partial"
-	} else if len(result.Errors) > 0 && len(devices) == 0 {
+	} else if len(result.Errors) > 0 {
 		status = "failed"
 	}
-	_ = discoveryCtx
+
+	a.reportDiscoveryResult(ctx, discoveryID, status, devices)
+}
+
+func (a *Agent) reportDiscoveryResult(ctx context.Context, discoveryID, status string, devices []map[string]interface{}) {
 	payload := map[string]interface{}{
-		"discoveryId": discoveryId,
+		"discoveryId": discoveryID,
 		"status":      status,
 		"devices":     devices,
 	}
 	reqURL := fmt.Sprintf("%s/api/agent/discovery", a.cfg.Server.URL)
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(body))
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[discovery] failed to encode results for %s: %v", discoveryID, err)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("[discovery] failed to build report request for %s: %v", discoveryID, err)
+		return
+	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s:%s", a.cfg.Agent.ID, a.cfg.Agent.Secret))
 	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := a.client.Do(req)
 	if err != nil {
-		log.Printf("[discovery] failed to report results for %s: %v", discoveryId, err)
+		log.Printf("[discovery] failed to report results for %s: %v", discoveryID, err)
 		return
 	}
 	defer resp.Body.Close()
-	log.Printf("[discovery] session %s completed: %d devices, status %s", discoveryId, len(devices), status)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("[discovery] gateway rejected results for %s: HTTP %d", discoveryID, resp.StatusCode)
+		return
+	}
+	log.Printf("[discovery] session %s completed: %d devices, status %s", discoveryID, len(devices), status)
 }

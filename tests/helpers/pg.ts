@@ -40,9 +40,6 @@ async function applyMigrationsOnce(): Promise<void> {
   try {
     await client.query("SELECT pg_advisory_lock($1)", [GLOBAL_PG_LOCK]);
     try {
-      // Each Vitest worker owns a disposable schema. Recreate only that schema
-      // so stale objects from an earlier process cannot make migrations depend
-      // on previous test state. Never drop public.
       if (schema) {
         await client.query(`DROP SCHEMA IF EXISTS ${quoteIdent(schema)} CASCADE`);
         await client.query(`CREATE SCHEMA ${quoteIdent(schema)}`);
@@ -59,9 +56,6 @@ async function applyMigrationsOnce(): Promise<void> {
           .map((s) => s.trim())
           .filter(Boolean);
         for (const stmt of statements) {
-          // A fresh schema must be migrated exactly once. Do not swallow DDL
-          // errors: PostgreSQL aborts the transaction after an error, and the
-          // next statement would otherwise fail misleadingly with 25P02.
           await client.query(stmt);
         }
       }
@@ -80,19 +74,22 @@ async function applyMigrationsOnce(): Promise<void> {
       }
 
       if (schema) {
-        const fkCheck = await client.query(`
-          SELECT conname, pg_get_constraintdef(oid) AS definition
-          FROM pg_constraint
-          WHERE conrelid IN (
-            to_regclass(${JSON.stringify(schema)} || '.agents'),
-            to_regclass(${JSON.stringify(schema)} || '.printers'),
-            to_regclass(${JSON.stringify(schema)} || '.print_jobs')
-          )
-          AND contype = 'f'
-        `);
+        const fkCheck = await client.query(
+          `
+            SELECT conname, pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conrelid IN (
+              to_regclass($1),
+              to_regclass($2),
+              to_regclass($3)
+            )
+            AND contype = 'f'
+          `,
+          [`${schema}.agents`, `${schema}.printers`, `${schema}.print_jobs`],
+        );
         for (const row of fkCheck.rows) {
           const definition = String(row.definition);
-          if (definition.includes('public.')) {
+          if (definition.includes("public.")) {
             throw new Error(`worker schema FK escaped into public: ${row.conname} -> ${definition}`);
           }
         }
