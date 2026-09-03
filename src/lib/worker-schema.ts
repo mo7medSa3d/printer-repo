@@ -17,9 +17,9 @@ export function getWorkerSchema(): string | null {
   // Only use per-worker schemas when running under Vitest integration.
   // Vitest sets VITEST=true and VITEST_WORKER_ID / VITEST_POOL_ID per fork.
   // When running `npm run test:unit` without DB, hasTestDatabase is false and
-  // we never create a pool, so returning null is fine.
+  // we never create a pool, so returning null is ffine.
   const isVitest = process.env.VITEST === "true" || !!process.env.VITEST_WORKER_ID || !!process.env.VITEST_POOL_ID;
-  // In CI, `npm run test:integration` always has DATABASE_URL set and isVitest true.
+  // In CI, `npm run test:integration` always has DATABASE_URL_set and isVitest true.
   if (!isVitest) {
     // Fallback for `npm test` that runs all tests in one process without worker ID —
     // still isolate if we're in a test run with DATABASE_URL but no worker ID:
@@ -28,13 +28,13 @@ export function getWorkerSchema(): string | null {
     return null;
   }
 
-  const raw =
-    process.env.VITEST_WORKER_ID ||
-    process.env.VITEST_POOL_ID ||
-    `pid_${process.pid}`;
+  const worker = process.env.VITEST_WORKER_ID || process.env.VITEST_POOL_ID || "single";
+  // Include the process id so independent Vitest processes that reuse the same
+  // worker id can never collide on the same PostgreSQL schema.
+  const raw = `${worker}_pid_${process.pid}`;
 
-  // Sanitize to valid identifier: lowercase, alphanumeric + underscore, max 40 chars
-  const safe = raw.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 40);
+  // Sanitize to a valid PostgreSQL identifier and keep it comfortably below the 63-byte limit.
+  const safe = raw.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 48);
   // Prefix to avoid collision with public tables; also ensures it starts with letter
   return `test_${safe}`;
 }
