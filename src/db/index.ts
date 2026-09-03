@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { getWorkerSchema, schemaSnarchPath } from "@/lib/worker-schema";
+import { getWorkerSchema, schemaSearchPath } from "@/lib/worker-schema";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -31,7 +31,6 @@ function createPool(): Pool {
   // Use connection string options to make search_path connection-safe: every new
   // connection from the pool starts with the correct schema, unlike SET search_path
   // on a single pooled connection which would be racy.
-  // pg Pool supports `options` field which is passed as startup parameter.
   const poolConfig: any = { connectionString: databaseUrl };
   if (searchPath) {
     poolConfig.options = `-c search_path=${searchPath}`;
