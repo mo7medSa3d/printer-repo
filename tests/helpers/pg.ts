@@ -39,7 +39,9 @@ export async function applyMigrations(): Promise<void> {
     try {
       await pool().query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
     } catch (e: any) {
-      if (e?.code !== "23505") throw e;
+      if (e?.code !== "23505" && e?.code !== "42P06" && !String(e?.message || "").includes("already exists")) {
+        throw e;
+      }
     }
   }
   const dir = path.resolve(process.cwd(), "drizzle");
@@ -104,10 +106,27 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
     await client.query("BEGIN");
     await client.query(`INSERT INTO branches (id, name) VALUES ($1, $2)`, [branchId, `Branch ${suffix}`]);
     await client.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now())`, [agentId, branchId, `Agent ${suffix}`, sha256(agentSecret)]);
-    const hasBranchCol = await client.query(`SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers' AND column_name='branch_id' LIMIT 1`);
-    const legacyBranch = (hasBranchCol.rows?.length ?? 0) > 0 || (hasBranchCol.rowCount ?? 0) > 0;
-    if (legacyBranch) {
-        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+    const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='printers'`);
+    const has = new Set((cols.rows as { column_name: string }[]).map((r) => r.column_name));
+    const hasBranch = has.has("branch_id");
+    const hasType = has.has("type");
+    const hasEnabled = has.has("enabled");
+    if (hasBranch || hasType || hasEnabled) {
+        if (hasBranch && hasType && hasEnabled) {
+          await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, $4, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        } else if (hasBranch && hasType) {
+          await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        } else if (hasBranch && hasEnabled) {
+          await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        } else if (hasType && hasEnabled) {
+          await client.query(`INSERT INTO printers (id, agent_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        } else if (hasBranch) {
+          await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        } else if (hasType) {
+          await client.query(`INSERT INTO printers (id, agent_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        } else if (hasEnabled) {
+          await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        }
       } else {
         await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
       }
