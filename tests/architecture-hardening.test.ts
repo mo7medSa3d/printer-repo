@@ -55,12 +55,15 @@ describe("architecture hardening", () => {
     });
     expect(result.success).toBe(false);
   });
-  it("requires agentId at registration and never derives ownership from branchId", () => {
+
+  it("uses the pairing code as the agent-registration credential and never accepts branch ownership", () => {
     const src = readFileSync("src/app/api/agent/register/route.ts", "utf8");
-    expect(src).toContain("agentId: z.string().trim().min(1).max(120)");
-    expect(src).not.toContain("agentId: z.string().trim().min(1).max(120).optional()");
-    expect(src).toContain("eq(agents.id, parsed.data.agentId)");
+    expect(src).toContain("pairingCode: z.string().trim().min(1).max(64)");
+    expect(src).toContain("agentId: z.string().trim().min(1).max(120).optional()");
     expect(src).toContain("branchId is not accepted");
+    expect(src).toContain("eq(agents.pairingCode, normalizedCode)");
+    expect(src).toContain("clientIpFrom(req)");
+    expect(src).toContain("inspectAuthRateLimit");
   });
 
   it("installs security headers without forcing HSTS on development HTTP", () => {
