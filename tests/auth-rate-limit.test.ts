@@ -127,10 +127,12 @@ suite("manager login rate limiting", () => {
     const ok = await login(USER, PASS, "198.51.100.70");
     expect(ok.status).toBe(200);
 
-    const after = await login(USER, "wrong", "198.51.100.70");
+    // recordAuthSuccess clears only the account bucket by design; the IP bucket
+    // may still retain security state. Use another IP to verify that the account
+    // itself was recovered without weakening the independent IP limiter.
+    const after = await login(USER, "wrong", "198.51.100.71");
     expect(after.status).toBe(401);
   });
-
 
   it("removes only expired buckets and retains recent security state", async () => {
     const staleAt = new Date(Date.now() - AUTH_RATE_RETENTION_MS - 60_000);
