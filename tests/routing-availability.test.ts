@@ -13,16 +13,6 @@ import { resolvePrinterForJob, selectBestBinding } from "@/lib/routing";
 import { getAgentAvailability } from "@/lib/agent-availability";
 import { POST as printJobsPOST } from "@/app/api/print/jobs/route";
 
-/**
- * Routing availability and authorization regressions (real PostgreSQL).
- *
- *  - a disabled printer must be reported as PRINTER_DISABLED (409), not as
- *    PRINTER_OFFLINE (503): one is a configuration change, the other is
- *    "retry later";
- *  - Odoo API-key document-type allow-lists must match the routing layer's
- *    case-insensitive comparison.
- */
-
 const suite = describe.skipIf(!hasTestDatabase);
 
 async function bind(f: Fixture, bindingId: string, printerId: string, priority: number, documentType: string | null = "receipt") {
@@ -49,6 +39,32 @@ suite("routing availability + document-type authorization", () => {
   beforeEach(async () => {
     await truncateAll();
     f = await seedFixture();
+  });
+
+  it("rejects a disabled branch before evaluating bindings", async () => {
+    await pool().query(`UPDATE branches SET enabled = false WHERE id = $1`, [f.branchId]);
+    await bind(f, "binding_disabled_branch", f.printerId, 1);
+
+    const resolved = await resolvePrinterForJob({
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+      documentType: "receipt",
+      payloadType: "raw",
+    });
+    expect((resolved as any).error).toBe("INVALID_BRANCH");
+  });
+
+  it("rejects a disabled destination before selecting a printer", async () => {
+    await pool().query(`UPDATE destinations SET enabled = false WHERE id = $1`, [f.destinationId]);
+    await bind(f, "binding_disabled_destination", f.printerId, 1);
+
+    const resolved = await resolvePrinterForJob({
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+      documentType: "receipt",
+      payloadType: "raw",
+    });
+    expect((resolved as any).error).toBe("INVALID_DESTINATION");
   });
 
   it("reports a disabled printer as PRINTER_DISABLED, not PRINTER_OFFLINE", async () => {
@@ -102,6 +118,23 @@ suite("routing availability + document-type authorization", () => {
     expect((resolved as any).error).toBe("PRINTER_OFFLINE");
   });
 
+  it("treats unknown printer telemetry as unavailable and uses a healthy fallback", async () => {
+    await pool().query(`UPDATE printers SET status = 'unknown' WHERE id = $1`, [f.printerId]);
+    await addPrinter(f, "printer_healthy", {});
+    await bind(f, "binding_unknown", f.printerId, 1);
+    await bind(f, "binding_healthy", "printer_healthy", 2);
+
+    const resolved = await resolvePrinterForJob({
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+      documentType: "receipt",
+      payloadType: "raw",
+    });
+    expect("error" in (resolved as any)).toBe(false);
+    expect((resolved as any).printer.id).toBe("printer_healthy");
+    expect((resolved as any).fallbackUsed).toBe(true);
+  });
+
   it("prefers the transient PRINTER_OFFLINE when both a disabled and an offline candidate exist", async () => {
     await pool().query(`UPDATE printers SET lifecycle = 'disabled' WHERE id = $1`, [f.printerId]);
     await addPrinter(f, "printer_offline_2", { status: "offline" });
@@ -133,6 +166,23 @@ suite("routing availability + document-type authorization", () => {
     expect((resolved as any).printer.id).toBe("printer_healthy");
     expect((resolved as any).fallbackUsed).toBe(true);
     expect((resolved as any).fallbackChain).toEqual([f.printerId, "printer_healthy"]);
+  });
+
+  it("skips a corrupt cross-branch candidate when a valid fallback exists", async () => {
+    const other = await seedFixture();
+    await bind(f, "binding_cross_branch", other.printerId, 1);
+    await addPrinter(f, "printer_healthy", {});
+    await bind(f, "binding_healthy", "printer_healthy", 2);
+
+    const resolved = await resolvePrinterForJob({
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+      documentType: "receipt",
+      payloadType: "raw",
+    });
+    expect("error" in (resolved as any)).toBe(false);
+    expect((resolved as any).printer.id).toBe("printer_healthy");
+    expect((resolved as any).fallbackChain).toEqual([other.printerId, "printer_healthy"]);
   });
 
   it("accepts a document type whose case differs from the API key allow-list", async () => {
