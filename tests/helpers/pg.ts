@@ -80,19 +80,22 @@ async function applyMigrationsOnce(): Promise<void> {
       }
 
       if (schema) {
-        const fkCheck = await client.query(`
-          SELECT conname, pg_get_constraintdef(oid) AS definition
-          FROM pg_constraint
-          WHERE conrelid IN (
-            to_regclass(${JSON.stringify(schema)} || '.agents'),
-            to_regclass(${JSON.stringify(schema)} || '.printers'),
-            to_regclass(${JSON.stringify(schema)} || '.print_jobs')
-          )
-          AND contype = 'f'
-        `);
+        const fkCheck = await client.query(
+          `
+            SELECT conname, pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conrelid IN (
+              to_regclass($1),
+              to_regclass($2),
+              to_regclass($3)
+            )
+            AND contype = 'f'
+          `,
+          [`${schema}.agents`, `${schema}.printers`, `${schema}.print_jobs`],
+        );
         for (const row of fkCheck.rows) {
           const definition = String(row.definition);
-          if (definition.includes('public.')) {
+          if (definition.includes("public.")) {
             throw new Error(`worker schema FK escaped into public: ${row.conname} -> ${definition}`);
           }
         }
@@ -193,7 +196,7 @@ export async function seedFixture(opts?: { branchId?: string; printerCapabilitie
       } else if (hasType && hasEnabled) {
         await client.query(`INSERT INTO printers (id, agent_id, name, type, printer_type, device_class, connection_type, protocol, status, lifecycle, enabled, config, capabilities) VALUES ($1, $2, $3, 'spooler', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', true, '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
       } else if (hasBranch) {
-        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
+        await client.query(`INSERT INTO printers (id, agent_id, branch_id, name, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, agentId, branchId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
       } else {
         await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf"] })]);
       }
