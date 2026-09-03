@@ -76,36 +76,34 @@ class PrintGatewayReportMapping(models.Model):
     @api.model
     def get_mapping_for_report(self, report):
         """Find best mapping for a given ir.actions.report record.
-        Priority: report_id exact match > report_xml_id > model_name > report_name
-        Returns the highest priority (lowest number) match or False.
+        Priority: report_id exact match > report_xml_id > model_name > report_name.
+        Ties are resolved by record id so routing remains deterministic.
         """
         if not report:
             return False
 
-        # Try exact report_id match first
-        mapping = self.search([('report_id', '=', report.id), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
+        order = 'priority asc, id asc'
+
+        mapping = self.search([('report_id', '=', report.id), ('active', '=', True), ('gateway_enabled', '=', True)], order=order, limit=1)
         if mapping:
             return mapping
 
-        # Try XML ID - need to find xml id for report
         try:
             xml_id = report.get_external_id().get(report.id)
             if xml_id:
-                mapping = self.search([('report_xml_id', '=', xml_id), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
+                mapping = self.search([('report_xml_id', '=', xml_id), ('active', '=', True), ('gateway_enabled', '=', True)], order=order, limit=1)
                 if mapping:
                     return mapping
         except Exception:
             pass
 
-        # Try report_name
         if report.report_name:
-            mapping = self.search([('report_name', '=', report.report_name), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
+            mapping = self.search([('report_name', '=', report.report_name), ('active', '=', True), ('gateway_enabled', '=', True)], order=order, limit=1)
             if mapping:
                 return mapping
 
-        # Try model
         if report.model:
-            mapping = self.search([('model_name', '=', report.model), ('active', '=', True), ('gateway_enabled', '=', True)], order='priority asc', limit=1)
+            mapping = self.search([('model_name', '=', report.model), ('active', '=', True), ('gateway_enabled', '=', True)], order=order, limit=1)
             if mapping:
                 return mapping
 
@@ -113,14 +111,15 @@ class PrintGatewayReportMapping(models.Model):
 
     @api.model
     def get_mapping_for_model(self, model_name, report_name=None):
-        """Helper for testing: find mapping by model/report_name"""
+        """Helper for testing: find mapping by model/report_name."""
         domain = [('active', '=', True), ('gateway_enabled', '=', True)]
+        order = 'priority asc, id asc'
         if report_name:
-            mapping = self.search([('report_name', '=', report_name)] + domain, order='priority asc', limit=1)
+            mapping = self.search([('report_name', '=', report_name)] + domain, order=order, limit=1)
             if mapping:
                 return mapping
         if model_name:
-            mapping = self.search([('model_name', '=', model_name)] + domain, order='priority asc', limit=1)
+            mapping = self.search([('model_name', '=', model_name)] + domain, order=order, limit=1)
             if mapping:
                 return mapping
         return False
