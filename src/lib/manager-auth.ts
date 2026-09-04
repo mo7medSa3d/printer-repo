@@ -1,5 +1,5 @@
-import { db } from "@/db";
-import { managerSessions } from "@/db/schema";
+import { db } from "../db";
+import { managerSessions } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 

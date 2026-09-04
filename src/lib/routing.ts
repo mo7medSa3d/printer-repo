@@ -1,5 +1,5 @@
-import { db } from "@/db";
-import { agents, branches, destinations, printerBindings, printers } from "@/db/schema";
+import { db } from "../db";
+import { agents, branches, destinations, printerBindings, printers } from "../db/schema";
 import { and, eq, inArray } from "drizzle-orm";
 import { isVirtualPrinterRecord, type PrinterLike } from "./printer-virtual";
 import { getAgentAvailability } from "./agent-availability";

@@ -1,5 +1,5 @@
-import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { db } from "../db";
+import { agents } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 

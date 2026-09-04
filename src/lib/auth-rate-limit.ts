@@ -1,4 +1,4 @@
-import { db } from "@/db";
+import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { isIP } from "node:net";
 

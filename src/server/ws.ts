@@ -1,13 +1,13 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
-import { validateAgent } from "@/lib/agent-auth";
+import { validateAgent } from "../lib/agent-auth";
 import {
   claimJobForDelivery,
   markJobDelivered,
   recordJobAck,
   releaseUndeliveredClaim,
   type ClaimedJobRow,
-} from "@/lib/job-delivery";
+} from "../lib/job-delivery";
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
