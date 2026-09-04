@@ -5,11 +5,18 @@ import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, closePool, 
 const suite = describe.skipIf(!hasTestDatabase);
 
 suite("agent registration contract", () => {
+  const previousTrustProxy = process.env.TRUST_PROXY;
+
   beforeAll(async () => {
     await applyMigrations();
+    // These integration tests intentionally exercise the IP-scoped limiter via
+    // x-real-ip, so they must run with an explicitly trusted test proxy.
+    process.env.TRUST_PROXY = "1";
   });
 
   afterAll(async () => {
+    if (previousTrustProxy === undefined) delete process.env.TRUST_PROXY;
+    else process.env.TRUST_PROXY = previousTrustProxy;
     await closePool();
   });
 
