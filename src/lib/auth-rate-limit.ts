@@ -10,24 +10,32 @@ import { isIP } from "node:net";
  * attempts across instances. State lives in `auth_rate_limits`.
  *
  * Keys:
- *   ip:<client-ip>        — per source address
+ *   ip:<client-ip>        — per source address when a trusted proxy is configured
  *   acct:<username>       — per login identifier (lowercased, trimmed)
  *
- * Progressive backoff (failures inside a 15-minute window):
- *    1–4  no lock
- *    5–9  30 s
- *   10–14 5 min
- *   15–19 15 min
- *     20+ 60 min
- *
- * A successful login clears the account bucket so a legitimate user recovers
- * immediately. The IP bucket is left alone (it may be covering other accounts).
- *
- * Responses never distinguish "unknown user" from "known user" — both increment
- * the same shape of counters and both see either 401 or 429.
+ * When TRUST_PROXY is not explicitly enabled, the framework Request does not
+ * expose a trustworthy TCP peer address. We therefore use account-scoped
+ * limiting only instead of putting every caller into the shared ip:unknown
+ * bucket. This prevents one remote client from globally locking out every
+ * manager/agent when the deployment is missing TRUST_PROXY configuration.
  */
 
 export const AUTH_RATE_WINDOW_MS = 15 * 60 * 1000;
+
+let warnedUntrustedProxy = false;
+
+function trustProxyEnabled(): boolean {
+  return process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
+}
+
+function warnUntrustedProxyOnce(): void {
+  if (warnedUntrustedProxy || process.env.NODE_ENV !== "production") return;
+  warnedUntrustedProxy = true;
+  console.warn(
+    "[auth-rate-limit] TRUST_PROXY is not enabled in production; IP-scoped auth rate limiting is disabled. " +
+    "Set TRUST_PROXY only when the deployment is behind a trusted proxy that sanitizes forwarding headers."
+  );
+}
 
 export function lockDurationMs(failures: number): number {
   if (failures < 5) return 0;
@@ -37,15 +45,11 @@ export function lockDurationMs(failures: number): number {
   return 60 * 60_000;
 }
 
-/**
- * Resolve a source address only from proxy-controlled forwarding headers when
- * `TRUST_PROXY` is explicitly enabled. Without a trusted proxy, framework
- * `Request` does not expose the TCP peer address, so treating client-supplied
- * X-Real-IP as authoritative would let an attacker rotate arbitrary IP keys.
- */
 export function clientIpFrom(req: Request): string {
-  const trust = process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
-  if (!trust) return "unknown";
+  if (!trustProxyEnabled()) {
+    warnUntrustedProxyOnce();
+    return "unknown";
+  }
 
   const candidates = [
     ...(req.headers.get("x-forwarded-for")?.split(",") ?? []),
@@ -102,17 +106,19 @@ function lockedFor(row: BucketRow | null, now: number): number {
   return until - now;
 }
 
-/**
- * Reject the attempt if either the IP or the account is currently locked.
- * Does not consume a failure — callers record failures only after a real
- * authentication miss so a 429 itself cannot amplify the lock.
- */
 export async function inspectAuthRateLimit(ip: string, username: string): Promise<RateLimitDecision> {
   const now = Date.now();
-  const [ipRow, acctRow] = await Promise.all([
-    readBucket(ipKey(ip)),
-    readBucket(accountKey(username)),
-  ]);
+  const account = readBucket(accountKey(username));
+  if (!trustProxyEnabled() || ip === "unknown") {
+    warnUntrustedProxyOnce();
+    const acctRow = await account;
+    const remaining = lockedFor(acctRow, now);
+    return remaining > 0
+      ? { allowed: false, retryAfterSec: Math.max(1, Math.ceil(remaining / 1000)) }
+      : { allowed: true };
+  }
+
+  const [ipRow, acctRow] = await Promise.all([readBucket(ipKey(ip)), account]);
   const remaining = Math.max(lockedFor(ipRow, now), lockedFor(acctRow, now));
   if (remaining > 0) {
     return { allowed: false, retryAfterSec: Math.max(1, Math.ceil(remaining / 1000)) };
@@ -127,8 +133,7 @@ async function bump(key: string): Promise<{ failures: number; lockedUntil: Date 
     await tx.execute(sql`
       INSERT INTO auth_rate_limits (key, failures, window_started_at, locked_until, updated_at)
       VALUES (${key}, 0, ${now}, NULL, ${now})
-      ON CONFLICT (key) DO UPDATE
-        SET updated_at = ${now}
+      ON CONFLICT (key) DO UPDATE SET updated_at = ${now}
     `);
     await tx.execute(sql`SELECT * FROM auth_rate_limits WHERE key = ${key} FOR UPDATE`);
 
@@ -158,7 +163,6 @@ async function bump(key: string): Promise<{ failures: number; lockedUntil: Date 
 
 export const AUTH_RATE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-/** Remove stale buckets without touching active security state. */
 export async function cleanupAuthRateLimits(now = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - AUTH_RATE_RETENTION_MS);
   const result = await db.execute(sql`
@@ -170,10 +174,19 @@ export async function cleanupAuthRateLimits(now = new Date()): Promise<number> {
 }
 
 export async function recordAuthFailure(ip: string, username: string): Promise<RateLimitDecision> {
-  const [ipBump, acctBump] = await Promise.all([
-    bump(ipKey(ip)),
-    bump(accountKey(username)),
-  ]);
+  const accountBump = bump(accountKey(username));
+
+  if (!trustProxyEnabled() || ip === "unknown") {
+    warnUntrustedProxyOnce();
+    const result = await accountBump;
+    if (!result.lockedUntil) return { allowed: true };
+    const remaining = result.lockedUntil.getTime() - Date.now();
+    return remaining > 0
+      ? { allowed: false, retryAfterSec: Math.max(1, Math.ceil(remaining / 1000)) }
+      : { allowed: true };
+  }
+
+  const [ipBump, acctBump] = await Promise.all([bump(ipKey(ip)), accountBump]);
   const until = [ipBump.lockedUntil, acctBump.lockedUntil]
     .filter((d): d is Date => !!d)
     .map((d) => d.getTime());
@@ -184,7 +197,5 @@ export async function recordAuthFailure(ip: string, username: string): Promise<R
 }
 
 export async function recordAuthSuccess(username: string): Promise<void> {
-  await db.execute(sql`
-    DELETE FROM auth_rate_limits WHERE key = ${accountKey(username)}
-  `);
+  await db.execute(sql`DELETE FROM auth_rate_limits WHERE key = ${accountKey(username)}`);
 }
