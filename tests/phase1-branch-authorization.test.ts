@@ -47,7 +47,7 @@ vi.mock("@/db", () => {
         agents: { findFirst: (...args: unknown[]) => findFirstMocks.agents(...args) },
         printJobs: { findFirst: (...args: unknown[]) => findFirstMocks.printJobs(...args) },
       },
-      transaction: async (callback: (tx: typeof tx) => Promise<unknown>) => callback(tx),
+      transaction: async (callback: (tx: any) => Promise<unknown>) => callback(tx),
       insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
       update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
     },
