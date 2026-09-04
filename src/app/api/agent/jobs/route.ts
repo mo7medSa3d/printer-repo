@@ -43,88 +43,107 @@ export async function GET(req: Request) {
       ${branchFilter}
   `);
 
-  // The capacity check and claim must be serialized per agent. Keeping the
-  // lock/count in the same SQL statement avoids the classic race where two
-  // concurrent polls both observe free capacity and jointly exceed the cap.
-  // pg_advisory_xact_lock is released automatically when this statement ends;
-  // hashtext collisions only serialize unrelated agents and do not affect
-  // correctness.
-  const claimed = await db.execute(sql`
-    WITH agent_lock AS (
-      SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`})) AS locked
-    ),
-    in_flight AS (
-      SELECT COUNT(*)::int AS count
-      FROM print_jobs, agent_lock
-      WHERE agent_id = ${agent.id}
-        AND status IN ('claimed', 'printing')
-        AND expires_at > now()
-        ${branchFilter}
-    ),
-    stale_candidates AS (
-      SELECT id, created_at, 0 AS priority
-      FROM print_jobs, agent_lock
-      WHERE agent_id = ${agent.id}
-        AND expires_at > now()
-        AND status IN ('claimed', 'printing')
-        AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
-        AND retries < ${MAX_RETRIES}
-        ${branchFilter}
-      ORDER BY created_at ASC
-      LIMIT ${MAX_CLAIM_BATCH}
-    ),
-    queued_candidates AS (
-      SELECT id, created_at, 1 AS priority
-      FROM print_jobs, agent_lock, in_flight
-      WHERE agent_id = ${agent.id}
-        AND expires_at > now()
-        AND status = 'queued'
-        AND in_flight.count < ${MAX_AGENT_IN_FLIGHT_JOBS}
-        ${branchFilter}
-      ORDER BY created_at ASC
-      LIMIT ${MAX_CLAIM_BATCH}
-    ),
-    candidate_ids AS (
-      SELECT id, created_at, priority FROM stale_candidates
-      UNION ALL
-      SELECT id, created_at, priority FROM queued_candidates
-    ),
-    claimable AS (
-      SELECT p.id
-      FROM print_jobs p
-      JOIN candidate_ids c ON c.id = p.id
-      ORDER BY c.priority ASC, c.created_at ASC
-      LIMIT ${MAX_CLAIM_BATCH}
-      FOR UPDATE SKIP LOCKED
-    )
-    UPDATE print_jobs
-    SET
-      status = 'claimed',
-      claimed_at = now(),
-      updated_at = now(),
-      delivered_at = now(),
-      acked_at = NULL,
-      delivery_attempts = print_jobs.delivery_attempts + 1,
-      retries = CASE WHEN print_jobs.status IN ('claimed', 'printing')
-                     THEN print_jobs.retries + 1
-                     ELSE print_jobs.retries END
-    FROM claimable
-    WHERE print_jobs.id = claimable.id
-    RETURNING
-      print_jobs.id AS id,
-      print_jobs.branch_id AS "branchId",
-      print_jobs.agent_id AS "agentId",
-      print_jobs.printer_id AS "printerId",
-      print_jobs.destination_id AS "destinationId",
-      print_jobs.document_type AS "documentType",
-      print_jobs.status AS status,
-      print_jobs.payload AS payload,
-      print_jobs.expires_at AS "expiresAt",
-      print_jobs.retries AS retries
-  `);
+  // Capacity and claiming must run in the SAME database transaction. A
+  // statement-local advisory lock is insufficient here: PostgreSQL can take a
+  // statement snapshot before waiting on the advisory lock, allowing a second
+  // concurrent poll to observe the same queued rows. Holding the lock for the
+  // transaction makes the snapshot and claim serialization explicit.
+  const claimJobs = async (tx: { execute: typeof db.execute }) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`}))
+    `);
 
-  const rows = (claimed as unknown as { rows?: unknown[] })?.rows ?? (claimed as unknown as unknown[]);
-  return NextResponse.json(Array.isArray(rows) ? rows : Array.isArray(claimed) ? claimed : []);
+    const countResult = await tx.execute(sql`
+      SELECT COUNT(*)::int AS count
+      FROM print_jobs
+      WHERE agent_id = ${agent.id}
+        AND status IN ('claimed', 'printing')
+        AND expires_at > now()
+        ${branchFilter}
+    `);
+    const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
+    const remainingSlots = Math.max(0, MAX_AGENT_IN_FLIGHT_JOBS - inFlight);
+
+    // Stale claims are recovery work and are always admitted because they do
+    // not increase the number of in-flight jobs. Queued work is capped to the
+    // actual remaining capacity, so this transaction can never add more jobs
+    // than MAX_AGENT_IN_FLIGHT_JOBS even under concurrent polling.
+    const queuedLimit = Math.min(MAX_CLAIM_BATCH, remainingSlots);
+    const claimed = await tx.execute(sql`
+      WITH stale_candidates AS (
+        SELECT id, created_at, 0 AS priority
+        FROM print_jobs
+        WHERE agent_id = ${agent.id}
+          AND expires_at > now()
+          AND status IN ('claimed', 'printing')
+          AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
+          AND retries < ${MAX_RETRIES}
+          ${branchFilter}
+        ORDER BY created_at ASC
+        LIMIT ${MAX_CLAIM_BATCH}
+      ),
+      queued_candidates AS (
+        SELECT id, created_at, 1 AS priority
+        FROM print_jobs
+        WHERE agent_id = ${agent.id}
+          AND expires_at > now()
+          AND status = 'queued'
+          AND ${queuedLimit} > 0
+          ${branchFilter}
+        ORDER BY created_at ASC
+        LIMIT ${queuedLimit}
+      ),
+      candidate_ids AS (
+        SELECT id, created_at, priority FROM stale_candidates
+        UNION ALL
+        SELECT id, created_at, priority FROM queued_candidates
+      ),
+      claimable AS (
+        SELECT p.id
+        FROM print_jobs p
+        JOIN candidate_ids c ON c.id = p.id
+        ORDER BY c.priority ASC, c.created_at ASC
+        LIMIT ${MAX_CLAIM_BATCH}
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE print_jobs
+      SET
+        status = 'claimed',
+        claimed_at = now(),
+        updated_at = now(),
+        delivered_at = now(),
+        acked_at = NULL,
+        delivery_attempts = print_jobs.delivery_attempts + 1,
+        retries = CASE WHEN print_jobs.status IN ('claimed', 'printing')
+                       THEN print_jobs.retries + 1
+                       ELSE print_jobs.retries END
+      FROM claimable
+      WHERE print_jobs.id = claimable.id
+      RETURNING
+        print_jobs.id AS id,
+        print_jobs.branch_id AS "branchId",
+        print_jobs.agent_id AS "agentId",
+        print_jobs.printer_id AS "printerId",
+        print_jobs.destination_id AS "destinationId",
+        print_jobs.document_type AS "documentType",
+        print_jobs.status AS status,
+        print_jobs.payload AS payload,
+        print_jobs.expires_at AS "expiresAt",
+        print_jobs.retries AS retries
+    `);
+
+    const rows = (claimed as unknown as { rows?: unknown[] })?.rows ?? (claimed as unknown as unknown[]);
+    return Array.isArray(rows) ? rows : Array.isArray(claimed) ? claimed : [];
+  };
+
+  // The real Drizzle/Postgres connection always has transaction(). The
+  // fallback keeps lightweight route mocks compatible without weakening the
+  // production path, where the transaction is mandatory for correctness.
+  const rows = typeof (db as { transaction?: unknown }).transaction === "function"
+    ? await db.transaction((tx) => claimJobs(tx as { execute: typeof db.execute }))
+    : await claimJobs(db);
+
+  return NextResponse.json(rows);
 }
 
 export async function PATCH(req: Request) {
