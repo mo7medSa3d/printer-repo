@@ -125,8 +125,8 @@ jobs:
       postgres:
         image: postgres:15-alpine
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
           POSTGRES_DB: postgres
         ports:
           - 5432:5432
@@ -143,15 +143,15 @@ jobs:
       - name: Wait for PostgreSQL
         run: |
           for i in $(seq 1 30); do
-            pg_isready -h 127.0.0.1 -p 5432 -U postgres && break
+            pg_isready -h 127.0.0.1 -p 5432 -U odoo && break
             sleep 1
           done
-          pg_isready -h 127.0.0.1 -p 5432 -U postgres
+          pg_isready -h 127.0.0.1 -p 5432 -U odoo
 
       - name: Create Odoo test database
         env:
-          PGPASSWORD: postgres
-        run: createdb -h 127.0.0.1 -U postgres odoo19_test
+          PGPASSWORD: odoo
+        run: createdb -h 127.0.0.1 -U odoo odoo19_test
 
       - name: Install and test addon on Odoo 19 Community
         run: |
@@ -159,18 +159,19 @@ jobs:
           docker run --rm --network host \
             -e HOST=127.0.0.1 \
             -e PORT=5432 \
-            -e USER=postgres \
-            -e PASSWORD=postgres \
+            -e USER=odoo \
+            -e PASSWORD=odoo \
             -v "$GITHUB_WORKSPACE/odoo_addons:/mnt/extra-addons:ro" \
             odoo:19.0 \
             odoo \
               --database=odoo19_test \
               --db_host=127.0.0.1 \
               --db_port=5432 \
-              --db_user=postgres \
-              --db_password=postgres \
+              --db_user=odoo \
+              --db_password=odoo \
               --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
-              --without-demo=all \
+              --without-demo=1 \
+              --http-interface=127.0.0.1 \
               --init=print_gateway \
               --test-enable \
               --stop-after-init \
