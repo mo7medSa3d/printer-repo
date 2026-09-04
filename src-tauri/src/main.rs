@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod cleanup;
 mod commands;
 mod logging;
 mod paths;
@@ -26,8 +27,6 @@ fn main() {
         .setup(|app| {
             logging::info("application setup started");
 
-            // Tauri's setup closure expects Box<dyn Error>; std::io::Error
-            // converts cleanly (String does not).
             paths::ensure_runtime_dirs().map_err(|e| {
                 let msg = format!("unable to create runtime dirs: {e}");
                 logging::error(&msg);
@@ -40,9 +39,6 @@ fn main() {
                 paths::agent_data_root().display()
             ));
 
-            // Register the desktop manager to launch on Windows login/reboot.
-            // The setup() handler then starts the bundled agent so a normal
-            // user gets the full stack again after a reboot.
             #[cfg(windows)]
             {
                 use tauri_plugin_autostart::ManagerExt;
@@ -97,6 +93,7 @@ fn main() {
             commands::get_printers,
             commands::discover_printers,
             commands::test_printer,
+            cleanup::cleanup_local_jobs,
             commands::register_printer,
             commands::get_autostart,
             commands::set_autostart
