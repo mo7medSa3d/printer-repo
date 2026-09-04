@@ -7,11 +7,9 @@ import { Button, Modal } from "@/components/ui";
 export function JobCleanupButton() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
 
   const cleanup = async () => {
     setBusy(true);
-    setMessage(null);
     try {
       const response = await fetch("/api/jobs", { method: "DELETE" });
       const data = (await response.json().catch(() => ({}))) as {
@@ -21,33 +19,23 @@ export function JobCleanupButton() {
       if (!response.ok) throw new Error(data.error ?? "Failed to clean print jobs");
 
       setOpen(false);
-      const deleted = Number(data.deleted ?? 0);
-      setMessage(
-        deleted === 0
-          ? "No completed or failed jobs to remove."
-          : `Removed ${deleted} terminal print job${deleted === 1 ? "" : "s"}.`
-      );
       window.location.reload();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to clean print jobs");
-    } finally {
       setBusy(false);
+      throw error;
     }
   };
 
   return (
     <>
-      <div className="flex items-center gap-2">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => setOpen(true)}
-          icon={<Trash2 className="h-4 w-4" />}
-        >
-          Clean jobs
-        </Button>
-        {message ? <span className="text-xs text-ink-3">{message}</span> : null}
-      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => setOpen(true)}
+        icon={<Trash2 className="h-4 w-4" />}
+      >
+        Clean jobs
+      </Button>
 
       <Modal
         open={open}
@@ -74,7 +62,7 @@ export function JobCleanupButton() {
       >
         <div className="space-y-3 text-sm text-ink-2">
           <p>Only completed, failed and expired jobs are removed.</p>
-          <p>Queued, claimed and printing jobs are never touched by this action.</p>
+          <p>Queued, claimed and printing jobs are never touched.</p>
           <p className="font-medium text-warn">
             This removes Gateway print history and cannot be undone.
           </p>
