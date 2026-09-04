@@ -39,8 +39,12 @@ function collectParams(node: any, out: string[] = []): string[] {
   return out;
 }
 
+function requestedIds(where: any): string[] {
+  return collectParams(where);
+}
+
 function requestedId(where: any): string | null {
-  return collectParams(where)[0] ?? null;
+  return requestedIds(where)[0] ?? null;
 }
 
 vi.mock("@/db", () => ({
@@ -55,15 +59,29 @@ vi.mock("@/db", () => ({
       },
       printerBindings: { findMany: async () => state.bindings },
       printers: {
+        // Keep findFirst for compatibility with any future routing helper,
+        // while the production resolver now uses the batched findMany path.
         findFirst: async ({ where }: any) => {
           const id = requestedId(where);
           return id ? (state.printers[id] ?? null) : null;
         },
+        findMany: async ({ where }: any) => {
+          const ids = requestedIds(where);
+          const selectedIds = ids.length > 0 ? ids : Object.keys(state.printers);
+          state.printerCalls += 1;
+          return selectedIds.map((id) => state.printers[id]).filter(Boolean);
+        },
       },
       agents: {
+        // Keep findFirst for compatibility with any future routing helper.
         findFirst: async ({ where }: any) => {
           const id = requestedId(where);
           return id ? (state.agents[id] ?? null) : null;
+        },
+        findMany: async ({ where }: any) => {
+          const ids = requestedIds(where);
+          const selectedIds = ids.length > 0 ? ids : Object.keys(state.agents);
+          return selectedIds.map((id) => state.agents[id]).filter(Boolean);
         },
       },
     },
@@ -177,8 +195,6 @@ describe("routing regression: virtual printers never win", () => {
     );
     const res = await resolvePrinterForJob(job);
     if (!res || !("error" in res)) throw new Error(`expected an error, got ${JSON.stringify(res)}`);
-    // Existing semantics preserved: an offline printer is still PRINTER_OFFLINE
-    // (503, retry later) — the virtual feature does not mask it.
     expect(res.error).toBe("PRINTER_OFFLINE");
   });
 
