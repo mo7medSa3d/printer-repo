@@ -7,9 +7,11 @@ import { Button, Modal } from "@/components/ui";
 export function JobCleanupButton() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const cleanup = async () => {
     setBusy(true);
+    setError(null);
     try {
       const response = await fetch("/api/jobs", { method: "DELETE" });
       const data = (await response.json().catch(() => ({}))) as {
@@ -20,22 +22,31 @@ export function JobCleanupButton() {
 
       setOpen(false);
       window.location.reload();
-    } catch (error) {
+    } catch (cleanupError) {
+      setError(
+        cleanupError instanceof Error ? cleanupError.message : "Failed to clean print jobs"
+      );
+    } finally {
       setBusy(false);
-      throw error;
     }
   };
 
   return (
     <>
-      <Button
-        variant="secondary"
-        size="sm"
-        onClick={() => setOpen(true)}
-        icon={<Trash2 className="h-4 w-4" />}
-      >
-        Clean jobs
-      </Button>
+      <div className="flex flex-col items-end gap-1.5">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            setError(null);
+            setOpen(true);
+          }}
+          icon={<Trash2 className="h-4 w-4" />}
+        >
+          Clean jobs
+        </Button>
+        {error ? <span role="alert" className="text-xs text-bad">{error}</span> : null}
+      </div>
 
       <Modal
         open={open}
