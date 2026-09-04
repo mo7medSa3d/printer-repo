@@ -31,7 +31,7 @@
                     <group string="Payload">
                         <field name="payload" readonly="1"/>
                     </group>
-                    <group string="Result" attrs="{'invisible': [('status', 'not in', ['failed', 'expired'])]}">
+                    <group string="Result" invisible="status not in ['failed', 'expired']">
                         <field name="error" readonly="1"/>
                     </group>
                     <div class="alert alert-info" role="alert">
@@ -43,10 +43,10 @@
         </field>
     </record>
     <record id="view_print_gateway_print_job_tree" model="ir.ui.view">
-        <field name="name">print_gateway.print_job.tree</field>
+        <field name="name">print_gateway.print_job.list</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <tree string="Print Jobs" class="o_pg_view o_pg_list"
+            <list string="Print Jobs" class="o_pg_view o_pg_list"
                   decoration-success="status in ('success','completed')"
                   decoration-danger="status in ('failed','expired')"
                   decoration-warning="status=='printing'"
@@ -62,13 +62,13 @@
                 <field name="printer_id"/>
                 <field name="status" widget="badge"/>
                 <field name="create_date"/>
-            </tree>
+            </list>
         </field>
     </record>
     <record id="action_print_gateway_print_job" model="ir.actions.act_window">
         <field name="name">Print Jobs</field>
         <field name="res_model">print_gateway.print_job</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
                 No print jobs yet — print a mapped report from Odoo to create one.
