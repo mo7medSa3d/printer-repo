@@ -22,20 +22,20 @@
         </field>
     </record>
     <record id="view_print_gateway_document_type_tree" model="ir.ui.view">
-        <field name="name">print_gateway.document_type.tree</field>
+        <field name="name">print_gateway.document_type.list</field>
         <field name="model">print_gateway.document_type</field>
         <field name="arch" type="xml">
-            <tree string="Document Types" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
+            <list string="Document Types" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="payload_hint"/>
                 <field name="enabled" widget="boolean_toggle"/>
-            </tree>
+            </list>
         </field>
     </record>
     <record id="action_print_gateway_document_type" model="ir.actions.act_window">
         <field name="name">Document Types</field>
         <field name="res_model">print_gateway.document_type</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
     </record>
 </odoo>
