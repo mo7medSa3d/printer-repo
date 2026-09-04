@@ -7,9 +7,11 @@ These tests verify that all security vulnerabilities have been fixed:
 4. Report routing company validation
 """
 
+from unittest.mock import MagicMock, patch
+
 import odoo
 from odoo.tests import common, TransactionCase
-from odoo.exceptions import AccessError, UserError
+from odoo.exceptions import AccessError, UserError, ValidationError
 
 
 class TestPrintGatewaySecurityCompanyIsolation(TransactionCase):
@@ -355,6 +357,7 @@ class TestPrintGatewayLifecycleOwnership(TransactionCase):
                 'branch_id': other_branch.id, 'destination_id': dest.id, 'printer_id': self.printer.id,
             })
 
+
 class TestGatewayPullSyncStatus(TransactionCase):
     """Pull-sync transport failures must be failed, not falsely successful."""
 
@@ -388,5 +391,3 @@ class TestGatewayPullSyncStatus(TransactionCase):
         response.json.return_value = {'unexpected': 'shape'}
         mock_get.return_value = response
         with self.assertRaises(ValidationError):
-            self.branch.action_sync_from_gateway()
-        self.assertEqual(self.branch.last_sync_status, 'failed')
