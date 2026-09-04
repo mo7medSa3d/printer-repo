@@ -49,8 +49,9 @@ Sign in at `/login` with `MANAGER_USERNAME` / `MANAGER_PASSWORD`, create a branc
 agent to obtain a pairing code, pair the agent, run discovery, then create a destination,
 a document type and a printer binding.
 
-No printer at hand? `http://localhost:3000/simulator` is a browser-based agent (register →
-heartbeat → poll → report) that exercises the whole lifecycle.
+The browser simulator has been removed from the production gateway. For end-to-end development
+without physical hardware, use the real Go agent with the supported local/non-Windows print
+simulation path described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 Full instructions: [INSTALLATION.md](INSTALLATION.md) ·
 configuration reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -171,7 +172,9 @@ independent Branch ownership field; branch is derived through `printer.agentId �
 
 Agent and Printer deletion is lifecycle-based: `active <-> disabled`, `active/disabled -> retired`;
 `retired` is terminal. Normal API/UI flows never physically delete Agents or Printers, so
-historical jobs and audit relationships survive.
+historical jobs and audit relationships survive. The manager UI now also exposes a guarded hard
+Delete action for an offline Agent that has no Printers, no print history, and no remaining
+operational discovery records.
 
 Logical print requests are idempotent by UUID/idempotency key. Physical printing remains
 potentially at-least-once because a device may receive bytes before a network failure is observed;
