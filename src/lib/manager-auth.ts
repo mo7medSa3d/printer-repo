@@ -159,9 +159,8 @@ export function verifyManagerPassword(username: string, input: string): boolean 
     return compareStringsSafe(derived, hash.toLowerCase());
   }
 
-  // Plaintext password is retained only for existing development setups.
-  // Production deployments must use MANAGER_PASSWORD_HASH.
-  if (process.env.NODE_ENV === "production" || !expectedPass) return false;
+  // Plaintext password is development-only and must be explicitly enabled.
+  if (process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD !== "1" || !expectedPass) return false;
   return compareStringsSafe(input, expectedPass);
 }
 
