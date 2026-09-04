@@ -34,6 +34,11 @@ const findFirstMocks = {
 };
 
 vi.mock("@/db", () => {
+  const tx = {
+    execute: vi.fn().mockResolvedValue({ rows: [{ count: 0 }] }),
+    insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
+  };
+
   return {
     db: {
       query: {
@@ -42,6 +47,7 @@ vi.mock("@/db", () => {
         agents: { findFirst: (...args: unknown[]) => findFirstMocks.agents(...args) },
         printJobs: { findFirst: (...args: unknown[]) => findFirstMocks.printJobs(...args) },
       },
+      transaction: async (callback: (tx: typeof tx) => Promise<unknown>) => callback(tx),
       insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
       update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
     },
