@@ -63,11 +63,17 @@ suite("manager login rate limiting", () => {
     await applyMigrations();
     process.env.MANAGER_USERNAME = USER;
     process.env.MANAGER_PASSWORD = PASS;
+    // Plaintext credentials are explicitly opt-in in production code. This
+    // integration suite uses the simple password fixture, so opt in only for
+    // the duration of this test suite rather than weakening the production
+    // default.
+    process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD = "1";
     process.env.GATEWAY_JWT_SECRET = process.env.GATEWAY_JWT_SECRET || "x".repeat(32);
     process.env.TRUST_PROXY = "1";
   });
 
   afterAll(async () => {
+    delete process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD;
     await closePool();
   });
 
