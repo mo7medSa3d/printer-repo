@@ -67,8 +67,8 @@ jobs:
 
       - name: Validate Odoo 19 addon XML conventions
         run: |
-          if grep -R -nE '<tree([[:space:]>])|attrs=' odoo_addons/print_gateway/views; then
-            echo 'Odoo 19 incompatibility detected: use <list> and direct modifiers such as invisible/readonly/required instead of <tree>/attrs.'
+          if grep -R -nE '<tree([[:space:]>])|attrs=|states=' odoo_addons/print_gateway/views; then
+            echo 'Odoo 19 incompatibility detected: use <list> and direct modifiers instead of <tree>, attrs, or states.'
             exit 1
           fi
 
@@ -118,3 +118,60 @@ jobs:
         run: npm run build
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+
+  odoo19:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -p 5432 -U postgres && break
+            sleep 1
+          done
+          pg_isready -h 127.0.0.1 -p 5432 -U postgres
+
+      - name: Create Odoo test database
+        env:
+          PGPASSWORD: postgres
+        run: createdb -h 127.0.0.1 -U postgres odoo19_test
+
+      - name: Install and test addon on Odoo 19 Community
+        run: |
+          docker pull odoo:19.0
+          docker run --rm --network host \
+            -e HOST=127.0.0.1 \
+            -e PORT=5432 \
+            -e USER=postgres \
+            -e PASSWORD=postgres \
+            -v "$GITHUB_WORKSPACE/odoo_addons:/mnt/extra-addons:ro" \
+            odoo:19.0 \
+            odoo \
+              --database=odoo19_test \
+              --db_host=127.0.0.1 \
+              --db_port=5432 \
+              --db_user=postgres \
+              --db_password=postgres \
+              --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
+              --without-demo=all \
+              --init=print_gateway \
+              --test-enable \
+              --stop-after-init \
+              --log-level=test
