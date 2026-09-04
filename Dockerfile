@@ -21,7 +21,6 @@ ENV PORT=3000
 # Agent WebSocket. Keep tsx available at runtime because server.ts is TypeScript.
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
-COPY --from=build /app/public ./public
 COPY --from=build /app/server.ts ./server.ts
 COPY --from=build /app/src ./src
 COPY --from=build /app/scripts ./scripts
