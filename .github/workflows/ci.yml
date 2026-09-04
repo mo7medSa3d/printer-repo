@@ -65,6 +65,13 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Validate Odoo 19 addon XML conventions
+        run: |
+          if grep -R -nE '<tree([[:space:]>])|attrs=' odoo_addons/print_gateway/views; then
+            echo 'Odoo 19 incompatibility detected: use <list> and direct modifiers such as invisible/readonly/required instead of <tree>/attrs.'
+            exit 1
+          fi
+
       - name: Run unit tests (no DB)
         run: npm run test:unit
 
