@@ -66,7 +66,7 @@ class PrintGatewayReportMapping(models.Model):
         default='pdf',
         string='Payload Type',
         required=True,
-        help='QWeb report mappings generate PDF payloads only. Use the direct print-job API for RAW/ESC-POS data.',
+        help='PDF reports remain application/pdf. PDF is never relabeled as raw. Use the direct print-job API for RAW/ESC-POS data.',
     )
     priority = fields.Integer(
         default=10,
