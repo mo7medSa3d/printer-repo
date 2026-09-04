@@ -391,3 +391,5 @@ class TestGatewayPullSyncStatus(TransactionCase):
         response.json.return_value = {'unexpected': 'shape'}
         mock_get.return_value = response
         with self.assertRaises(ValidationError):
+            self.branch.action_sync_from_gateway()
+        self.assertEqual(self.branch.last_sync_status, 'failed')
