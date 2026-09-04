@@ -25,7 +25,7 @@
                         <field name="last_sync_at" readonly="1" help="Last successful synchronization with the Gateway."/>
                         <field name="last_sync_status" readonly="1"/>
                         <field name="last_successful_sync_at" readonly="1"/>
-                        <field name="last_sync_error" readonly="1" attrs="{'invisible': [('last_sync_status', '!=', 'failed')] }"/>
+                        <field name="last_sync_error" readonly="1" invisible="last_sync_status != 'failed'"/>
                     </group>
                     <notebook>
                         <page string="Destinations" name="destinations">
@@ -59,10 +59,10 @@
     </record>
 
     <record id="view_print_gateway_branch_tree" model="ir.ui.view">
-        <field name="name">print_gateway.branch.tree</field>
+        <field name="name">print_gateway.branch.list</field>
         <field name="model">print_gateway.branch</field>
         <field name="arch" type="xml">
-            <tree string="Branches" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
+            <list string="Branches" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="name"/>
                 <field name="gateway_url"/>
                 <field name="enabled" widget="boolean_toggle"/>
@@ -70,13 +70,13 @@
                 <field name="printer_count"/>
                 <field name="last_sync_at" optional="show"/>
                 <field name="last_sync_status" optional="show"/>
-            </tree>
+            </list>
         </field>
     </record>
 
     <record id="action_print_gateway_branch" model="ir.actions.act_window">
         <field name="name">Print Branches</field>
         <field name="res_model">print_gateway.branch</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
     </record>
 </odoo>
