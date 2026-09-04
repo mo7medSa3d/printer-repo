@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { agents, branches, destinations, printerBindings, printers } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { isVirtualPrinterRecord, type PrinterLike } from "./printer-virtual";
 import { getAgentAvailability } from "./agent-availability";
 
@@ -47,9 +47,6 @@ export function validatePayloadForPrinter(
   const pt = payloadType.toLowerCase();
   const proto = (printer.protocol ?? "").toLowerCase();
   const conn = (printer.connectionType ?? "").toLowerCase();
-
-  // If the printer explicitly lists supported document kinds, enforce it
-  // before evaluating the transport-specific compatibility rules.
   const supported = printer.capabilities?.supported_protocols?.map((s) => s.toLowerCase());
   if (supported && supported.length > 0) {
     if (supported.includes(pt)) return { ok: true };
@@ -59,13 +56,8 @@ export function validatePayloadForPrinter(
       }
       return { ok: false, reason: `CAPABILITY_MISMATCH: payload type ${pt} not in printer supported_protocols [${supported.join(",")}]` };
     }
-    return {
-      ok: false,
-      reason: `CAPABILITY_MISMATCH: payload type ${pt} not in printer supported_protocols [${supported.join(",")}]`,
-    };
+    return { ok: false, reason: `CAPABILITY_MISMATCH: payload type ${pt} not in printer supported_protocols [${supported.join(",")}]` };
   }
-
-  // IPP/IPPS can carry PDF or opaque byte streams through Print-Job.
   if (proto === "ipp" || conn === "ipp" || proto === "ipps" || conn === "ipps") {
     if (["raw", "escpos", "ipp", "ipps", "pdf"].includes(pt)) return { ok: true };
   }
@@ -87,7 +79,6 @@ export function validatePayloadForPrinter(
   return { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} incompatible with printer ${proto}/${conn}` };
 }
 
-/** Minimal printer shape the routing availability check needs. */
 export interface PrinterAvailability extends PrinterLike {
   lifecycle: string | null;
   status: string | null;
@@ -96,9 +87,6 @@ export interface PrinterAvailability extends PrinterLike {
 export function isPrinterAvailableForJob(printer: PrinterAvailability): boolean {
   if (printer.lifecycle !== "active") return false;
   if (isVirtualPrinterRecord(printer)) return false;
-  // Only a positively reported online printer is safe for immediate routing.
-  // Unknown telemetry is treated as unavailable rather than risking delivery
-  // to a printer whose health state is not known.
   return printer.status === "online";
 }
 
@@ -140,21 +128,29 @@ export async function resolvePrinterForJob({
     if (!destination.enabled) return { error: "INVALID_DESTINATION", message: `Destination ${destinationId} is disabled` };
 
     const rows = await db.query.printerBindings.findMany({
-      where: and(
-        eq(printerBindings.branchId, branchId),
-        eq(printerBindings.destinationId, destinationId),
-        eq(printerBindings.enabled, true)
-      ),
+      where: and(eq(printerBindings.branchId, branchId), eq(printerBindings.destinationId, destinationId), eq(printerBindings.enabled, true)),
     });
-
     if (!rows || rows.length === 0) {
       return { error: "NO_ROUTE", message: `No printer binding found for branch ${branchId} destination ${destinationId} documentType ${documentType}` };
     }
 
     const candidates = selectFallbackBindings(rows as BindingCandidate[], documentType ?? null);
-    if (candidates.length === 0) {
-      return { error: "NO_ROUTE", message: `No matching binding for documentType ${documentType}` };
-    }
+    if (candidates.length === 0) return { error: "NO_ROUTE", message: `No matching binding for documentType ${documentType}` };
+
+    // Batch-load all candidate printers and their owner agents before walking
+    // the ordered fallback chain. This preserves selection semantics while
+    // reducing the previous 2N sequential DB round-trips to at most two.
+    const printerIds = [...new Set(candidates.map((candidate) => candidate.printerId))];
+    const printerRows = printerIds.length
+      ? await db.query.printers.findMany({ where: inArray(printers.id, printerIds) })
+      : [];
+    const printerById = new Map(printerRows.map((printer) => [printer.id, printer]));
+
+    const agentIds = [...new Set(printerRows.map((printer) => printer.agentId))];
+    const agentRows = agentIds.length
+      ? await db.query.agents.findMany({ where: inArray(agents.id, agentIds) })
+      : [];
+    const agentById = new Map(agentRows.map((agent) => [agent.id, agent]));
 
     const fallbackChain: string[] = [];
     let lastOfflinePrinter: string | null = null;
@@ -167,20 +163,14 @@ export async function resolvePrinterForJob({
       const binding = candidates[idx];
       fallbackChain.push(binding.printerId);
 
-      const printer = await db.query.printers.findFirst({
-        where: eq(printers.id, binding.printerId),
-      });
-
+      const printer = printerById.get(binding.printerId);
       if (!printer) continue;
 
       // Ownership is derived exclusively through Printer -> Agent -> Branch.
-      const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+      const agent = agentById.get(printer.agentId);
       if (!agent) {
         return { error: "INTERNAL_ERROR", message: `printer ${printer.id} has no owner agent` };
       }
-      // A corrupt cross-branch binding must not prevent a valid fallback
-      // printer from serving the same destination. Record it, skip it, and
-      // only surface INTERNAL_ERROR when no safe candidate remains.
       if (agent.branchId !== branchId || binding.branchId !== agent.branchId) {
         crossBranchCandidateSeen = true;
         continue;
@@ -188,9 +178,7 @@ export async function resolvePrinterForJob({
       if (agent.lifecycle !== "active") continue;
       const availability = getAgentAvailability(agent);
       if (!availability.available) {
-        if (["offline", "stale", "missing-heartbeat"].includes(availability.reason)) {
-          lastOfflinePrinter = printer.id;
-        }
+        if (["offline", "stale", "missing-heartbeat"].includes(availability.reason)) lastOfflinePrinter = printer.id;
         continue;
       }
       if (isVirtualPrinterRecord(printer)) {
@@ -218,28 +206,16 @@ export async function resolvePrinterForJob({
         }
       }
 
-      return {
-        branch,
-        destination,
-        binding,
-        printer,
-        fallbackUsed: idx > 0,
-        fallbackChain,
-      };
+      return { branch, destination, binding, printer, fallbackUsed: idx > 0, fallbackChain };
     }
 
     if (lastCapabilityReason) return { error: "CAPABILITY_MISMATCH", message: lastCapabilityReason };
     if (lastOfflinePrinter) return { error: "PRINTER_OFFLINE", message: `All candidate printers offline (last tried ${lastOfflinePrinter})` };
     if (lastDisabledPrinter) return { error: "PRINTER_DISABLED", message: `All candidate printers are disabled (last tried ${lastDisabledPrinter})` };
     if (lastVirtualPrinter) {
-      return {
-        error: "PRINTER_VIRTUAL",
-        message: `All candidate printers are virtual or redirected (last tried ${lastVirtualPrinter}). Register a physical printer on the agent.`,
-      };
+      return { error: "PRINTER_VIRTUAL", message: `All candidate printers are virtual or redirected (last tried ${lastVirtualPrinter}). Register a physical printer on the agent.` };
     }
-    if (crossBranchCandidateSeen) {
-      return { error: "INTERNAL_ERROR", message: "All matching printer bindings reference printers owned by another branch" };
-    }
+    if (crossBranchCandidateSeen) return { error: "INTERNAL_ERROR", message: "All matching printer bindings reference printers owned by another branch" };
     return { error: "NO_PRINTER_FOUND", message: `No available printer after evaluating ${candidates.length} bindings` };
   } catch (e) {
     const message = e instanceof Error ? e.message : "unexpected routing error";
