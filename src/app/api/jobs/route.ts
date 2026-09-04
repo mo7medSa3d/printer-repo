@@ -41,8 +41,8 @@ export async function GET(req: Request) {
 
 // Management maintenance — remove only terminal Gateway history. Active work
 // remains untouched so cleanup can never delete queued/claimed/printing jobs.
-export async function DELETE() {
-  const claims = await validateManager(new Request("http://localhost/api/jobs"));
+export async function DELETE(req: Request) {
+  const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const result = await db
