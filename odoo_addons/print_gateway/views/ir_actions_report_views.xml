@@ -8,13 +8,13 @@
             <xpath expr="//field[@name='report_type']" position="after">
                 <separator string="Print Gateway"/>
                 <field name="print_gateway_enabled" widget="boolean_toggle"/>
-                <field name="print_gateway_document_type_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" domain="[('branch_id','=',print_gateway_branch_id)]"/>
-                <field name="print_gateway_branch_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}"/>
-                <field name="print_gateway_destination_id" options="{'no_create': True}" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}" domain="[('branch_id','=',print_gateway_branch_id)]"/>
+                <field name="print_gateway_document_type_id" options="{'no_create': True}" invisible="not print_gateway_enabled" domain="[('branch_id','=',print_gateway_branch_id)]"/>
+                <field name="print_gateway_branch_id" options="{'no_create': True}" invisible="not print_gateway_enabled"/>
+                <field name="print_gateway_destination_id" options="{'no_create': True}" invisible="not print_gateway_enabled" domain="[('branch_id','=',print_gateway_branch_id)]"/>
                 <!-- Wrapper carries the add-on scope class so the callout picks up the
                      Print Gateway brand tokens without restyling the rest of this
                      inherited core (ir.actions.report) form. -->
-                <div class="o_pg_view" attrs="{'invisible': [('print_gateway_enabled', '=', False)]}">
+                <div class="o_pg_view" invisible="not print_gateway_enabled">
                     <div class="alert alert-info" role="alert">
                         When enabled, this report's standard <b>Print</b> button renders the PDF and routes it through
                         Print Gateway <b>(Branch → Destination → Document Type → Printer Binding → Printer)</b> instead
@@ -27,7 +27,7 @@
     </record>
 
     <record id="view_ir_actions_report_print_gateway_tree" model="ir.ui.view">
-        <field name="name">ir.actions.report.print_gateway.tree</field>
+        <field name="name">ir.actions.report.print_gateway.list</field>
         <field name="model">ir.actions.report</field>
         <field name="inherit_id" ref="base.view_report_tree"/>
         <field name="arch" type="xml">

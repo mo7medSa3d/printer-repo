@@ -37,10 +37,10 @@
     </record>
 
     <record id="view_print_gateway_report_mapping_tree" model="ir.ui.view">
-        <field name="name">print_gateway.report_mapping.tree</field>
+        <field name="name">print_gateway.report_mapping.list</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <tree string="Report Mappings" class="o_pg_view o_pg_list" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
+            <list string="Report Mappings" class="o_pg_view o_pg_list" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
                 <field name="name"/>
                 <field name="report_id"/>
                 <field name="report_xml_id"/>
@@ -52,7 +52,7 @@
                 <field name="gateway_enabled" widget="boolean_toggle"/>
                 <field name="priority"/>
                 <field name="active" widget="boolean_toggle"/>
-            </tree>
+            </list>
         </field>
     </record>
 
@@ -85,7 +85,7 @@
     <record id="action_print_gateway_report_mapping" model="ir.actions.act_window">
         <field name="name">Report Mappings</field>
         <field name="res_model">print_gateway.report_mapping</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
                 Create your first report mapping!

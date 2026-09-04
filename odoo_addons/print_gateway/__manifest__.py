@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '1.1.0',
+    'version': '19.0.1.0.0',
     'summary': 'Multi-branch print gateway integration: branches, destinations, document types, printer bindings',
     'description': """
 Odoo Print Gateway — End-to-End Print Routing
@@ -21,6 +21,7 @@ Features:
   - Print job history/status
   - Sale order / invoice print integration via Gateway routing
     (no hardcoded physical printer IDs)
+  - Odoo 19-compatible list/form/kanban view definitions
     """,
     'author': 'Odoo Print Gateway',
     'website': 'https://example.com',
@@ -38,7 +39,6 @@ Features:
         'views/print_job_views.xml',
         'views/report_mapping_views.xml',
         'views/ir_actions_report_views.xml',
-        'views/menu.xml',
         'data/cron.xml',
         'data/report_mappings.xml',
     ],
