@@ -173,6 +173,6 @@ jobs:
               --without-demo=1 \
               --http-interface=127.0.0.1 \
               --init=print_gateway \
-              --test-enable \
+              --test-tags=/print_gateway \
               --stop-after-init \
               --log-level=test
