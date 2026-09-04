@@ -9,4 +9,5 @@ from . import print_job
 from . import report_mapping
 from . import ir_actions_report
 from . import branch_security
+from . import branch_multicompany
 from . import async_report
