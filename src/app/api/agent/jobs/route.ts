@@ -8,26 +8,18 @@ import { CLAIM_LEASE_SECONDS } from "@/lib/job-delivery";
 import { logInfo, logWarn, requestIdFrom } from "@/lib/log";
 import { incrementMetric } from "@/lib/metrics";
 
-// A claimed/printing job that hasn't been updated in this long is assumed
-// to belong to a crashed or disconnected agent and becomes reclaimable.
-// This is also the lease the WS claim-before-delivery path relies on
-// (src/lib/job-delivery.ts) — the two must stay identical.
+export const dynamic = "force-dynamic";
+
 const STALE_CLAIM_SECONDS = CLAIM_LEASE_SECONDS;
-// After this many reclaims, stop retrying and mark the job permanently failed.
 const MAX_RETRIES = 5;
-// Cap how many jobs one poll can claim at once (basic resource limit).
 const MAX_CLAIM_BATCH = 20;
+export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 const MAX_ERROR_LENGTH = 2000;
 
 export async function GET(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
   if (!agent) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // 1. TTL sweep, scoped to this agent: anything past its deadline that
-  //    hasn't reached a terminal state is expired before we do anything else.
-  // Optional branch restriction fragment: when agents are scoped to a branch
-  // ensure queries only touch jobs that belong to the same branch. This keeps
-  // behavior compatible with pre-migration installs where agent.branchId may be null.
   const branchFilter = agent.branchId ? sql`AND branch_id = ${agent.branchId}` : sql``;
 
   await db.execute(sql`
@@ -39,8 +31,6 @@ export async function GET(req: Request) {
       ${branchFilter}
   `);
 
-  // 2. Give up on stale claims that have exhausted their retry budget -
-  //    the agent that held them is presumed gone for good.
   await db.execute(sql`
     UPDATE print_jobs
     SET status = 'failed',
@@ -53,26 +43,59 @@ export async function GET(req: Request) {
       ${branchFilter}
   `);
 
-  // 3. Atomically claim: fresh queued jobs, plus stale claimed/printing
-  //    jobs still within their retry budget (agent crash recovery).
-  //    FOR UPDATE SKIP LOCKED + a single UPDATE...RETURNING is what makes
-  //    this safe under concurrent pollers/agents - two pollers can never
-  //    walk away with the same job id.
+  // Count all non-terminal in-flight ownership, including stale claims. A
+  // stale claim is reclaimed in place, so it does not free a capacity slot.
+  // Queued jobs may consume only the remaining slots; stale jobs are always
+  // eligible so recovery cannot deadlock at the cap.
+  const countResult = await db.execute(sql`
+    SELECT COUNT(*)::int AS count
+    FROM print_jobs
+    WHERE agent_id = ${agent.id}
+      AND status IN ('claimed', 'printing')
+      AND expires_at > now()
+      ${branchFilter}
+  `);
+  const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
+  const remainingSlots = Math.max(0, MAX_AGENT_IN_FLIGHT_JOBS - inFlight);
+
+  // The two candidate streams are intentionally separate: stale claims are
+  // recovery work and are always admitted, while queued work is bounded by
+  // remaining capacity. The outer SELECT applies SKIP LOCKED to the actual
+  // print_jobs rows, preserving the existing claim-before-delivery protocol.
   const claimed = await db.execute(sql`
-    WITH claimable AS (
-      SELECT id FROM print_jobs
+    WITH stale_candidates AS (
+      SELECT id, created_at, 0 AS priority
+      FROM print_jobs
       WHERE agent_id = ${agent.id}
         AND expires_at > now()
-        AND (
-          status = 'queued'
-          OR (
-            status IN ('claimed', 'printing')
-            AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
-            AND retries < ${MAX_RETRIES}
-          )
-        )
+        AND status IN ('claimed', 'printing')
+        AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
+        AND retries < ${MAX_RETRIES}
         ${branchFilter}
       ORDER BY created_at ASC
+      LIMIT ${MAX_CLAIM_BATCH}
+    ),
+    queued_candidates AS (
+      SELECT id, created_at, 1 AS priority
+      FROM print_jobs
+      WHERE agent_id = ${agent.id}
+        AND expires_at > now()
+        AND status = 'queued'
+        AND ${remainingSlots} > 0
+        ${branchFilter}
+      ORDER BY created_at ASC
+      LIMIT ${Math.min(MAX_CLAIM_BATCH, remainingSlots)}
+    ),
+    candidate_ids AS (
+      SELECT id, created_at, priority FROM stale_candidates
+      UNION ALL
+      SELECT id, created_at, priority FROM queued_candidates
+    ),
+    claimable AS (
+      SELECT p.id
+      FROM print_jobs p
+      JOIN candidate_ids c ON c.id = p.id
+      ORDER BY c.priority ASC, c.created_at ASC
       LIMIT ${MAX_CLAIM_BATCH}
       FOR UPDATE SKIP LOCKED
     )
@@ -81,9 +104,6 @@ export async function GET(req: Request) {
       status = 'claimed',
       claimed_at = now(),
       updated_at = now(),
-      -- The HTTP response IS the delivery for the poll path, so the claim and
-      -- the delivery record commit together (the WS path records them
-      -- separately: claim first, delivery only once the socket accepted it).
       delivered_at = now(),
       acked_at = NULL,
       delivery_attempts = print_jobs.delivery_attempts + 1,
@@ -105,9 +125,6 @@ export async function GET(req: Request) {
       print_jobs.retries AS retries
   `);
 
-  // Every row returned here is already 'claimed' in the database: the agent
-  // never receives a job it does not own. drizzle node-postgres returns
-  // { rows, rowCount } but callers expect a plain array; normalize defensively.
   const rows = (claimed as unknown as { rows?: unknown[] })?.rows ?? (claimed as unknown as unknown[]);
   return NextResponse.json(Array.isArray(rows) ? rows : Array.isArray(claimed) ? claimed : []);
 }
@@ -136,8 +153,6 @@ export async function PATCH(req: Request) {
 
   const currentStatus = job.status as JobStatus;
 
-  // Expiration is itself an atomic compare-and-set. If another request wins
-  // the race, this update affects zero rows and we re-read the winner.
   if (!isTerminal(currentStatus) && new Date(job.expiresAt).getTime() <= Date.now()) {
     const expired = await db.update(printJobs)
       .set({ status: "expired", updatedAt: new Date() })
@@ -153,12 +168,8 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: `Job transition raced with another update${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
   }
 
-  if (!canTransition(currentStatus, requestedStatus)) {
-    return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
-  }
+  if (!canTransition(currentStatus, requestedStatus)) return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
 
-  // Atomic compare-and-set: the status observed above is part of the UPDATE
-  // predicate. Exactly one conflicting concurrent transition can therefore win.
   const updated = await db.update(printJobs)
     .set({ status: requestedStatus, error: errorMessage, updatedAt: new Date() })
     .where(and(whereClause, eq(printJobs.status, currentStatus)))
