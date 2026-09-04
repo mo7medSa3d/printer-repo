@@ -58,6 +58,16 @@ class PrintGatewayReportMapping(models.Model):
         default=True,
         help='If enabled, this report will be routed through Print Gateway. Otherwise normal Odoo printing.',
     )
+    # QWeb report mappings generate PDF. Keeping this field preserves the
+    # transport contract used by the report integration while deliberately
+    # preventing a false ESC/POS/RAW configuration.
+    payload_type = fields.Selection(
+        [('pdf', 'PDF (application/pdf)')],
+        default='pdf',
+        string='Payload Type',
+        required=True,
+        help='QWeb report mappings generate PDF payloads only. Use the direct print-job API for RAW/ESC-POS data.',
+    )
     priority = fields.Integer(
         default=10,
         help='Lower number = higher priority when multiple mappings match.',
