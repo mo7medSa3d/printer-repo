@@ -33,15 +33,8 @@ Sign in at `/login` with `MANAGER_USERNAME` / `MANAGER_PASSWORD`.
 
 ## 3. Working without hardware
 
-Two ways to exercise the whole pipeline on a Linux/macOS workstation:
-
-**Browser agent simulator** — `http://localhost:3000/simulator`
-(`src/app/simulator/agent-simulator.tsx`). It registers with a pairing code
-(`POST /api/agent/register`), sends heartbeats every 10 s, polls `GET /api/agent/jobs`
-every 5 s and PATCHes `printing` → `success`. Credentials are kept in `localStorage`. This
-is the fastest way to see a job move through the lifecycle.
-
-**Real Go agent in simulation mode** —
+Use the real Go agent and its supported local/non-Windows print simulation path. The production
+Gateway no longer contains a browser-based agent simulator.
 
 ```bash
 cd agent
@@ -57,10 +50,9 @@ explicit "not supported on this OS" error by design.
 
 ```
 server.ts                  custom HTTP server: Next.js + attachAgentWSS
-src/app/api/**             24 route handlers (agent, manager, Odoo, health)
+src/app/api/**             route handlers (agent, manager, Odoo, health)
 src/app/dashboard          manager dashboard (agents, printers, latest 50 jobs)
-src/app/simulator          browser-based agent simulator (development aid)
-src/app/actions.ts         server actions (create agent, create/test print job)
+src/app/actions.ts         server actions (create/delete agent, create/test print job)
 src/lib/                   payload contract, routing, job status, job delivery, auth
 src/server/ws.ts           agent WebSocket server, claim-and-push, job_ack handling
 src/db/                    Drizzle schema + pooled connection
