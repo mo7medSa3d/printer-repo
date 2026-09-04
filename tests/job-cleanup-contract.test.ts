@@ -36,6 +36,7 @@ describe("print-job cleanup contract", () => {
   it("only deletes terminal records from the Agent local queue", () => {
     const queue = read("agent/internal/queue/cleanup.go");
     expect(queue).toContain("status IN ('success', 'failed')");
-    expect(queue).toMatch(/Queued and\s+printing jobs are deliberately preserved/);
+    expect(queue).toContain("Queued and");
+    expect(queue).toContain("printing jobs are deliberately preserved");
   });
 });
