@@ -43,29 +43,27 @@ export async function GET(req: Request) {
       ${branchFilter}
   `);
 
-  // Count all non-terminal in-flight ownership, including stale claims. A
-  // stale claim is reclaimed in place, so it does not free a capacity slot.
-  // Queued jobs may consume only the remaining slots; stale jobs are always
-  // eligible so recovery cannot deadlock at the cap.
-  const countResult = await db.execute(sql`
-    SELECT COUNT(*)::int AS count
-    FROM print_jobs
-    WHERE agent_id = ${agent.id}
-      AND status IN ('claimed', 'printing')
-      AND expires_at > now()
-      ${branchFilter}
-  `);
-  const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
-  const remainingSlots = Math.max(0, MAX_AGENT_IN_FLIGHT_JOBS - inFlight);
-
-  // The two candidate streams are intentionally separate: stale claims are
-  // recovery work and are always admitted, while queued work is bounded by
-  // remaining capacity. The outer SELECT applies SKIP LOCKED to the actual
-  // print_jobs rows, preserving the existing claim-before-delivery protocol.
+  // The capacity check and claim must be serialized per agent. Keeping the
+  // lock/count in the same SQL statement avoids the classic race where two
+  // concurrent polls both observe free capacity and jointly exceed the cap.
+  // pg_advisory_xact_lock is released automatically when this statement ends;
+  // hashtext collisions only serialize unrelated agents and do not affect
+  // correctness.
   const claimed = await db.execute(sql`
-    WITH stale_candidates AS (
+    WITH agent_lock AS (
+      SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`})) AS locked
+    ),
+    in_flight AS (
+      SELECT COUNT(*)::int AS count
+      FROM print_jobs, agent_lock
+      WHERE agent_id = ${agent.id}
+        AND status IN ('claimed', 'printing')
+        AND expires_at > now()
+        ${branchFilter}
+    ),
+    stale_candidates AS (
       SELECT id, created_at, 0 AS priority
-      FROM print_jobs
+      FROM print_jobs, agent_lock
       WHERE agent_id = ${agent.id}
         AND expires_at > now()
         AND status IN ('claimed', 'printing')
@@ -77,14 +75,14 @@ export async function GET(req: Request) {
     ),
     queued_candidates AS (
       SELECT id, created_at, 1 AS priority
-      FROM print_jobs
+      FROM print_jobs, agent_lock, in_flight
       WHERE agent_id = ${agent.id}
         AND expires_at > now()
         AND status = 'queued'
-        AND ${remainingSlots} > 0
+        AND in_flight.count < ${MAX_AGENT_IN_FLIGHT_JOBS}
         ${branchFilter}
       ORDER BY created_at ASC
-      LIMIT ${Math.min(MAX_CLAIM_BATCH, remainingSlots)}
+      LIMIT ${MAX_CLAIM_BATCH}
     ),
     candidate_ids AS (
       SELECT id, created_at, priority FROM stale_candidates
