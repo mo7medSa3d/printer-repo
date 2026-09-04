@@ -59,7 +59,7 @@
         <field name="name">print_gateway.report_mapping.search</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <search string="Report Mappings">
+            <search>
                 <field name="name"/>
                 <field name="report_xml_id"/>
                 <field name="model_name"/>
@@ -73,7 +73,7 @@
                 <filter string="Invoice" name="invoice" domain="[('model_name','=','account.move')]"/>
                 <filter string="Delivery" name="delivery" domain="[('model_name','=','stock.picking')]"/>
                 <separator/>
-                <group expand="0" string="Group By">
+                <group>
                     <filter string="Branch" name="branch" context="{'group_by': 'branch_id'}"/>
                     <filter string="Document Type" name="document_type" context="{'group_by': 'document_type_id'}"/>
                 </group>
