@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
 import DashboardClient from "./dashboard-client";
+import { JobCleanupButton } from "@/components/JobCleanupButton";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +82,7 @@ export default async function DashboardPage() {
             protects the console and all management actions.
           </p>
         </div>
+        {!databaseError ? <JobCleanupButton /> : null}
       </header>
 
       {databaseError ? (
