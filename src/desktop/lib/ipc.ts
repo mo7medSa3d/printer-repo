@@ -132,6 +132,10 @@ export function testPrinter(printerId: string): Promise<string> {
   return invoke<string>("test_printer", { printerId });
 }
 
+export function cleanupLocalJobs(): Promise<number> {
+  return invoke<number>("cleanup_local_jobs");
+}
+
 export interface RegisterPrinterRequest {
   name: string;
   connectionType: string;
