@@ -24,7 +24,7 @@ Features:
   - Odoo 19-compatible list/form/kanban view definitions
     """,
     'author': 'Odoo Print Gateway',
-    'website': 'https://example.com',
+    'website': 'https://github.com/mo7medSa3d/printer-repo',
     'category': 'Tools',
     'depends': ['base', 'sale', 'account', 'stock', 'purchase', 'point_of_sale'],
     'data': [
