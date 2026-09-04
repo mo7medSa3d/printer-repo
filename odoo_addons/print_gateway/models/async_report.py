@@ -42,7 +42,6 @@ class PrintGatewayAsyncReport(models.Model):
         if not records.exists():
             raise ValidationError(_("One or more records to print no longer exist."))
 
-        # Keep all existing deterministic routing/security rules.
         routing_groups = self._validate_recordset_routing_consistency(records, mapping_info)
         routing_group = routing_groups[0]
         branch = routing_group['branch']
@@ -185,8 +184,10 @@ class PrintGatewayAsyncPrintJob(models.Model):
                 raise ValidationError(_("Report model changed for pending operation %s; refusing ambiguous rendering.") % job.id)
 
             try:
-                # This is the first point where QWeb PDF rendering occurs.
-                payload = report._generate_payload_for_report(report, res_ids, report_data)
+                # Isolate rendering so a worker failure does not roll back the
+                # durable error state recorded on the queued outbox operation.
+                with self.env.cr.savepoint():
+                    payload = report._generate_payload_for_report(report, res_ids, report_data)
             except Exception as exc:
                 # Keep the durable operation queued. A transient Odoo/report
                 # problem can be retried by the existing cron without creating
@@ -199,9 +200,6 @@ class PrintGatewayAsyncPrintJob(models.Model):
             if not destination or destination.branch_id != job.branch_id:
                 raise ValidationError(_("Pending operation %s has invalid branch/destination routing.") % job.id)
 
-            # The original branch method persists the same operation and sends
-            # the real payload using the existing idempotency key. Its built-in
-            # retry therefore remains duplicate-safe.
             job.branch_id.create_print_job(
                 destination.gateway_destination_id or destination.id,
                 job.document_type,
