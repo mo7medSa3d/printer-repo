@@ -49,7 +49,7 @@ describe("production hardening contracts", () => {
     const provision = read("src/app/api/agents/[id]/discovered-printers/[deviceId]/provision/route.ts");
     const verify = read("src/app/api/agents/[id]/discovered-printers/[deviceId]/verify/route.ts");
     expect(provision).toContain('code: "DEVICE_NOT_APPROVED"');
-    expect(provision).toContain('device.verification !== "verified"');
+    expect(provision).toContain('row.verification !== "verified"');
     expect(provision).toContain("UNSUPPORTED_DISCOVERY_TRANSPORT");
     expect(provision).not.toContain('wsd: "raw"');
     expect(provision).not.toContain('mdns: "ipp"');
