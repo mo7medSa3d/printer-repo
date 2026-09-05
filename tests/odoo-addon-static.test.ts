@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import path from "node:path";
 
-const ROOT = path.resolve(path.dirname(pathToFileURL(import.meta.url).pathname), "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ADDON = path.join(ROOT, "odoo_addons", "print_gateway");
 
 describe("Odoo addon static contracts", () => {
