@@ -30,6 +30,10 @@ COPY --from=build /app/next.config.ts ./next.config.ts
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/package-lock.json ./package-lock.json
 
+# The gateway does not require root privileges. Running as the built-in node
+# user reduces the impact of an application-level compromise.
+USER node
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
