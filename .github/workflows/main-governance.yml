@@ -21,7 +21,7 @@ jobs:
           set -euo pipefail
           protected=$(gh api "repos/${REPOSITORY}/branches/main" --jq '.protected')
           if [[ "$protected" != "true" ]]; then
-            echo "main branch is not protected. Production merges are blocked until branch protection/rulesets are enabled."
+            echo "main branch is not protected. Configure GitHub branch protection or a ruleset with required status checks before merging production changes."
             exit 1
           fi
           echo "main branch protection is enabled."
