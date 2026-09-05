@@ -1,13 +1,13 @@
 import { db } from "../db";
 import { agents } from "../db/schema";
 import { eq } from "drizzle-orm";
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
 
 /**
  * Agents authenticate with `Authorization: Bearer <agentId>:<secret>`.
  * The secret itself is high-entropy (24 random bytes, base64url-encoded),
- * generated once at pairing time and never shown again, so a fast SHA-256 hash is
- * sufficient here (this is not a low-entropy human password that needs
+ * generated once at pairing time and never shown again, so a fast SHA-256 hash
+ * is sufficient here (this is not a low-entropy human password that needs
  * bcrypt/scrypt-style slow hashing) - and it avoids adding a new
  * dependency. Only the hash is ever stored; the plaintext secret exists
  * only in the single pairing response and in the agent's local config.
@@ -20,16 +20,11 @@ export function generateSecret(): string {
   return randomBytes(24).toString("base64url");
 }
 
-/** Cryptographically secure pairing code (not Math.random()). */
+/** Cryptographically secure six-digit numeric pairing code. */
 export function generatePairingCode(): string {
-  // 6 chars from an unambiguous alphabet (no 0/O/1/I), ~31 bits of entropy.
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = randomBytes(6);
-  let code = "";
-  for (const b of bytes) {
-    code += alphabet[b % alphabet.length];
-  }
-  return code;
+  // Keep the public pairing contract exactly six decimal digits, including
+  // leading zeroes. randomInt() uses the OS CSPRNG and avoids modulo bias.
+  return randomInt(0, 1_000_000).toString().padStart(6, "0");
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
