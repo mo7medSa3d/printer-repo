@@ -4,7 +4,9 @@ import { validateAgent } from "@/lib/agent-auth";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { DEVICE_CLASSES, PRINTER_TYPES } from "@/lib/printer-model";
+import { hasBodyOverLimit } from "@/lib/request-limits";
 
+const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
 const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]);
@@ -68,6 +70,7 @@ export async function POST(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
   if (!agent) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
+  if (hasBodyOverLimit(req, MAX_HEARTBEAT_BODY_BYTES)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
 
   try {
     const body = await req.json();
@@ -80,15 +83,9 @@ export async function POST(req: Request) {
     if (reportedPrinters.length > 500) return NextResponse.json({ error: "too many printers in heartbeat" }, { status: 400 });
     if (JSON.stringify(reportedPrinters).length > 256_000) return NextResponse.json({ error: "heartbeat printer metadata exceeds 256KB" }, { status: 400 });
 
-    await db.update(agents)
-      .set({
-        status,
-        lastSeenAt: new Date(),
-      })
-      .where(eq(agents.id, agent.id));
+    await db.update(agents).set({ status, lastSeenAt: new Date() }).where(eq(agents.id, agent.id));
 
     const skipped: string[] = [];
-
     for (const raw of reportedPrinters) {
       const p = sanitizePrinter(raw);
       if (!p) {
@@ -96,30 +93,24 @@ export async function POST(req: Request) {
         continue;
       }
 
-      const existing = await db.query.printers.findFirst({
-        where: eq(printers.id, p.id),
-      });
-
+      const existing = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
       if (existing) {
         if (existing.agentId !== agent.id) {
           skipped.push(p.id);
           continue;
         }
-        await db.update(printers)
-          .set({
-            name: p.name,
-            printerType: p.printerType as typeof printers.$inferInsert.printerType,
-            deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
-            connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
-            protocol: p.protocol as typeof printers.$inferInsert.protocol,
-            status: p.status,
-            config: p.config as typeof printers.$inferInsert.config,
-            capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
-            // Heartbeat updates telemetry only; lifecycle remains operator-owned.
-            lastSeenAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(printers.id, p.id));
+        await db.update(printers).set({
+          name: p.name,
+          printerType: p.printerType as typeof printers.$inferInsert.printerType,
+          deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
+          connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
+          protocol: p.protocol as typeof printers.$inferInsert.protocol,
+          status: p.status,
+          config: p.config as typeof printers.$inferInsert.config,
+          capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(printers.id, p.id));
       } else {
         await db.insert(printers).values({
           id: p.id,
@@ -139,7 +130,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: true, skippedPrinters: skipped });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
