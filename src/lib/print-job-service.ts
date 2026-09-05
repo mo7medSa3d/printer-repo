@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import { agents, branches, printers, printJobs } from "@/db/schema";
+import { getAgentAvailability } from "@/lib/agent-availability";
 import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
 import { validatePayloadForPrinter } from "@/lib/routing";
 import { validatePrintJobPayload } from "@/lib/payload";
@@ -127,7 +128,10 @@ export async function createPrintJobForPrinter(
 
   const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!ownerAgent) throw new Error("Printer owner agent not found");
-  if (ownerAgent.lifecycle !== "active") throw new Error(`Agent is ${ownerAgent.lifecycle}`);
+  const availability = getAgentAvailability(ownerAgent);
+  if (!availability.available) {
+    throw new Error(`Agent is not available for jobs (reason=${availability.reason})`);
+  }
   if (!ownerAgent.branchId) throw new Error("Printer owner agent has no branch");
 
   const ownerBranch = await db.query.branches.findFirst({ where: eq(branches.id, ownerAgent.branchId) });
