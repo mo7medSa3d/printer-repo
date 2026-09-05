@@ -62,8 +62,8 @@ jobs:
         run: npm run typecheck
       - name: Lint frontend
         run: npm run lint
-      - name: Run Vitest suite
-        run: npm run test
+      - name: Run Node.js unit suite (integration runs in ci.yml with PostgreSQL)
+        run: npm run test:unit
       - name: Go vet
         working-directory: agent
         shell: pwsh
@@ -105,6 +105,10 @@ jobs:
             Write-Host "OK icon $icon ($len bytes)"
           }
           Write-Host "All $($icons.Count) configured icons are present."
+      - name: Verify Cargo.lock is committed
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "src-tauri\Cargo.lock")) { throw "src-tauri/Cargo.lock is required for reproducible builds" }
       - name: Build desktop frontend
         run: npm run desktop:vite:build
       - name: Build Tauri Windows installer (MSI + NSIS EXE)
