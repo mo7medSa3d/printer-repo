@@ -1,0 +1,27 @@
+name: Main Branch Governance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-main-protection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require protected main branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          protected=$(gh api "repos/${REPOSITORY}/branches/main" --jq '.protected')
+          if [[ "$protected" != "true" ]]; then
+            echo "main branch is not protected. Configure GitHub branch protection or a ruleset with required status checks before merging production changes."
+            exit 1
+          fi
+          echo "main branch protection is enabled."
