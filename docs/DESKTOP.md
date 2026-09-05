@@ -35,8 +35,8 @@ system in `src/app/globals.css` and the primitives in `src/components/ui.tsx`).
 
 ## 3. Gateway connection
 
-* The gateway URL is validated before it is stored (`normalizeGatewayUrl`): `http://` or
-  `https://` only, no whitespace, no embedded credentials, no query string or fragment.
+* The gateway URL is validated before it is stored (`normalizeGatewayUrl`): `https://` only,
+  no whitespace, no embedded credentials, no query string or fragment.
 * `GET /api/health` — unauthenticated, 8-second abort timeout; drives the "gateway
   connected" state. Response is `{ok:true}` / `{ok:false}` only.
 * `GET /api/jobs?limit=50` — **requires a manager session**. The desktop app has no session
@@ -98,4 +98,14 @@ Icons are generated from `src-tauri/icons/icon-source.svg` with
   (`app.security.csp`); capabilities are limited to `core:default`
   (`src-tauri/capabilities/`).
 * No shell plugin: service control uses `std::process` with argument vectors.
+* Production gateway traffic is HTTPS/WSS only. The Go agent permits HTTP only when
+  both `ODOO_PRINT_AGENT_ENV=development` and `ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP=1`
+  are explicitly set.
 * The gateway URL validation above prevents credential-carrying URLs from being stored.
+
+## 8. Pairing contract
+
+The Gateway, Go agent and Tauri manager use one pairing contract: six characters from
+`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, excluding ambiguous `O`, `I`, `0` and `1`.
+Pairing codes expire after 30 minutes and are consumed atomically by the registration
+endpoint. Example: `AB12CD`.

@@ -3,8 +3,13 @@ import { agents } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
 
-/** Public registration contract: exactly six decimal digits, including leading zeroes. */
-export const PAIRING_CODE_PATTERN = /^\d{6}$/;
+/**
+ * Public pairing contract shared by Gateway, Go agent and Tauri manager.
+ * 32-character unambiguous alphabet; excludes O/I and 0/1.
+ */
+export const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export const PAIRING_CODE_LENGTH = 6;
+export const PAIRING_CODE_PATTERN = new RegExp(`^[${PAIRING_CODE_ALPHABET}]{${PAIRING_CODE_LENGTH}}$`);
 
 export function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
@@ -15,11 +20,21 @@ export function generateSecret(): string {
 }
 
 export function generatePairingCode(): string {
-  return randomInt(0, 1_000_000).toString().padStart(6, "0");
+  let code = "";
+  for (let i = 0; i < PAIRING_CODE_LENGTH; i += 1) {
+    code += PAIRING_CODE_ALPHABET[randomInt(0, PAIRING_CODE_ALPHABET.length)];
+  }
+  return code;
 }
 
 export function isValidPairingCode(value: unknown): value is string {
-  return typeof value === "string" && PAIRING_CODE_PATTERN.test(value.trim());
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toUpperCase();
+  if (normalized.length !== PAIRING_CODE_LENGTH) return false;
+  for (const char of normalized) {
+    if (!PAIRING_CODE_ALPHABET.includes(char)) return false;
+  }
+  return true;
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
