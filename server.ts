@@ -11,50 +11,50 @@ const port = parseInt(process.env.PORT ?? "3000", 10);
 const hostname = process.env.HOSTNAME ?? "0.0.0.0";
 const JOB_SWEEP_INTERVAL_MS = 30_000;
 const HOUSEKEEPING_INTERVAL_MS = 5 * 60_000;
-const MAX_API_BODY_BYTES = 8 * 1024 * 1024;
+export const MAX_API_BODY_BYTES = 8 * 1024 * 1024;
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-function rejectOversizedRequest(res: ServerResponse) {
+function rejectRequest(res: ServerResponse, status: number, error: string) {
   if (res.headersSent || res.writableEnded) return;
-  res.statusCode = 413;
+  res.statusCode = status;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("connection", "close");
-  res.end(JSON.stringify({ success: false, error: "REQUEST_BODY_TOO_LARGE" }));
+  res.end(JSON.stringify({ success: false, error }));
 }
 
-function guardApiRequest(req: IncomingMessage, res: ServerResponse): boolean {
+/**
+ * Enforce the application write-body ceiling without ever attaching data/end
+ * listeners to IncomingMessage. Next.js owns the request stream exclusively.
+ * The public deployment terminates requests in Caddy, which enforces the same
+ * ceiling for chunked/streamed bodies before they reach this process.
+ */
+export function guardApiRequest(req: IncomingMessage, res: ServerResponse): boolean {
   if (!req.url?.startsWith("/api/")) return true;
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method ?? "")) return true;
 
+  const transferEncoding = req.headers["transfer-encoding"];
   const rawLength = req.headers["content-length"];
-  if (rawLength !== undefined) {
-    const length = Number(rawLength);
-    if (!Number.isFinite(length) || length < 0 || length > MAX_API_BODY_BYTES) {
-      rejectOversizedRequest(res);
-      return false;
-    }
+
+  // Caddy handles public chunked requests. A direct chunked request must not
+  // bypass the application ceiling because the Node layer deliberately does
+  // not consume the stream to count it.
+  if (transferEncoding && String(transferEncoding).toLowerCase() !== "identity") {
+    rejectRequest(res, 411, "CONTENT_LENGTH_REQUIRED");
+    return false;
   }
 
-  // Content-Length is only an early rejection. For HTTP/1.1 chunked requests
-  // there is no trustworthy declared size, so count bytes on the IncomingMessage
-  // stream itself. The listener observes chunks without consuming them, allowing
-  // Next.js to continue parsing the same stream. Once the hard ceiling is crossed
-  // we return 413 and destroy the request connection before a huge JSON payload
-  // can be fully buffered by a route handler.
-  let received = 0;
-  let rejected = false;
-  req.on("data", (chunk: Buffer | string) => {
-    if (rejected) return;
-    received += Buffer.byteLength(chunk);
-    if (received > MAX_API_BODY_BYTES) {
-      rejected = true;
-      rejectOversizedRequest(res);
-      req.destroy();
-    }
-  });
-  req.on("aborted", () => { rejected = true; });
+  if (rawLength === undefined) {
+    rejectRequest(res, 411, "CONTENT_LENGTH_REQUIRED");
+    return false;
+  }
+
+  const length = Number(rawLength);
+  if (!Number.isFinite(length) || length < 0 || length > MAX_API_BODY_BYTES) {
+    rejectRequest(res, 413, "REQUEST_BODY_TOO_LARGE");
+    return false;
+  }
 
   return true;
 }
