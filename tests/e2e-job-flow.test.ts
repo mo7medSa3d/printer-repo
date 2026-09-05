@@ -14,7 +14,7 @@ import {
 } from "./helpers/pg";
 import { attachAgentWSS } from "@/server/ws";
 import { POST as printJobsPOST, GET as printJobsGET } from "@/app/api/print/jobs/route";
-import { PATCH as agentJobsPATCH } from "@/app/api/agent/jobs/route";
+import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "@/app/api/agent/jobs/route";
 
 /**
  * Gateway end-to-end flow with a real database and a real agent WebSocket
@@ -93,8 +93,6 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     }));
     expect(res.status).toBe(201);
     const created = await res.json();
-    // The gateway claimed the job before delivering it, so the reported
-    // status is the real row status.
     expect(created.status).toBe("claimed");
     expect(created.printerId).toBe(f.printerId);
 
@@ -123,7 +121,6 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     const finalStatus = await statusRes.json();
     expect(finalStatus.status).toBe("success");
 
-    // The idempotent retry returns the SAME job id, never a second job.
     const retry = await printJobsPOST(odooCreate({
       branchId: f.branchId,
       destinationId: f.destinationId,
@@ -164,7 +161,6 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     const jobs = await pool().query(`SELECT count(*)::int AS n FROM print_jobs WHERE branch_id = $1`, [escpos.branchId]);
     expect(jobs.rows[0].n).toBe(0);
 
-    // The same printer still accepts ESC/POS work.
     const ok = await printJobsPOST(new Request("http://gateway.test/api/print/jobs", {
       method: "POST",
       headers: { Authorization: `Bearer ${escpos.odooKey}`, "content-type": "application/json" },
@@ -193,5 +189,50 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     expect(row.status).toBe("queued");
     expect(row.delivered_at).toBeNull();
     expect(row.delivery_attempts).toBe(0);
+  });
+
+  it("does not mark a polling claim as delivered until the agent acknowledges receipt", async () => {
+    const createRes = await printJobsPOST(odooCreate({
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+      documentType: "receipt",
+      payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") },
+    }));
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json();
+    expect(created.status).toBe("queued");
+
+    const pollRes = await agentJobsGET(new Request("http://gateway.test/api/agent/jobs", {
+      headers: { Authorization: f.agentAuth },
+    }));
+    expect(pollRes.status).toBe(200);
+    const jobs = await pollRes.json();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe(created.jobId);
+    expect(jobs[0].status).toBe("claimed");
+
+    const claimedRow = await jobRow(created.jobId);
+    expect(claimedRow.status).toBe("claimed");
+    expect(claimedRow.delivered_at).toBeNull();
+    expect(claimedRow.acked_at).toBeNull();
+    expect(claimedRow.delivery_attempts).toBe(1);
+
+    const ackRes = await agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", {
+      method: "PATCH",
+      headers: { Authorization: f.agentAuth, "content-type": "application/json" },
+      body: JSON.stringify({ jobId: created.jobId, status: "printing" }),
+    }));
+    expect(ackRes.status).toBe(200);
+
+    // A status transition is not the delivery ACK. The WebSocket ack path is
+    // what records receipt, so delivered_at remains unset here.
+    const printingRow = await jobRow(created.jobId);
+    expect(printingRow.delivered_at).toBeNull();
+
+    const { handleAgentMessage } = await import("@/server/ws");
+    await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId }));
+    const ackedRow = await jobRow(created.jobId);
+    expect(ackedRow.acked_at).not.toBeNull();
+    expect(ackedRow.delivered_at).not.toBeNull();
   });
 });
