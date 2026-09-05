@@ -15,6 +15,11 @@ import {
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
+type WritableSocket = {
+  write(chunk: string): boolean;
+  destroy(): void;
+};
+
 const agentSockets = new Map<string, Set<AgentSocket>>();
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
 const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
@@ -36,10 +41,11 @@ function websocketClientKey(req: IncomingMessage): string {
   return (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "").slice(0, 128) || "unknown";
 }
 
-function writeWsHttpError(socket: import("net").Socket, status: number, body: string, retryAfterSec?: number) {
+function writeWsHttpError(socket: WritableSocket, status: number, body: string, retryAfterSec?: number) {
   const retry = retryAfterSec !== undefined ? `Retry-After: ${retryAfterSec}\r\n` : "";
+  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : "Unauthorized";
   const payload = JSON.stringify({ error: body });
-  socket.write(`HTTP/1.1 ${status} ${status === 429 ? "Too Many Requests" : "Unauthorized"}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
+  socket.write(`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
   socket.destroy();
 }
 
@@ -268,6 +274,7 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
     if (!url.startsWith("/api/agent/ws")) return;
+
     const clientKey = websocketClientKey(req);
     try {
       const decision = await inspectWsUpgradeRateLimit(clientKey);
@@ -276,9 +283,6 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
         return;
       }
     } catch {
-      // Fail closed for unauthenticated upgrade traffic when the limiter cannot
-      // be consulted. A DB outage must not turn the agent credential endpoint
-      // into an unlimited authentication oracle.
       writeWsHttpError(socket, 503, "WebSocket authentication temporarily unavailable", 5);
       return;
     }
