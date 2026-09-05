@@ -32,6 +32,11 @@ describe("production hardening contracts", () => {
     expect(compose).toContain('command: ["npm", "run", "db:migrate"]');
     expect(compose).toContain("service_completed_successfully");
     expect(compose).toContain("condition: service_healthy");
+    expect(compose).toContain("PGHOST: postgres");
+    expect(compose).toContain("PGPASSWORD: ${POSTGRES_PASSWORD");
+    expect(compose).not.toContain("DATABASE_URL: postgresql://");
+    expect(read("src/db/index.ts")).toContain("PGPASSWORD");
+    expect(read("scripts/db-migrate.ts")).toContain("hasDatabaseSettings");
   });
 
   it("keeps Drizzle journal entries unique and aligned with migration files", () => {
@@ -73,8 +78,9 @@ describe("production hardening contracts", () => {
     expect(route).toContain("ownerAgent.branchId !== odoo.branchId");
   });
 
-  it("documents governance as a prerequisite rather than pretending the workflow itself enforces it", () => {
+  it("keeps the main governance workflow present and explicit about the external protection prerequisite", () => {
     const workflow = read(".github/workflows/main-governance.yml");
+    expect(workflow).toContain("Require protected main branch");
     expect(workflow).toContain("Configure GitHub branch protection or a ruleset");
     expect(workflow).not.toContain("blocks PR merges");
   });
