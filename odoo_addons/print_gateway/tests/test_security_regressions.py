@@ -228,23 +228,26 @@ class TestGatewayPullSyncStatus(PrintGatewaySecurityCase):
     @patch('odoo.addons.print_gateway.models.branch.requests.get')
     def test_http_500_is_failed(self, mock_get):
         mock_get.return_value = MagicMock(status_code=500, text='boom')
-        with self.assertRaises(ValidationError):
-            self.branch.action_sync_from_gateway()
+        result = self.branch.action_sync_from_gateway()
+        self.assertEqual(result['tag'], 'display_notification')
         self.assertEqual(self.branch.last_sync_status, 'failed')
+        self.assertIn('500', self.branch.last_sync_error)
 
     @patch('odoo.addons.print_gateway.models.branch.requests.get')
     def test_timeout_is_failed(self, mock_get):
         import requests
         mock_get.side_effect = requests.Timeout('timed out')
-        with self.assertRaises(ValidationError):
-            self.branch.action_sync_from_gateway()
+        result = self.branch.action_sync_from_gateway()
+        self.assertEqual(result['tag'], 'display_notification')
         self.assertEqual(self.branch.last_sync_status, 'failed')
+        self.assertIn('timed out', self.branch.last_sync_error)
 
     @patch('odoo.addons.print_gateway.models.branch.requests.get')
     def test_malformed_agents_response_is_failed(self, mock_get):
         response = MagicMock(status_code=200)
         response.json.return_value = {'unexpected': 'shape'}
         mock_get.return_value = response
-        with self.assertRaises(ValidationError):
-            self.branch.action_sync_from_gateway()
+        result = self.branch.action_sync_from_gateway()
+        self.assertEqual(result['tag'], 'display_notification')
         self.assertEqual(self.branch.last_sync_status, 'failed')
+        self.assertIn('Agents endpoint must return an array', self.branch.last_sync_error)
