@@ -41,7 +41,7 @@ func TestParseMDNSPacketWithCompressionAndTXT(t *testing.T) {
 
 	// PTR: _printer._ipp._tcp.local.
 	instance := encodeDNSName("Front Desk._ipp._tcp.local.")
-	packet = appendRRName(packet, "_ipp._tcp.local.", 12, 0x8400, instance)
+	packet = appendRRName(packet, "_ipp._tcp.local.", 12, 0x8001, instance)
 
 	// SRV: Front Desk._ipp._tcp.local. -> printer.local.:631
 	srvRData := make([]byte, 6)
@@ -49,16 +49,16 @@ func TestParseMDNSPacketWithCompressionAndTXT(t *testing.T) {
 	binary.BigEndian.PutUint16(srvRData[2:4], 0)
 	binary.BigEndian.PutUint16(srvRData[4:6], 631)
 	srvRData = append(srvRData, encodeDNSName("printer.local.")...)
-	packet = appendRRName(packet, "Front Desk._ipp._tcp.local.", 33, 0x8400, srvRData)
+	packet = appendRRName(packet, "Front Desk._ipp._tcp.local.", 33, 0x8001, srvRData)
 
 	// TXT: rp=/ipp/print and ty=Example Printer
 	txt := append([]byte{byte(len("rp=/ipp/print"))}, []byte("rp=/ipp/print")...)
 	txt = append(txt, byte(len("ty=Example Printer")))
 	txt = append(txt, []byte("ty=Example Printer")...)
-	packet = appendRRName(packet, "Front Desk._ipp._tcp.local.", 16, 0x8400, txt)
+	packet = appendRRName(packet, "Front Desk._ipp._tcp.local.", 16, 0x8001, txt)
 
 	// A: printer.local. -> 192.168.1.60
-	packet = appendRRName(packet, "printer.local.", 1, 0x8400, net.IPv4(192, 168, 1, 60).To4())
+	packet = appendRRName(packet, "printer.local.", 1, 0x8001, net.IPv4(192, 168, 1, 60).To4())
 
 	if questionOffset == 0 {
 		t.Fatal("question offset unexpectedly zero")
