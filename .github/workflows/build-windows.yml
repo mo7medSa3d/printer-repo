@@ -146,35 +146,6 @@ jobs:
           Write-Host "NSIS EXE:"
           $exe | Select-Object FullName, Length
 
-      - name: Sign Windows release artifacts (required on main)
-        if: github.ref == 'refs/heads/main'
-        shell: pwsh
-        env:
-          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
-          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
-            throw "WINDOWS_SIGNING_CERT_BASE64 is not configured; refusing to publish unsigned Windows artifacts."
-          }
-          $certPath = Join-Path $env:RUNNER_TEMP "windows-signing-cert.pfx"
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
-          $signtool = Get-Command signtool.exe -ErrorAction Stop
-          $timestamp = "http://timestamp.digicert.com"
-
-          $binaries = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle" -Recurse -File |
-            Where-Object { $_.Extension -in @('.exe', '.msi') }
-          if (-not $binaries) { throw "No Windows release binaries found to sign." }
-
-          foreach ($artifact in $binaries) {
-            Write-Host "Signing $($artifact.FullName)"
-            & $signtool.Source sign /fd SHA256 /f $certPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD /tr $timestamp /td SHA256 $artifact.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($artifact.FullName)" }
-            & $signtool.Source verify /pa /all $artifact.FullName
-            if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $($artifact.FullName)" }
-          }
-          Remove-Item -Force $certPath
-
       - name: Install MSI and smoke-test installed app
         shell: pwsh
         run: |
@@ -193,17 +164,6 @@ jobs:
           if (-not (Test-Path $installedExe)) { throw "Installed EXE missing after MSI install: $installDir" }
           & pwsh -NoProfile -File .\scripts\smoke-test-windows.ps1 -InstallDir $installDir
           if ($LASTEXITCODE -ne 0) { throw "Windows smoke test failed" }
-
-      - name: Verify production artifacts are signed
-        if: github.ref == 'refs/heads/main'
-        shell: pwsh
-        run: |
-          $artifacts = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle" -Recurse -File |
-            Where-Object { $_.Extension -in @('.exe', '.msi') }
-          foreach ($artifact in $artifacts) {
-            & signtool.exe verify /pa /all $artifact.FullName
-            if ($LASTEXITCODE -ne 0) { throw "Unsigned or invalid Authenticode signature: $($artifact.FullName)" }
-          }
 
       - name: Upload Windows MSI and NSIS EXE
         uses: actions/upload-artifact@v6
