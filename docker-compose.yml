@@ -27,7 +27,11 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-odoo_print}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-odoo_print}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-odoo_print}
+      PGUSER: ${POSTGRES_USER:-odoo_print}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     command: ["npm", "run", "db:migrate"]
     networks:
       - printer_backend
@@ -44,7 +48,11 @@ services:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
       PORT: 3000
-      DATABASE_URL: postgresql://${POSTGRES_USER:-odoo_print}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-odoo_print}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-odoo_print}
+      PGUSER: ${POSTGRES_USER:-odoo_print}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:?GATEWAY_JWT_SECRET must be set in .env}
       MANAGER_USERNAME: ${MANAGER_USERNAME:-admin}
       MANAGER_PASSWORD: ${MANAGER_PASSWORD:-}
