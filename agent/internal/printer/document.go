@@ -45,8 +45,9 @@ type VerifiedKindSupporter interface {
 	SupportsKindVerified(ctx context.Context, kind string) bool
 }
 
-// VerifiedKindsProvider allows a backend to fetch all supported kinds in one
-// capability query, avoiding one network round trip per document type.
+// VerifiedKindsProvider is available to callers that explicitly want a live
+// capability snapshot. The normal SupportedKinds contract remains static so
+// legacy heartbeat tests and non-live backends are unaffected.
 type VerifiedKindsProvider interface {
 	SupportedKindsVerified(ctx context.Context) []string
 }
@@ -86,15 +87,19 @@ func PrintDocument(ctx context.Context, p Printer, doc Document) error {
 	return p.Print(ctx, doc.Data)
 }
 
+// SupportedKinds returns the backend's statically declared kinds. Use
+// SupportedKindsVerified through the explicit provider interface when a live
+// IPP capability snapshot is required.
 func SupportedKinds(p Printer) []string {
-	if provider, ok := p.(VerifiedKindsProvider); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		return provider.SupportedKindsVerified(ctx)
-	}
 	kinds := make([]string, 0, 3)
 	for _, k := range []string{KindRaw, KindESCPOS, KindPDF} {
-		if SupportsKind(p, k) {
+		if ks, ok := p.(KindSupporter); ok {
+			if ks.SupportsKind(k) {
+				kinds = append(kinds, k)
+			}
+			continue
+		}
+		if k == KindRaw || k == KindESCPOS {
 			kinds = append(kinds, k)
 		}
 	}
