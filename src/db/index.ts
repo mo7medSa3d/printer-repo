@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import { Pool, type PoolConfig } from "pg";
 import { getWorkerSchema, schemaSearchPath } from "../lib/worker-schema";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -9,18 +9,27 @@ const globalForDb = globalThis as typeof globalThis & {
   __arenaWorkerSchema?: string | null;
 };
 
-// During `next build` page-data collection, DATABASE_URL may not be set (CI without DB).
-// Create a lazy pool that only throws when actually used at runtime, so build succeeds.
+// During `next build` page-data collection, no database settings may be present.
+// Create a lazy pool that only throws when actually used at runtime, so builds
+// can still complete without a configured database.
 function createPool(): Pool {
-  if (!databaseUrl) {
+  const hasStructuredConfig = Boolean(
+    process.env.PGHOST ||
+    process.env.PGDATABASE ||
+    process.env.PGUSER ||
+    process.env.PGPASSWORD,
+  );
+
+  if (!databaseUrl && !hasStructuredConfig) {
     const dummy = {
-      query: async () => { throw new Error("DATABASE_URL is required at runtime"); },
-      connect: async () => { throw new Error("DATABASE_URL is required at runtime"); },
+      query: async () => { throw new Error("PostgreSQL connection settings are required at runtime"); },
+      connect: async () => { throw new Error("PostgreSQL connection settings are required at runtime"); },
       on: () => dummy,
       end: async () => {},
     } as unknown as Pool;
     return dummy;
   }
+
   const workerSchema = getWorkerSchema();
   // Memoize the worker schema on the global so helpers/pg.ts can reuse the same decision
   // without re-evaluating per-pool creation (important for Drizzle singleton).
@@ -28,15 +37,25 @@ function createPool(): Pool {
     globalForDb.__arenaWorkerSchema = workerSchema;
   }
   const searchPath = workerSchema ? schemaSearchPath(workerSchema) : null;
-  // Use connection string options to make search_path connection-safe: every new
-  // connection from the pool starts with the correct schema, unlike SET search_path
-  // on a single pooled connection which would be racy.
-  const poolConfig: any = { connectionString: databaseUrl };
+
+  // Prefer an explicit connection string when supplied. Docker Compose uses
+  // structured PG* variables instead, so passwords containing URI-reserved
+  // characters such as `@`, `:` or `/` never need manual URL escaping.
+  const poolConfig: PoolConfig = databaseUrl
+    ? { connectionString: databaseUrl }
+    : {
+        host: process.env.PGHOST,
+        port: Number(process.env.PGPORT ?? "5432"),
+        database: process.env.PGDATABASE,
+        user: process.env.PGUSER,
+        password: process.env.PGPASSWORD,
+      };
+
   if (searchPath) {
     poolConfig.options = `-c search_path=${searchPath}`;
   }
-  const pool = new Pool(poolConfig);
-  return pool;
+
+  return new Pool(poolConfig);
 }
 
 export const pool =
