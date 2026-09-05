@@ -50,7 +50,8 @@ jobs:
           fi
           healthy=0
           for i in $(seq 1 60); do
-            if docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+            gateway_container="$(docker ps --filter 'label=com.docker.compose.service=gateway' --format '{{.ID}}' | head -n1)"
+            if [ -n "$gateway_container" ] && docker exec "$gateway_container" node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
               healthy=1
               break
             fi
@@ -61,13 +62,20 @@ jobs:
             echo "Gateway did not become healthy within 120 seconds" >&2
             exit 1
           fi
-          docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>r.text()).then(console.log)"
+          gateway_container="$(docker ps --filter 'label=com.docker.compose.service=gateway' --format '{{.ID}}' | head -n1)"
+          docker exec "$gateway_container" node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>r.text()).then(console.log)"
 
       - name: Exercise custom server HTTP guards
         shell: bash
         run: |
           set -euo pipefail
-          docker compose exec -T gateway node <<'NODE'
+          gateway_container="$(docker ps --filter 'label=com.docker.compose.service=gateway' --format '{{.ID}}' | head -n1)"
+          if [ -z "$gateway_container" ]; then
+            echo "Gateway container was not found" >&2
+            docker ps -a >&2
+            exit 1
+          fi
+          docker exec -i "$gateway_container" node <<'NODE'
           const http = require('node:http');
           const net = require('node:net');
 
