@@ -13,16 +13,18 @@ describe("production hardening contracts", () => {
     expect(hasBodyOverLimit(new Request("http://test"), 2048)).toBe(false);
   });
 
-  it("enforces a hard byte ceiling for both declared and chunked API request bodies", () => {
+  it("enforces a hard byte ceiling without attaching a competing request-stream listener", () => {
     const server = read("server.ts");
-    expect(server).toContain("const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
+    expect(server).toContain("export const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
     expect(server).toContain('if (!req.url?.startsWith("/api/")) return true;');
     expect(server).toContain('["POST", "PUT", "PATCH", "DELETE"]');
     expect(server).toContain('"REQUEST_BODY_TOO_LARGE"');
-    expect(server).toContain('req.on("data"');
-    expect(server).toContain("received += Buffer.byteLength(chunk)");
-    expect(server).toContain("received > MAX_API_BODY_BYTES");
-    expect(server).toContain("req.destroy()");
+    expect(server).toContain('if (transferEncoding && String(transferEncoding).toLowerCase() !== "identity")');
+    expect(server).toContain('"CONTENT_LENGTH_REQUIRED"');
+    expect(server).toContain("Number(rawLength)");
+    expect(server).toContain("length > MAX_API_BODY_BYTES");
+    expect(server).not.toContain('req.on("data"');
+    expect(server).not.toContain("received += Buffer.byteLength(chunk)");
   });
 
   it("keeps Docker migration out of runtime startup and orders Compose migration before gateway", () => {
