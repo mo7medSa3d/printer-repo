@@ -45,10 +45,11 @@ PCL is **not** a discovery protocol — never advertised.
 - Bounded concurrency (32), per-host 500-1500ms, global 30s, cancellation via `cancel` endpoint.
 - Deduplication deterministic: UUID → serial+model → MAC → IP:port → spooler name.
 
-## Confidence
-- Agent-generated confidence is informational only at ingestion.
-- Gateway persistence always starts candidates at LOW confidence.
-- Manager approval raises the authorization state to `verified/high`.
+## Confidence and approval
+- Agent-generated confidence is informational evidence only at ingestion.
+- Gateway persistence starts every incoming candidate at LOW confidence.
+- Manager approval changes only the authorization state to `verified`; it does **not** manufacture higher technical confidence.
+- Provisioning requires both `verification=verified` and `candidateStatus=verified`.
 
 ## Lifecycle
 `running → completed|partial|failed|cancelled` (partial = some detectors failed but results exist). Candidates TTL via `discovered_devices.candidate_status` (`discovered|verified|provisioned|ignored|expired`), provisioned history preserved.
