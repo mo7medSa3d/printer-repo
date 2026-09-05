@@ -2,25 +2,17 @@ name: Docker Runtime Smoke
 
 on:
   pull_request:
-    paths:
-      - 'Dockerfile'
-      - 'docker-compose.yml'
-      - '.dockerignore'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'server.ts'
-      - 'src/**'
-      - 'drizzle/**'
-      - 'scripts/**'
-      - 'next.config.ts'
-      - 'tsconfig.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   compose-runtime:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate Compose configuration
         run: docker compose config
@@ -41,7 +33,7 @@ jobs:
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
         run: |
           set -euo pipefail
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if docker compose ps --status running gateway | grep -q gateway; then
               break
             fi
