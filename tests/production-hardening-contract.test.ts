@@ -17,7 +17,7 @@ describe("production hardening contracts", () => {
     const server = read("server.ts");
     expect(server).toContain("const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
     expect(server).toContain('if (!req.url?.startsWith("/api/")) return true;');
-    expect(server).toContain('["POST", "PUT", "PATCH"]');
+    expect(server).toContain('["POST", "PUT", "PATCH", "DELETE"]');
     expect(server).toContain("req.on(\"data\"");
     expect(server).toContain('"REQUEST_BODY_TOO_LARGE"');
   });
