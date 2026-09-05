@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents } from "../../../../db/schema";
 import { and, eq, gt } from "drizzle-orm";
-import { generateSecret, hashSecret, PAIRING_CODE_PATTERN } from "../../../../lib/agent-auth";
+import { generateSecret, hashSecret, isValidPairingCode } from "../../../../lib/agent-auth";
 import {
   clientIpFrom,
   inspectPairingRateLimit,
@@ -15,7 +15,7 @@ import { z } from "zod";
 const MAX_REGISTRATION_BODY_BYTES = 64 * 1024;
 
 const registrationSchema = z.object({
-  pairingCode: z.string().trim().regex(PAIRING_CODE_PATTERN, "pairingCode must be exactly 6 digits"),
+  pairingCode: z.string().trim().min(6).max(6).refine(isValidPairingCode, "pairingCode must be exactly 6 characters from the approved alphabet"),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agentId: z.string().trim().min(1).max(120).optional(),
 }).strict();
@@ -37,10 +37,10 @@ export async function POST(req: Request) {
 
     const parsed = registrationSchema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json({ error: "pairingCode must be exactly 6 digits" }, { status: 400 });
+      return NextResponse.json({ error: "pairingCode must be exactly 6 characters from the approved alphabet" }, { status: 400 });
     }
 
-    const normalizedCode = parsed.data.pairingCode;
+    const normalizedCode = parsed.data.pairingCode.trim().toUpperCase();
     const ip = clientIpFrom(req);
 
     try {
