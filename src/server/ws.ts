@@ -125,18 +125,7 @@ export async function handleAgentMessage(agentId: string, raw: string): Promise<
   if (!known) console.warn(`[ws] agent ${agentId} acked unknown job ${jobId}`);
 }
 
-async function notifyJobAvailable(jobId: string, agentId: string): Promise<void> {
-  const payload = JSON.stringify({ jobId, agentId });
-  try {
-    await pool.query("SELECT pg_notify($1, $2)", [PG_NOTIFY_CHANNEL, payload]);
-  } catch (error) {
-    console.warn(`[ws] PostgreSQL job notification failed for ${jobId}:`, error);
-  }
-}
-
-export { notifyJobAvailable };
-
-async function startJobNotificationListener(wss: WebSocketServer): Promise<() => Promise<void>> {
+async function startJobNotificationListener(): Promise<() => Promise<void>> {
   const client = await pool.connect();
   let closed = false;
   await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
@@ -178,7 +167,7 @@ export function attachAgentWSS(server: HttpServer) {
   wss.on("close", () => clearInterval(interval));
 
   let stopNotificationListener: (() => Promise<void>) | null = null;
-  void startJobNotificationListener(wss).then((stop) => { stopNotificationListener = stop; }).catch((error) => {
+  void startJobNotificationListener().then((stop) => { stopNotificationListener = stop; }).catch((error) => {
     console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
   });
   wss.on("close", () => { void stopNotificationListener?.(); });
