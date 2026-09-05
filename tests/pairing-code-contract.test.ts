@@ -9,8 +9,8 @@ describe("pairing code contract", () => {
   });
 
   it("uses the unambiguous alphabet shared by Gateway, Go and Tauri", () => {
-    expect(isValidPairingCode("AB12CD")).toBe(true);
-    expect(isValidPairingCode("ab12cd")).toBe(true);
+    expect(isValidPairingCode("AB22CD")).toBe(true);
+    expect(isValidPairingCode("ab22cd")).toBe(true);
     expect(isValidPairingCode("123456")).toBe(false);
     expect(isValidPairingCode("AB01CD")).toBe(false);
     expect(isValidPairingCode("ABIOCD")).toBe(false);
