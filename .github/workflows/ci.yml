@@ -97,7 +97,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
 
-      - name: Run all tests with coverage gate
+      - name: Run complete test suite
         run: npm test
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
