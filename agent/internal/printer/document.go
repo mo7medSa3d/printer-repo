@@ -27,37 +27,30 @@ type Document struct {
 	JobID string
 }
 
-// ErrCapabilityMismatch marks "this printer cannot physically render this
-// payload type". It is reported to the gateway verbatim so the job fails with
-// a CAPABILITY_MISMATCH reason instead of printing garbage.
 var ErrCapabilityMismatch = errors.New("CAPABILITY_MISMATCH")
 
-// CapabilityMismatchf builds an ErrCapabilityMismatch-wrapped error whose
-// message always starts with the CAPABILITY_MISMATCH token.
 func CapabilityMismatchf(format string, args ...interface{}) error {
 	return fmt.Errorf("%w: %s", ErrCapabilityMismatch, fmt.Sprintf(format, args...))
 }
 
-// IsCapabilityMismatch reports whether err is a capability mismatch.
 func IsCapabilityMismatch(err error) bool {
 	return errors.Is(err, ErrCapabilityMismatch)
 }
 
-// DocumentPrinter is implemented by backends that need to know the document
-// kind to select the correct physical path (e.g. Windows spooler: RAW
-// byte-stream vs. PDF rendered through the printer driver).
 type DocumentPrinter interface {
 	PrintDocument(ctx context.Context, doc Document) error
 }
 
-// KindSupporter is implemented by backends that can declare which document
-// kinds they accept. Backends that do not implement it are assumed to be
-// byte-stream only (raw/escpos).
 type KindSupporter interface {
 	SupportsKind(kind string) bool
 }
 
-// NormalizeKind lower-cases a document kind; an empty kind means "raw bytes".
+// VerifiedKindSupporter is used when support depends on live device
+// capabilities rather than a backend's static implementation.
+type VerifiedKindSupporter interface {
+	SupportsKindVerified(ctx context.Context, kind string) bool
+}
+
 func NormalizeKind(kind string) string {
 	k := strings.ToLower(strings.TrimSpace(kind))
 	if k == "" {
@@ -67,18 +60,21 @@ func NormalizeKind(kind string) string {
 }
 
 // SupportsKind reports whether p can physically print the given document kind.
+// Backends with protocol-level capability discovery get precedence over a
+// static KindSupporter declaration.
 func SupportsKind(p Printer, kind string) bool {
 	k := NormalizeKind(kind)
+	if verified, ok := p.(VerifiedKindSupporter); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*1e9)
+		defer cancel()
+		return verified.SupportsKindVerified(ctx, k)
+	}
 	if ks, ok := p.(KindSupporter); ok {
 		return ks.SupportsKind(k)
 	}
-	// Unknown/legacy backend: byte streams only. PDF requires an explicit
-	// PDF-aware path, never an opaque write.
 	return k == KindRaw || k == KindESCPOS
 }
 
-// PrintDocument routes a document to the backend's kind-aware path when it has
-// one, and refuses (rather than downgrades) payloads the backend cannot render.
 func PrintDocument(ctx context.Context, p Printer, doc Document) error {
 	if p == nil {
 		return fmt.Errorf("no printer backend")
@@ -93,9 +89,6 @@ func PrintDocument(ctx context.Context, p Printer, doc Document) error {
 	return p.Print(ctx, doc.Data)
 }
 
-// SupportedKinds lists the document kinds a backend accepts. It is reported to
-// the gateway in the heartbeat (capabilities.supported_protocols) so routing
-// can reject an incompatible job before it is ever queued.
 func SupportedKinds(p Printer) []string {
 	kinds := make([]string, 0, 3)
 	for _, k := range []string{KindRaw, KindESCPOS, KindPDF} {
