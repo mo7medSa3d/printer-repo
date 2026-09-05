@@ -4,15 +4,19 @@ import { readFileSync } from "node:fs";
 describe("printing crash recovery", () => {
   it("fails stale printing jobs without requiring delivery retries", () => {
     const src = readFileSync("src/app/api/agent/jobs/route.ts", "utf8");
-    const start = src.indexOf("error = 'AGENT_EXECUTION_TIMEOUT'");
-    const updateStart = src.lastIndexOf("UPDATE print_jobs", start);
-    const end = src.indexOf("`);", start);
-    const sqlBlock = src.slice(updateStart, end);
+    const timeoutIndex = src.indexOf("AGENT_EXECUTION_TIMEOUT");
 
-    expect(sqlBlock).toContain("status = 'printing'");
-    expect(sqlBlock).toContain("status = 'failed'");
-    expect(sqlBlock).toContain("AGENT_EXECUTION_TIMEOUT");
-    expect(sqlBlock).not.toContain("retries >= ${MAX_RETRIES}");
+    expect(src).toContain("const STALE_PRINTING_SECONDS = 10 * 60");
+    expect(timeoutIndex).toBeGreaterThan(-1);
+
+    const recoveryBlock = src.slice(Math.max(0, timeoutIndex - 1400), timeoutIndex + 500);
+    expect(recoveryBlock).toContain("UPDATE print_jobs");
+    expect(recoveryBlock).toContain("status = 'failed'");
+    expect(recoveryBlock).toContain("status = 'printing'");
+    expect(recoveryBlock).toContain(
+      "updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})",
+    );
+    expect(recoveryBlock).not.toContain("AND retries >= ${MAX_RETRIES}");
   });
 
   it("uses the shared agent availability policy for all service-created jobs", () => {
