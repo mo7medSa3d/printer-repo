@@ -169,6 +169,7 @@ export async function GET(req: Request) {
   const branchIdFromQuery = url.searchParams.get("branchId");
   const odoo = await validateOdooKey(req, branchIdFromQuery);
   if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!odoo.branchId) return NextResponse.json({ error: "Branch-scoped API key required" }, { status: 403 });
   const id = url.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 });
   const row = await db.query.printJobs.findFirst({ where: eq(printJobs.id, id) });

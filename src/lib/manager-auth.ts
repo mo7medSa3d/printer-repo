@@ -171,6 +171,7 @@ export function verifyManagerPassword(username: string, input: string): boolean 
   // must provide MANAGER_PASSWORD_HASH so a compromised environment/config
   // cannot silently downgrade authentication to a raw password comparison.
   if (process.env.NODE_ENV === "production") return false;
+  if (process.env.NODE_ENV === "production") return false;
   if (process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD !== "1" || !expectedPass) return false;
   return compareStringsSafe(input, expectedPass);
 }

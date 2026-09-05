@@ -106,7 +106,7 @@ class PrintGatewayPrintJob(models.Model):
 
     @api.model
     def cron_sync_pending_jobs(self):
-        pending = self.search([('status', 'in', ['queued', 'claimed', 'printing'])])
+        pending = self.search([('status', 'in', ['queued', 'claimed', 'printing'])], order='id asc', limit=50)
         if pending:
             pending.action_sync_status()
         return True

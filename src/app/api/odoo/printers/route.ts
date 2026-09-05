@@ -15,7 +15,7 @@ export async function GET(req: Request) {
   const filter = requestedBranch ?? odoo.branchId ?? null;
   try {
     const query = db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt));
-    const rows = filter ? await query.where(eq(agents.branchId, filter)) : await query;
+    const rows = filter ? await query.where(eq(agents.branchId, filter)).limit(500) : await query.limit(500);
     return NextResponse.json(rows.filter(({ printer }) => !isVirtualPrinterRecord(printer)).map(({ printer, branchId }) => ({ ...printer, branchId })));
   } catch {
     return NextResponse.json({ error: "database error while listing printers" }, { status: 500 });

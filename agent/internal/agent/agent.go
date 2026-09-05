@@ -460,12 +460,14 @@ func (a *Agent) recoverInterruptedJobs() {
 		log.Printf("WARNING: could not scan the local queue for interrupted jobs: %v", err)
 	}
 	for _, job := range interrupted {
-		log.Printf(
-			"WARNING: job %s on printer %s was still printing when the agent stopped. Physical output is UNKNOWN (full, partial or none). Reporting it as failed; reprint_after_crash=%v",
-			job.ID, job.PrinterID, a.cfg.ReprintAfterCrashEnabled(),
-		)
-		a.updateJobStatus(job.ID, "failed", queue.InterruptedMarker+
-			": the agent stopped while this job was printing; the physical output is unknown (full, partial or none)")
+		reason := queue.InterruptedMarker + ": the agent stopped while this job was printing; the physical output is unknown (full, partial or none)"
+		if a.cfg.ReprintAfterCrashEnabled() {
+			log.Printf("WARNING: job %s interrupted during print; requesting controlled re-delivery because reprint_after_crash=true", job.ID)
+			a.updateJobStatus(job.ID, "queued", "AGENT_RESTART_DURING_PRINT_RETRYABLE: "+reason)
+		} else {
+			log.Printf("WARNING: job %s interrupted during print; reporting failed because reprint_after_crash=false", job.ID)
+			a.updateJobStatus(job.ID, "failed", reason+": reprint_after_crash=false")
+		}
 	}
 	if len(interrupted) > 0 {
 		log.Printf("Crash recovery: %d job(s) were interrupted mid-print and reported to the gateway", len(interrupted))
@@ -1044,6 +1046,21 @@ func (a *Agent) pollJobs(ctx context.Context) {
 	}
 }
 
+// printExecutionTimeout gives slow transports more time as payloads grow
+// while keeping a hard upper bound.
+func printExecutionTimeout(bytes int, kind string) time.Duration {
+	if kind == "pdf" {
+		return 2 * time.Minute
+	}
+	base := 30 * time.Second
+	perMiB := time.Duration((bytes+1024*1024-1)/(1024*1024)) * 75 * time.Second
+	timeout := base + perMiB
+	if timeout > 15*time.Minute {
+		return 15 * time.Minute
+	}
+	return timeout
+}
+
 // processJob executes exactly one print job end-to-end and reports the
 // true outcome. It NEVER reports "success" unless the payload was
 // actually transmitted to the printer backend without error. "Success"
@@ -1153,8 +1170,30 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	// Report printing outside the per-printer lock (network I/O must not hold mutex)
 	a.updateJobStatus(jobID, "printing", "")
 
-	printCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	printTimeout := printExecutionTimeout(len(pl.Data), kind)
+	printCtx, cancel := context.WithTimeout(ctx, printTimeout)
 	defer cancel()
+
+	keepaliveCtx, keepaliveCancel := context.WithCancel(ctx)
+	defer keepaliveCancel()
+	keepaliveDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		defer close(keepaliveDone)
+		for {
+			select {
+			case <-ticker.C:
+				a.updateJobStatus(jobID, "printing", "")
+			case <-keepaliveCtx.Done():
+				return
+			}
+		}
+	}()
+	defer func() {
+		keepaliveCancel()
+		<-keepaliveDone
+	}()
 
 	// Physical print is serialized per printer; re-check dedup before printing
 	// in case the same jobId was already completed while we were reporting

@@ -180,7 +180,7 @@ Secrets are stripped; 500 on a database error.
 No auth (the pairing code is the credential). The registration request cannot establish ownership.
 
 ```json
-{ "agentId": "agt_7f3c", "pairingCode": "AB12CD",
+{ "agentId": "agt_7f3c", "pairingCode": "AB22CD",
   "metadata": {"hostname":"pos-pc-1","os":"windows","version":"1.0.0"} }
 ```
 

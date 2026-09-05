@@ -60,6 +60,9 @@ export function guardApiRequest(req: IncomingMessage, res: ServerResponse): bool
 }
 
 app.prepare().then(() => {
+  if (process.env.NODE_ENV === "production" && Intl.DateTimeFormat().resolvedOptions().timeZone !== "UTC") {
+    throw new Error("Production gateway requires TZ=UTC for timestamp consistency");
+  }
   const server = createServer((req, res) => {
     if (!guardApiRequest(req, res)) return;
     handle(req, res);

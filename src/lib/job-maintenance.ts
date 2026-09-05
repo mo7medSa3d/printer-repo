@@ -49,6 +49,7 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
     WHERE status = 'printing'
       AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
       AND expires_at > now()
+      AND expires_at > now()
       ${agentFilter}
       ${branchFilter}
     RETURNING id

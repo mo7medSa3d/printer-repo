@@ -229,9 +229,9 @@ export async function POST(req: Request) {
   // ------------------------------------------------- cross-reference checks
   // These read the current database state; nothing has been written yet.
   const missingDependencies: Detail[] = [];
-  const hasDestinations = Array.isArray(body.destinations);
-  const hasDocumentTypes = Array.isArray(body.documentTypes) || Array.isArray(body.document_types);
-  const hasBindings = Array.isArray(body.bindings);
+  const hasDestinations = Array.isArray(body.destinations) && (body.destinations.length > 0 || body.wipe === true);
+  const hasDocumentTypes = (Array.isArray(body.documentTypes) && (body.documentTypes.length > 0 || body.wipe === true)) || (Array.isArray(body.document_types) && (body.document_types.length > 0 || body.wipe === true));
+  const hasBindings = Array.isArray(body.bindings) && (body.bindings.length > 0 || body.wipe === true);
   try {
     const referencedDestinationIds = [...new Set(validBindings.map((b) => b.destinationId))];
     const payloadDestinationIds = new Set(validDestinations.map((d) => d.id));
@@ -473,7 +473,12 @@ export async function GET(req: Request) {
       agentRows = await db.select().from(agents).where(eq(agents.branchId, branchFilter)).orderBy(desc(agents.lastSeenAt)).limit(50);
       const rows = await db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).where(eq(agents.branchId, branchFilter)).orderBy(desc(printers.updatedAt)).limit(100);
       printerRows = rows.map(({ printer, branchId }) => ({ ...printer, branchId }));
-      jobRows = await db.select().from(printJobs).where(eq(printJobs.branchId, branchFilter)).orderBy(desc(printJobs.createdAt)).limit(50);
+      jobRows = await db.select({
+        id: printJobs.id, branchId: printJobs.branchId, printerId: printJobs.printerId, agentId: printJobs.agentId,
+        destinationId: printJobs.destinationId, documentType: printJobs.documentType, status: printJobs.status,
+        error: printJobs.error, retries: printJobs.retries, createdAt: printJobs.createdAt, updatedAt: printJobs.updatedAt,
+        expiresAt: printJobs.expiresAt,
+      }).from(printJobs).where(eq(printJobs.branchId, branchFilter)).orderBy(desc(printJobs.createdAt)).limit(50);
     } else {
       agentRows = await db.select().from(agents).orderBy(desc(agents.lastSeenAt)).limit(20);
       const rows = await db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt)).limit(20);

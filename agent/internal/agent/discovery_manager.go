@@ -13,6 +13,8 @@ import (
 )
 
 // pollDiscovery checks gateway for pending discovery sessions for this agent and executes them.
+var discoveryExecutionSem = make(chan struct{}, 2)
+
 func (a *Agent) pollDiscovery(ctx context.Context) {
 	reqURL := fmt.Sprintf("%s/api/agent/discovery", a.cfg.Server.URL)
 	resp, err := a.doAuthorizedRequest("GET", reqURL, nil)
@@ -32,7 +34,15 @@ func (a *Agent) pollDiscovery(ctx context.Context) {
 		if id == "" {
 			continue
 		}
-		go a.executeDiscoverySession(ctx, id)
+		select {
+		case discoveryExecutionSem <- struct{}{}:
+			go func(discoveryID string) {
+				defer func() { <-discoveryExecutionSem }()
+				a.executeDiscoverySession(ctx, discoveryID)
+			}(id)
+		default:
+			log.Printf("[discovery] concurrency limit reached; leaving session %s for the next poll", id)
+		}
 	}
 }
 

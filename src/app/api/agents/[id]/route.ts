@@ -6,6 +6,7 @@ import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { eq, count, desc } from "drizzle-orm";
 import { z } from "zod";
 import { generatePairingCode } from "../../../../lib/agent-auth";
+import { closeAgentSockets } from "../../../../server/ws";
 
 export const dynamic = "force-dynamic";
 const patchSchema = z.object({ lifecycle: z.enum(["active", "disabled", "retired"]) }).strict();
@@ -42,5 +43,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(eq(printers.agentId, id));
     }
   });
+  if (next !== "active") closeAgentSockets(id);
   return NextResponse.json({ ok: true, lifecycle: next, pairingCode });
 }
