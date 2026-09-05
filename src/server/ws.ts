@@ -1,8 +1,10 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
 import type { PoolClient } from "pg";
+import { isIP } from "node:net";
 import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
+import { inspectWsUpgradeRateLimit, recordWsUpgradeFailure } from "../lib/ws-rate-limit";
 import {
   claimJobForDelivery,
   markJobDelivered,
@@ -13,12 +15,39 @@ import {
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
+type WritableSocket = {
+  write(chunk: string): boolean;
+  destroy(): void;
+};
+
 const agentSockets = new Map<string, Set<AgentSocket>>();
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
 const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
 const PG_NOTIFY_CHANNEL = "print_gateway_agent_jobs";
 const PG_NOTIFY_RECONNECT_MIN_MS = 1_000;
 const PG_NOTIFY_RECONNECT_MAX_MS = 30_000;
+
+function websocketClientKey(req: IncomingMessage): string {
+  if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
+    const forwarded = req.headers["x-forwarded-for"];
+    const candidates = typeof forwarded === "string" ? forwarded.split(",") : [];
+    for (const candidate of candidates) {
+      const ip = candidate.trim();
+      if (ip && isIP(ip) !== 0) return ip.slice(0, 128);
+    }
+    const real = typeof req.headers["x-real-ip"] === "string" ? req.headers["x-real-ip"].trim() : "";
+    if (real && isIP(real) !== 0) return real.slice(0, 128);
+  }
+  return (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "").slice(0, 128) || "unknown";
+}
+
+function writeWsHttpError(socket: WritableSocket, status: number, body: string, retryAfterSec?: number) {
+  const retry = retryAfterSec !== undefined ? `Retry-After: ${retryAfterSec}\r\n` : "";
+  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : "Unauthorized";
+  const payload = JSON.stringify({ error: body });
+  socket.write(`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
+  socket.destroy();
+}
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
   ws.agentId = agentId;
@@ -245,13 +274,26 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
     if (!url.startsWith("/api/agent/ws")) return;
+
+    const clientKey = websocketClientKey(req);
+    try {
+      const decision = await inspectWsUpgradeRateLimit(clientKey);
+      if (!decision.allowed) {
+        writeWsHttpError(socket, 429, "Too many failed WebSocket authentication attempts", decision.retryAfterSec);
+        return;
+      }
+    } catch {
+      writeWsHttpError(socket, 503, "WebSocket authentication temporarily unavailable", 5);
+      return;
+    }
+
     const auth = req.headers["authorization"] ?? req.headers["Authorization"];
     const header = Array.isArray(auth) ? auth[0] : (auth as string | undefined) ?? null;
     let agent: Awaited<ReturnType<typeof validateAgent>> = null;
     try { agent = await validateAgent(header ?? null); } catch { agent = null; }
     if (!agent) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"error\":\"Unauthorized\"}");
-      socket.destroy();
+      try { await recordWsUpgradeFailure(clientKey); } catch {}
+      writeWsHttpError(socket, 401, "Unauthorized");
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {

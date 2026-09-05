@@ -15,9 +15,9 @@ describe("job-status", () => {
     expect(canTransition("printing", "success")).toBe(true);
     expect(canTransition("printing", "failed")).toBe(true);
   });
-  it("expiration is server-controlled and cannot be requested by agents", () => {
-    expect(canTransition("claimed", "expired")).toBe(false);
-    expect(canTransition("printing", "expired")).toBe(false);
+  it("expired jobs may be finalized by an agent after local TTL observation", () => {
+    expect(canTransition("claimed", "expired")).toBe(true);
+    expect(canTransition("printing", "expired")).toBe(true);
   });
   it("disallowed: queued is agent never sets", () => {
     expect(canTransition("queued", "printing")).toBe(false);

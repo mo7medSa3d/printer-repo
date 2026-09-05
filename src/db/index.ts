@@ -9,9 +9,6 @@ const globalForDb = globalThis as typeof globalThis & {
   __arenaWorkerSchema?: string | null;
 };
 
-// During `next build` page-data collection, no database settings may be present.
-// Create a lazy pool that only throws when actually used at runtime, so builds
-// can still complete without a configured database.
 function createPool(): Pool {
   const hasStructuredConfig = Boolean(
     process.env.PGHOST ||
@@ -31,16 +28,11 @@ function createPool(): Pool {
   }
 
   const workerSchema = getWorkerSchema();
-  // Memoize the worker schema on the global so helpers/pg.ts can reuse the same decision
-  // without re-evaluating per-pool creation (important for Drizzle singleton).
   if (workerSchema && globalForDb.__arenaWorkerSchema === undefined) {
     globalForDb.__arenaWorkerSchema = workerSchema;
   }
   const searchPath = workerSchema ? schemaSearchPath(workerSchema) : null;
 
-  // Prefer an explicit connection string when supplied. Docker Compose uses
-  // structured PG* variables instead, so passwords containing URI-reserved
-  // characters such as `@`, `:` or `/` never need manual URL escaping.
   const poolConfig: PoolConfig = databaseUrl
     ? { connectionString: databaseUrl }
     : {
@@ -54,6 +46,13 @@ function createPool(): Pool {
   if (searchPath) {
     poolConfig.options = `-c search_path=${searchPath}`;
   }
+
+  poolConfig.max = 20;
+  poolConfig.idleTimeoutMillis = 30_000;
+  poolConfig.connectionTimeoutMillis = 10_000;
+  poolConfig.statement_timeout = 30_000;
+  poolConfig.lock_timeout = 5_000;
+  poolConfig.maxUses = 10_000;
 
   return new Pool(poolConfig);
 }

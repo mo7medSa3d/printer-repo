@@ -1,0 +1,4 @@
+{$GATEWAY_DOMAIN} {
+    encode gzip zstd
+    reverse_proxy gateway:3000
+}

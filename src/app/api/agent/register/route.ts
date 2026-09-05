@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents } from "../../../../db/schema";
 import { and, eq, gt } from "drizzle-orm";
-import { generateSecret, hashSecret } from "../../../../lib/agent-auth";
+import { generateSecret, hashSecret, PAIRING_CODE_PATTERN } from "../../../../lib/agent-auth";
 import {
   clientIpFrom,
   inspectPairingRateLimit,
@@ -15,10 +15,8 @@ import { z } from "zod";
 const MAX_REGISTRATION_BODY_BYTES = 64 * 1024;
 
 const registrationSchema = z.object({
-  // Keep the user-facing pairing code exactly six numeric digits.
-  pairingCode: z.string().trim().regex(/^\d{6}$/, "pairingCode must be exactly 6 digits"),
+  pairingCode: z.string().trim().regex(PAIRING_CODE_PATTERN, "pairingCode must be exactly 6 digits"),
   metadata: z.record(z.string(), z.unknown()).optional(),
-  // Optional compatibility hint. It never determines the branch.
   agentId: z.string().trim().min(1).max(120).optional(),
 }).strict();
 
@@ -45,11 +43,6 @@ export async function POST(req: Request) {
     const normalizedCode = parsed.data.pairingCode;
     const ip = clientIpFrom(req);
 
-    // This limiter is independent of the submitted code value. That prevents
-    // an attacker from bypassing protection by trying a different six-digit
-    // value on every request. With TRUST_PROXY enabled, it is per source IP;
-    // otherwise it deliberately falls back to a shared bucket until a trusted
-    // proxy is configured.
     try {
       const decision = await inspectPairingRateLimit(ip);
       if (!decision.allowed) {
@@ -66,17 +59,11 @@ export async function POST(req: Request) {
       gt(agents.pairingCodeExpiresAt, new Date()),
       eq(agents.lifecycle, "active"),
     ];
-    if (parsed.data.agentId) {
-      conditions.push(eq(agents.id, parsed.data.agentId));
-    }
+    if (parsed.data.agentId) conditions.push(eq(agents.id, parsed.data.agentId));
 
     const agent = await db.query.agents.findFirst({ where: and(...conditions) });
     if (!agent) {
-      try {
-        await recordPairingFailure(ip);
-      } catch {
-        // A failed limiter write must not reveal whether the code was valid.
-      }
+      try { await recordPairingFailure(ip); } catch {}
       return NextResponse.json({ error: "Unknown, disabled, retired, or expired agent registration" }, { status: 400 });
     }
 
@@ -98,17 +85,14 @@ export async function POST(req: Request) {
     )).returning({ id: agents.id });
 
     if (!updated.length) {
-      return NextResponse.json({ error: "Pairing code was already used or expired" }, { status: 409 });
+      try { await recordPairingFailure(ip); } catch {}
+      return NextResponse.json({ error: "Pairing code was consumed or expired; retry with a fresh code" }, { status: 409 });
     }
 
-    try {
-      await recordPairingSuccess(ip);
-    } catch {
-      // Housekeeping only; successful registration must not fail because a security counter could not be cleared.
-    }
-
-    return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret });
-  } catch {
+    try { await recordPairingSuccess(ip); } catch {}
+    return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret }, { status: 200 });
+  } catch (error) {
+    console.error("[agent/register] registration failed", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

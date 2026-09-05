@@ -19,18 +19,21 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          GATEWAY_DOMAIN: print.example.com
 
       - name: Start stack
         run: docker compose up -d --build
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          GATEWAY_DOMAIN: print.example.com
 
       - name: Verify migration and gateway health
         shell: bash
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          GATEWAY_DOMAIN: print.example.com
         run: |
           set -euo pipefail
 
@@ -51,7 +54,7 @@ jobs:
 
           healthy=0
           for i in $(seq 1 60); do
-            if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:3000/api/health >/tmp/gateway-health.json; then
+            if docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
               healthy=1
               break
             fi
@@ -63,7 +66,7 @@ jobs:
             echo "Gateway did not become healthy within 120 seconds" >&2
             exit 1
           fi
-          cat /tmp/gateway-health.json
+          docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>r.text()).then(console.log)"
 
       - name: Show logs on failure
         if: failure()
@@ -71,6 +74,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          GATEWAY_DOMAIN: print.example.com
 
       - name: Tear down
         if: always()
@@ -78,3 +82,4 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          GATEWAY_DOMAIN: print.example.com
