@@ -4,20 +4,12 @@ import { validateAgent } from "@/lib/agent-auth";
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { isJobStatus, canTransition, isTerminal, type JobStatus } from "@/lib/job-status";
-import { CLAIM_LEASE_SECONDS, MAX_DELIVERY_ATTEMPTS } from "@/lib/job-delivery";
 import { logInfo, logWarn, requestIdFrom } from "@/lib/log";
 import { incrementMetric } from "@/lib/metrics";
+import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "@/lib/job-maintenance";
+import { hasBodyOverLimit } from "@/lib/request-limits";
 
 export const dynamic = "force-dynamic";
-
-const STALE_CLAIM_SECONDS = CLAIM_LEASE_SECONDS;
-// Printing has its own lease. It is intentionally longer than the delivery
-// lease because a physical printer may legitimately take more than 90 seconds
-// for a large PDF/label batch. The agent refreshes updated_at through its
-// normal status callback before this lease expires; this timeout is a final
-// crash-recovery backstop, not a delivery timer.
-const STALE_PRINTING_SECONDS = 10 * 60;
-const MAX_RETRIES = 5;
 const MAX_CLAIM_BATCH = 20;
 export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 const MAX_ERROR_LENGTH = 2000;
@@ -26,52 +18,11 @@ export async function GET(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
   if (!agent) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  await sweepPrintJobs({ agentId: agent.id, branchId: agent.branchId });
+
   const branchFilter = agent.branchId ? sql`AND branch_id = ${agent.branchId}` : sql``;
-
-  await db.execute(sql`
-    UPDATE print_jobs
-    SET status = 'expired', updated_at = now()
-    WHERE agent_id = ${agent.id}
-      AND status NOT IN ('success', 'failed', 'expired')
-      AND expires_at <= now()
-      ${branchFilter}
-  `);
-
-  // Only CLAIMED rows use the short delivery lease. PRINTING rows have a
-  // separate execution lease so a slow printer is never mistaken for a lost
-  // delivery. A printing job is reclaimed only after the longer execution
-  // lease, which is the crash-recovery backstop.
-  await db.execute(sql`
-    UPDATE print_jobs
-    SET status = 'failed',
-        error = 'exceeded max retries after a stale claim (agent likely crashed or lost connection)',
-        updated_at = now()
-    WHERE agent_id = ${agent.id}
-      AND status = 'claimed'
-      AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
-      AND retries >= ${MAX_RETRIES}
-      ${branchFilter}
-  `);
-
-  await db.execute(sql`
-    UPDATE print_jobs
-    SET status = 'failed',
-        error = 'exceeded max retries after a stale printing lease (agent likely crashed during execution)',
-        updated_at = now()
-    WHERE agent_id = ${agent.id}
-      AND status = 'printing'
-      AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
-      AND retries >= ${MAX_RETRIES}
-      ${branchFilter}
-  `);
-
-  // Reclaim only stale CLAIMED delivery leases. Active PRINTING jobs are not
-  // eligible here; their longer execution lease above is the only recovery
-  // mechanism for an agent crash during physical printing.
   const claimJobs = async (tx: { execute: typeof db.execute }) => {
-    await tx.execute(sql`
-      SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`}))
-    `);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`}))`);
 
     const countResult = await tx.execute(sql`
       SELECT COUNT(*)::int AS count
@@ -166,6 +117,7 @@ export async function PATCH(req: Request) {
     logWarn("job.status.unauthorized", { requestId });
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  if (hasBodyOverLimit(req, 64 * 1024)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
 
   let body: { jobId?: unknown; status?: unknown; error?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
