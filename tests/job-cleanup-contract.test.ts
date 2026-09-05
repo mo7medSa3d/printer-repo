@@ -11,16 +11,20 @@ describe("print-job cleanup contract", () => {
     expect(src).toContain("const claims = await validateManager(req)");
     expect(src).toContain('["success", "failed", "expired"]');
     expect(src).toContain("inArray(printJobs.status");
-    expect(src).toContain("queued/claimed/printing");
+    expect(src).not.toContain(".delete(printJobs)\n    .where(inArray(printJobs.status");
+    expect(src).toContain("confirm=1");
+    expect(src).toContain("MAX_CLEANUP_ROWS = 5000");
+    expect(src).toContain("before=<ISO-8601 timestamp>");
   });
 
-  it("surfaces a confirmed cleanup action in the Gateway dashboard", () => {
+  it("surfaces a confirmed bounded retention action in the Gateway dashboard", () => {
     const page = read("src/app/dashboard/page.tsx");
     const button = read("src/components/JobCleanupButton.tsx");
     expect(page).toContain("<JobCleanupButton />");
     expect(button).toContain("Clean jobs");
     expect(button).toContain('method: "DELETE"');
-    expect(button).toContain("completed, failed and expired jobs");
+    expect(button).toContain("RETENTION_DAYS = 30");
+    expect(button).toContain("limit=5000&confirm=1");
   });
 
   it("exposes local cleanup through the typed Desktop IPC boundary", () => {
