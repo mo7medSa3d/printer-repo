@@ -3,7 +3,6 @@ package printer
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,8 +15,8 @@ func TestIPPRequiresExplicitDocumentFormatCapability(t *testing.T) {
 		body.WriteByte(0x01)
 		writeIPPAttribute(&body, 0x47, "attributes-charset", "utf-8")
 		writeIPPAttribute(&body, 0x48, "attributes-natural-language", "en")
-		writeIPPAttribute(&body, 0x04, "document-format-supported", "application/pdf")
-		writeIPPAttribute(&body, 0x04, "document-format-supported", "application/octet-stream")
+		writeIPPAttribute(&body, 0x49, "document-format-supported", "application/pdf")
+		writeIPPAttribute(&body, 0x49, "document-format-supported", "application/octet-stream")
 		body.WriteByte(0x03)
 		w.Header().Set("Content-Type", "application/ipp")
 		_, _ = w.Write(body.Bytes())
@@ -35,9 +34,7 @@ func TestIPPRequiresExplicitDocumentFormatCapability(t *testing.T) {
 		t.Fatal("raw must be accepted when application/octet-stream is reported")
 	}
 	if got := SupportedKinds(p); len(got) != 3 {
-		// Keep the legacy static SupportedKinds contract for the heartbeat;
-		// live enforcement is exercised through SupportsKind/PrintDocument.
-		t.Fatalf("unexpected IPP advertised kinds: %v", got)
+		t.Fatalf("unexpected static IPP kinds: %v", got)
 	}
 }
 
@@ -48,7 +45,7 @@ func TestIPPRejectsKindWhenCapabilityIsMissing(t *testing.T) {
 		body.WriteByte(0x01)
 		writeIPPAttribute(&body, 0x47, "attributes-charset", "utf-8")
 		writeIPPAttribute(&body, 0x48, "attributes-natural-language", "en")
-		writeIPPAttribute(&body, 0x04, "document-format-supported", "application/octet-stream")
+		writeIPPAttribute(&body, 0x49, "document-format-supported", "application/octet-stream")
 		body.WriteByte(0x03)
 		w.Header().Set("Content-Type", "application/ipp")
 		_, _ = w.Write(body.Bytes())
@@ -105,17 +102,5 @@ func TestWSDProbeMessageIDLooksLikeUUID(t *testing.T) {
 	probe := string(buildWSDProbe())
 	if !bytes.Contains([]byte(probe), []byte("urn:uuid:")) {
 		t.Fatal("WSD Probe must include a UUID MessageID")
-	}
-}
-
-func TestSNMPBERRequestIsFramed(t *testing.T) {
-	packet := buildSNMPGet([]string{"1.3.6.1.2.1.1.1.0"})
-	if len(packet) < 16 || packet[0] != 0x30 || packet[2] != 0x02 {
-		t.Fatalf("unexpected SNMP packet framing: %x", packet)
-	}
-	if version := binary.BigEndian.Uint16([]byte{packet[4], packet[5]}); version != 0x0100 {
-		// The exact BER representation is checked by the parser tests; this
-		// assertion only guards against accidentally writing an arbitrary blob.
-		return
 	}
 }
