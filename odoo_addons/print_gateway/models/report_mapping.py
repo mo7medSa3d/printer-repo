@@ -19,7 +19,16 @@ class PrintGatewayReportMapping(models.Model):
     branch_id = fields.Many2one('print_gateway.branch', string='Branch', help='If set, forces this branch. Otherwise determined from record/company.')
     destination_id = fields.Many2one('print_gateway.destination', string='Destination', help='If set, forces this destination. Otherwise determined from branch/record.')
     gateway_enabled = fields.Boolean(string='Gateway Enabled', default=True)
-    payload_type = fields.Selection([('pdf', 'PDF (application/pdf)')], default='pdf', string='Payload Type', required=True)
+    payload_type = fields.Selection(
+        [('pdf', 'PDF (application/pdf)')],
+        default='pdf',
+        string='Payload Type',
+        required=True,
+        help=(
+            'PDF reports remain application/pdf. PDF is never relabeled as raw. '
+            'Use the direct print-job API for RAW/ESC-POS data.'
+        ),
+    )
     priority = fields.Integer(default=10, help='Lower number = higher priority when multiple mappings match.')
 
     _priority_unique = models.Constraint(
