@@ -33,23 +33,13 @@ function guardApiRequest(req: import("http").IncomingMessage, res: import("http"
       rejectOversizedRequest(res);
       return false;
     }
-    return true;
   }
 
-  let seen = 0;
-  req.on("data", (chunk: Buffer | string) => {
-    if (res.writableEnded) return;
-    seen += Buffer.byteLength(chunk);
-    if (seen > MAX_API_BODY_BYTES) {
-      rejectOversizedRequest(res);
-      req.destroy();
-    }
-  });
-
-  req.on("aborted", () => {
-    if (!res.writableEnded) res.end();
-  });
-
+  // Do not attach data listeners here. IncomingMessage is the body stream and
+  // consuming it before handing the request to Next.js can make req.json()/form
+  // parsing fail or observe a truncated body. Requests without Content-Length
+  // must be bounded at the trusted reverse proxy/edge; route handlers also keep
+  // their own explicit limits where payloads are larger/specialized.
   return true;
 }
 
