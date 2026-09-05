@@ -13,6 +13,15 @@ describe("production hardening contracts", () => {
     expect(hasBodyOverLimit(new Request("http://test"), 2048)).toBe(false);
   });
 
+  it("enforces a global pre-parser API body ceiling, including chunked requests", () => {
+    const server = read("server.ts");
+    expect(server).toContain("const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
+    expect(server).toContain('if (!req.url?.startsWith("/api/")) return true;');
+    expect(server).toContain('["POST", "PUT", "PATCH"]');
+    expect(server).toContain("req.on(\"data\"");
+    expect(server).toContain('"REQUEST_BODY_TOO_LARGE"');
+  });
+
   it("keeps Docker migration out of runtime startup and orders Compose migration before gateway", () => {
     const dockerfile = read("Dockerfile");
     const compose = read("docker-compose.yml");
@@ -42,6 +51,13 @@ describe("production hardening contracts", () => {
     expect(provision).toContain('device.verification !== "verified"');
     expect(verify).toContain('verification: "verified"');
     expect(verify).toContain('candidateStatus: "verified"');
+  });
+
+  it("keeps dashboard approval aligned with technical confidence semantics", () => {
+    const dashboard = read("src/app/dashboard/dashboard-client.tsx");
+    expect(dashboard).toContain('candidateStatus: "verified", verification: "verified"');
+    expect(dashboard).not.toContain('candidateStatus: "verified", verification: "verified", confidence: "high"');
+    expect(dashboard).toContain("Technical confidence remains unchanged");
   });
 
   it("keeps the legacy direct-printer route branch-scoped and payload-validated", () => {
