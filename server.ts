@@ -24,7 +24,7 @@ function rejectOversizedRequest(res: import("http").ServerResponse) {
 
 function guardApiRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): boolean {
   if (!req.url?.startsWith("/api/")) return true;
-  if (!["POST", "PUT", "PATCH"].includes(req.method ?? "")) return true;
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method ?? "")) return true;
 
   const rawLength = req.headers["content-length"];
   if (rawLength !== undefined) {
