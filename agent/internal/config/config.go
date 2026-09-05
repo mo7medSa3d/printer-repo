@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/odoo-print-agent/agent/internal/storage"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,11 +21,11 @@ type Config struct {
 		URL string `yaml:"url"`
 	} `yaml:"server"`
 	Agent struct {
-		ID     string `yaml:"id"`
-		Secret string `yaml:"secret"`
-		Name   string `yaml:"name"`
+		ID              string   `yaml:"id"`
+		Secret          string   `yaml:"secret,omitempty"`
+		Name            string   `yaml:"name"`
 		PDFPrintCommand []string `yaml:"pdf_print_command,omitempty"`
-		ReprintAfterCrash *bool `yaml:"reprint_after_crash,omitempty"`
+		ReprintAfterCrash *bool  `yaml:"reprint_after_crash,omitempty"`
 	} `yaml:"agent"`
 	Printers []PrinterConfig `yaml:"printers"`
 }
@@ -45,9 +47,8 @@ type PrinterConfig struct {
 }
 
 func (c *Config) ReprintAfterCrashEnabled() bool {
-	// A nil pointer can still occur in zero-value Config values used by older
-	// callers/tests. Preserve that compatibility value, while every real config
-	// creation/load path explicitly initializes the persisted policy to false.
+	// Zero-value configs are kept compatible for tests/embedders, but all real
+	// persisted configurations default to the conservative no-reprint policy.
 	if c == nil || c.Agent.ReprintAfterCrash == nil {
 		return true
 	}
@@ -66,6 +67,12 @@ func validateServerURL(raw string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("server.url host is empty")
+	}
+	if u.User != nil {
+		return fmt.Errorf("server.url must not contain embedded credentials")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("server.url must not contain query strings or fragments")
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -104,6 +111,19 @@ func Load(path string) (*Config, error) {
 	err = yaml.NewDecoder(f).Decode(cfg)
 	if err != nil {
 		return nil, err
+	}
+	legacySecret := cfg.Agent.Secret
+	cfg.Agent.Secret = ""
+	store := storage.NewStore(filepath.Dir(path))
+	if legacySecret != "" {
+		if err := store.SaveSecret("agent-secret", legacySecret); err != nil {
+			return nil, fmt.Errorf("migrate agent secret to secure storage: %w", err)
+		}
+	}
+	if secret, err := store.GetSecret("agent-secret"); err == nil {
+		cfg.Agent.Secret = secret
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		return nil, fmt.Errorf("load agent secret from secure storage: %w", err)
 	}
 	if cfg.Agent.ReprintAfterCrash == nil {
 		cfg.Agent.ReprintAfterCrash = boolPtr(false)
@@ -149,11 +169,19 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("config path is empty")
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(c)
+	store := storage.NewStore(dir)
+	if c.Agent.Secret != "" {
+		if err := store.SaveSecret("agent-secret", c.Agent.Secret); err != nil {
+			return fmt.Errorf("store agent secret securely: %w", err)
+		}
+	}
+	safe := *c
+	safe.Agent.Secret = ""
+	data, err := yaml.Marshal(&safe)
 	if err != nil {
 		return fmt.Errorf("encode config %s: %w", path, err)
 	}
