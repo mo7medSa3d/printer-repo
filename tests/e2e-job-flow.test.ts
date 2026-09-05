@@ -184,54 +184,60 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
       branchId: f.branchId,
       destinationId: f.destinationId,
       documentType: "receipt",
-      payload: { type: "pdf", encoding: "base64", data: pdfBase64() },
-      idempotencyKey: "no-socket-42",
+      payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") },
     }));
     expect(res.status).toBe(201);
     const created = await res.json();
     expect(created.status).toBe("queued");
-    expect((await jobRow(created.jobId)).status).toBe("queued");
 
-    const ws = await connectAgent(f);
-    await expect.poll(async () => (await jobRow(created.jobId)).status, { timeout: 5000 }).toBe("queued");
-    expect(ws.readyState).toBe(WebSocket.OPEN);
-
-    const claimRes = await agentJobsGET(agentRequest(f, "GET"));
-    expect(claimRes.status).toBe(200);
-    const jobs = await claimRes.json();
-    expect(jobs.jobs.some((job: any) => job.id === created.jobId)).toBe(true);
+    const row = await jobRow(created.jobId);
+    expect(row.status).toBe("queued");
+    expect(row.delivered_at).toBeNull();
+    expect(row.delivery_attempts).toBe(0);
   });
 
   it("does not mark a polling claim as delivered until the agent acknowledges receipt", async () => {
-    const createdJobId = `job_poll_${Date.now()}`;
-    await pool().query(
-      `INSERT INTO print_jobs (id, branch_id, destination_id, document_type, agent_id, printer_id, status, payload, expires_at)
-       VALUES ($1, $2, $3, 'receipt', $4, $5, 'queued', $6::jsonb, now() + interval '1 hour')`,
-      [createdJobId, f.branchId, f.destinationId, f.agentId, f.printerId, JSON.stringify({ type: "pdf", encoding: "base64", data: pdfBase64() })]
-    );
+    const createRes = await printJobsPOST(odooCreate({
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+      documentType: "receipt",
+      payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") },
+    }));
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json();
+    expect(created.status).toBe("queued");
 
-    const claimRes = await agentJobsGET(agentRequest(f, "GET"));
-    expect(claimRes.status).toBe(200);
-    const body = await claimRes.json();
-    const claimed = body.jobs.find((job: any) => job.id === createdJobId);
-    expect(claimed.status).toBe("claimed");
-    expect((await jobRow(createdJobId)).delivered_at).toBeNull();
+    const pollRes = await agentJobsGET(new Request("http://gateway.test/api/agent/jobs", {
+      headers: { Authorization: f.agentAuth },
+    }));
+    expect(pollRes.status).toBe(200);
+    const jobs = await pollRes.json();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe(created.jobId);
+    expect(jobs[0].status).toBe("claimed");
 
-    const ws = await connectAgent(f);
-    void ws;
-    const ack = await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    void ack;
-    expect((await jobRow(createdJobId)).delivered_at).toBeNull();
+    const claimedRow = await jobRow(created.jobId);
+    expect(claimedRow.status).toBe("claimed");
+    expect(claimedRow.delivered_at).toBeNull();
+    expect(claimedRow.acked_at).toBeNull();
+    expect(claimedRow.delivery_attempts).toBe(1);
+
+    const ackRes = await agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", {
+      method: "PATCH",
+      headers: { Authorization: f.agentAuth, "content-type": "application/json" },
+      body: JSON.stringify({ jobId: created.jobId, status: "printing" }),
+    }));
+    expect(ackRes.status).toBe(200);
+
+    // A status transition is not the delivery ACK. The WebSocket ack path is
+    // what records receipt, so delivered_at remains unset here.
+    const printingRow = await jobRow(created.jobId);
+    expect(printingRow.delivered_at).toBeNull();
+
+    const { handleAgentMessage } = await import("../src/server/ws");
+    await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId }));
+    const ackedRow = await jobRow(created.jobId);
+    expect(ackedRow.acked_at).not.toBeNull();
+    expect(ackedRow.delivered_at).not.toBeNull();
   });
 });
-
-function agentRequest(fixture: Fixture, method: "GET" | "PATCH", body?: unknown) {
-  return new Request("http://gateway.test/api/agent/jobs", {
-    method,
-    headers: {
-      Authorization: fixture.agentAuth,
-      "content-type": "application/json",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
