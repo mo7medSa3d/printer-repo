@@ -106,8 +106,8 @@ function DiscoveryPanel({ agents, branchesById }: { agents: Agent[]; branchesByI
       const res = await fetch(`/api/agents/${agentId}/discovered-printers/${deviceId}/verify`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "approval failed");
-      setDevices(prev => prev.map(d => d.id === deviceId ? { ...d, candidateStatus: "verified", verification: "verified", confidence: "high" } : d));
-      setMsg(`Candidate ${deviceId.slice(0, 16)}… approved. It can now be provisioned.`);
+      setDevices(prev => prev.map(d => d.id === deviceId ? { ...d, candidateStatus: "verified", verification: "verified" } : d));
+      setMsg(`Candidate ${deviceId.slice(0, 16)}… approved. Technical confidence remains unchanged; approval only authorizes provisioning.`);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
