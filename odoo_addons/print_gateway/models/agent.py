@@ -2,6 +2,7 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError
 
+
 class PrintGatewayAgent(models.Model):
     _name = 'print_gateway.agent'
     _description = 'Print Gateway Agent'
@@ -21,12 +22,12 @@ class PrintGatewayAgent(models.Model):
     last_seen_at = fields.Datetime(readonly=True)
     hostname = fields.Char()
     os = fields.Char(string='OS')
-
     printer_ids = fields.One2many('print_gateway.printer', 'agent_id', string='Printers', readonly=True)
 
-    _sql_constraints = [
-        ('gateway_agent_id_unique', 'unique(gateway_agent_id)', 'Agent ID must be globally unique'),
-    ]
+    _gateway_agent_id_unique = models.Constraint(
+        'UNIQUE(gateway_agent_id)',
+        'Agent ID must be globally unique',
+    )
 
     def write(self, vals):
         if 'lifecycle' in vals:
@@ -35,10 +36,6 @@ class PrintGatewayAgent(models.Model):
                     raise ValidationError(_('Retired agents are terminal; create/re-pair a new agent identity instead.'))
                 if vals['lifecycle'] not in ('active', 'disabled', 'retired'):
                     raise ValidationError(_('Invalid agent lifecycle state.'))
-                if rec.lifecycle == 'active' and vals['lifecycle'] not in ('active', 'disabled', 'retired'):
-                    raise ValidationError(_('Invalid agent lifecycle transition.'))
-                if rec.lifecycle == 'disabled' and vals['lifecycle'] not in ('disabled', 'active', 'retired'):
-                    raise ValidationError(_('Invalid agent lifecycle transition.'))
         if 'branch_id' in vals:
             for rec in self:
                 if rec.branch_id.id != vals['branch_id']:
