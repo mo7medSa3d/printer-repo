@@ -8,11 +8,36 @@ import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
 export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
+export const MAX_AGENT_QUEUED_JOBS = 1000;
+export const MAX_BRANCH_QUEUED_JOBS = 10000;
+export const PRINT_JOB_RATE_LIMIT_PER_MINUTE = 60;
+export const PRINT_JOB_RATE_LIMIT_PER_HOUR = 1000;
 
 export class AgentQueueFullError extends Error {
   readonly code = "AGENT_QUEUE_FULL" as const;
   constructor(public readonly agentId: string, public readonly inFlight: number) {
     super(`Agent ${agentId} has reached the maximum of ${MAX_AGENT_IN_FLIGHT_JOBS} in-flight jobs`);
+  }
+}
+
+export class AgentQueuedJobsFullError extends Error {
+  readonly code = "AGENT_QUEUED_QUEUE_FULL" as const;
+  constructor(public readonly agentId: string, public readonly queued: number) {
+    super(`Agent ${agentId} has reached the maximum of ${MAX_AGENT_QUEUED_JOBS} queued jobs`);
+  }
+}
+
+export class BranchQueuedJobsFullError extends Error {
+  readonly code = "BRANCH_QUEUED_QUEUE_FULL" as const;
+  constructor(public readonly branchId: string, public readonly queued: number) {
+    super(`Branch ${branchId} has reached the maximum of ${MAX_BRANCH_QUEUED_JOBS} queued jobs`);
+  }
+}
+
+export class PrintJobRateLimitError extends Error {
+  readonly code = "PRINT_JOB_RATE_LIMITED" as const;
+  constructor(public readonly retryAfterSeconds: number) {
+    super(`Print job rate limit exceeded; retry after ${retryAfterSeconds} seconds`);
   }
 }
 
@@ -22,6 +47,8 @@ export type CreatePrintJobOptions = {
   destinationId?: string | null;
   documentType?: string | null;
   expiresAt?: Date;
+  /** Stable API-key identity used for distributed throttling. */
+  rateLimitKeyId?: string | null;
 };
 
 export type CreatePrintJobResult = {
@@ -29,12 +56,6 @@ export type CreatePrintJobResult = {
   printerId: string;
   agentId: string;
   branchId: string;
-  /**
-   * Creation is intentionally reported as queued. Delivery is asynchronous
-   * and may be claimed by either the local WebSocket fast path or another
-   * gateway instance consuming PostgreSQL NOTIFY. The persisted job row and
-   * subsequent status reads are authoritative for delivery state.
-   */
   status: "queued";
 };
 
@@ -55,6 +76,7 @@ async function insertQueuedJobAtomically({
   idempotencyKey,
   destinationId,
   documentType,
+  rateLimitKeyId,
 }: {
   jobId: string;
   printerId: string;
@@ -66,9 +88,16 @@ async function insertQueuedJobAtomically({
   idempotencyKey?: string | null;
   destinationId?: string | null;
   documentType?: string | null;
+  rateLimitKeyId?: string | null;
 }): Promise<void> {
   await db.transaction(async (tx) => {
+    // Lock in deterministic branch -> agent -> key order so concurrent
+    // submissions stay race-free without cross-agent/global serialization.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:branch:${branchId}`}))`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
+    if (rateLimitKeyId) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
+    }
 
     if (idempotencyKey) {
       const existing = await tx.execute(sql`
@@ -83,15 +112,83 @@ async function insertQueuedJobAtomically({
       }
     }
 
-    const countResult = await tx.execute(sql`
-      SELECT COUNT(*)::int AS count
+    const counts = await tx.execute(sql`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE agent_id = ${agentId}
+            AND status = 'queued'
+            AND expires_at > now()
+        )::int AS agent_queued,
+        COUNT(*) FILTER (
+          WHERE agent_id = ${agentId}
+            AND status IN ('claimed', 'printing')
+            AND expires_at > now()
+        )::int AS agent_in_flight,
+        COUNT(*) FILTER (
+          WHERE branch_id = ${branchId}
+            AND status = 'queued'
+            AND expires_at > now()
+        )::int AS branch_queued
       FROM print_jobs
-      WHERE agent_id = ${agentId}
-        AND status IN ('claimed', 'printing')
-        AND expires_at > now()
+      WHERE (agent_id = ${agentId} OR branch_id = ${branchId})
     `);
-    const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
+    const row = counts.rows[0] as { agent_queued?: number | string; agent_in_flight?: number | string; branch_queued?: number | string } | undefined;
+    const agentQueued = Number(row?.agent_queued ?? 0);
+    const inFlight = Number(row?.agent_in_flight ?? 0);
+    const branchQueued = Number(row?.branch_queued ?? 0);
+
+    if (agentQueued >= MAX_AGENT_QUEUED_JOBS) throw new AgentQueuedJobsFullError(agentId, agentQueued);
     if (inFlight >= MAX_AGENT_IN_FLIGHT_JOBS) throw new AgentQueueFullError(agentId, inFlight);
+    if (branchQueued >= MAX_BRANCH_QUEUED_JOBS) throw new BranchQueuedJobsFullError(branchId, branchQueued);
+
+    if (rateLimitKeyId) {
+      const now = new Date();
+      const limit = await tx.execute(sql`
+        SELECT minute_window_started_at, minute_count, hour_window_started_at, hour_count
+        FROM print_job_rate_limits
+        WHERE api_key_id = ${rateLimitKeyId}
+        FOR UPDATE
+      `);
+      const existing = limit.rows[0] as {
+        minute_window_started_at?: string | Date;
+        minute_count?: number | string;
+        hour_window_started_at?: string | Date;
+        hour_count?: number | string;
+      } | undefined;
+
+      if (!existing) {
+        await tx.execute(sql`
+          INSERT INTO print_job_rate_limits
+            (api_key_id, minute_window_started_at, minute_count, hour_window_started_at, hour_count, updated_at)
+          VALUES (${rateLimitKeyId}, ${now}, 1, ${now}, 1, ${now})
+        `);
+      } else {
+        const minuteStarted = new Date(existing.minute_window_started_at ?? now);
+        const hourStarted = new Date(existing.hour_window_started_at ?? now);
+        const minuteCount = Number(existing.minute_count ?? 0);
+        const hourCount = Number(existing.hour_count ?? 0);
+        const minuteElapsed = Math.max(0, now.getTime() - minuteStarted.getTime());
+        const hourElapsed = Math.max(0, now.getTime() - hourStarted.getTime());
+        const nextMinuteCount = minuteElapsed >= 60_000 ? 1 : minuteCount + 1;
+        const nextHourCount = hourElapsed >= 3_600_000 ? 1 : hourCount + 1;
+
+        if (nextMinuteCount > PRINT_JOB_RATE_LIMIT_PER_MINUTE || nextHourCount > PRINT_JOB_RATE_LIMIT_PER_HOUR) {
+          const minuteRetry = minuteElapsed >= 60_000 ? 0 : Math.ceil((60_000 - minuteElapsed) / 1000);
+          const hourRetry = hourElapsed >= 3_600_000 ? 0 : Math.ceil((3_600_000 - hourElapsed) / 1000);
+          throw new PrintJobRateLimitError(Math.max(1, Math.max(minuteRetry, hourRetry)));
+        }
+
+        await tx.execute(sql`
+          UPDATE print_job_rate_limits
+          SET minute_window_started_at = ${minuteElapsed >= 60_000 ? now : minuteStarted},
+              minute_count = ${nextMinuteCount},
+              hour_window_started_at = ${hourElapsed >= 3_600_000 ? now : hourStarted},
+              hour_count = ${nextHourCount},
+              updated_at = ${now}
+          WHERE api_key_id = ${rateLimitKeyId}
+        `);
+      }
+    }
 
     await tx.insert(printJobs).values({
       id: jobId,
@@ -157,19 +254,14 @@ export async function createPrintJobForPrinter(
     idempotencyKey: options.idempotencyKey ?? null,
     destinationId: options.destinationId ?? null,
     documentType: options.documentType ?? null,
+    rateLimitKeyId: options.rateLimitKeyId ?? null,
   });
 
   try {
     await claimAndPushJobToAgent({ id, agentId: ownerAgent.id });
   } catch (error) {
-    // The durable row is already queued. Delivery is best-effort and polling
-    // remains the recovery path; never roll back a successfully persisted job
-    // merely because the optional WebSocket fast path failed.
     console.warn(`[print-job-service] WS push failed for job ${id}:`, error);
   }
 
-  // The POST contract is intentionally stable: 201 means the job was
-  // accepted and persisted. The delivery state is observed via the job API,
-  // not inferred from a race between synchronous and notification delivery.
   return { id, printerId: printer.id, agentId: ownerAgent.id, branchId: ownerBranch.id, status: "queued" };
 }
