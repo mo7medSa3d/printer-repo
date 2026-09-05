@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldCheck, Lock } from "lucide-react";
-import { BrandMark, Button, Field, Input, ErrorState } from "@/components/ui";
+import { BrandMark, Button, Field, Input, ErrorState } from "../../components/ui";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");

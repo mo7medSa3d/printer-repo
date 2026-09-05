@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { lockDurationMs, accountKey, ipKey, clientIpFrom, cleanupAuthRateLimits, AUTH_RATE_RETENTION_MS } from "@/lib/auth-rate-limit";
+import { lockDurationMs, accountKey, ipKey, clientIpFrom, cleanupAuthRateLimits, AUTH_RATE_RETENTION_MS } from "../src/lib/auth-rate-limit";
 import {
   hasTestDatabase,
   applyMigrations,
@@ -7,7 +7,7 @@ import {
   closePool,
   pool,
 } from "./helpers/pg";
-import { POST as loginPOST } from "@/app/api/auth/manager/login/route";
+import { POST as loginPOST } from "../src/app/api/auth/manager/login/route";
 
 describe("auth rate limiter (pure)", () => {
   it("has no lock below 5 failures", () => {

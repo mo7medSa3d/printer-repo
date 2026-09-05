@@ -144,7 +144,7 @@ describe("desktop manager", () => {
     root.id = "root";
     document.body.appendChild(root);
 
-    await import("@/desktop/main");
+    await import("../src/desktop/main");
     await new Promise((r) => setTimeout(r, 300));
 
     const text = () => document.body.textContent ?? "";

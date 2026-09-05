@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "fs";
 import path from "path";
 import { createHash, randomBytes } from "crypto";
 import { Pool } from "pg";
-import { getWorkerSchema, schemaSearchPath } from "@/lib/worker-schema";
+import { getWorkerSchema, schemaSearchPath } from "../../src/lib/worker-schema";
 
 export const TEST_DATABASE_URL = process.env.DATABASE_URL ?? "";
 export const hasTestDatabase = TEST_DATABASE_URL.length > 0;

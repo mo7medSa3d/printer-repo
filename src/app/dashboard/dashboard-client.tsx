@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { createAgent, createTestPrintJob, deleteAgent, setAgentLifecycle, setPrinterLifecycle } from "@/app/actions";
+import { createAgent, createTestPrintJob, deleteAgent, setAgentLifecycle, setPrinterLifecycle } from "../actions";
 import {
   Plus,
   Printer as PrinterIcon,
@@ -31,7 +31,7 @@ import {
   agentTone,
   printerTone,
   jobTone,
-} from "@/components/ui";
+} from "../../components/ui";
 
 type Branch = { id: string; name: string; enabled: boolean };
 type Agent = {
@@ -100,6 +100,19 @@ function DiscoveryPanel({ agents, branchesById }: { agents: Agent[]; branchesByI
     } finally { setBusy(false); }
   };
 
+  const approve = async (deviceId: string) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/agents/${agentId}/discovered-printers/${deviceId}/verify`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "approval failed");
+      setDevices(prev => prev.map(d => d.id === deviceId ? { ...d, candidateStatus: "verified", verification: "verified" } : d));
+      setMsg(`Candidate ${deviceId.slice(0, 16)}… approved. Technical confidence remains unchanged; approval only authorizes provisioning.`);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+
   const provision = async (deviceId: string) => {
     setBusy(true);
     try {
@@ -160,9 +173,17 @@ function DiscoveryPanel({ agents, branchesById }: { agents: Agent[]; branchesByI
               {d.manufacturer || d.model ? <div className="font-medium text-ink-2">{d.manufacturer ?? ""} {d.model ?? ""}</div> : null}
               <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-edge pt-2.5">
                 <Mono>{d.id.slice(0, 16)}…</Mono>
-                <Button size="sm" variant={d.candidateStatus === "provisioned" ? "secondary" : "primary"} onClick={() => provision(d.id)} disabled={busy || d.candidateStatus === "provisioned"}>
-                  {d.candidateStatus === "provisioned" ? "Configured" : "Provision Printer"}
-                </Button>
+                {d.candidateStatus === "provisioned" ? (
+                  <Button size="sm" variant="secondary" disabled>Configured</Button>
+                ) : d.candidateStatus === "verified" && d.verification === "verified" ? (
+                  <Button size="sm" variant="primary" onClick={() => provision(d.id)} disabled={busy}>
+                    Provision Printer
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="primary" onClick={() => approve(d.id)} disabled={busy}>
+                    Approve Candidate
+                  </Button>
+                )}
               </div>
             </div>
           ))}

@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { managerSessions } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 
 const COOKIE_NAME = "mgr_session";
@@ -121,6 +121,15 @@ export async function revokeManagerSession(jti: string) {
   await db.update(managerSessions).set({ revokedAt: new Date() }).where(eq(managerSessions.jti, jti));
 }
 
+export async function cleanupExpiredManagerSessions(now = new Date()): Promise<number> {
+  const result = await db.execute(sql`
+    DELETE FROM manager_sessions
+    WHERE expires_at <= ${now}
+    RETURNING jti
+  `);
+  return result.rows.length;
+}
+
 export function managerCookieHeader(token: string, exp: Date): string {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax${secure}; Expires=${exp.toUTCString()}; Max-Age=${MAX_AGE_SECONDS}`;
@@ -144,7 +153,6 @@ export function verifyManagerPassword(username: string, input: string): boolean 
 
   const userOk = compareStringsSafe(username, expectedUser);
   if (!userOk) {
-    // Perform a real scrypt calculation even on a bad username when a hash is configured.
     if (expectedHash?.includes(":")) {
       const [salt] = expectedHash.split(":", 1);
       if (salt) scryptSync(input, salt, 32);
@@ -159,7 +167,6 @@ export function verifyManagerPassword(username: string, input: string): boolean 
     return compareStringsSafe(derived, hash.toLowerCase());
   }
 
-  // Plaintext password is development-only and must be explicitly enabled.
   if (process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD !== "1" || !expectedPass) return false;
   return compareStringsSafe(input, expectedPass);
 }

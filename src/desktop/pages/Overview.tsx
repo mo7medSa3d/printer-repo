@@ -22,7 +22,7 @@ import {
   LoadingState,
   Mono,
   StatusBadge,
-} from "@/components/ui";
+} from "../../components/ui";
 import {
   DetailList,
   StatCard,

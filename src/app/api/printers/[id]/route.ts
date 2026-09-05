@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, printers } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../../db";
+import { agents, printers } from "../../../../db/schema";
+import { validateManager } from "../../../../lib/manager-auth";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { canTransitionLifecycle } from "@/lib/lifecycle";
-import { PRINTER_TYPES, CONNECTION_TYPES, PRINTER_PROTOCOLS, assertPrinterMetadataLimits } from "@/lib/printer-model";
+import { canTransitionLifecycle } from "../../../../lib/lifecycle";
+import { PRINTER_TYPES, CONNECTION_TYPES, PRINTER_PROTOCOLS, assertPrinterMetadataLimits } from "../../../../lib/printer-model";
 
 export const dynamic = "force-dynamic";
 

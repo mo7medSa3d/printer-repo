@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, printers } from "@/db/schema";
-import { validateOdooKey } from "@/lib/odoo-auth";
-import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
+import { db } from "../../../../db";
+import { agents, printers } from "../../../../db/schema";
+import { validateOdooKey } from "../../../../lib/odoo-auth";
+import { isVirtualPrinterRecord } from "../../../../lib/printer-virtual";
 import { eq, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";

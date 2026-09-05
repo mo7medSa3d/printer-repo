@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -30,14 +31,27 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
       CI: true
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify relative imports only
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern="$(printf '\x40/')"
+          if grep -RIn --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.next \
+              --exclude='*.lock' --exclude='*.svg' --exclude='*.png' --exclude='*.ico' "$pattern" .; then
+            echo "Path aliases are forbidden. Use relative imports."
+            exit 1
+          fi
+          if grep -nE '"baseUrl"|"paths"' tsconfig.json; then
+            echo "TypeScript path mapping is forbidden."
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -45,36 +59,28 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
-
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
           cache: true
           cache-dependency-path: agent/go.sum
-
       - name: Install dependencies
         run: npm ci
-
       - name: Audit production and development dependencies
         run: npm audit --audit-level=moderate
-
       - name: Typecheck
         run: npm run typecheck
-
       - name: Lint
         run: npm run lint
-
       - name: Validate Odoo 19 addon XML conventions
         run: |
           if grep -R -nE '<tree([[:space:]>])|attrs=|states=' odoo_addons/print_gateway/views; then
             echo 'Odoo 19 incompatibility detected: use <list> and direct modifiers instead of <tree>, attrs, or states.'
             exit 1
           fi
-
       - name: Run unit tests (no DB)
         run: npm run test:unit
-
       - name: Wait for PostgreSQL
         run: |
           for i in $(seq 1 30); do
@@ -82,42 +88,28 @@ jobs:
             sleep 1
           done
           pg_isready -h 127.0.0.1 -p 5432 -U postgres
-
       - name: Run Drizzle migrations
         run: npm run db:migrate
-
       - name: Verify schema invariants
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM information_schema.tables WHERE table_name='branches';"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f drizzle/0009_runtime_invariant_guard.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 'schema ok';"
-
       - name: Run integration tests (PostgreSQL)
         run: npm run test:integration
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
-
-      - name: Run all tests with coverage gate
+      - name: Run complete test suite
         run: npm test
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
-
       - name: Go vet
         working-directory: agent
         run: go vet ./...
-
       - name: Go tests
         working-directory: agent
         run: go test -count=1 -p 2 ./...
-
       - name: Go race tests
         working-directory: agent
         run: go test -count=1 -race -p 2 ./...
-
       - name: Build Next.js
         run: npm run build
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
 
   odoo19:
     runs-on: ubuntu-latest
@@ -135,11 +127,9 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
       - name: Wait for PostgreSQL
         run: |
           for i in $(seq 1 30); do
@@ -147,20 +137,15 @@ jobs:
             sleep 1
           done
           pg_isready -h 127.0.0.1 -p 5432 -U odoo
-
       - name: Create Odoo test database
         env:
           PGPASSWORD: odoo
         run: createdb -h 127.0.0.1 -U odoo odoo19_test
-
       - name: Install and test addon on Odoo 19 Community
         run: |
           docker pull odoo:19.0
           docker run --rm --network host \
-            -e HOST=127.0.0.1 \
-            -e PORT=5432 \
-            -e USER=odoo \
-            -e PASSWORD=odoo \
+            --add-host=db:127.0.0.1 \
             -v "$GITHUB_WORKSPACE/odoo_addons:/mnt/extra-addons:ro" \
             odoo:19.0 \
             odoo \

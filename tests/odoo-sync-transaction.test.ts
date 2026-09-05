@@ -8,7 +8,7 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { POST as syncPOST } from "@/app/api/odoo/sync/route";
+import { POST as syncPOST } from "../src/app/api/odoo/sync/route";
 
 /**
  * PART 3 regression suite — dependency-safe, transactional Odoo → Gateway sync.

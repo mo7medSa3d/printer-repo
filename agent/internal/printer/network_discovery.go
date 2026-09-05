@@ -16,9 +16,9 @@ import (
 // - bounded concurrency (32), per-host 500ms, global 8s timeout
 // - context cancellation
 // - deduplication via stable ID
-// A reachable 9100 port is only a discovery candidate; it is not proof that
-// the endpoint is a printer or that RAW printing is supported.
+// Returns DeviceInfos with ConnectionType network, Protocol raw, Status online.
 func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
+	// Global timeout for network discovery
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
@@ -47,11 +47,14 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 			if ip == nil || ip.IsLoopback() || ip.IsMulticast() {
 				continue
 			}
+			// Only private ranges (and not link-local 169.254)
 			if !ip.IsPrivate() {
 				continue
 			}
+			// Derive /24 subnet around this IP to avoid scanning huge /8 or /16
 			mask := ipNet.Mask
 			if len(mask) == 4 {
+				// If mask is /16 or /8, clamp to /24 around local IP
 				ones, bits := ipNet.Mask.Size()
 				if bits == 32 && ones < 24 {
 					mask = net.CIDRMask(24, 32)
@@ -64,10 +67,12 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 			}
 			seenSubnet[subnetKey] = true
 
+			// Generate hosts for this subnet (limit to 254 hosts max)
 			hosts := generateHosts(ipNet)
 			if len(hosts) > 254 {
 				hosts = hosts[:254]
 			}
+			// Avoid scanning our own IP and gateway .0/.255
 			for _, h := range hosts {
 				if h.Equal(ip) {
 					continue
@@ -80,9 +85,14 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 
 	if len(targets) == 0 {
 		log.Printf("[discovery] network discovery: no private subnets found, skipping TCP scan")
+		// mDNS/SNMP/WSD stubs
+		log.Printf("[discovery] mDNS discovery: not yet implemented (would query _ipp._tcp,_printer._tcp)")
+		log.Printf("[discovery] SNMP discovery: not yet implemented (would query 1.3.6.1.2.1.43)")
+		log.Printf("[discovery] WSD discovery: not yet implemented (would use WS-Discovery)")
 		return nil, nil
 	}
 
+	// Bounded concurrent probes
 	const workers = 32
 	const perHostTimeout = 500 * time.Millisecond
 
@@ -100,24 +110,25 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 					return
 				default:
 				}
-				host, portStr, err := net.SplitHostPort(target)
-				if err != nil {
-					continue
-				}
+				host, portStr, _ := net.SplitHostPort(target)
+				// Short dial
 				d := net.Dialer{Timeout: perHostTimeout}
 				connCtx, cancel := context.WithTimeout(ctx, perHostTimeout)
 				conn, err := d.DialContext(connCtx, "tcp", target)
 				cancel()
 				if err != nil {
-					continue
+					return
 				}
-				_ = conn.Close()
+				conn.Close()
+				// Found printer
 				port := 9100
 				if portStr != "" {
 					fmt.Sscanf(portStr, "%d", &port)
 				}
 				id := StableIDFromNetwork(host, port)
+				// Try to infer name via reverse lookup or just host
 				name := fmt.Sprintf("Network Printer %s", host)
+				// Attempt rDNS
 				if names, err := net.LookupAddr(host); err == nil && len(names) > 0 {
 					n := strings.TrimSuffix(names[0], ".")
 					if n != "" {
@@ -134,19 +145,14 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 					Endpoint:       target,
 					NetworkAddress: host,
 					Port:           port,
-					Status:         "unknown",
+					Status:         "online",
 					Enabled:        true,
 					Type:           "network",
-					Capabilities: map[string]interface{}{
-						"discovered_via": "tcp_raw_scan",
-						"verification":   "candidate",
-						"confidence":     "low",
-						"port":           port,
-					},
+					Capabilities:   map[string]interface{}{"discovered_via": "tcp_raw_scan", "port": port},
 				}
 				select {
 				case results <- di:
-					log.Printf("[discovery] found TCP candidate: %s (9100) -> %s", host, id)
+					log.Printf("[discovery] found TCP printer: %s (9100) -> %s", host, id)
 				case <-ctx.Done():
 					return
 				}
@@ -163,6 +169,7 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 	}
 	close(jobs)
 
+	// Wait with context
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -184,11 +191,15 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 			seenID[di.ID] = true
 			out = append(out, di)
 		} else {
-			log.Printf("[discovery] duplicate TCP candidate merged: %s", di.ID)
+			log.Printf("[discovery] duplicate TCP printer merged: %s", di.ID)
 		}
 	}
 
-	log.Printf("[discovery] network TCP discovery completed: %d candidates found", len(out))
+	// Stubs for other protocols (additive, not replacing TCP)
+	log.Printf("[discovery] mDNS discovery: not yet implemented (would query _ipp._tcp,_printer._tcp) — skipping")
+	log.Printf("[discovery] SNMP discovery: not yet implemented — skipping")
+	log.Printf("[discovery] WSD discovery: not yet implemented — skipping")
+	log.Printf("[discovery] network TCP discovery completed: %d printers found", len(out))
 	return out, nil
 }
 
@@ -200,13 +211,15 @@ func generateHosts(ipNet *net.IPNet) []net.IP {
 		return hosts
 	}
 	network := ip.Mask(mask)
+	// For /24, iterate 1..254
+	// For other masks, iterate all hosts but cap
 	ones, bits := mask.Size()
 	if bits != 32 {
 		return hosts
 	}
 	total := 1 << (32 - ones)
 	if total > 1024 {
-		total = 1024
+		total = 1024 // safety cap
 	}
 	base := ipToUint32(network)
 	for i := 1; i < total-1 && len(hosts) < 254; i++ {

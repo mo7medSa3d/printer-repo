@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isPrivateCIDR, confidenceFor, DISCOVERY_SOURCES, DISCOVERY_PROTOCOLS } from "@/lib/discovery";
+import { isPrivateCIDR, confidenceFor, DISCOVERY_SOURCES, DISCOVERY_PROTOCOLS } from "../src/lib/discovery";
 
 describe("discovery taxonomy", () => {
   it("canonical sources include all required", () => {

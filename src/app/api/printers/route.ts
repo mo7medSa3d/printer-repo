@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, printers } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../db";
+import { agents, printers } from "../../../db/schema";
+import { validateManager } from "../../../lib/manager-auth";
 import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { normalizeLegacyPrinterInput } from "@/lib/printer-model";
+import { normalizeLegacyPrinterInput } from "../../../lib/printer-model";
 
 export const dynamic = "force-dynamic";
 

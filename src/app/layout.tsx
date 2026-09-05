@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { HeaderNav } from "@/components/HeaderNav";
+import { HeaderNav } from "../components/HeaderNav";
 import "./globals.css";
 
 export const metadata: Metadata = {

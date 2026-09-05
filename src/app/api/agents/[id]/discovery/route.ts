@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, discoverySessions } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../../../db";
+import { agents, discoverySessions } from "../../../../../db/schema";
+import { validateManager } from "../../../../../lib/manager-auth";
 import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { validateDiscoveryRequest } from "@/lib/discovery";
+import { validateDiscoveryRequest } from "../../../../../lib/discovery";
 
 export const dynamic = "force-dynamic";
 

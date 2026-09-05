@@ -11,7 +11,7 @@ import {
   verifyManagerToken,
   verifyManagerPassword,
   validateManagerClaims,
-} from "@/lib/manager-auth";
+} from "../src/lib/manager-auth";
 
 const suite = describe.skipIf(!hasTestDatabase);
 

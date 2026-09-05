@@ -12,9 +12,9 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { attachAgentWSS } from "@/server/ws";
-import { POST as printJobsPOST, GET as printJobsGET } from "@/app/api/print/jobs/route";
-import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "@/app/api/agent/jobs/route";
+import { attachAgentWSS } from "../src/server/ws";
+import { POST as printJobsPOST, GET as printJobsGET } from "../src/app/api/print/jobs/route";
+import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
 
 /**
  * Gateway end-to-end flow with a real database and a real agent WebSocket
@@ -229,7 +229,7 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     const printingRow = await jobRow(created.jobId);
     expect(printingRow.delivered_at).toBeNull();
 
-    const { handleAgentMessage } = await import("@/server/ws");
+    const { handleAgentMessage } = await import("../src/server/ws");
     await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId }));
     const ackedRow = await jobRow(created.jobId);
     expect(ackedRow.acked_at).not.toBeNull();

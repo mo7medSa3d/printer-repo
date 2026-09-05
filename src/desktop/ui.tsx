@@ -1,6 +1,6 @@
 import React from "react";
 import { ChevronRight } from "lucide-react";
-import { StatusDot, type Tone } from "@/components/ui";
+import { StatusDot, type Tone } from "../components/ui";
 
 /* ============================================================
    DESKTOP MANAGER — design system layout primitives

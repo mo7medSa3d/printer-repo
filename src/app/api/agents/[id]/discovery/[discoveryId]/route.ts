@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, discoverySessions, discoveredDevices } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../../../../db";
+import { agents, discoverySessions, discoveredDevices } from "../../../../../../db/schema";
+import { validateManager } from "../../../../../../lib/manager-auth";
 import { eq, and } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";

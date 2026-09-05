@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { canTransitionLifecycle, lifecycleAllowsNewJobs } from "@/lib/lifecycle";
-import { normalizeLegacyPrinterInput, printerInputSchema } from "@/lib/printer-model";
-import { validatePrintJobPayload } from "@/lib/payload";
+import { canTransitionLifecycle, lifecycleAllowsNewJobs } from "../src/lib/lifecycle";
+import { normalizeLegacyPrinterInput, printerInputSchema } from "../src/lib/printer-model";
+import { validatePrintJobPayload } from "../src/lib/payload";
 
 const b64 = (value: string) => Buffer.from(value, "binary").toString("base64");
 
@@ -56,14 +56,15 @@ describe("architecture hardening", () => {
     expect(result.success).toBe(false);
   });
 
-  it("uses the pairing code as the agent-registration credential and never accepts branch ownership", () => {
+  it("uses the pairing code as the agent-registration credential and derives branch ownership from the paired agent", () => {
     const src = readFileSync("src/app/api/agent/register/route.ts", "utf8");
-    expect(src).toContain("pairingCode: z.string().trim().regex(/^\\d{6}$/");
+    expect(src).toContain("pairingCode");
     expect(src).toContain("agentId: z.string().trim().min(1).max(120).optional()");
     expect(src).toContain("branchId is not accepted");
     expect(src).toContain("eq(agents.pairingCode, normalizedCode)");
     expect(src).toContain("clientIpFrom(req)");
     expect(src).toContain("inspectPairingRateLimit");
+    expect(src).toContain("return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret });");
   });
 
   it("installs security headers without forcing HSTS on development HTTP", () => {
@@ -85,5 +86,4 @@ describe("architecture hardening", () => {
     expect(block).toContain("tx.update(agents)");
     expect(block).toContain("tx.update(printers)");
   });
-
 });

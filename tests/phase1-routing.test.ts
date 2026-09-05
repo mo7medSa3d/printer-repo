@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isBranchScopedKeyAllowed } from "@/lib/odoo-auth";
-import { selectBestBinding } from "@/lib/routing";
+import { isBranchScopedKeyAllowed } from "../src/lib/odoo-auth";
+import { selectBestBinding } from "../src/lib/routing";
 
 describe("Phase 1 multi-branch routing", () => {
   it("prefers the lowest priority enabled binding for the requested document type", () => {

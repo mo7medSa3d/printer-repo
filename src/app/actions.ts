@@ -1,16 +1,16 @@
 "use server";
 
-import { db } from "@/db";
-import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "@/db/schema";
-import { eq, count, sql } from "drizzle-orm";
+import { db } from "../db";
+import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "../db/schema";
+import { eq, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
-import { generatePairingCode } from "@/lib/agent-auth";
-import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
-import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
-import { claimAndPushJobToAgent } from "@/server/ws";
-import { canTransitionLifecycle } from "@/lib/lifecycle";
+import { generatePairingCode } from "../lib/agent-auth";
+import { buildTestPrintPayload } from "../lib/payload";
+import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../lib/manager-auth";
+import { createPrintJobForPrinter } from "../lib/print-job-service";
+import { canTransitionLifecycle } from "../lib/lifecycle";
 
 async function requireManager() {
   const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
@@ -51,42 +51,28 @@ export async function deleteAgent(id: string) {
   if (typeof id !== "string" || !id.trim()) throw new Error("agent id is required");
 
   await db.transaction(async (tx) => {
-    // Lock the agent row before checking runtime state. Heartbeats update this
-    // same row, so they cannot turn an offline agent online between the checks
-    // below and the final delete.
-    const locked = await tx.execute(sql`
-      SELECT id, status, lifecycle
-      FROM agents
-      WHERE id = ${id.trim()}
-      FOR UPDATE
-    `);
-    const row = locked.rows[0] as
-      | { id: string; status: string; lifecycle: string }
-      | undefined;
-    if (!row) throw new Error("Agent not found");
-
-    if (row.status === "online") {
+    const agent = await tx.query.agents.findFirst({ where: eq(agents.id, id.trim()) });
+    if (!agent) throw new Error("Agent not found");
+    if (agent.status === "online") {
       throw new Error("Online agents cannot be deleted. Disable or retire the agent first.");
     }
-    if (row.lifecycle === "retired") {
+    if (agent.lifecycle === "retired") {
       throw new Error("Retired agents are kept for audit history and cannot be deleted.");
     }
 
-    const [{ c: printerCount }] = await tx.select({ c: count() }).from(printers).where(eq(printers.agentId, row.id));
+    const [{ c: printerCount }] = await tx.select({ c: count() }).from(printers).where(eq(printers.agentId, agent.id));
     if (Number(printerCount ?? 0) > 0) {
       throw new Error("This agent still has printers. Retire the agent instead to preserve printer history.");
     }
 
-    const [{ c: jobCount }] = await tx.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, row.id));
+    const [{ c: jobCount }] = await tx.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, agent.id));
     if (Number(jobCount ?? 0) > 0) {
       throw new Error("This agent has print history and cannot be deleted. Retire the agent to preserve audit history.");
     }
 
-    // Discovery sessions/devices are operational data, not print history.
-    // Remove them before deleting the agent to satisfy the foreign keys.
-    await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, row.id));
-    await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, row.id));
-    await tx.delete(agents).where(eq(agents.id, row.id));
+    await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, agent.id));
+    await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, agent.id));
+    await tx.delete(agents).where(eq(agents.id, agent.id));
   });
 
   revalidatePath("/dashboard");
@@ -94,49 +80,27 @@ export async function deleteAgent(id: string) {
 
 export async function createPrintJob(printerId: string, payload: unknown) {
   await requireManager();
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
-  if (!printer) throw new Error("Printer not found");
-  if (printer.lifecycle !== "active") throw new Error(`Printer is ${printer.lifecycle}`);
-
-  const validatedPayload = validatePrintJobPayload(payload);
-  const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (!ownerAgent) throw new Error("Printer owner agent not found");
-  if (ownerAgent.lifecycle !== "active") throw new Error(`Agent is ${ownerAgent.lifecycle}`);
-  if (!ownerAgent.branchId) throw new Error("Printer owner agent has no branch");
-
-  const ownerBranch = await db.query.branches.findFirst({ where: eq(branches.id, ownerAgent.branchId) });
-  if (!ownerBranch) throw new Error("Printer owner branch not found");
-  if (!ownerBranch.enabled) throw new Error("Printer owner branch is disabled");
-
-  const id = `job_${nanoid(10)}`;
-  const row = {
-    id,
-    branchId: ownerBranch.id,
-    agentId: ownerAgent.id,
-    printerId: printer.id,
-    status: "queued" as const,
-    payload: validatedPayload,
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60),
-  };
-  await db.insert(printJobs).values(row);
-
-  try {
-    await claimAndPushJobToAgent({ id, agentId: printer.agentId });
-  } catch (e) {
-    console.warn(`[actions] WS push failed for job ${id}:`, e);
-  }
-
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager" });
   revalidatePath("/dashboard");
-  return { id };
+  return { id: result.id };
 }
 
 export async function createTestPrintJob(printerId: string) {
   await requireManager();
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
+  const printer = await db.query.printers.findFirst({
+    where: eq(printers.id, printerId),
+  });
   if (!printer) throw new Error("Printer not found");
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  const payload = buildTestPrintPayload(printer.name, agent?.name ?? printer.agentId);
-  return createPrintJob(printerId, payload);
+
+  const agent = await db.query.agents.findFirst({
+    where: eq(agents.id, printer.agentId),
+  });
+  if (!agent) throw new Error("Printer owner agent not found");
+
+  const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager-test" });
+  revalidatePath("/dashboard");
+  return { id: result.id };
 }
 
 export async function setPrinterLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {

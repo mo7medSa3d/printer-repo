@@ -21,7 +21,7 @@ import {
   Mono,
   StatusBadge,
   Tabs,
-} from "@/components/ui";
+} from "../../components/ui";
 import type { DesktopState } from "../types";
 import {
   cleanupLocalJobs,

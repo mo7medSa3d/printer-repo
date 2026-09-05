@@ -8,7 +8,7 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { POST as printJobsPOST } from "@/app/api/print/jobs/route";
+import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
 
 /**
  * P0 — print idempotency.

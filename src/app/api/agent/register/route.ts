@@ -1,15 +1,18 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { db } from "../../../../db";
+import { agents } from "../../../../db/schema";
 import { and, eq, gt } from "drizzle-orm";
-import { generateSecret, hashSecret } from "@/lib/agent-auth";
+import { generateSecret, hashSecret } from "../../../../lib/agent-auth";
 import {
   clientIpFrom,
   inspectPairingRateLimit,
   recordPairingFailure,
   recordPairingSuccess,
-} from "@/lib/auth-rate-limit";
+} from "../../../../lib/auth-rate-limit";
+import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { z } from "zod";
+
+const MAX_REGISTRATION_BODY_BYTES = 64 * 1024;
 
 const registrationSchema = z.object({
   // Keep the user-facing pairing code exactly six numeric digits.
@@ -21,6 +24,10 @@ const registrationSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    if (hasBodyOverLimit(req, MAX_REGISTRATION_BODY_BYTES)) {
+      return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+    }
+
     const body = await req.json();
     if (body?.metadata && JSON.stringify(body.metadata).length > 32_768) {
       return NextResponse.json({ error: "metadata exceeds 32KB" }, { status: 400 });

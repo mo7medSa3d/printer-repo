@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { printers, agents } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../../../db";
+import { printers, agents } from "../../../../../db/schema";
+import { validateManager } from "../../../../../lib/manager-auth";
 import { eq } from "drizzle-orm";
-import { getAgentAvailability } from "@/lib/agent-availability";
+import { getAgentAvailability } from "../../../../../lib/agent-availability";
 
 export const dynamic = "force-dynamic";
 

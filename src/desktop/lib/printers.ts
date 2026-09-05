@@ -1,6 +1,6 @@
 import type { PrinterInfo } from "./ipc";
-import type { Tone } from "@/components/ui";
-import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
+import type { Tone } from "../../components/ui";
+import { isVirtualPrinterRecord } from "../../lib/printer-virtual";
 
 /* ============================================================
    Desktop presentation helpers for printers

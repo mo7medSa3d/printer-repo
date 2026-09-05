@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername } from "@/lib/manager-auth";
+import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername } from "../../../../../lib/manager-auth";
 import {
   clientIpFrom,
   inspectAuthRateLimit,
   recordAuthFailure,
   recordAuthSuccess,
-  cleanupAuthRateLimits,
-} from "@/lib/auth-rate-limit";
-import { logWarn, logInfo, requestIdFrom } from "@/lib/log";
+} from "../../../../../lib/auth-rate-limit";
+import { hasBodyOverLimit } from "../../../../../lib/request-limits";
+import { logWarn, logInfo, requestIdFrom } from "../../../../../lib/log";
 
 const INVALID = "Invalid credentials";
 
@@ -19,28 +19,26 @@ function tooMany(retryAfterSec: number) {
 
 export async function POST(req: Request) {
   const requestId = requestIdFrom(req);
+  if (hasBodyOverLimit(req, 64 * 1024)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+
   let body: { username?: unknown; password?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
-  const username = typeof body.username === "string" ? body.username : "";
+  const username = typeof body.username === "string" ? body.username.slice(0, 128) : "";
   const password = typeof body.password === "string" ? body.password : "";
-  if (!username || !password) {
+  if (!username || !password || password.length > 4096) {
     return NextResponse.json({ error: "username and password required" }, { status: 400 });
   }
 
   const expectedUser = getManagerUsername();
   if (!expectedUser) {
-    // Not configured — fail closed.
     return NextResponse.json({ error: "Manager auth not configured (set MANAGER_USERNAME / MANAGER_PASSWORD or MANAGER_PASSWORD_HASH)" }, { status: 500 });
   }
 
   const ip = clientIpFrom(req);
-  await cleanupAuthRateLimits().catch(() => {
-    // Cleanup is housekeeping only; limiter reads remain fail-closed below.
-  });
 
   try {
     const pre = await inspectAuthRateLimit(ip, username);
@@ -49,8 +47,6 @@ export async function POST(req: Request) {
       return tooMany(pre.retryAfterSec);
     }
   } catch (e) {
-    // Fail closed: a limiter outage must not open an unbounded brute-force
-    // window. Login is unavailable until the shared counter store is back.
     logWarn("auth.login.rate_limit_unavailable", { requestId, error: e instanceof Error ? e.message : "unknown" });
     return NextResponse.json({ error: "Authentication temporarily unavailable" }, { status: 503 });
   }

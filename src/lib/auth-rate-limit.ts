@@ -10,9 +10,9 @@ import { isIP } from "node:net";
  * attempts across instances. State lives in `auth_rate_limits`.
  *
  * Keys:
- *   ip:<client-ip>        — per source address when a trusted proxy is configured
- *   acct:<username>       — per login identifier (lowercased, trimmed)
- *   pairing-ip:<client-ip> — dedicated pairing endpoint budget, independent of code value
+ *   ip:<client-ip>              — per source address when a trusted proxy is configured
+ *   acct:<username>             — per login identifier (lowercased, trimmed)
+ *   pairing-ip:<client-ip>      — dedicated pairing endpoint budget, independent of code value
  *
  * When TRUST_PROXY is not explicitly enabled, the framework Request does not
  * expose a trustworthy TCP peer address. We therefore use account-scoped
@@ -196,8 +196,7 @@ async function bump(key: string): Promise<{ failures: number; lockedUntil: Date 
 }
 
 export async function recordPairingFailure(ip: string): Promise<RateLimitDecision> {
-  const keyIp = pairingIpKey(ip);
-  const result = await bumpWith(keyIp, PAIRING_RATE_WINDOW_MS, pairingLockDurationMs);
+  const result = await bumpWith(pairingIpKey(ip), PAIRING_RATE_WINDOW_MS, pairingLockDurationMs);
   if (!result.lockedUntil) return { allowed: true };
   const remaining = result.lockedUntil.getTime() - Date.now();
   return remaining > 0

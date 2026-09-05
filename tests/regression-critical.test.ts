@@ -1,22 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
-import { validatePrintJobPayload } from "@/lib/payload";
-import { validatePayloadForPrinter, selectBestBinding } from "@/lib/routing";
-import { isOdooKeyAllowedForDocumentType } from "@/lib/odoo-auth";
-import { canTransition } from "@/lib/job-status";
+import { validatePrintJobPayload } from "../src/lib/payload";
+import { validatePayloadForPrinter, selectBestBinding } from "../src/lib/routing";
+import { isOdooKeyAllowedForDocumentType } from "../src/lib/odoo-auth";
+import { canTransition } from "../src/lib/job-status";
 
-describe("regression: truncated 40-bit jobId removed", () => {
-  it("route.ts does not use sha256 truncated hash for jobId", () => {
-    const src = readFileSync("src/app/api/print/jobs/route.ts", "utf8");
-    expect(src).not.toContain("createHash");
-    expect(src).not.toContain("slice(0, 10)");
-    expect(src).not.toContain("job_${h}");
-    // Must use nanoid with collision-safe length
-    expect(src).toContain("nanoid(12)");
-    // Must dedup via (branchId, idempotencyKey)
-    expect(src).toContain("idempotencyKey");
-    expect(src).toContain("branchId");
-    expect(src).toContain("printJobs.idempotencyKey");
+describe("regression: collision-safe job IDs removed from route layer", () => {
+  it("does not use a truncated hash and keeps job ID generation centralized", () => {
+    const route = readFileSync("src/app/api/print/jobs/route.ts", "utf8");
+    const service = readFileSync("src/lib/print-job-service.ts", "utf8");
+    expect(route).not.toContain("createHash");
+    expect(route).not.toContain("slice(0, 10)");
+    expect(route).not.toContain("job_${h}");
+    expect(service).toContain("nanoid(12)");
+    expect(route).toContain("idempotencyKey");
+    expect(route).toContain("branchId");
+    expect(service).toContain("branch_id = ${branchId} AND idempotency_key = ${idempotencyKey}");
   });
 
   it("schema persists idempotencyKey durably", () => {
@@ -35,7 +34,6 @@ describe("regression: truncated 40-bit jobId removed", () => {
     expect(branch).toContain("uuid.uuid4().hex");
     expect(branch).toContain("idempotencyKey");
     expect(branch).toContain("requests.post");
-    // Must reuse same key on retry
     expect(branch).toContain("for attempt in (1, 2)");
 
     const report = readFileSync("odoo_addons/print_gateway/models/ir_actions_report.py", "utf8");
@@ -72,16 +70,13 @@ describe("regression: state machine server-enforced", () => {
 describe("regression: no mutex held during network (agent)", () => {
   it("agent.go does not hold lock across updateJobStatus", () => {
     const src = readFileSync("agent/internal/agent/agent.go", "utf8");
-    // The critical comment must exist
     expect(src).toContain("Report printing outside the per-printer lock");
-    // Ensure lock is released before updateJobStatus
     const idxLock = src.indexOf("a.queue.UpdateStatus(jobID, \"printing\")");
     const idxUnlock = src.indexOf("lock.Unlock()", idxLock);
     const idxUpdate = src.indexOf("a.updateJobStatus(jobID, \"printing\"", idxUnlock);
     expect(idxLock).toBeGreaterThan(0);
     expect(idxUnlock).toBeGreaterThan(idxLock);
     expect(idxUpdate).toBeGreaterThan(idxUnlock);
-    // Ensure second lock re-checks dedup
     expect(src).toContain("was already processed while waiting for printer");
   });
 });
@@ -168,7 +163,6 @@ describe("regression: WS claim race (contract-level, no DB required)", () => {
   it("releases an undelivered claim instead of stranding the job, reusing the job id", () => {
     expect(wsSrc).toContain("releaseUndeliveredClaim");
     expect(deliverySrc).toContain("SET status = 'queued'");
-    // The recovery path never inserts a new row / new job id.
     expect(deliverySrc).not.toContain("nanoid");
     expect(deliverySrc).not.toContain("INSERT INTO print_jobs");
   });
@@ -200,8 +194,6 @@ describe("regression: PDF capability routing (contract-level, no DB required)", 
     const result = validatePayloadForPrinter("pdf", escposOnly);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain("CAPABILITY_MISMATCH");
-
-    // raw/escpos to the same printer stay valid — no over-blocking.
     expect(validatePayloadForPrinter("raw", escposOnly).ok).toBe(true);
     expect(validatePayloadForPrinter("escpos", escposOnly).ok).toBe(true);
   });
@@ -262,7 +254,6 @@ describe("regression: Odoo sync is validated and transactional (contract-level)"
   });
 
   it("never returns success while something failed", () => {
-    // The only success:true is emitted after the transaction committed.
     const successIdx = syncSrc.indexOf("success: true");
     const commitIdx = syncSrc.indexOf("});", syncSrc.indexOf("db.transaction"));
     expect(successIdx).toBeGreaterThan(commitIdx);
@@ -274,7 +265,6 @@ describe("regression: PRINTER_DISABLED is distinct from PRINTER_OFFLINE", () => 
 
   it("tracks disabled printers separately from offline ones", () => {
     expect(routingSrc).toContain("lastDisabledPrinter");
-    // A disabled printer must no longer be reported through the offline path.
     expect(routingSrc).not.toContain("if (idx === 0) lastOfflinePrinter = printer.id;");
     const disabledIdx = routingSrc.indexOf('error: "PRINTER_DISABLED"');
     expect(disabledIdx).toBeGreaterThan(-1);
@@ -302,9 +292,7 @@ describe("regression: Odoo key document-type matching is normalized like routing
 
   it("matches the routing layer's normalization for the same value", () => {
     const bindings = [{ id: "b1", branchId: "br", destinationId: "d", documentType: "invoice", printerId: "p", priority: 1, enabled: true }];
-    // routing accepts "Invoice" for a binding declared as "invoice" …
     expect(selectBestBinding(bindings, "Invoice")?.id).toBe("b1");
-    // … so authorization must accept it too (this was the 403 mismatch).
     expect(isOdooKeyAllowedForDocumentType({ allowedDocumentTypes: ["invoice"] }, "Invoice", "write")).toBe(true);
   });
 });

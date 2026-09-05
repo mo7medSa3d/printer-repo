@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({
   managerAuth: true,
 }));
 
-vi.mock("@/db", () => ({
+vi.mock("../src/db", () => ({
   db: {
     query: {
       agents: { findFirst: async ({ where }: any) => {
@@ -35,14 +35,14 @@ vi.mock("@/db", () => ({
     update: () => ({ set: () => ({ where: async () => {} }) }),
   },
 }));
-vi.mock("@/lib/manager-auth", () => ({
+vi.mock("../src/lib/manager-auth", () => ({
   validateManager: async () => (state.managerAuth ? { jti: "test" } as any : null),
 }));
-vi.mock("@/lib/agent-auth", () => ({
+vi.mock("../src/lib/agent-auth", () => ({
   validateAgent: async () => null,
 }));
 
-import { POST as startDiscovery } from "@/app/api/agents/[id]/discovery/route";
+import { POST as startDiscovery } from "../src/app/api/agents/[id]/discovery/route";
 
 describe("discovery authorization", () => {
   beforeEach(() => {
@@ -61,14 +61,14 @@ describe("discovery authorization", () => {
   });
 
   it("CIDR public rejected", async () => {
-    const { isPrivateCIDR } = await import("@/lib/discovery");
+    const { isPrivateCIDR } = await import("../src/lib/discovery");
     expect(isPrivateCIDR("8.8.8.0/24")).toBe(false);
   });
 
   it("retired agent cannot start discovery (branch isolation enforced via agent.lifecycle check)", async () => {
     // Lifecycle check is unit-tested in src/lib/lifecycle; API-level branch isolation
     // is enforced by Agent → Branch derivation (see src/app/api/agents/[id]/discovery/route.ts)
-    const { canTransitionLifecycle } = await import("@/lib/lifecycle");
+    const { canTransitionLifecycle } = await import("../src/lib/lifecycle");
     expect(canTransitionLifecycle("retired", "active")).toBe(false);
     expect(canTransitionLifecycle("active", "retired")).toBe(true);
   });

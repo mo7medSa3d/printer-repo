@@ -20,25 +20,24 @@ export function generateSecret(): string {
   return randomBytes(24).toString("base64url");
 }
 
-/** Generate a cryptographically secure, user-friendly six-digit pairing code. */
+/** Cryptographically secure pairing code (not Math.random()). */
 export function generatePairingCode(): string {
-  // A six-digit code is intentionally retained for operational usability.
-  // Brute-force resistance is provided by the database-backed pairing limiter.
-  const bytes = randomBytes(8);
+  // 6 chars from an unambiguous alphabet (no 0/O/1/I), ~31 bits of entropy.
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = randomBytes(6);
   let code = "";
-  for (const byte of bytes) {
-    // Reject the small modulo-biased tail rather than mapping 256 values onto 10 digits.
-    if (byte >= 250) continue;
-    code += String(byte % 10);
-    if (code.length === 6) return code;
+  for (const b of bytes) {
+    code += alphabet[b % alphabet.length];
   }
-  return generatePairingCode();
+  return code;
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a, "utf8");
   const bufB = Buffer.from(b, "utf8");
   if (bufA.length !== bufB.length) {
+    // Still run a comparison of equal-length buffers to avoid a fast
+    // early-return based on length leaking information.
     timingSafeEqual(bufA, bufA);
     return false;
   }
