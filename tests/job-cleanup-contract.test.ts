@@ -11,7 +11,7 @@ describe("print-job cleanup contract", () => {
     expect(src).toContain("const claims = await validateManager(req)");
     expect(src).toContain('["success", "failed", "expired"]');
     expect(src).toContain("inArray(printJobs.status");
-    expect(src).toContain("Queued, claimed and printing jobs").not;
+    expect(src).not.toContain(".delete(printJobs)\n    .where(inArray(printJobs.status");
     expect(src).toContain("confirm=1");
     expect(src).toContain("MAX_CLEANUP_ROWS = 5000");
     expect(src).toContain("before=<ISO-8601 timestamp>");
