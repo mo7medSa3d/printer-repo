@@ -4,13 +4,19 @@ import { validateAgent } from "@/lib/agent-auth";
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { isJobStatus, canTransition, isTerminal, type JobStatus } from "@/lib/job-status";
-import { CLAIM_LEASE_SECONDS } from "@/lib/job-delivery";
+import { CLAIM_LEASE_SECONDS, MAX_DELIVERY_ATTEMPTS } from "@/lib/job-delivery";
 import { logInfo, logWarn, requestIdFrom } from "@/lib/log";
 import { incrementMetric } from "@/lib/metrics";
 
 export const dynamic = "force-dynamic";
 
 const STALE_CLAIM_SECONDS = CLAIM_LEASE_SECONDS;
+// Printing has its own lease. It is intentionally longer than the delivery
+// lease because a physical printer may legitimately take more than 90 seconds
+// for a large PDF/label batch. The agent refreshes updated_at through its
+// normal status callback before this lease expires; this timeout is a final
+// crash-recovery backstop, not a delivery timer.
+const STALE_PRINTING_SECONDS = 10 * 60;
 const MAX_RETRIES = 5;
 const MAX_CLAIM_BATCH = 20;
 export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
@@ -31,23 +37,37 @@ export async function GET(req: Request) {
       ${branchFilter}
   `);
 
+  // Only CLAIMED rows use the short delivery lease. PRINTING rows have a
+  // separate execution lease so a slow printer is never mistaken for a lost
+  // delivery. A printing job is reclaimed only after the longer execution
+  // lease, which is the crash-recovery backstop.
   await db.execute(sql`
     UPDATE print_jobs
     SET status = 'failed',
         error = 'exceeded max retries after a stale claim (agent likely crashed or lost connection)',
         updated_at = now()
     WHERE agent_id = ${agent.id}
-      AND status IN ('claimed', 'printing')
+      AND status = 'claimed'
       AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
       AND retries >= ${MAX_RETRIES}
       ${branchFilter}
   `);
 
-  // Capacity and claiming must run in the SAME database transaction. A
-  // statement-local advisory lock is insufficient here: PostgreSQL can take a
-  // statement snapshot before waiting on the advisory lock, allowing a second
-  // concurrent poll to observe the same queued rows. Holding the lock for the
-  // transaction makes the snapshot and claim serialization explicit.
+  await db.execute(sql`
+    UPDATE print_jobs
+    SET status = 'failed',
+        error = 'exceeded max retries after a stale printing lease (agent likely crashed during execution)',
+        updated_at = now()
+    WHERE agent_id = ${agent.id}
+      AND status = 'printing'
+      AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
+      AND retries >= ${MAX_RETRIES}
+      ${branchFilter}
+  `);
+
+  // Reclaim only stale CLAIMED delivery leases. Active PRINTING jobs are not
+  // eligible here; their longer execution lease above is the only recovery
+  // mechanism for an agent crash during physical printing.
   const claimJobs = async (tx: { execute: typeof db.execute }) => {
     await tx.execute(sql`
       SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`}))
@@ -63,19 +83,15 @@ export async function GET(req: Request) {
     `);
     const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
     const remainingSlots = Math.max(0, MAX_AGENT_IN_FLIGHT_JOBS - inFlight);
-
-    // Stale claims are recovery work and are always admitted because they do
-    // not increase the number of in-flight jobs. Queued work is capped to the
-    // actual remaining capacity, so this transaction can never add more jobs
-    // than MAX_AGENT_IN_FLIGHT_JOBS even under concurrent polling.
     const queuedLimit = Math.min(MAX_CLAIM_BATCH, remainingSlots);
+
     const claimed = await tx.execute(sql`
       WITH stale_candidates AS (
         SELECT id, created_at, 0 AS priority
         FROM print_jobs
         WHERE agent_id = ${agent.id}
           AND expires_at > now()
-          AND status IN ('claimed', 'printing')
+          AND status = 'claimed'
           AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
           AND retries < ${MAX_RETRIES}
           ${branchFilter}
@@ -111,10 +127,10 @@ export async function GET(req: Request) {
         status = 'claimed',
         claimed_at = now(),
         updated_at = now(),
-        delivered_at = now(),
+        delivered_at = NULL,
         acked_at = NULL,
         delivery_attempts = print_jobs.delivery_attempts + 1,
-        retries = CASE WHEN print_jobs.status IN ('claimed', 'printing')
+        retries = CASE WHEN print_jobs.status = 'claimed'
                        THEN print_jobs.retries + 1
                        ELSE print_jobs.retries END
       FROM claimable
@@ -136,9 +152,6 @@ export async function GET(req: Request) {
     return Array.isArray(rows) ? rows : Array.isArray(claimed) ? claimed : [];
   };
 
-  // The real Drizzle/Postgres connection always has transaction(). The
-  // fallback keeps lightweight route mocks compatible without weakening the
-  // production path, where the transaction is mandatory for correctness.
   const rows = typeof (db as { transaction?: unknown }).transaction === "function"
     ? await db.transaction((tx) => claimJobs(tx as { execute: typeof db.execute }))
     : await claimJobs(db);
@@ -188,7 +201,12 @@ export async function PATCH(req: Request) {
   if (!canTransition(currentStatus, requestedStatus)) return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
 
   const updated = await db.update(printJobs)
-    .set({ status: requestedStatus, error: errorMessage, updatedAt: new Date() })
+    .set({
+      status: requestedStatus,
+      error: errorMessage,
+      updatedAt: new Date(),
+      ...(requestedStatus === "claimed" ? { claimedAt: new Date() } : {}),
+    })
     .where(and(whereClause, eq(printJobs.status, currentStatus)))
     .returning({ status: printJobs.status });
 
