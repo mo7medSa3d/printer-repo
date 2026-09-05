@@ -154,14 +154,9 @@ foreach ($a in $artifacts) {
 Write-Host @"
 
 Next steps for a production release:
-  1. Code-sign the installers AND the three bundled EXEs before distribution
-     (avoids SmartScreen warnings and satisfies enterprise policies):
-       signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /n "<Your certificate CN>" "<artifact.exe>"
-     For the NSIS bundle, sign the built setup.exe directly (it is the
-     outermost binary Tauri emits).
-  2. Smoke-test on a CLEAN Windows VM (no Node/Go/Rust — WebView2 must come
+  1. Smoke-test on a CLEAN Windows VM (no Node/Go/Rust — WebView2 must come
      from the installer bootstrapper):
        .\\scripts\\smoke-test-windows.ps1
-  3. Test upgrade + uninstall paths: install previous version, upgrade,
+  2. Test upgrade + uninstall paths: install previous version, upgrade,
      run the app, then uninstall and confirm Add/Remove Programs is clean.
 "@ -ForegroundColor DarkGray
