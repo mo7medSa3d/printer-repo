@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """Odoo 19 compatibility and user-facing error handling for Print Gateway."""
 
+import logging
+
 from odoo import models, _
 from odoo.exceptions import ValidationError
+
+_logger = logging.getLogger(__name__)
 
 
 class PrintGatewayBranchOdoo19(models.Model):
