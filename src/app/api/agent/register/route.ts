@@ -9,29 +9,28 @@ import {
   recordAuthFailure,
   recordAuthSuccess,
 } from "@/lib/auth-rate-limit";
+import { hasBodyOverLimit } from "@/lib/request-limits";
 import { z } from "zod";
 
+const MAX_REGISTRATION_BODY_BYTES = 64 * 1024;
+
 const registrationSchema = z.object({
-  // The pairing code is the one-time credential. Agent identity/branch are
-  // derived from the pre-provisioned Gateway record instead of trusting a
-  // client-supplied branch.
   pairingCode: z.string().trim().min(1).max(64),
   metadata: z.record(z.string(), z.unknown()).optional(),
-  // Optional compatibility hint. When present it must match the agent bound
-  // to the pairing code, but it is never required for a valid registration.
   agentId: z.string().trim().min(1).max(120).optional(),
 }).strict();
 
 export async function POST(req: Request) {
   try {
+    if (hasBodyOverLimit(req, MAX_REGISTRATION_BODY_BYTES)) {
+      return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+    }
+
     const body = await req.json();
     if (body?.metadata && JSON.stringify(body.metadata).length > 32_768) {
       return NextResponse.json({ error: "metadata exceeds 32KB" }, { status: 400 });
     }
 
-    // Reject branch ownership input before schema validation and before any
-    // database/ownership lookup. This keeps the security contract deterministic
-    // even when the request is otherwise malformed.
     if (body && typeof body === "object" && "branchId" in body) {
       return NextResponse.json({ error: "branchId is not accepted during registration" }, { status: 400 });
     }
@@ -61,9 +60,7 @@ export async function POST(req: Request) {
       gt(agents.pairingCodeExpiresAt, new Date()),
       eq(agents.lifecycle, "active"),
     ];
-    if (parsed.data.agentId) {
-      conditions.push(eq(agents.id, parsed.data.agentId));
-    }
+    if (parsed.data.agentId) conditions.push(eq(agents.id, parsed.data.agentId));
 
     const agent = await db.query.agents.findFirst({ where: and(...conditions) });
     if (!agent) {
@@ -99,8 +96,7 @@ export async function POST(req: Request) {
     try {
       await recordAuthSuccess(limiterUsername);
     } catch {
-      // Housekeeping only; successful registration must not fail because a
-      // security counter could not be cleared.
+      // Housekeeping only; successful registration must not fail because a security counter could not be cleared.
     }
 
     return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret });
