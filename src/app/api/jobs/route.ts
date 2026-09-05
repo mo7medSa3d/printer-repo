@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 
 const TERMINAL_JOB_STATUSES = ["success", "failed", "expired"] as const;
 const MAX_CLEANUP_ROWS = 5000;
+const MAX_LIST_ROWS = 200;
 
 export async function GET(req: Request) {
   const claims = await validateManager(req);
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
   const status = url.searchParams.get("status");
   const printerId = url.searchParams.get("printerId");
   const agentId = url.searchParams.get("agentId");
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 200);
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), MAX_LIST_ROWS);
 
   if (status && !isJobStatus(status)) {
     return NextResponse.json({ error: "invalid status filter" }, { status: 400 });
@@ -31,7 +32,24 @@ export async function GET(req: Request) {
   ];
 
   const rows = await db
-    .select()
+    .select({
+      id: printJobs.id,
+      branchId: printJobs.branchId,
+      agentId: printJobs.agentId,
+      printerId: printJobs.printerId,
+      destinationId: printJobs.destinationId,
+      documentType: printJobs.documentType,
+      status: printJobs.status,
+      error: printJobs.error,
+      retries: printJobs.retries,
+      deliveryAttempts: printJobs.deliveryAttempts,
+      expiresAt: printJobs.expiresAt,
+      createdAt: printJobs.createdAt,
+      updatedAt: printJobs.updatedAt,
+      claimedAt: printJobs.claimedAt,
+      deliveredAt: printJobs.deliveredAt,
+      ackedAt: printJobs.ackedAt,
+    })
     .from(printJobs)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(printJobs.createdAt))
@@ -39,11 +57,6 @@ export async function GET(req: Request) {
   return NextResponse.json(rows);
 }
 
-/**
- * Destructive maintenance is intentionally scoped and bounded. A cleanup must
- * provide an explicit cutoff and confirmation token, and can never touch more
- * than MAX_CLEANUP_ROWS in one request. Active work is excluded by status.
- */
 export async function DELETE(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
