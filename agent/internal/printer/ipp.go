@@ -37,7 +37,7 @@ func normalizeIPPURL(raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("empty IPP URL")
 	}
-	// Handle bare host:port or host without scheme for manual network entry (e.g., 192.168.1.60:631)
+	// Handle bare host:port or host without scheme for manual network entry.
 	if !strings.Contains(raw, "://") {
 		if _, _, err := net.SplitHostPort(raw); err == nil {
 			raw = "http://" + raw + "/ipp/print"
@@ -50,12 +50,18 @@ func normalizeIPPURL(raw string) (string, error) {
 			raw = "http://" + raw
 		}
 	}
+
 	lower := strings.ToLower(raw)
+	legacyIPP := false
+	legacyIPPS := false
 	if strings.HasPrefix(lower, "ipp://") {
+		legacyIPP = true
 		raw = "http://" + raw[6:]
 	} else if strings.HasPrefix(lower, "ipps://") {
+		legacyIPPS = true
 		raw = "https://" + raw[7:]
 	}
+
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("invalid IPP URL %q: %w", raw, err)
@@ -66,7 +72,11 @@ func normalizeIPPURL(raw string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("IPP URL host missing")
 	}
-	// Default path if empty
+	// IPP and IPPS conventionally use TCP 631 when no port is supplied.
+	// Preserve the normal HTTP/HTTPS defaults for explicitly supplied web URLs.
+	if u.Port() == "" && (legacyIPP || legacyIPPS) {
+		u.Host = net.JoinHostPort(u.Hostname(), "631")
+	}
 	if u.Path == "" || u.Path == "/" {
 		u.Path = "/ipp/print"
 	}
@@ -75,7 +85,7 @@ func normalizeIPPURL(raw string) (string, error) {
 
 // Print sends document data via IPP Print-Job operation.
 // It builds a minimal IPP 2.0 Print-Job request with document-format application/octet-stream
-// and appends the raw document bytes. Success is IPP status 0x0000.
+// and appends the raw document bytes. Success is any 0x000x successful IPP status.
 func (p *IPPPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("refusing to print empty payload")
@@ -93,8 +103,7 @@ func (p *IPPPrinter) Print(ctx context.Context, data []byte) error {
 }
 
 // PrintDocument sends the document with the IPP document-format that matches
-// the payload kind: application/pdf for PDF (so the printer renders it) and
-// application/octet-stream for raw/ESC-POS byte streams.
+// the payload kind: application/pdf for PDF and application/octet-stream for raw/ESC-POS bytes.
 func (p *IPPPrinter) PrintDocument(ctx context.Context, doc Document) error {
 	kind := NormalizeKind(doc.Kind)
 	format, ok := ippDocumentFormatFor(kind)
@@ -115,8 +124,6 @@ func (p *IPPPrinter) PrintDocument(ctx context.Context, doc Document) error {
 	return p.printDocument(ctx, doc.Data, format)
 }
 
-// SupportsKind: IPP carries a typed document, so raw/escpos byte streams and
-// real PDF documents are all valid.
 func (p *IPPPrinter) SupportsKind(kind string) bool {
 	_, ok := ippDocumentFormatFor(NormalizeKind(kind))
 	return ok
@@ -147,11 +154,9 @@ func (p *IPPPrinter) printDocument(ctx context.Context, data []byte, documentFor
 	}
 	req.Header.Set("Content-Type", "application/ipp")
 	req.Header.Set("Accept", "application/ipp")
-	// Some printers require Expect handling, disable
 	req.Header.Set("Expect", "")
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	// Respect context timeout if set, otherwise 15s
 	if deadline, ok := ctx.Deadline(); ok {
 		timeout := time.Until(deadline)
 		if timeout < 15*time.Second && timeout > 0 {
@@ -168,9 +173,8 @@ func (p *IPPPrinter) printDocument(ctx context.Context, data []byte, documentFor
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("IPP printer %s returned HTTP %d: %s", p.URL, resp.StatusCode, string(body))
 	}
-	// Parse IPP response status
 	status, msg := parseIPPStatus(body)
-	if status != 0x0000 {
+	if !isSuccessfulIPPStatus(status) {
 		return fmt.Errorf("IPP printer %s returned IPP status 0x%04x (%s): %s", p.URL, status, ippStatusText(status), msg)
 	}
 	log.Printf("IPP printed %d bytes to %s (IPP status 0x%04x)", len(data), p.URL, status)
@@ -179,26 +183,21 @@ func (p *IPPPrinter) printDocument(ctx context.Context, data []byte, documentFor
 
 func (p *IPPPrinter) Test(ctx context.Context) error {
 	data := []byte("IPP Test Print for Odoo Agent - Printer: " + p.Name + "\n\n")
-	// Try as raw text; for IPP we send as document-format application/octet-stream
+	// Send a raw text payload only for devices that accept application/octet-stream.
 	return p.Print(ctx, data)
 }
 
 func (p *IPPPrinter) Status() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// Try Get-Printer-Attributes
 	attrs, err := p.getPrinterAttributes(ctx)
 	if err != nil {
-		// Fallback: try simple HTTP GET to URL root
-		// If IPP not responding, try TCP dial to host:port
 		return "offline"
 	}
 	if attrs == nil {
 		return "online"
 	}
-	// Check printer-state
 	if state, ok := attrs["printer-state"]; ok {
-		// 3=idle, 4=processing, 5=stopped
 		switch state {
 		case "3":
 			return "online"
@@ -226,6 +225,7 @@ func (p *IPPPrinter) getPrinterAttributes(ctx context.Context) (map[string]strin
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/ipp")
+	req.Header.Set("Accept", "application/ipp")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -237,15 +237,11 @@ func (p *IPPPrinter) getPrinterAttributes(ctx context.Context) (map[string]strin
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	status, _ := parseIPPStatus(body)
-	if status != 0x0000 {
+	if !isSuccessfulIPPStatus(status) {
 		return nil, fmt.Errorf("IPP status 0x%04x", status)
 	}
-	// Parse attributes from response (very minimal)
-	attrs := parseIPPAttributes(body)
-	return attrs, nil
+	return parseIPPAttributes(body), nil
 }
-
-// IPP encoding helpers
 
 const (
 	ippFormatOctetStream = "application/octet-stream"
@@ -258,13 +254,9 @@ func buildIPPPrintJob(printerURI string, document []byte) []byte {
 
 func buildIPPPrintJobWithFormat(printerURI string, document []byte, documentFormat string) []byte {
 	var buf bytes.Buffer
-	// Version 2.0
 	buf.Write([]byte{0x02, 0x00})
-	// Operation Print-Job 0x0002
 	binary.Write(&buf, binary.BigEndian, uint16(0x0002))
-	// Request ID
 	binary.Write(&buf, binary.BigEndian, uint32(1))
-	// Operation attributes group 0x01
 	buf.WriteByte(0x01)
 	writeIPPAttribute(&buf, 0x47, "attributes-charset", "utf-8")
 	writeIPPAttribute(&buf, 0x48, "attributes-natural-language", "en")
@@ -272,9 +264,7 @@ func buildIPPPrintJobWithFormat(printerURI string, document []byte, documentForm
 	writeIPPAttribute(&buf, 0x42, "requesting-user-name", "odoo-agent")
 	writeIPPAttribute(&buf, 0x49, "document-format", documentFormat)
 	writeIPPAttribute(&buf, 0x42, "job-name", "Odoo Print Job")
-	// End of attributes
 	buf.WriteByte(0x03)
-	// Document data
 	buf.Write(document)
 	return buf.Bytes()
 }
@@ -282,14 +272,13 @@ func buildIPPPrintJobWithFormat(printerURI string, document []byte, documentForm
 func buildIPPGetPrinterAttributes(printerURI string) []byte {
 	var buf bytes.Buffer
 	buf.Write([]byte{0x02, 0x00})
-	binary.Write(&buf, binary.BigEndian, uint16(0x000B)) // Get-Printer-Attributes
+	binary.Write(&buf, binary.BigEndian, uint16(0x000B))
 	binary.Write(&buf, binary.BigEndian, uint32(1))
 	buf.WriteByte(0x01)
 	writeIPPAttribute(&buf, 0x47, "attributes-charset", "utf-8")
 	writeIPPAttribute(&buf, 0x48, "attributes-natural-language", "en")
 	writeIPPAttribute(&buf, 0x45, "printer-uri", printerURI)
 	writeIPPAttribute(&buf, 0x42, "requesting-user-name", "odoo-agent")
-	// Requested attributes
 	writeIPPAttribute(&buf, 0x44, "requested-attributes", "printer-state")
 	writeIPPAttribute(&buf, 0x44, "requested-attributes", "printer-state-reasons")
 	writeIPPAttribute(&buf, 0x44, "requested-attributes", "printer-is-accepting-jobs")
@@ -317,14 +306,14 @@ func parseIPPStatus(data []byte) (uint16, string) {
 	return status, ""
 }
 
-// parseIPPAttributes is a bounds-checked IPP binary attribute parser.
-// It never panics on truncated, malformed or unknown input: any attribute
-// that cannot be decoded is skipped and parsing stops at the first illegal
-// length. Repeated values for the same name are joined with commas.
+func isSuccessfulIPPStatus(status uint16) bool {
+	// 0x0000..0x00ff are success/warning responses in the IPP status-code range.
+	return status < 0x0100
+}
+
 func parseIPPAttributes(data []byte) (out map[string]string) {
 	out = make(map[string]string)
 	defer func() {
-		// Parser must never panic on malformed input.
 		if recover() != nil {
 			return
 		}
@@ -332,16 +321,15 @@ func parseIPPAttributes(data []byte) (out map[string]string) {
 	if len(data) < 8 {
 		return out
 	}
-	i := 8 // skip version (2) + status/op (2) + request-id (4)
+	i := 8
 	currentName := ""
 	for i < len(data) {
 		tag := data[i]
 		i++
-		if tag == 0x03 { // end-of-attributes
+		if tag == 0x03 {
 			break
 		}
 		if tag <= 0x0F {
-			// Delimiter / group tag (operation, job, printer, unsupported).
 			currentName = ""
 			continue
 		}
@@ -385,14 +373,14 @@ func parseIPPAttributes(data []byte) (out map[string]string) {
 
 func decodeIPPValue(tag byte, raw []byte) string {
 	switch tag {
-	case 0x10, 0x12, 0x13: // unsupported / unknown / no-value
+	case 0x10, 0x12, 0x13:
 		return ""
-	case 0x21, 0x23: // integer / enum
+	case 0x21, 0x23:
 		if len(raw) != 4 {
 			return ""
 		}
 		return fmt.Sprintf("%d", int32(binary.BigEndian.Uint32(raw)))
-	case 0x22: // boolean
+	case 0x22:
 		if len(raw) != 1 {
 			return ""
 		}
@@ -401,11 +389,8 @@ func decodeIPPValue(tag byte, raw []byte) string {
 		}
 		return "false"
 	case 0x30, 0x41, 0x42, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49:
-		// octetString, textWithoutLanguage, nameWithoutLanguage, keyword,
-		// uri, uriScheme, charset, naturalLanguage, mimeMediaType
 		return string(raw)
 	default:
-		// Unknown / unsupported tags: expose printable bytes, otherwise skip.
 		for _, b := range raw {
 			if b < 0x20 || b > 0x7e {
 				return ""
@@ -421,6 +406,8 @@ func ippStatusText(status uint16) string {
 		return "successful-ok"
 	case 0x0001:
 		return "successful-ok-ignored-or-substituted-attributes"
+	case 0x0002:
+		return "successful-ok-conflicting-attributes"
 	case 0x0400:
 		return "client-error-bad-request"
 	case 0x0401:
