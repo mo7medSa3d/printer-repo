@@ -33,15 +33,24 @@ jobs:
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
         run: |
           set -euo pipefail
+          docker compose ps migrate
+          docker compose ps migrate | grep -q 'Exited (0)'
+
+          healthy=0
           for i in $(seq 1 60); do
-            if docker compose ps --status running gateway | grep -q gateway; then
+            if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:3000/api/health >/tmp/gateway-health.json; then
+              healthy=1
               break
             fi
             sleep 2
           done
+
           docker compose ps
-          docker compose ps migrate | grep -q 'Exited (0)'
-          curl --fail --silent --show-error http://127.0.0.1:3000/api/health
+          if [ "$healthy" -ne 1 ]; then
+            echo "Gateway did not become healthy within 120 seconds" >&2
+            exit 1
+          fi
+          cat /tmp/gateway-health.json
 
       - name: Show logs on failure
         if: failure()
