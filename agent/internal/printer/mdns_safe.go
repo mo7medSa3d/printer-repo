@@ -69,7 +69,7 @@ func browseMDNSServicesExact(ctx context.Context, iface *net.Interface, services
 	if len(e.txt)==0 { if q,qe:=buildMDNSRRQuery(instance+".",16);qe==nil{_,_=conn.WriteToUDP(q,&net.UDPAddr{IP:net.ParseIP(mdnsIPv4),Port:mdnsPort})} }
 	}
 	readUntil(time.Now().Add(700*time.Millisecond))
-	for _,rr:=range records{e:=instances[strings.ToLower(trimFQDN(rr.name))];if e==nil{continue};switch rr.type_{case 33:if rr.srv==nil&&rr.srv!=nil{e.srv=rr.srv};if rr.srv!=nil{e.srv=rr.srv};case 16:for k,v:=range rr.txt{e.txt[k]=v}}}
+	for _,rr:=range records{e:=instances[strings.ToLower(trimFQDN(rr.name))];if e==nil{continue};switch rr.type_{case 33:if rr.srv!=nil{e.srv=rr.srv};case 16:for k,v:=range rr.txt{e.txt[k]=v}}}
 	for _,e:=range instances{if e.srv==nil||e.srv.target==""{continue};qname:=trimFQDN(e.srv.target);for _,qt:=range []uint16{1,28}{q,_:=buildMDNSRRQuery(qname+".",qt);_=conn.SetWriteDeadline(time.Now().Add(300*time.Millisecond));_,_=conn.WriteToUDP(q,&net.UDPAddr{IP:net.ParseIP(mdnsIPv4),Port:mdnsPort})}}
 	readUntil(time.Now().Add(600*time.Millisecond))
 
