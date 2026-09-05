@@ -129,6 +129,7 @@ jobs:
         run: |
           docker pull odoo:19.0
           docker run --rm --network host \
+            --add-host=db:127.0.0.1 \
             -v "$GITHUB_WORKSPACE/odoo_addons:/mnt/extra-addons:ro" \
             odoo:19.0 \
             odoo \
