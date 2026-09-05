@@ -7,12 +7,8 @@ on:
     branches: [main]
   merge_group:
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   ci:
@@ -37,11 +33,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-
-      - name: Apply production hardening transformations
-        run: python3 scripts/apply-production-hardening.py
 
       - name: Verify relative imports only
         shell: bash
@@ -116,21 +107,6 @@ jobs:
       - name: Build Next.js
         run: npm run build
 
-      - name: Persist hardening changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f scripts/apply-production-hardening.py .github/workflows/apply-production-hardening.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No hardening changes to persist"
-            exit 0
-          fi
-          git commit -m "fix: complete production hardening pass"
-          git push origin HEAD:${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
-
   odoo19:
     runs-on: ubuntu-latest
     services:
@@ -147,15 +123,9 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-    env:
-      CI: true
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-      - name: Apply production hardening transformations
-        run: python3 scripts/apply-production-hardening.py
       - name: Wait for PostgreSQL
         run: |
           for i in $(seq 1 30); do
