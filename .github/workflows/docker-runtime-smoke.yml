@@ -54,7 +54,7 @@ jobs:
 
           healthy=0
           for i in $(seq 1 60); do
-            if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:3000/api/health >/tmp/gateway-health.json; then
+            if docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
               healthy=1
               break
             fi
@@ -66,7 +66,7 @@ jobs:
             echo "Gateway did not become healthy within 120 seconds" >&2
             exit 1
           fi
-          cat /tmp/gateway-health.json
+          docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>r.text()).then(console.log)"
 
       - name: Show logs on failure
         if: failure()
