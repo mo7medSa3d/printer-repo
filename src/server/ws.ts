@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
+import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
 import {
   claimJobForDelivery,
@@ -11,11 +12,9 @@ import {
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
-// Per-agent connection tracking. Agent ↔ Gateway is the ONLY persistent WS.
 const agentSockets = new Map<string, Set<AgentSocket>>();
-
-// Agent → Gateway control frames are tiny; anything larger is refused by ws.
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
+const PG_NOTIFY_CHANNEL = "print_gateway_agent_jobs";
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
   ws.agentId = agentId;
@@ -35,34 +34,21 @@ export function getAgentWsCount(agentId: string): number {
   return agentSockets.get(agentId)?.size ?? 0;
 }
 
-/** True when at least one socket for this agent is in OPEN state. */
 export function hasOpenAgentSocket(agentId: string): boolean {
   const set = agentSockets.get(agentId);
   if (!set) return false;
-  for (const ws of set) {
-    if (ws.readyState === WebSocket.OPEN) return true;
-  }
+  for (const ws of set) if (ws.readyState === WebSocket.OPEN) return true;
   return false;
 }
 
-/**
- * Write one message to exactly ONE open socket of the agent.
- *
- * Sending to every socket of the same agent would be a duplicate delivery of
- * the same job, so the newest open socket wins. Returns false when nothing
- * could actually be written — the caller must then treat the delivery as
- * failed (previously this returned true whenever a socket object existed,
- * even if it was already CLOSING, which silently lost jobs).
- */
 export function sendToAgent(agentId: string, message: unknown): boolean {
   const set = agentSockets.get(agentId);
   if (!set || set.size === 0) return false;
   const open = [...set].filter((ws) => ws.readyState === WebSocket.OPEN);
   if (open.length === 0) return false;
   const target = open[open.length - 1];
-  const data = JSON.stringify(message);
   try {
-    target.send(data);
+    target.send(JSON.stringify(message));
   } catch (e) {
     console.warn(`[ws] send to agent ${agentId} failed:`, e);
     return false;
@@ -84,8 +70,6 @@ export type JobDeliveryEnvelope = {
     expiresAt: string;
     retries: number;
   };
-  // Flat aliases so an older agent build that reads `id`/`printerId`/`payload`
-  // straight off the message keeps working against a new gateway.
   id: string;
   printerId: string;
   payload: unknown;
@@ -115,128 +99,120 @@ export function buildJobEnvelope(job: ClaimedJobRow): JobDeliveryEnvelope {
   };
 }
 
-export type PushOutcome =
-  | "delivered" // claimed, written to a socket, agent owns it now
-  | "no_socket" // agent is not connected; row stays queued for the poll path
-  | "not_claimable" // already claimed/terminal/expired — nothing was sent
-  | "requeued" // claim taken but send failed; row is queued again
-  | "failed"; // claim taken, send failed, delivery budget exhausted
+export type PushOutcome = "delivered" | "no_socket" | "not_claimable" | "requeued" | "failed";
 
-/**
- * Claim a job and only then push it to the agent.
- *
- * Ordering is the whole point: the queued→claimed transition commits BEFORE
- * a single byte reaches the agent, so the agent can never execute (and report
- * progress on) a job the gateway still believes is queued. If the socket
- * write fails after the claim, the claim is released so the job stays
- * recoverable under the same job id.
- */
 export async function claimAndPushJobToAgent(job: { id: string; agentId: string }): Promise<PushOutcome> {
   if (!hasOpenAgentSocket(job.agentId)) return "no_socket";
-
   const claimed = await claimJobForDelivery(job.id, job.agentId);
   if (!claimed) return "not_claimable";
-
   const delivered = sendToAgent(job.agentId, buildJobEnvelope(claimed));
   if (!delivered) {
-    const outcome = await releaseUndeliveredClaim(
-      job.id,
-      job.agentId,
-      "websocket delivery failed after claim; job requeued for redelivery"
-    );
+    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, "websocket delivery failed after claim; job requeued for redelivery");
     return outcome === "failed" ? "failed" : "requeued";
   }
-
   await markJobDelivered(job.id, job.agentId);
   return "delivered";
 }
 
-/** Handles one Agent → Gateway control frame. Exported for tests. */
 export async function handleAgentMessage(agentId: string, raw: string): Promise<void> {
   let msg: unknown;
-  try {
-    msg = JSON.parse(raw);
-  } catch {
-    return; // non-JSON keepalive noise
-  }
+  try { msg = JSON.parse(raw); } catch { return; }
   if (!msg || typeof msg !== "object") return;
   const { type, jobId } = msg as { type?: unknown; jobId?: unknown };
   if (type !== "job_ack") return;
   if (typeof jobId !== "string" || !jobId) return;
-  // Acknowledgement is receipt only: it never changes the job status.
   const known = await recordJobAck(jobId, agentId);
-  if (!known) {
-    console.warn(`[ws] agent ${agentId} acked unknown job ${jobId}`);
+  if (!known) console.warn(`[ws] agent ${agentId} acked unknown job ${jobId}`);
+}
+
+async function notifyJobAvailable(jobId: string, agentId: string): Promise<void> {
+  const payload = JSON.stringify({ jobId, agentId });
+  try {
+    await pool.query("SELECT pg_notify($1, $2)", [PG_NOTIFY_CHANNEL, payload]);
+  } catch (error) {
+    console.warn(`[ws] PostgreSQL job notification failed for ${jobId}:`, error);
   }
+}
+
+export { notifyJobAvailable };
+
+async function startJobNotificationListener(wss: WebSocketServer): Promise<() => Promise<void>> {
+  const client = await pool.connect();
+  let closed = false;
+  await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
+  client.on("notification", (notification) => {
+    if (notification.channel !== PG_NOTIFY_CHANNEL || !notification.payload) return;
+    try {
+      const message = JSON.parse(notification.payload) as { jobId?: unknown; agentId?: unknown };
+      if (typeof message.jobId !== "string" || typeof message.agentId !== "string") return;
+      if (!hasOpenAgentSocket(message.agentId)) return;
+      void claimAndPushJobToAgent({ id: message.jobId, agentId: message.agentId }).catch((error) => {
+        console.warn(`[ws] cross-instance job delivery failed for ${message.jobId}:`, error);
+      });
+    } catch {
+      console.warn("[ws] ignored malformed PostgreSQL job notification");
+    }
+  });
+  client.on("error", (error) => {
+    if (!closed) console.warn("[ws] PostgreSQL notification listener error:", error);
+  });
+  return async () => {
+    if (closed) return;
+    closed = true;
+    try { await client.query(`UNLISTEN ${PG_NOTIFY_CHANNEL}`); } catch {}
+    client.release();
+  };
 }
 
 export function attachAgentWSS(server: HttpServer) {
   const wss = new WebSocketServer({ noServer: true, path: "/api/agent/ws", maxPayload: MAX_WS_MESSAGE_BYTES });
 
-  // Heartbeat for dead WS detection (per ws docs)
   const interval = setInterval(() => {
     wss.clients.forEach((ws: WebSocket) => {
       const a = ws as AgentSocket;
-      if (a.isAlive === false) {
-        a.terminate();
-        return;
-      }
+      if (a.isAlive === false) { a.terminate(); return; }
       a.isAlive = false;
-      try {
-        a.ping();
-      } catch {}
+      try { a.ping(); } catch {}
     });
   }, 30_000);
-
   wss.on("close", () => clearInterval(interval));
+
+  let stopNotificationListener: (() => Promise<void>) | null = null;
+  void startJobNotificationListener(wss).then((stop) => { stopNotificationListener = stop; }).catch((error) => {
+    console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
+  });
+  wss.on("close", () => { void stopNotificationListener?.(); });
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
-    // Only handle /api/agent/ws ; let Next handle others (none)
     if (!url.startsWith("/api/agent/ws")) return;
-
     const auth = req.headers["authorization"] ?? req.headers["Authorization"];
     const header = Array.isArray(auth) ? auth[0] : (auth as string | undefined) ?? null;
-
-    // validateAgent expects "Bearer agt:secret" and does DB lookup
     let agent: Awaited<ReturnType<typeof validateAgent>> = null;
-    try {
-      agent = await validateAgent(header ?? null);
-    } catch {
-      agent = null;
-    }
+    try { agent = await validateAgent(header ?? null); } catch { agent = null; }
     if (!agent) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"error\":\"Unauthorized\"}");
       socket.destroy();
       return;
     }
-
     wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       const aws = ws as AgentSocket;
       aws.isAlive = true;
       aws.on("pong", () => { aws.isAlive = true; });
       trackAgentSocket(agent!.id, aws);
-      // No jobs are sent on connect: a job is only ever pushed after the
-      // gateway has claimed it (claimAndPushJobToAgent). Undelivered claims
-      // are recovered by the agent's poll path.
       wss.emit("connection", ws, req);
     });
   });
 
-  // Agent → Gateway frames: pong keepalives and `{"type":"job_ack","jobId"}`.
   wss.on("connection", (ws: AgentSocket) => {
     ws.on("message", (data) => {
       ws.isAlive = true;
       const agentId = ws.agentId;
       if (!agentId) return;
       const raw = typeof data === "string" ? data : data.toString();
-      handleAgentMessage(agentId, raw).catch((e) => {
-        console.warn(`[ws] failed to handle message from agent ${agentId}:`, e);
-      });
+      handleAgentMessage(agentId, raw).catch((e) => console.warn(`[ws] failed to handle message from agent ${agentId}:`, e));
     });
-    ws.on("error", () => {
-      try { ws.close(); } catch {}
-    });
+    ws.on("error", () => { try { ws.close(); } catch {} });
   });
 
   return wss;
