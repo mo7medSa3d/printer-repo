@@ -69,7 +69,7 @@ function makePrinter() {
 }
 
 function makeAgent(branchId: string) {
-  return { id: "agent_1", branchId, lifecycle: "active" };
+  return { id: "agent_1", branchId, lifecycle: "active", status: "online", lastSeenAt: new Date() };
 }
 
 function makeBranch(branchId: string) {
