@@ -1,4 +1,5 @@
 import { createServer } from "http";
+import type { IncomingMessage, ServerResponse } from "http";
 import next from "next";
 import { attachAgentWSS } from "./src/server/ws";
 import { sweepPrintJobs } from "./src/lib/job-maintenance";
@@ -15,14 +16,15 @@ const MAX_API_BODY_BYTES = 8 * 1024 * 1024;
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-function rejectOversizedRequest(res: import("http").ServerResponse) {
+function rejectOversizedRequest(res: ServerResponse) {
+  if (res.headersSent || res.writableEnded) return;
   res.statusCode = 413;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("connection", "close");
   res.end(JSON.stringify({ success: false, error: "REQUEST_BODY_TOO_LARGE" }));
 }
 
-function guardApiRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): boolean {
+function guardApiRequest(req: IncomingMessage, res: ServerResponse): boolean {
   if (!req.url?.startsWith("/api/")) return true;
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method ?? "")) return true;
 
@@ -35,11 +37,25 @@ function guardApiRequest(req: import("http").IncomingMessage, res: import("http"
     }
   }
 
-  // Do not attach data listeners here. IncomingMessage is the body stream and
-  // consuming it before handing the request to Next.js can make req.json()/form
-  // parsing fail or observe a truncated body. Requests without Content-Length
-  // must be bounded at the trusted reverse proxy/edge; route handlers also keep
-  // their own explicit limits where payloads are larger/specialized.
+  // Content-Length is only an early rejection. For HTTP/1.1 chunked requests
+  // there is no trustworthy declared size, so count bytes on the IncomingMessage
+  // stream itself. The listener observes chunks without consuming them, allowing
+  // Next.js to continue parsing the same stream. Once the hard ceiling is crossed
+  // we return 413 and destroy the request connection before a huge JSON payload
+  // can be fully buffered by a route handler.
+  let received = 0;
+  let rejected = false;
+  req.on("data", (chunk: Buffer | string) => {
+    if (rejected) return;
+    received += Buffer.byteLength(chunk);
+    if (received > MAX_API_BODY_BYTES) {
+      rejected = true;
+      rejectOversizedRequest(res);
+      req.destroy();
+    }
+  });
+  req.on("aborted", () => { rejected = true; });
+
   return true;
 }
 
