@@ -33,8 +33,8 @@ export function normalizeGatewayUrl(raw: string): string {
   if (/\s/.test(url)) {
     throw new Error("Gateway URL cannot contain whitespace");
   }
-  if (!/^https?:\/\//i.test(url)) {
-    throw new Error("Gateway URL must start with http:// or https://");
+  if (!/^https:\/\//i.test(url)) {
+    throw new Error("Gateway URL must use https://");
   }
   try {
     const parsed = new URL(url);
@@ -175,11 +175,8 @@ export interface GatewayHealth {
 export async function fetchGatewayJobs(
   gatewayUrl: string
 ): Promise<Record<string, unknown>[]> {
-  const base = gatewayUrl.replace(/\/$/, "");
+  const base = normalizeGatewayUrl(gatewayUrl);
   const res = await fetch(`${base}/api/jobs?limit=50`, {
-    // A manager session cookie is required by /api/jobs. The desktop Manager
-    // has no gateway session, so this 401s until the user signs in at the
-    // gateway dashboard — surfaced to the UI, never silently swallowed.
     credentials: "include",
   });
   if (!res.ok) {
@@ -215,10 +212,11 @@ const HEALTH_TIMEOUT_MS = 8000;
 export async function fetchGatewayHealth(
   gatewayUrl: string
 ): Promise<Record<string, unknown>> {
+  const base = normalizeGatewayUrl(gatewayUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   try {
-    const res = await fetch(`${gatewayUrl.replace(/\/$/, "")}/api/health`, {
+    const res = await fetch(`${base}/api/health`, {
       signal: controller.signal,
     });
     return (await res.json()) as Record<string, unknown>;
