@@ -10,8 +10,6 @@ from odoo.exceptions import AccessError, ValidationError
 class PrintGatewayBranchSecurity(models.Model):
     _inherit = 'print_gateway.branch'
 
-    # A masked password widget is presentation-only. Field groups are what
-    # prevent regular Odoo users from reading the secret through ORM/API.
     gateway_api_key = fields.Char(
         groups='base.group_system',
         copy=False,
@@ -27,16 +25,6 @@ class PrintGatewayBranchSecurity(models.Model):
                 raise ValidationError(_(
                     'Gateway URL must use HTTPS and include a valid host for branch %s.'
                 ) % rec.name)
-
-    def _check_company_access(self):
-        super()._check_company_access()
-        for rec in self:
-            if rec.gateway_url:
-                parsed = urlparse(rec.gateway_url.strip())
-                if parsed.scheme.lower() != 'https' or not parsed.netloc:
-                    raise ValidationError(_(
-                        'Gateway URL must use HTTPS and include a valid host for branch %s.'
-                    ) % rec.name)
 
     def _check_gateway_configuration_access(self):
         if not self.env.user.has_group('base.group_system'):
