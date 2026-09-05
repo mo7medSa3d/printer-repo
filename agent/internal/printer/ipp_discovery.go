@@ -10,26 +10,30 @@ import (
 	"time"
 )
 
-// discoverIPPPrinters performs IPP/IPPS discovery via TCP 631 scan and mDNS.
-// It is additive and bounded. Currently TCP 631 scan is primary; mDNS is best-effort.
+// discoverIPPPrinters performs standards-based IPP/IPPS discovery.
+// Primary discovery is DNS-SD/mDNS (_ipp._tcp, _ipps._tcp and the
+// IPP Everywhere subtypes). TCP/631 probing is a fallback only and a host is
+// returned from that path only when an actual IPP Get-Printer-Attributes
+// request succeeds. This prevents an arbitrary service listening on 631 from
+// being presented as a printer.
 func discoverIPPPrinters(ctx context.Context) ([]DeviceInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// First, try mDNS for _ipp._tcp.local and _ipps._tcp.local
-	mdnsFound := discoverMDNSPrinters(ctx)
-
-	// Then TCP 631 scan of local private subnets (similar to 9100)
-	tcpFound, err := discoverIPPviaTCP(ctx)
-	if err != nil {
-		log.Printf("[discovery] IPP TCP scan error: %v", err)
+	mdnsFound, mdnsErr := discoverMDNSPrinters(ctx)
+	if mdnsErr != nil {
+		log.Printf("[discovery] IPP mDNS discovery warning: %v", mdnsErr)
 	}
 
-	// Merge mDNS and TCP results with dedup by host:port
+	tcpFound, tcpErr := discoverIPPviaTCP(ctx)
+	if tcpErr != nil {
+		log.Printf("[discovery] IPP TCP discovery warning: %v", tcpErr)
+	}
+
 	seen := make(map[string]bool)
-	var out []DeviceInfo
+	out := make([]DeviceInfo, 0, len(mdnsFound)+len(tcpFound))
 	for _, di := range append(mdnsFound, tcpFound...) {
-		key := fmt.Sprintf("%s:%d", strings.ToLower(di.NetworkAddress), di.Port)
+		key := strings.ToLower(fmt.Sprintf("%s:%d", di.NetworkAddress, di.Port))
 		if seen[key] {
 			continue
 		}
@@ -37,9 +41,7 @@ func discoverIPPPrinters(ctx context.Context) ([]DeviceInfo, error) {
 		out = append(out, di)
 	}
 	if len(out) > 0 {
-		log.Printf("[discovery] IPP discovery found %d printers (mDNS %d, TCP %d)", len(out), len(mdnsFound), len(tcpFound))
-	} else {
-		log.Printf("[discovery] IPP discovery: no printers found (mDNS %d, TCP %d)", len(mdnsFound), len(tcpFound))
+		log.Printf("[discovery] IPP discovery found %d printers (mDNS %d, TCP verified %d)", len(out), len(mdnsFound), len(tcpFound))
 	}
 	return out, nil
 }
@@ -65,10 +67,7 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 				continue
 			}
 			ip := ipNet.IP.To4()
-			if ip == nil || ip.IsLoopback() || ip.IsMulticast() {
-				continue
-			}
-			if !ip.IsPrivate() {
+			if ip == nil || ip.IsLoopback() || ip.IsMulticast() || !ip.IsPrivate() {
 				continue
 			}
 			mask := ipNet.Mask
@@ -94,14 +93,14 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 				}
 				targets = append(targets, net.JoinHostPort(h.String(), "631"))
 			}
-			log.Printf("[discovery] IPP scanning subnet %s (%s) %d hosts", subnetKey, iface.Name, len(hosts))
 		}
 	}
 	if len(targets) == 0 {
 		return nil, nil
 	}
+
 	const workers = 32
-	const perHostTimeout = 500 * time.Millisecond
+	const perHostTimeout = 700 * time.Millisecond
 	jobs := make(chan string, len(targets))
 	results := make(chan DeviceInfo, len(targets))
 	var wg sync.WaitGroup
@@ -115,58 +114,107 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 					return
 				default:
 				}
-				host, portStr, _ := net.SplitHostPort(target)
+				host, portStr, err := net.SplitHostPort(target)
+				if err != nil {
+					continue
+				}
+				port := 631
+				if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+					continue
+				}
+
+				// TCP reachability is only a cheap pre-check. The actual proof of
+				// printer identity is a valid IPP Get-Printer-Attributes response.
 				d := net.Dialer{Timeout: perHostTimeout}
-				connCtx, cancel := context.WithTimeout(ctx, perHostTimeout)
-				conn, err := d.DialContext(connCtx, "tcp", target)
+				probeCtx, cancel := context.WithTimeout(ctx, perHostTimeout)
+				conn, err := d.DialContext(probeCtx, "tcp", target)
 				cancel()
 				if err != nil {
-					return
+					continue
 				}
-				conn.Close()
-				port := 631
-				fmt.Sscanf(portStr, "%d", &port)
-				// Try to verify it's really IPP by doing Get-Printer-Attributes
-				// If it fails, still treat as potential IPP printer but mark status
-				urlStr := fmt.Sprintf("http://%s:%d/ipp/print", host, port)
-				// Quick probe: try to fetch via IPP
-				ippProbe := IPPPrinter{URL: urlStr, Name: host}
-				status := "online"
-				probeCtx, cancel2 := context.WithTimeout(ctx, 2*time.Second)
-				if _, err := ippProbe.getPrinterAttributes(probeCtx); err != nil {
-					// If IPP not responding, still keep as IPP candidate but status unknown
-					// Check if HTTP GET to / succeeds
-					status = "unknown"
-				}
-				cancel2()
-				id := StableIDFromNetwork(host, port)
-				// Use ipp:// URL as endpoint for later printing
-				ippURL := fmt.Sprintf("ipp://%s/ipp/print", target)
-				name := fmt.Sprintf("IPP Printer %s", host)
-				if names, err := net.LookupAddr(host); err == nil && len(names) > 0 {
-					n := strings.TrimSuffix(names[0], ".")
-					if n != "" {
-						name = fmt.Sprintf("IPP Printer %s (%s)", host, n)
+				_ = conn.Close()
+
+				probeTimeout := 2 * time.Second
+				if deadline, ok := ctx.Deadline(); ok {
+					remaining := time.Until(deadline)
+					if remaining > 0 && remaining < probeTimeout {
+						probeTimeout = remaining
 					}
 				}
+				probeCtx, cancel = context.WithTimeout(ctx, probeTimeout)
+				var verifiedURL string
+				var attrs map[string]string
+				for _, candidate := range []string{
+					fmt.Sprintf("http://%s:%d/ipp/print", host, port),
+					fmt.Sprintf("http://%s:%d/ipp/printer", host, port),
+					fmt.Sprintf("http://%s:%d/printers/ipp", host, port),
+					fmt.Sprintf("http://%s:%d/ipp", host, port),
+					fmt.Sprintf("https://%s:%d/ipp/print", host, port),
+					fmt.Sprintf("https://%s:%d/ipp/printer", host, port),
+				} {
+					probe := IPPPrinter{URL: candidate, Name: host}
+					var probeAttrs map[string]string
+					probeAttrs, err = probe.getPrinterAttributes(probeCtx)
+					if err == nil && probeAttrs != nil && (probeAttrs["printer-uri-supported"] != "" || probeAttrs["printer-state"] != "" || probeAttrs["printer-make-and-model"] != "") {
+						verifiedURL = candidate
+						attrs = probeAttrs
+						break
+					}
+					if probeCtx.Err() != nil {
+						break
+					}
+				}
+				cancel()
+				if verifiedURL == "" {
+					continue
+				}
+
+				name := attrs["printer-info"]
+				if name == "" {
+					name = attrs["printer-make-and-model"]
+				}
+				if name == "" {
+					name = attrs["printer-name"]
+				}
+				if name == "" {
+					name = fmt.Sprintf("IPP Printer %s", host)
+				}
+				caps := map[string]interface{}{
+					"discovered_via": "ipp_tcp_verified",
+					"ipp_verified":   true,
+					"ipp_url":        verifiedURL,
+				}
+				for _, key := range []string{
+					"printer-uri-supported", "document-format-supported", "printer-make-and-model", "printer-info", "printer-name", "printer-state", "printer-state-reasons", "printer-is-accepting-jobs", "ipp-versions-supported", "operations-supported",
+				} {
+					if v := attrs[key]; v != "" {
+						caps[key] = v
+					}
+				}
+				hostName := host
+				if names, lookupErr := net.LookupAddr(host); lookupErr == nil && len(names) > 0 {
+					hostName = strings.TrimSuffix(names[0], ".")
+				}
+				caps["hostname"] = hostName
+
+				id := StableIDFromNetwork(host, port)
 				di := DeviceInfo{
 					ID:             id,
 					Name:           name,
 					DisplayName:    name,
 					PrinterType:    "unknown",
 					ConnectionType: "ipp",
-					Protocol:       "ipp",
-					Endpoint:       ippURL,
+					Protocol:       strings.SplitN(strings.ToLower(verifiedURL), ":", 2)[0],
+					Endpoint:       verifiedURL,
 					NetworkAddress: host,
 					Port:           port,
-					Status:         status,
+					Status:         "online",
 					Enabled:        true,
 					Type:           "ipp",
-					Capabilities:   map[string]interface{}{"discovered_via": "ipp_tcp_scan", "ipp_url": ippURL},
+					Capabilities:   caps,
 				}
 				select {
 				case results <- di:
-					log.Printf("[discovery] found IPP printer: %s:631 -> %s", host, id)
 				case <-ctx.Done():
 					return
 				}
@@ -188,47 +236,46 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 	case <-ctx.Done():
 	}
 	close(results)
-	var out []DeviceInfo
+
+	out := make([]DeviceInfo, 0)
 	seenID := make(map[string]bool)
 	for di := range results {
-		if !seenID[di.ID] {
-			seenID[di.ID] = true
-			out = append(out, di)
+		if seenID[di.ID] {
+			continue
 		}
+		seenID[di.ID] = true
+		out = append(out, di)
 	}
 	return out, nil
 }
 
-// discoverMDNSPrinters performs mDNS query for _ipp._tcp.local and _ipps._tcp.local
-// It is best-effort; if it fails, it returns empty and logs.
-func discoverMDNSPrinters(ctx context.Context) []DeviceInfo {
-	// Minimal mDNS implementation: send DNS PTR query to 224.0.0.251:5353
-	// For now, we implement a stub that logs and returns empty, but does not fail.
-	// A full implementation would use a library like github.com/grandcat/zeroconf or
-	// github.com/miekg/dns. To keep dependencies minimal, we do a best-effort UDP multicast
-	// with a handcrafted DNS packet and parse responses for PTR/SRV/TXT.
-
-	// Try to perform mDNS discovery with timeout 2s
-	mdnsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	// Use a simple approach: try to resolve _ipp._tcp.local via net.Lookup (which may use mDNS on some systems)
-	// This is not reliable, so we just log and return empty for now, but keep the hook for future.
-	// We attempt a quick UDP multicast to avoid blocking.
-	_ = mdnsCtx
-
-	// Log that mDNS was attempted
-	// To avoid spamming logs on every discovery, only log at debug level
-	// For now, return empty
-	return nil
-}
-
-// buildMDNSQuery is a helper for future full mDNS implementation (currently stub).
-func buildMDNSQuery(service string) []byte {
-	// DNS query for PTR service._tcp.local
-	// Header: ID 0, flags 0, QDCOUNT 1
-	// Question: QNAME service, QTYPE PTR (12), QCLASS IN (1)
-	// This is a placeholder for future implementation.
-	_ = service
-	return nil
+func discoverMDNSPrinters(ctx context.Context) ([]DeviceInfo, error) {
+	services := []string{
+		"_ipp._tcp.local.",
+		"_ipps._tcp.local.",
+		"_print._sub._ipp._tcp.local.",
+		"_print._sub._ipps._tcp.local.",
+	}
+	var out []DeviceInfo
+	seen := make(map[string]bool)
+	var errs []string
+	for _, service := range services {
+		entries, err := discoverMDNSService(ctx, service)
+		if err != nil {
+			errs = append(errs, service+": "+err.Error())
+			continue
+		}
+		for _, di := range entries {
+			key := strings.ToLower(fmt.Sprintf("%s:%d", di.NetworkAddress, di.Port))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, di)
+		}
+	}
+	if len(errs) > 0 {
+		return out, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return out, nil
 }
