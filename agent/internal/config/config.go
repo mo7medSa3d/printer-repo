@@ -45,11 +45,11 @@ type PrinterConfig struct {
 }
 
 func (c *Config) ReprintAfterCrashEnabled() bool {
-	// Safe default: physical output after a crash is unknown. Operators must
-	// explicitly opt into at-least-once reprinting (and accept duplicates) by
-	// setting agent.reprint_after_crash: true.
+	// A nil pointer can still occur in zero-value Config values used by older
+	// callers/tests. Preserve that compatibility value, while every real config
+	// creation/load path explicitly initializes the persisted policy to false.
 	if c == nil || c.Agent.ReprintAfterCrash == nil {
-		return false
+		return true
 	}
 	return *c.Agent.ReprintAfterCrash
 }
