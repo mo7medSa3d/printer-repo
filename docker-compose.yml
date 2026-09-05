@@ -17,14 +17,29 @@ services:
     networks:
       - printer_backend
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-odoo_print}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-odoo_print}
+    command: ["npm", "run", "db:migrate"]
+    networks:
+      - printer_backend
+
   gateway:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
