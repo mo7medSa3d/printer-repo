@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   ci:
@@ -37,109 +37,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
-      - name: Remove path aliases from PR branch
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          git fetch origin "$HEAD_BRANCH" --depth=1
-          git checkout "$HEAD_BRANCH"
-          python3 <<'PY'
-          from pathlib import Path
-          import json
-          import os
-          import re
-
-          root = Path.cwd().resolve()
-          prefix = chr(64) + "/"
-          code_ext = {".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
-          skip_dirs = {".git", "node_modules", ".next", "dist", "build", "target", ".venv", "venv"}
-          import_pattern = re.compile(r"(['\"])(?:" + re.escape(prefix) + r")([^'\"]+)\1")
-          changed = []
-
-          def relative_target(path: Path, suffix: str) -> str:
-              target = root / "src" / suffix
-              rel = os.path.relpath(target, path.parent).replace(os.sep, "/")
-              return rel if rel.startswith(".") else "./" + rel
-
-          for path in root.rglob("*"):
-              if not path.is_file() or any(part in skip_dirs for part in path.parts):
-                  continue
-              try:
-                  original = path.read_text(encoding="utf-8")
-              except (UnicodeDecodeError, OSError):
-                  continue
-
-              text = original
-              if path.suffix in code_ext:
-                  text = import_pattern.sub(lambda m: m.group(1) + relative_target(path, m.group(2)) + m.group(1), text)
-              else:
-                  text = text.replace(prefix, "src/")
-
-              if path.name == "tsconfig.json":
-                  data = json.loads(text)
-                  options = data.get("compilerOptions", {})
-                  options.pop("baseUrl", None)
-                  options.pop("paths", None)
-                  text = json.dumps(data, indent=2) + "\n"
-
-              if text != original:
-                  path.write_text(text, encoding="utf-8")
-                  changed.append(str(path.relative_to(root)))
-
-          dockerfile = root / "Dockerfile"
-          if dockerfile.exists():
-              original = dockerfile.read_text(encoding="utf-8")
-              lines = [line for line in original.splitlines() if "path aliases" not in line and "tsconfig.json" not in line]
-              updated = "\n".join(lines).rstrip() + "\n"
-              if updated != original:
-                  dockerfile.write_text(updated, encoding="utf-8")
-                  changed.append("Dockerfile")
-
-          leftovers = []
-          for path in root.rglob("*"):
-              if not path.is_file() or any(part in skip_dirs for part in path.parts):
-                  continue
-              try:
-                  text = path.read_text(encoding="utf-8")
-              except (UnicodeDecodeError, OSError):
-                  continue
-              if prefix in text:
-                  leftovers.append(str(path.relative_to(root)))
-
-          tsconfig = json.loads((root / "tsconfig.json").read_text(encoding="utf-8"))
-          options = tsconfig.get("compilerOptions", {})
-          if "paths" in options or "baseUrl" in options:
-              leftovers.append("tsconfig.json (baseUrl/paths)")
-
-          if leftovers:
-              print("Forbidden path-alias references remain:")
-              print("\n".join(leftovers))
-              raise SystemExit(1)
-          print(f"Relative-import codemod changed {len(changed)} files.")
-          PY
-
-          if git diff --quiet; then
-            echo "No path-alias changes required."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "refactor: remove TypeScript path aliases"
-            git push origin HEAD:"$HEAD_BRANCH"
-          fi
-
-      - name: Verify no path aliases
+      - name: Verify relative imports only
         shell: bash
         run: |
           set -euo pipefail
           pattern="$(printf '\x40/')"
-          if grep -RIn --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.next --exclude='*.lock' --exclude='*.svg' --exclude='*.png' --exclude='*.ico' "$pattern" .; then
+          if grep -RIn --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.next \
+              --exclude='*.lock' --exclude='*.svg' --exclude='*.png' --exclude='*.ico' "$pattern" .; then
             echo "Path aliases are forbidden. Use relative imports."
             exit 1
           fi
