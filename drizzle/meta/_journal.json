@@ -6,7 +6,7 @@
     {"idx":1,"version":"7","when":1788063485215,"tag":"0001_phase1_branch_foundation","breakpoints":true},
     {"idx":2,"version":"7","when":1788063485216,"tag":"0002_add_document_types","breakpoints":true},
     {"idx":3,"version":"7","when":1788063485217,"tag":"0003_add_idempotency_key","breakpoints":true},
-    {"idx":4,"version":"7","when":1788063485218,"tag":"0004_job_delivery_tracking","breakpoints":true},
+    {"idx":4,"version":"7","when":1788063485218,"tag":"0004_add_job_delivery_tracking","breakpoints":true},
     {"idx":5,"version":"7","when":1788063485219,"tag":"0005_auth_rate_limits","breakpoints":true},
     {"idx":6,"version":"7","when":1788063485220,"tag":"0006_architecture_hardening","breakpoints":true},
     {"idx":7,"version":"7","when":1788063485221,"tag":"0007_auth_rate_limit_retention","breakpoints":true},
