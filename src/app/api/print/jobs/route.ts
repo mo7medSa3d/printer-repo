@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { agents, printJobs } from "@/db/schema";
+import { agents, printJobs, printers } from "@/db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
 import { validatePrintJobPayload } from "@/lib/payload";
 import { resolvePrinterForJob } from "@/lib/routing";
@@ -39,7 +39,7 @@ function parseExpiresAt(str?: string) {
 
 function errorStatus(message: string): number {
   if (/not online/i.test(message)) return 503;
-  if (/queue is full|AGENT_QUEUE_FULL/i.test(message)) return 503;
+  if (/AGENT_QUEUE_FULL/i.test(message)) return 503;
   if (/virtual|redirected|disabled|retired/i.test(message)) return 409;
   if (/capability|cannot print/i.test(message)) return 422;
   if (/not found/i.test(message)) return 404;
@@ -145,19 +145,10 @@ export async function POST(req: Request) {
     } catch (e: unknown) {
       if (e instanceof AgentQueueFullError) {
         incrementMetric("print_jobs_backpressure_total");
-        return NextResponse.json({
-          error: "AGENT_QUEUE_FULL",
-          code: "AGENT_QUEUE_FULL",
-          agentId: e.agentId,
-          inFlight: e.inFlight,
-          limit: 500,
-          retryable: true,
-        }, { status: 503 });
+        return NextResponse.json({ error: "AGENT_QUEUE_FULL", code: "AGENT_QUEUE_FULL", agentId: e.agentId, inFlight: e.inFlight, limit: 500, retryable: true }, { status: 503 });
       }
-      if (e instanceof Error && e.message === "DUPLICATE_JOB") {
-        const existing = parsed.idempotencyKey
-          ? await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) })
-          : null;
+      if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
+        const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
         if (existing) return NextResponse.json(jobResponse(existing), { status: 200 });
       }
       const message = e instanceof Error ? e.message : "print job creation failed";
@@ -181,11 +172,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Invalid expiresAt" }, { status: 400 });
     }
 
-    // The shared service performs the authoritative printer/agent/branch,
-    // virtual-printer, capability, capacity, idempotency and delivery checks.
-    // The lookup here is only needed to determine the Odoo branch scope for
-    // the legacy endpoint's authorization and idempotency lookup.
-    const printer = await db.query.printers.findFirst({ where: eq((await import("@/db/schema")).printers.id, parsed.printerId) });
+    const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
     if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
     const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
     if (!ownerAgent) return NextResponse.json({ error: "INTERNAL_ERROR: printer owner agent missing" }, { status: 500 });
