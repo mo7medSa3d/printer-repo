@@ -11,3 +11,4 @@ from . import ir_actions_report
 from . import branch_security
 from . import branch_multicompany
 from . import async_report
+from . import odoo19_compat
