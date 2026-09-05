@@ -85,10 +85,7 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 
 	if len(targets) == 0 {
 		log.Printf("[discovery] network discovery: no private subnets found, skipping TCP scan")
-		// mDNS/SNMP/WSD stubs
-		log.Printf("[discovery] mDNS discovery: not yet implemented (would query _ipp._tcp,_printer._tcp)")
-		log.Printf("[discovery] SNMP discovery: not yet implemented (would query 1.3.6.1.2.1.43)")
-		log.Printf("[discovery] WSD discovery: not yet implemented (would use WS-Discovery)")
+		// Other discovery sources are handled by their dedicated discoverers.
 		return nil, nil
 	}
 
@@ -110,17 +107,21 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 					return
 				default:
 				}
-				host, portStr, _ := net.SplitHostPort(target)
+				host, portStr, err := net.SplitHostPort(target)
+				if err != nil {
+					continue
+				}
 				// Short dial
 				d := net.Dialer{Timeout: perHostTimeout}
 				connCtx, cancel := context.WithTimeout(ctx, perHostTimeout)
 				conn, err := d.DialContext(connCtx, "tcp", target)
 				cancel()
 				if err != nil {
-					return
+					// One failed target must not terminate the whole worker.
+					continue
 				}
 				conn.Close()
-				// Found printer
+				// Found an open RAW printer port.
 				port := 9100
 				if portStr != "" {
 					fmt.Sscanf(portStr, "%d", &port)
@@ -128,7 +129,6 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 				id := StableIDFromNetwork(host, port)
 				// Try to infer name via reverse lookup or just host
 				name := fmt.Sprintf("Network Printer %s", host)
-				// Attempt rDNS
 				if names, err := net.LookupAddr(host); err == nil && len(names) > 0 {
 					n := strings.TrimSuffix(names[0], ".")
 					if n != "" {
@@ -195,10 +195,6 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 		}
 	}
 
-	// Stubs for other protocols (additive, not replacing TCP)
-	log.Printf("[discovery] mDNS discovery: not yet implemented (would query _ipp._tcp,_printer._tcp) — skipping")
-	log.Printf("[discovery] SNMP discovery: not yet implemented — skipping")
-	log.Printf("[discovery] WSD discovery: not yet implemented — skipping")
 	log.Printf("[discovery] network TCP discovery completed: %d printers found", len(out))
 	return out, nil
 }
