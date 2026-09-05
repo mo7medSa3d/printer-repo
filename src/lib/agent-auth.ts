@@ -28,7 +28,13 @@ export function generatePairingCode(): string {
 }
 
 export function isValidPairingCode(value: unknown): value is string {
-  return typeof value === "string" && PAIRING_CODE_PATTERN.test(value.trim().toUpperCase());
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toUpperCase();
+  if (normalized.length !== PAIRING_CODE_LENGTH) return false;
+  for (const char of normalized) {
+    if (!PAIRING_CODE_ALPHABET.includes(char)) return false;
+  }
+  return true;
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
