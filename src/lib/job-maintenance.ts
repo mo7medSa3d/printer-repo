@@ -3,7 +3,11 @@ import { sql } from "drizzle-orm";
 import { incrementMetric } from "./metrics";
 
 export const STALE_CLAIM_SECONDS = 90;
-export const STALE_PRINTING_SECONDS = 10 * 60;
+export const STALE_PRINTING_SECONDS = (() => {
+  const configured = Number(process.env.STALE_PRINTING_SECONDS ?? "1800");
+  if (!Number.isFinite(configured)) return 1800;
+  return Math.min(24 * 60 * 60, Math.max(10 * 60, Math.floor(configured)));
+})();
 export const MAX_RETRIES = 5;
 
 export async function sweepPrintJobs(scope: { agentId?: string; branchId?: string } = {}): Promise<{ expired: number; requeuedClaims: number; stalePrinting: number; exhaustedClaims: number }> {
@@ -20,11 +24,6 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
     RETURNING id
   `);
 
-  // A stale claim means delivery ownership was acquired but the agent never
-  // advanced the job to PRINTING. Requeue it for the same agent so a temporarily
-  // lost WebSocket/poll cycle can recover without requiring the agent to remain
-  // alive at the exact moment the lease expires. Each recovery increments
-  // retries; once the retry budget is exhausted the job is failed explicitly.
   const requeuedClaims = await db.execute(sql`
     UPDATE print_jobs
     SET status = 'queued',
@@ -45,10 +44,11 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
   const stalePrinting = await db.execute(sql`
     UPDATE print_jobs
     SET status = 'failed',
-        error = 'AGENT_EXECUTION_TIMEOUT: agent execution lease expired (agent likely crashed during physical printing)',
+        error = 'AGENT_EXECUTION_TIMEOUT: printing execution recovery lease expired',
         updated_at = now()
     WHERE status = 'printing'
       AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
+      AND expires_at > now()
       ${agentFilter}
       ${branchFilter}
     RETURNING id
