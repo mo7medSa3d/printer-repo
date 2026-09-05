@@ -22,6 +22,7 @@ import { isIP } from "node:net";
 
 export const AUTH_RATE_WINDOW_MS = 15 * 60 * 1000;
 export const PAIRING_RATE_WINDOW_MS = 15 * 60 * 1000;
+export const AUTH_RATE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 let warnedUntrustedProxy = false;
 
@@ -205,7 +206,7 @@ export async function recordPairingFailure(ip: string): Promise<RateLimitDecisio
 }
 
 export async function cleanupAuthRateLimits(now = new Date()): Promise<number> {
-  const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const cutoff = new Date(now.getTime() - AUTH_RATE_RETENTION_MS);
   const result = await db.execute(sql`
     DELETE FROM auth_rate_limits
     WHERE updated_at < ${cutoff}
