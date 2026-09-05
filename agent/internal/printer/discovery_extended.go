@@ -527,7 +527,10 @@ func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
 }
 
 func buildWSDProbe() []byte {
-	uuid := fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano())
+	// WS-Addressing MessageID uses an urn:uuid URI. Build a valid UUID-shaped
+	// value without requiring a new dependency solely for discovery probes.
+	n := uint64(time.Now().UnixNano())
+	uuid := fmt.Sprintf("urn:uuid:%08x-%04x-4%03x-8%03x-%012x", uint32(n), uint16(n>>32), uint16(n>>16)&0x0fff, uint16(n>>4)&0x0fff, n&0xffffffffffff)
 	msg := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:wprt="http://schemas.microsoft.com/windows/2006/08/wdp/print">
 <soap:Header><wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action><wsa:MessageID>%s</wsa:MessageID><wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To></soap:Header>
