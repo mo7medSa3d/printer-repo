@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
+import type { PoolClient } from "pg";
 import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
 import {
@@ -139,7 +140,7 @@ export async function handleAgentMessage(agentId: string, raw: string): Promise<
 
 async function startJobNotificationListener(): Promise<() => Promise<void>> {
   let stopped = false;
-  let activeClient: Awaited<ReturnType<typeof pool.connect>> | null = null;
+  let activeClient: PoolClient | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
 
@@ -168,14 +169,14 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
     console.warn(`[ws] PostgreSQL notification listener reconnecting in ${delay}ms`);
   };
 
-  const disconnect = (client: typeof activeClient) => {
-    if (!client || activeClient !== client) return;
+  const disconnect = (client: PoolClient) => {
+    if (activeClient !== client) return;
     activeClient = null;
     try { client.release(true); } catch {}
     if (!stopped) scheduleReconnect();
   };
 
-  const connect = async () => {
+  const connect = async (): Promise<void> => {
     if (stopped || activeClient) return;
     try {
       const client = await pool.connect();
