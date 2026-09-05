@@ -38,7 +38,7 @@ describe("production hardening contracts", () => {
   it("does not silently restore the old auto-provision discovery path", () => {
     const provision = read("src/app/api/agents/[id]/discovered-printers/[deviceId]/provision/route.ts");
     const verify = read("src/app/api/agents/[id]/discovered-printers/[deviceId]/verify/route.ts");
-    expect(provision).toContain('"DEVICE_NOT_APPROVED"');
+    expect(provision).toContain('code: "DEVICE_NOT_APPROVED"');
     expect(provision).toContain('device.verification !== "verified"');
     expect(verify).toContain('verification: "verified"');
     expect(verify).toContain('candidateStatus: "verified"');
