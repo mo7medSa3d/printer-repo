@@ -97,7 +97,29 @@ class PrintGatewayPrinter(models.Model):
         resp = requests.post(f"{base}/api/printers/{self.gateway_printer_id}/test-print", headers=headers, timeout=15)
         if resp.status_code not in (200, 201):
             raise ValidationError(_('Test print failed %s: %s') % (resp.status_code, resp.text[:500]))
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise ValidationError(_('Gateway returned malformed JSON for test print')) from exc
+
         job_id = data.get('jobId') or data.get('id')
-        self.env['print_gateway.print_job'].create({'branch_id': branch.id, 'gateway_job_id': job_id, 'printer_id': self.id, 'status': 'queued', 'document_type': 'test', 'payload': 'test print'})
+        if not job_id:
+            raise ValidationError(_('Gateway accepted the test print but returned no job id'))
+
+        remote_status = data.get('status') or 'queued'
+        if remote_status == 'completed':
+            remote_status = 'success'
+        if remote_status not in ('queued', 'claimed', 'printing', 'success', 'failed', 'expired'):
+            remote_status = 'queued'
+
+        self.env['print_gateway.print_job'].create({
+            'branch_id': branch.id,
+            'gateway_job_id': job_id,
+            'printer_id': self.id,
+            'agent_id': self.agent_id.id,
+            'status': remote_status,
+            'document_type': 'test',
+            'payload': 'test print',
+            'requested_by': 'odoo-test',
+        })
         return {'type': 'ir.actions.client', 'tag': 'display_notification', 'params': {'title': _('Test Print Queued'), 'message': _('Job %s created') % job_id, 'type': 'success'}}
