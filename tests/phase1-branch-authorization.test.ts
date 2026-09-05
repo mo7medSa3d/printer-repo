@@ -21,8 +21,8 @@ describe("Phase 1 branch authorization", () => {
 });
 
 // C1 regression: the legacy API must enforce the Odoo key's branch scope.
-// The route now delegates actual job creation to the shared service, so the
-// mock must include every DB relation that the shared service reads.
+// The route delegates actual job creation to the shared service, so the mock
+// includes the DB relations read by authentication and the shared job service.
 const findFirstMocks = {
   apiKeys: vi.fn(),
   printers: vi.fn(),
@@ -108,7 +108,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     expect(res.status).toBe(403);
   });
 
-  it("still allows a branch-A-scoped key against a branch-A printer", async () => {
+  it("allows a branch-scoped key only when the printer owner is in that same branch", async () => {
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_a"));
@@ -119,7 +119,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     expect(res.status).toBe(201);
   });
 
-  it("still allows a global (null-branch) key against any branch's printer", async () => {
+  it("rejects global (null-branch) keys for legacy direct-printer submission", async () => {
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey(null));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
@@ -127,6 +127,6 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     const { POST } = await import("@/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(403);
   });
 });
