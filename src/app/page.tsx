@@ -1,8 +1,17 @@
-import Link from "next/link";
+import type { ReactNode } from "react";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { ArrowRight, Printer, ShieldCheck, Zap, Globe, Cpu } from "lucide-react";
 import { Button } from "../components/ui";
+import { getManagerCookieName, validateManagerClaims, verifyManagerToken } from "../lib/manager-auth";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
+  const claims = await validateManagerClaims(token ? verifyManagerToken(token) : null);
+  if (!claims) redirect("/login");
+
   return (
     <div className="flex flex-col items-center">
       <section className="w-full border-b border-edge bg-surface">
@@ -75,7 +84,7 @@ export default function Home() {
   );
 }
 
-function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+function FeatureCard({ icon, title, description }: { icon: ReactNode; title: string; description: string }) {
   return (
     <div className="card card-interactive p-6">
       <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
