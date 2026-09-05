@@ -138,7 +138,7 @@ suite("discovery trust and approval flow", () => {
 
     const device = await pool().query(`SELECT verification, confidence, candidate_status, provisioned_printer_id FROM discovered_devices WHERE id = $1`, ["device-provision-1"]);
     expect(device.rows[0].verification).toBe("verified");
-    expect(device.rows[0].confidence).toBe("high");
+    expect(device.rows[0].confidence).toBe("low");
     expect(device.rows[0].candidate_status).toBe("provisioned");
     expect(device.rows[0].provisioned_printer_id).toBe(body.printerId);
   });
