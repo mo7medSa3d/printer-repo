@@ -1,8 +1,11 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
-import path from "path";
+
+const rootDir = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  resolve: { alias: { "@": resolve(rootDir, "src") } },
   test: {
     include: ["tests/**/*.test.ts"],
     testTimeout: 30000,

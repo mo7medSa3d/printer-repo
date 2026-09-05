@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'summary': 'Multi-branch print gateway integration: branches, destinations, document types, printer bindings',
     'description': """
 Odoo Print Gateway — End-to-End Print Routing
@@ -24,7 +24,7 @@ Features:
   - Odoo 19-compatible list/form/kanban view definitions
     """,
     'author': 'Odoo Print Gateway',
-    'website': 'https://example.com',
+    'website': 'https://github.com/mo7medSa3d/printer-repo',
     'category': 'Tools',
     'depends': ['base', 'sale', 'account', 'stock', 'purchase', 'point_of_sale'],
     'data': [

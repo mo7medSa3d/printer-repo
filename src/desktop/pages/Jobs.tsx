@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   CheckCircle2,
   Eye,
@@ -6,6 +6,7 @@ import {
   Printer as PrinterIcon,
   RefreshCw,
   Search,
+  Trash2,
   X,
   XCircle,
 } from "lucide-react";
@@ -16,11 +17,15 @@ import {
   ErrorState,
   Input,
   LoadingState,
+  Modal,
   Mono,
   StatusBadge,
   Tabs,
 } from "@/components/ui";
 import type { DesktopState } from "../types";
+import {
+  cleanupLocalJobs,
+} from "../lib/ipc";
 import {
   jobDocType,
   jobId,
@@ -33,12 +38,39 @@ import {
 const TABS = ["all", "pending", "printing", "completed", "failed"] as const;
 
 export function JobsPage({ s }: { s: DesktopState }) {
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+
   const tabCounts = {
     all: s.jobCounts.all,
     pending: s.jobCounts.pending,
     printing: s.jobCounts.printing,
     completed: s.jobCounts.completed,
     failed: s.jobCounts.failed,
+  };
+
+  const handleCleanup = async () => {
+    setCleanupBusy(true);
+    try {
+      const deleted = await cleanupLocalJobs();
+      setCleanupOpen(false);
+      s.setMsg({
+        text:
+          deleted === 0
+            ? "No completed or failed local print jobs to remove."
+            : `Removed ${deleted} terminal local print job${deleted === 1 ? "" : "s"}.`,
+        type: "success",
+      });
+      // The table is sourced from the Gateway. Local cleanup intentionally
+      // does not rewrite Gateway history, so no remote refresh is triggered.
+    } catch (error) {
+      s.setMsg({
+        text: error instanceof Error ? error.message : "Failed to clean local print jobs",
+        type: "error",
+      });
+    } finally {
+      setCleanupBusy(false);
+    }
   };
 
   return (
@@ -61,14 +93,24 @@ export function JobsPage({ s }: { s: DesktopState }) {
               aria-label="Search jobs"
             />
           </div>
-          <Button
-            variant="secondary"
-            onClick={s.refreshJobs}
-            loading={s.jobsLoading}
-            icon={<RefreshCw className="h-[18px] w-[18px]" />}
-          >
-            Refresh
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              onClick={s.refreshJobs}
+              loading={s.jobsLoading}
+              icon={<RefreshCw className="h-[18px] w-[18px]" />}
+            >
+              Refresh
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setCleanupOpen(true)}
+              disabled={cleanupBusy}
+              icon={<Trash2 className="h-[18px] w-[18px]" />}
+            >
+              Clean local jobs
+            </Button>
+          </div>
         </div>
         {s.jobPrinterFilter && (
           <div className="flex items-center gap-3 border-t border-edge bg-surface-2/60 px-6 py-4">
@@ -151,36 +193,18 @@ export function JobsPage({ s }: { s: DesktopState }) {
               </thead>
               <tbody>
                 {s.jobsFiltered.map((j) => (
-                  <tr
-                    key={jobId(j)}
-                    className="border-b border-edge last:border-0 row-hover"
-                  >
+                  <tr key={jobId(j)} className="border-b border-edge last:border-0 row-hover">
                     <td className="px-6 py-4">
-                      <div className="text-[14px] font-semibold text-ink">
-                        {jobDocType(j)}
-                      </div>
+                      <div className="text-[14px] font-semibold text-ink">{jobDocType(j)}</div>
                       {j.branchId ? (
-                        <div className="text-[12px] text-ink-3">
-                          Branch {String(j.branchId)}
-                        </div>
+                        <div className="text-[12px] text-ink-3">Branch {String(j.branchId)}</div>
                       ) : null}
                     </td>
-                    <td className="px-4 py-4">
-                      <Mono>{jobId(j)}</Mono>
-                    </td>
+                    <td className="px-4 py-4"><Mono>{jobId(j)}</Mono></td>
                     <td className="whitespace-nowrap px-4 py-4 text-[14px] text-ink-2">
-                      {String(
-                        s.printers.find((p) => p.id === jobPrinterId(j))?.name ||
-                          jobPrinterId(j) ||
-                          "—"
-                      )}
+                      {String(s.printers.find((p) => p.id === jobPrinterId(j))?.name || jobPrinterId(j) || "—")}
                     </td>
-                    <td className="px-4 py-4">
-                      <StatusBadge
-                        tone={jobTone(jobStatus(j))}
-                        label={labelJob(jobStatus(j))}
-                      />
-                    </td>
+                    <td className="px-4 py-4"><StatusBadge tone={jobTone(jobStatus(j))} label={labelJob(jobStatus(j))} /></td>
                     <td className="whitespace-nowrap px-4 py-4 text-[13px] text-ink-3">
                       {j.createdAt ? new Date(String(j.createdAt)).toLocaleString() : "—"}
                     </td>
@@ -188,12 +212,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
                       {j.updatedAt ? new Date(String(j.updatedAt)).toLocaleString() : "—"}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => s.setSelectedJob(j)}
-                        icon={<Eye className="h-4 w-4" />}
-                      >
+                      <Button size="sm" variant="secondary" onClick={() => s.setSelectedJob(j)} icon={<Eye className="h-4 w-4" />}>
                         Details
                       </Button>
                     </td>
@@ -204,6 +223,31 @@ export function JobsPage({ s }: { s: DesktopState }) {
           </div>
         )}
       </Card>
+
+      <Modal
+        open={cleanupOpen}
+        onClose={() => {
+          if (!cleanupBusy) setCleanupOpen(false);
+        }}
+        title="Clean local print jobs?"
+        description="This clears terminal records from this PC's local Agent queue."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCleanupOpen(false)} disabled={cleanupBusy}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={handleCleanup} loading={cleanupBusy} icon={<Trash2 className="h-4 w-4" />}>
+              Clean local jobs
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm text-ink-2">
+          <p>Only completed and failed local records are removed.</p>
+          <p>Queued and printing jobs are never touched.</p>
+          <p>Gateway PostgreSQL history is not changed by this action.</p>
+        </div>
+      </Modal>
     </div>
   );
 }

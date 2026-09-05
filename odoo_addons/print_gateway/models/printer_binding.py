@@ -2,6 +2,7 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError
 
+
 class PrintGatewayPrinterBinding(models.Model):
     _name = 'print_gateway.printer_binding'
     _description = 'Printer Binding (Destination + Document Type -> Printer)'
@@ -18,9 +19,10 @@ class PrintGatewayPrinterBinding(models.Model):
     config_override = fields.Text(help='JSON config overrides')
     notes = fields.Text()
 
-    _sql_constraints = [
-        ('priority_branch_dest_doctype_unique', 'unique(branch_id, destination_id, document_type, priority)', 'Priority must be unique per branch/destination/document_type'),
-    ]
+    _priority_branch_dest_doctype_unique = models.Constraint(
+        'UNIQUE(branch_id, destination_id, document_type, priority)',
+        'Priority must be unique per branch/destination/document_type',
+    )
 
     @api.constrains('branch_id', 'destination_id', 'printer_id')
     def _check_branch_consistency(self):
@@ -34,9 +36,7 @@ class PrintGatewayPrinterBinding(models.Model):
 
     @api.model
     def create(self, vals):
-        rec = super().create(vals)
-        # Ensure gateway sync can be triggered; idempotent sync via action
-        return rec
+        return super().create(vals)
 
     def name_get(self):
         result = []

@@ -10,9 +10,7 @@
                         <field name="name" readonly="1"/>
                         <field name="active" widget="boolean_toggle"/>
                         <field name="gateway_enabled" widget="boolean_toggle"/>
-                        <field name="fallback_to_normal" widget="boolean_toggle" help="When this is on, a routing failure falls back to the standard Odoo print/download flow."/>
                         <field name="priority" help="Lower number = higher priority. When multiple mappings match a report, the lowest priority wins."/>
-                        <field name="payload_type"/>
                     </group>
                     <group string="Report Identification (priority: report &gt; xml_id &gt; report_name &gt; model)">
                         <field name="report_id" options="{'no_create': True}" placeholder="Select exact report action"/>
@@ -26,10 +24,10 @@
                         <field name="branch_id" options="{'no_create': True}"/>
                         <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
                     </group>
-                    <div class="alert alert-warning" role="alert">
-                        <b>Priority:</b> lower number wins. <b>Fallback:</b> if the mapped routing cannot be resolved,
-                        the job falls back to the standard report action when <b>Fallback to Normal</b> is enabled.
-                        Leave Branch/Destination empty to auto-determine from the record/company.
+                    <div class="alert alert-info" role="alert">
+                        <b>Queue semantics:</b> Gateway-enabled Odoo reports are persisted as durable print operations first.
+                        PDF rendering and Gateway submission happen in the background. A transport/render failure stays queued for retry;
+                        it does not silently fall back to a different print path after the user request has completed.
                     </div>
                 </sheet>
             </form>
@@ -44,6 +42,7 @@
                 <field name="name"/>
                 <field name="report_id"/>
                 <field name="report_xml_id"/>
+                <field name="report_name"/>
                 <field name="model_name"/>
                 <field name="document_type_id"/>
                 <field name="document_type_name"/>
@@ -60,7 +59,7 @@
         <field name="name">print_gateway.report_mapping.search</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <search string="Report Mappings">
+            <search>
                 <field name="name"/>
                 <field name="report_xml_id"/>
                 <field name="model_name"/>
@@ -74,7 +73,7 @@
                 <filter string="Invoice" name="invoice" domain="[('model_name','=','account.move')]"/>
                 <filter string="Delivery" name="delivery" domain="[('model_name','=','stock.picking')]"/>
                 <separator/>
-                <group expand="0" string="Group By">
+                <group>
                     <filter string="Branch" name="branch" context="{'group_by': 'branch_id'}"/>
                     <filter string="Document Type" name="document_type" context="{'group_by': 'document_type_id'}"/>
                 </group>
@@ -91,9 +90,9 @@
                 Create your first report mapping!
             </p>
             <p>
-                Map Odoo reports to Print Gateway document types.
+                Map Odoo QWeb PDF reports to Print Gateway document types.
                 Priority: Report &gt; XML ID &gt; Report Name &gt; Model.
-                Example: sale.action_report_saleorder → order, account.account_invoices → invoice.
+                Report mappings intentionally produce PDF payloads only; RAW/ESC-POS jobs use the direct print-job APIs instead.
             </p>
         </field>
     </record>

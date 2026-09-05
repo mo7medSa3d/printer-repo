@@ -1,8 +1,8 @@
 "use server";
 
 import { db } from "@/db";
-import { agents, branches, printers, printJobs } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "@/db/schema";
+import { eq, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
@@ -44,6 +44,40 @@ export async function createAgent(name: string, branchId: string) {
 
   revalidatePath("/dashboard");
   return { id, pairingCode };
+}
+
+export async function deleteAgent(id: string) {
+  await requireManager();
+  if (typeof id !== "string" || !id.trim()) throw new Error("agent id is required");
+
+  await db.transaction(async (tx) => {
+    const agent = await tx.query.agents.findFirst({ where: eq(agents.id, id.trim()) });
+    if (!agent) throw new Error("Agent not found");
+    if (agent.status === "online") {
+      throw new Error("Online agents cannot be deleted. Disable or retire the agent first.");
+    }
+    if (agent.lifecycle === "retired") {
+      throw new Error("Retired agents are kept for audit history and cannot be deleted.");
+    }
+
+    const [{ c: printerCount }] = await tx.select({ c: count() }).from(printers).where(eq(printers.agentId, agent.id));
+    if (Number(printerCount ?? 0) > 0) {
+      throw new Error("This agent still has printers. Retire the agent instead to preserve printer history.");
+    }
+
+    const [{ c: jobCount }] = await tx.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, agent.id));
+    if (Number(jobCount ?? 0) > 0) {
+      throw new Error("This agent has print history and cannot be deleted. Retire the agent to preserve audit history.");
+    }
+
+    // Discovery sessions/devices are operational data, not print history.
+    // Remove them before deleting the agent to satisfy the foreign keys.
+    await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, agent.id));
+    await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, agent.id));
+    await tx.delete(agents).where(eq(agents.id, agent.id));
+  });
+
+  revalidatePath("/dashboard");
 }
 
 export async function createPrintJob(printerId: string, payload: unknown) {

@@ -1,17 +1,8 @@
-/* ============================================================
-   PRINT GATEWAY — Odoo brand tokens
-   ------------------------------------------------------------
-   Mirrors the web/desktop design system
-   (src/app/globals.css, DESIGN_SYSTEM.md) so the Odoo add-on is
-   recognisably the same product.
-
-   Everything is exposed as `--pg-*` custom properties: Odoo's own
-   Bootstrap variables stay untouched, so native widgets keep
-   working exactly as before and nothing leaks into other apps.
-   ============================================================ */
+/* PRINT GATEWAY — Odoo light theme tokens
+   Mirrors the Web gateway and Desktop Manager. Odoo Bootstrap variables
+   remain untouched and every value is namespaced under --pg-*. */
 
 :root {
-    /* Brand ramp — sophisticated modern blue */
     --pg-brand-50: #eff6ff;
     --pg-brand-100: #dbeafe;
     --pg-brand-200: #bfdbfe;
@@ -23,7 +14,6 @@
     --pg-brand-800: #1e40af;
     --pg-brand-900: #1e3a8a;
 
-    /* Brand semantics */
     --pg-brand: var(--pg-brand-600);
     --pg-brand-hover: var(--pg-brand-700);
     --pg-brand-active: var(--pg-brand-800);
@@ -33,23 +23,21 @@
     --pg-brand-subtle-text: var(--pg-brand-700);
     --pg-brand-ring: rgba(37, 99, 235, 0.26);
 
-    /* Surfaces & borders */
-    --pg-bg: #f8fafc;
+    --pg-bg: #ffffff;
     --pg-surface: #ffffff;
-    --pg-surface-2: #f1f5f9;
-    --pg-surface-3: #e2e8f0;
-    --pg-surface-accent: #eff6ff;
-    --pg-border: #e2e8f0;
-    --pg-border-strong: #cbd5e1;
-    --pg-border-accent: #dbeafe;
+    --pg-surface-2: #f5f8fc;
+    --pg-surface-3: #e8eef7;
+    --pg-surface-accent: #eef5ff;
+    --pg-surface-accent-2: #dce9ff;
+    --pg-border: #dfe7f2;
+    --pg-border-strong: #c8d4e6;
+    --pg-border-accent: #c9ddff;
 
-    /* Text hierarchy */
     --pg-text: #0f172a;
     --pg-text-2: #475569;
     --pg-text-3: #64748b;
     --pg-text-4: #94a3b8;
 
-    /* Status — `-solid` fills, bare token = accessible text colour */
     --pg-ok: #15803d;
     --pg-ok-solid: #16a34a;
     --pg-ok-bg: #f0fdf4;
@@ -67,19 +55,16 @@
     --pg-info-bg: #eff6ff;
     --pg-info-border: #dbeafe;
 
-    /* Radii */
     --pg-r-sm: 6px;
     --pg-r-md: 8px;
     --pg-r-lg: 10px;
     --pg-r-xl: 12px;
     --pg-r-pill: 9999px;
 
-    /* Elevation — cool and low */
     --pg-shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
     --pg-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
     --pg-shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
 
-    /* Spacing (4px base) */
     --pg-space-1: 4px;
     --pg-space-2: 8px;
     --pg-space-3: 12px;
@@ -87,62 +72,37 @@
     --pg-space-5: 20px;
     --pg-space-6: 24px;
 
-    /* Typography */
     --pg-fs-caption: 11px;
     --pg-fs-small: 12px;
     --pg-fs-body: 13px;
     --pg-tracking-label: 0.06em;
-
-    /* Motion */
     --pg-dur: 150ms;
     --pg-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Odoo's opt-in backend dark mode — same identity, deep cool slate.
-   Light mode stays the default presentation. */
+/* Keep the add-on light even when Odoo is running with its global dark theme. */
 .o_dark_mode,
 body.o_dark_mode {
-    --pg-brand: #3b82f6;
-    --pg-brand-hover: #5b9bff;
-    --pg-brand-active: #85b6ff;
-    --pg-brand-contrast: #06122a;
-    --pg-brand-subtle: #132444;
-    --pg-brand-subtle-hover: #1a3161;
-    --pg-brand-subtle-text: #b3d1ff;
-    --pg-brand-ring: rgba(91, 155, 255, 0.4);
-
-    --pg-bg: #0a1120;
-    --pg-surface: #0f1a2e;
-    --pg-surface-2: #16223a;
-    --pg-surface-3: #1d2b47;
-    --pg-surface-accent: #132444;
-    --pg-border: #1e2b45;
-    --pg-border-strong: #2f4066;
-    --pg-border-accent: #24406e;
-
-    --pg-text: #e8eef8;
-    --pg-text-2: #a9b8ce;
-    --pg-text-3: #8496b1;
-    --pg-text-4: #64758f;
-
-    --pg-ok: #4ade80;
-    --pg-ok-solid: #22c55e;
-    --pg-ok-bg: #0d2419;
-    --pg-ok-border: #1c4a31;
-    --pg-warn: #fbbf24;
-    --pg-warn-solid: #f59e0b;
-    --pg-warn-bg: #2a1e0a;
-    --pg-warn-border: #573c12;
-    --pg-bad: #f87171;
-    --pg-bad-solid: #ef4444;
-    --pg-bad-bg: #2a1214;
-    --pg-bad-border: #5b2226;
-    --pg-info: #7dabff;
-    --pg-info-solid: #3b82f6;
-    --pg-info-bg: #132444;
-    --pg-info-border: #24406e;
-
-    --pg-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --pg-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
-    --pg-shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.35);
+    color-scheme: light;
+    --pg-bg: #ffffff;
+    --pg-surface: #ffffff;
+    --pg-surface-2: #f5f8fc;
+    --pg-surface-3: #e8eef7;
+    --pg-surface-accent: #eef5ff;
+    --pg-surface-accent-2: #dce9ff;
+    --pg-border: #dfe7f2;
+    --pg-border-strong: #c8d4e6;
+    --pg-border-accent: #c9ddff;
+    --pg-text: #0f172a;
+    --pg-text-2: #475569;
+    --pg-text-3: #64748b;
+    --pg-text-4: #94a3b8;
+    --pg-brand: #2563eb;
+    --pg-brand-hover: #1d4ed8;
+    --pg-brand-active: #1e40af;
+    --pg-brand-contrast: #ffffff;
+    --pg-brand-subtle: #eff6ff;
+    --pg-brand-subtle-hover: #dbeafe;
+    --pg-brand-subtle-text: #1d4ed8;
+    --pg-brand-ring: rgba(37, 99, 235, 0.26);
 }

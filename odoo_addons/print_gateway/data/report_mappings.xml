@@ -1,18 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo noupdate="1">
-    <!-- Default Report Mappings for common Odoo documents -->
-    <!-- These are created as inactive examples? Active by default, admin can disable -->
-    <!-- XML IDs verified for Odoo 17/18: action_ prefix for report actions -->
-    
+    <!-- Safe defaults for common Odoo QWeb PDF reports.
+         Mappings exist as ready-made templates, but Gateway routing stays OFF
+         until an administrator explicitly configures the branch/destination. -->
+
     <record id="report_mapping_sale_order" model="print_gateway.report_mapping">
         <field name="report_xml_id">sale.action_report_saleorder</field>
         <field name="report_name">sale.report_saleorder</field>
         <field name="model_name">sale.order</field>
         <field name="document_type_name">order</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">10</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">True</field>
     </record>
 
@@ -21,10 +19,8 @@
         <field name="report_name">sale.report_saleorder</field>
         <field name="model_name">sale.order</field>
         <field name="document_type_name">quotation</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">20</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">False</field>
     </record>
 
@@ -33,10 +29,8 @@
         <field name="report_name">account.report_invoice_with_payments</field>
         <field name="model_name">account.move</field>
         <field name="document_type_name">invoice</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">10</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">True</field>
     </record>
 
@@ -45,10 +39,8 @@
         <field name="report_name">stock.report_deliveryslip</field>
         <field name="model_name">stock.picking</field>
         <field name="document_type_name">delivery</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">10</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">True</field>
     </record>
 
@@ -57,10 +49,8 @@
         <field name="report_name">stock.report_picking</field>
         <field name="model_name">stock.picking</field>
         <field name="document_type_name">picking</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">20</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">True</field>
     </record>
 
@@ -69,10 +59,8 @@
         <field name="report_name">purchase.report_purchaseorder</field>
         <field name="model_name">purchase.order</field>
         <field name="document_type_name">purchase_order</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">10</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">True</field>
     </record>
 
@@ -81,22 +69,10 @@
         <field name="report_name">point_of_sale.report_receipt</field>
         <field name="model_name">pos.order</field>
         <field name="document_type_name">receipt</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">pdf</field>
+        <field name="gateway_enabled">False</field>
         <field name="priority">10</field>
-        <field name="fallback_to_normal">True</field>
         <field name="active">True</field>
     </record>
 
-    <record id="report_mapping_pos_order" model="print_gateway.report_mapping">
-        <field name="report_xml_id">point_of_sale.action_report_receipt</field>
-        <field name="report_name">point_of_sale.report_receipt</field>
-        <field name="model_name">pos.order</field>
-        <field name="document_type_name">receipt</field>
-        <field name="gateway_enabled">True</field>
-        <field name="payload_type">escpos</field>
-        <field name="priority">20</field>
-        <field name="fallback_to_normal">True</field>
-        <field name="active">False</field>
-    </record>
+    <!-- RAW/ESC-POS is never declared as a QWeb report mapping. -->
 </odoo>

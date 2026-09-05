@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api
 
+
 class PrintGatewayDestination(models.Model):
     _name = 'print_gateway.destination'
     _description = 'Print Gateway Destination'
@@ -23,9 +24,10 @@ class PrintGatewayDestination(models.Model):
 
     binding_ids = fields.One2many('print_gateway.printer_binding', 'destination_id', string='Printer Bindings')
 
-    _sql_constraints = [
-        ('name_branch_unique', 'unique(name, branch_id)', 'Destination name must be unique per branch'),
-    ]
+    _name_branch_unique = models.Constraint(
+        'UNIQUE(name, branch_id)',
+        'Destination name must be unique per branch',
+    )
 
     def get_printer_for_doctype(self, document_type_name):
         """Returns printer record for document type, respecting priority fallback."""
@@ -33,6 +35,5 @@ class PrintGatewayDestination(models.Model):
         bindings = self.binding_ids.filtered(lambda b: b.enabled and (not b.document_type or b.document_type == document_type_name or (b.document_type_id and b.document_type_id.name == document_type_name))).sorted('priority')
         if bindings:
             return bindings[0].printer_id
-        # Fallback: any enabled binding sorted by priority
         fallback = self.binding_ids.filtered(lambda b: b.enabled).sorted('priority')
         return fallback[0].printer_id if fallback else False

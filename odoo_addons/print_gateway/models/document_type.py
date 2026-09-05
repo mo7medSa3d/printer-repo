@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields
 
+
 class PrintGatewayDocumentType(models.Model):
     _name = 'print_gateway.document_type'
     _description = 'Print Gateway Document Type'
@@ -17,6 +18,7 @@ class PrintGatewayDocumentType(models.Model):
     enabled = fields.Boolean(default=True)
     gateway_document_type_id = fields.Char(string='Gateway Document Type ID', copy=False)
 
-    _sql_constraints = [
-        ('name_branch_unique', 'unique(name, branch_id)', 'Document type must be unique per branch'),
-    ]
+    _name_branch_unique = models.Constraint(
+        'UNIQUE(name, branch_id)',
+        'Document type must be unique per branch',
+    )

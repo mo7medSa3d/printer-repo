@@ -6,6 +6,7 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+
 class PrintGatewayPrinter(models.Model):
     _name = 'print_gateway.printer'
     _description = 'Print Gateway Printer'
@@ -15,54 +16,25 @@ class PrintGatewayPrinter(models.Model):
     name = fields.Char(required=True)
     agent_id = fields.Many2one('print_gateway.agent', required=True, ondelete='restrict')
     branch_id = fields.Many2one('print_gateway.branch', related='agent_id.branch_id', store=True, readonly=True)
-    printer_type = fields.Selection([
-        ('physical', 'Physical'),
-        ('virtual', 'Virtual'),
-        ('redirected', 'Redirected'),
-    ], default='physical', string='Printer Type', readonly=True)
-    device_class = fields.Selection([
-        ('thermal', 'Thermal'),
-        ('laser', 'Laser'),
-        ('inkjet', 'Inkjet'),
-        ('label', 'Label'),
-        ('other', 'Other'),
-        ('unknown', 'Unknown'),
-    ], default='unknown', string='Device Class', readonly=True)
-    connection_type = fields.Selection([
-        ('network', 'Network'),
-        ('usb', 'USB'),
-        ('spooler', 'Windows Spooler'),
-        ('ipp', 'IPP'),
-        ('ipps', 'IPPS'),
-    ], default='network', string='Connection Type')
-    protocol = fields.Selection([
-        ('raw', 'Raw Binary'),
-        ('escpos', 'ESC/POS'),
-        ('ipp', 'IPP Protocol'),
-        ('ipps', 'IPPS Protocol'),
-        ('spooler', 'Windows Spooler'),
-    ], default='raw', string='Protocol')
-    status = fields.Selection([
-        ('online', 'Online'),
-        ('offline', 'Offline'),
-        ('busy', 'Busy'),
-        ('error', 'Error'),
-        ('unknown', 'Unknown'),
-    ], default='unknown')
+    printer_type = fields.Selection([('physical', 'Physical'), ('virtual', 'Virtual'), ('redirected', 'Redirected')], default='physical', string='Printer Type', readonly=True)
+    device_class = fields.Selection([('thermal', 'Thermal'), ('laser', 'Laser'), ('inkjet', 'Inkjet'), ('label', 'Label'), ('other', 'Other'), ('unknown', 'Unknown')], default='unknown', string='Device Class', readonly=True)
+    connection_type = fields.Selection([('network', 'Network'), ('usb', 'USB'), ('spooler', 'Windows Spooler'), ('ipp', 'IPP'), ('ipps', 'IPPS')], default='network', string='Connection Type')
+    protocol = fields.Selection([('raw', 'Raw Binary'), ('escpos', 'ESC/POS'), ('ipp', 'IPP Protocol'), ('ipps', 'IPPS Protocol'), ('spooler', 'Windows Spooler')], default='raw', string='Protocol')
+    status = fields.Selection([('online', 'Online'), ('offline', 'Offline'), ('busy', 'Busy'), ('error', 'Error'), ('unknown', 'Unknown')], default='unknown')
     ip_address = fields.Char(help='Network IP if TCP')
     port = fields.Integer(help='Network port if TCP')
     usb_serial = fields.Char(help='USB serial')
     spooler_name = fields.Char(help='Windows spooler printer name')
     lifecycle = fields.Selection([('active', 'Active'), ('disabled', 'Disabled'), ('retired', 'Retired')], default='active', required=True, readonly=True)
-
     binding_ids = fields.One2many('print_gateway.printer_binding', 'printer_id', string='Bindings')
     binding_count = fields.Integer(compute='_compute_binding_count', string='Binding Count')
     destination_ids = fields.Many2many('print_gateway.destination', compute='_compute_destinations', string='Assigned Destinations')
     last_seen_at = fields.Datetime(readonly=True)
 
-    _sql_constraints = [
-        ('gateway_printer_id_unique', 'unique(gateway_printer_id)', 'Printer ID must be globally unique'),
-    ]
+    _gateway_printer_id_unique = models.Constraint(
+        'UNIQUE(gateway_printer_id)',
+        'Printer ID must be globally unique',
+    )
 
     @api.constrains('agent_id')
     def _check_agent_branch(self):
@@ -108,21 +80,11 @@ class PrintGatewayPrinter(models.Model):
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
-                # /api/printers/{id} is a manager-only endpoint; the Odoo
-                # addon authenticates with a branch-scoped Odoo API key, so it
-                # must use the documented /api/odoo/printers endpoint (which
-                # accepts the Odoo key) and filter by printer id locally.
-                resp = requests.get(
-                    f"{base}/api/odoo/printers",
-                    params={'branchId': str(branch.gateway_branch_id or branch.id)},
-                    headers=headers, timeout=10)
+                resp = requests.get(f"{base}/api/odoo/printers", params={'branchId': str(branch.gateway_branch_id or branch.id)}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     for pr in resp.json():
                         if pr.get('id') == printer.gateway_printer_id:
-                            printer.write({
-                                'status': pr.get('status') or 'unknown',
-                                'lifecycle': pr.get('lifecycle') or 'active',
-                            })
+                            printer.write({'status': pr.get('status') or 'unknown', 'lifecycle': pr.get('lifecycle') or 'active'})
                             break
             except Exception as e:
                 _logger.warning("Printer sync failed for %s: %s", printer.name, str(e))
@@ -137,17 +99,5 @@ class PrintGatewayPrinter(models.Model):
             raise ValidationError(_('Test print failed %s: %s') % (resp.status_code, resp.text[:500]))
         data = resp.json()
         job_id = data.get('jobId') or data.get('id')
-        # Create tracking job
-        self.env['print_gateway.print_job'].create({
-            'branch_id': branch.id,
-            'gateway_job_id': job_id,
-            'printer_id': self.id,
-            'status': 'queued',
-            'document_type': 'test',
-            'payload': 'test print',
-        })
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {'title': _('Test Print Queued'), 'message': _('Job %s created') % job_id, 'type': 'success'},
-        }
+        self.env['print_gateway.print_job'].create({'branch_id': branch.id, 'gateway_job_id': job_id, 'printer_id': self.id, 'status': 'queued', 'document_type': 'test', 'payload': 'test print'})
+        return {'type': 'ir.actions.client', 'tag': 'display_notification', 'params': {'title': _('Test Print Queued'), 'message': _('Job %s created') % job_id, 'type': 'success'}}

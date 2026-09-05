@@ -3,13 +3,12 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, MonitorPlay, LogIn, Menu, X, Home } from "lucide-react";
+import { LayoutDashboard, LogIn, Menu, X, Home } from "lucide-react";
 import { BrandMark } from "@/components/brand";
 
 const navLinks = [
   { href: "/", label: "Home", icon: Home },
   { href: "/dashboard", label: "Console", icon: LayoutDashboard },
-  { href: "/simulator", label: "Simulator", icon: MonitorPlay },
   { href: "/login", label: "Sign in", icon: LogIn },
 ];
 
@@ -18,9 +17,9 @@ export function HeaderNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-edge bg-surface/85 backdrop-blur-md">
-      <div className="container mx-auto flex h-16 items-center justify-between gap-4 px-4">
-        <div className="flex items-center gap-8">
+    <nav className="sticky top-0 z-50 border-b border-edge bg-surface/95 backdrop-blur-md">
+      <div className="mx-auto flex h-[68px] max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-8">
           <Link
             href="/"
             className="rounded-lg focusable transition-opacity hover:opacity-90"
@@ -29,8 +28,11 @@ export function HeaderNav() {
             <BrandMark title="Print Gateway" subtitle="Enterprise print operations" />
           </Link>
 
-          {/* Desktop Navigation */}
-          <div className="hidden items-center gap-1 text-sm font-medium md:flex" role="navigation" aria-label="Main Navigation">
+          <div
+            className="hidden items-center gap-1 text-sm font-semibold md:flex"
+            role="navigation"
+            aria-label="Main Navigation"
+          >
             {navLinks.map(({ href, label, icon: Icon }) => {
               const isActive = pathname === href || (href !== "/" && pathname.startsWith(href));
               return (
@@ -38,7 +40,7 @@ export function HeaderNav() {
                   key={href}
                   href={href}
                   aria-current={isActive ? "page" : undefined}
-                  className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-colors duration-150 focusable ${
+                  className={`flex items-center gap-2 rounded-lg px-3.5 py-2 transition-colors duration-150 focusable ${
                     isActive
                       ? "bg-brand-subtle font-semibold text-brand-subtle-text"
                       : "text-ink-2 hover:bg-surface-2 hover:text-ink"
@@ -53,11 +55,10 @@ export function HeaderNav() {
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="hidden sm:inline-flex items-center rounded-md border border-edge bg-surface-2 px-2.5 py-1 font-mono text-[11px] font-medium text-ink-3">
+          <span className="hidden rounded-md border border-edge bg-surface-2 px-2.5 py-1 font-mono text-[11px] font-medium text-ink-3 sm:inline-flex">
             v1.0.0
           </span>
 
-          {/* Mobile Navigation Toggle */}
           <button
             type="button"
             onClick={() => setMobileOpen(!mobileOpen)}
@@ -70,10 +71,9 @@ export function HeaderNav() {
         </div>
       </div>
 
-      {/* Mobile Drawer Menu */}
       {mobileOpen && (
         <div className="border-b border-edge bg-surface px-4 py-3 md:hidden pg-fade-in">
-          <div className="flex flex-col space-y-1">
+          <div className="mx-auto flex max-w-[1440px] flex-col space-y-1 sm:px-2">
             {navLinks.map(({ href, label, icon: Icon }) => {
               const isActive = pathname === href || (href !== "/" && pathname.startsWith(href));
               return (
@@ -94,7 +94,7 @@ export function HeaderNav() {
               );
             })}
           </div>
-          <div className="mt-3 border-t border-edge pt-3 flex items-center justify-between text-xs text-ink-3">
+          <div className="mx-auto mt-3 flex max-w-[1440px] items-center justify-between border-t border-edge px-3 pt-3 text-xs text-ink-3 sm:px-2">
             <span>Odoo Print Gateway</span>
             <span className="font-mono">v1.0.0</span>
           </div>
