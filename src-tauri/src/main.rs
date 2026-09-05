@@ -39,18 +39,8 @@ fn main() {
                 paths::agent_data_root().display()
             ));
 
-            #[cfg(windows)]
-            {
-                use tauri_plugin_autostart::ManagerExt;
-
-                match app.autolaunch().enable() {
-                    Ok(_) => logging::info("desktop autostart enabled at Windows login"),
-                    Err(e) => logging::warn(&format!(
-                        "desktop autostart could not be enabled: {e}"
-                    )),
-                }
-            }
-
+            // Autostart is user-controlled through Settings. Never enable it
+            // implicitly during application setup or installation.
             tray::setup_tray(app.handle())?;
 
             // Hide on close: window close => hide, not exit. Tray Exit does real exit.
