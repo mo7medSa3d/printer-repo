@@ -1,4 +1,16 @@
 {$GATEWAY_DOMAIN} {
     encode gzip zstd
-    reverse_proxy gateway:3000
+
+    # Caddy is the only public entry point. Enforce the same API ceiling here
+    # so chunked/streamed bodies cannot bypass the Node request guard.
+    request_body {
+        max_size 8MB
+    }
+
+    reverse_proxy gateway:3000 {
+        # Never trust client-supplied forwarding metadata. Replace it with the
+        # actual TCP peer seen by Caddy before the request reaches the gateway.
+        header_up X-Forwarded-For {http.request.remote.host}
+        header_up X-Real-IP {http.request.remote.host}
+    }
 }
