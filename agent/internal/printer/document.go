@@ -5,25 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
-// Document kinds. They mirror the payload contract shared with the gateway
-// (agent/internal/payload/payload.go and src/lib/payload.ts) — a print job
-// carries EXACTLY one of these and the agent must pick a physically correct
-// print path for it. A PDF is never silently downgraded to a raw byte stream.
+// Document kinds. They mirror the payload contract shared with the gateway.
 const (
 	KindRaw    = "raw"
 	KindESCPOS = "escpos"
 	KindPDF    = "pdf"
 )
 
-// Document is one print job body as handed to a printer backend.
 type Document struct {
-	// Kind is "raw", "escpos" or "pdf" (already validated by payload.Parse).
-	Kind string
-	// Data is the decoded document body.
-	Data []byte
-	// JobID is the gateway job id, used for log correlation and temp-file names.
+	Kind  string
+	Data  []byte
 	JobID string
 }
 
@@ -45,10 +39,16 @@ type KindSupporter interface {
 	SupportsKind(kind string) bool
 }
 
-// VerifiedKindSupporter is used when support depends on live device
-// capabilities rather than a backend's static implementation.
+// VerifiedKindSupporter is for backends whose actual device capabilities must
+// be queried before a document kind can be considered supported.
 type VerifiedKindSupporter interface {
 	SupportsKindVerified(ctx context.Context, kind string) bool
+}
+
+// VerifiedKindsProvider allows a backend to fetch all supported kinds in one
+// capability query, avoiding one network round trip per document type.
+type VerifiedKindsProvider interface {
+	SupportedKindsVerified(ctx context.Context) []string
 }
 
 func NormalizeKind(kind string) string {
@@ -59,13 +59,10 @@ func NormalizeKind(kind string) string {
 	return k
 }
 
-// SupportsKind reports whether p can physically print the given document kind.
-// Backends with protocol-level capability discovery get precedence over a
-// static KindSupporter declaration.
 func SupportsKind(p Printer, kind string) bool {
 	k := NormalizeKind(kind)
 	if verified, ok := p.(VerifiedKindSupporter); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*1e9)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		return verified.SupportsKindVerified(ctx, k)
 	}
@@ -90,6 +87,11 @@ func PrintDocument(ctx context.Context, p Printer, doc Document) error {
 }
 
 func SupportedKinds(p Printer) []string {
+	if provider, ok := p.(VerifiedKindsProvider); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return provider.SupportedKindsVerified(ctx)
+	}
 	kinds := make([]string, 0, 3)
 	for _, k := range []string{KindRaw, KindESCPOS, KindPDF} {
 		if SupportsKind(p, k) {
