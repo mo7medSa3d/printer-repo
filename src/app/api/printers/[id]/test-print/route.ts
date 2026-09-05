@@ -4,7 +4,7 @@ import { agents, printers } from "@/db/schema";
 import { validateManager } from "@/lib/manager-auth";
 import { validateOdooKey } from "@/lib/odoo-auth";
 import { eq } from "drizzle-orm";
-import { createPrintJob } from "@/app/actions";
+import { createPrintJobForPrinter, AgentQueueFullError } from "@/lib/print-job-service";
 import { buildTestPrintPayload } from "@/lib/payload";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +15,7 @@ export const dynamic = "force-dynamic";
 // Two callers authenticate here:
 //   - Desktop Manager (Tauri) sends a manager session (cookie/Bearer);
 //   - the Odoo addon (print_gateway.printer.action_test_print) sends a
-//     branch-scoped Odoo API key — it has no manager session. Without the
-//     Odoo-key path the addon's Test Print button always got 401.
+//     branch-scoped Odoo API key — it has no manager session.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
@@ -24,23 +23,37 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!agent) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
+
   const claims = await validateManager(req);
   const odoo = claims ? null : await validateOdooKey(req, agent.branchId);
   if (!claims && !odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (printer.lifecycle !== "active") return NextResponse.json({ error: "printer disabled" }, { status: 409 });
-
   if (odoo?.branchId && odoo.branchId !== agent.branchId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const payload = buildTestPrintPayload(printer.name, (agent as unknown as { name?: string })?.name ?? printer.agentId);
+  const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
 
   try {
-    // createPrintJob inserts the durable row AND does the best-effort WS push
-    // with claim (see src/app/actions.ts) — pushing again here would deliver
-    // the job twice over the agent socket.
-    const { id: jobId } = await createPrintJob(printer.id, payload);
-    return NextResponse.json({ ok: true, jobId, printerId: printer.id }, { status: 201 });
+    const result = await createPrintJobForPrinter(printer.id, payload, {
+      requestedBy: claims ? "manager-test" : "odoo-test",
+    });
+    return NextResponse.json({ ok: true, jobId: result.id, printerId: printer.id, status: result.status }, { status: 201 });
   } catch (e) {
+    if (e instanceof AgentQueueFullError) {
+      return NextResponse.json({
+        error: "AGENT_QUEUE_FULL",
+        code: "AGENT_QUEUE_FULL",
+        agentId: e.agentId,
+        inFlight: e.inFlight,
+        limit: 500,
+        retryable: true,
+      }, { status: 503 });
+    }
     const msg = e instanceof Error ? e.message : "createPrintJob failed";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    const status = /not online/i.test(msg) ? 503
+      : /virtual or redirected/i.test(msg) ? 409
+      : /capability|cannot print/i.test(msg) ? 422
+      : /disabled|retired/i.test(msg) ? 409
+      : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
 }

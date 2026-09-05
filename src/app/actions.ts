@@ -7,9 +7,9 @@ import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { generatePairingCode } from "@/lib/agent-auth";
-import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
+import { buildTestPrintPayload } from "@/lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
-import { claimAndPushJobToAgent } from "@/server/ws";
+import { createPrintJobForPrinter } from "@/lib/print-job-service";
 import { canTransitionLifecycle } from "@/lib/lifecycle";
 
 async function requireManager() {
@@ -70,8 +70,6 @@ export async function deleteAgent(id: string) {
       throw new Error("This agent has print history and cannot be deleted. Retire the agent to preserve audit history.");
     }
 
-    // Discovery sessions/devices are operational data, not print history.
-    // Remove them before deleting the agent to satisfy the foreign keys.
     await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, agent.id));
     await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, agent.id));
     await tx.delete(agents).where(eq(agents.id, agent.id));
@@ -82,44 +80,9 @@ export async function deleteAgent(id: string) {
 
 export async function createPrintJob(printerId: string, payload: unknown) {
   await requireManager();
-  const printer = await db.query.printers.findFirst({
-    where: eq(printers.id, printerId),
-  });
-
-  if (!printer) throw new Error("Printer not found");
-  if (printer.lifecycle !== "active") throw new Error(`Printer is ${printer.lifecycle}`);
-
-  const validatedPayload = validatePrintJobPayload(payload);
-
-  const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (!ownerAgent) throw new Error("Printer owner agent not found");
-  if (ownerAgent.lifecycle !== "active") throw new Error(`Agent is ${ownerAgent.lifecycle}`);
-  if (!ownerAgent.branchId) throw new Error("Printer owner agent has no branch");
-
-  const ownerBranch = await db.query.branches.findFirst({ where: eq(branches.id, ownerAgent.branchId) });
-  if (!ownerBranch) throw new Error("Printer owner branch not found");
-  if (!ownerBranch.enabled) throw new Error("Printer owner branch is disabled");
-
-  const id = `job_${nanoid(10)}`;
-  const row = {
-    id,
-    branchId: ownerBranch.id,
-    agentId: ownerAgent.id,
-    printerId: printer.id,
-    status: "queued" as const,
-    payload: validatedPayload,
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60),
-  };
-  await db.insert(printJobs).values(row);
-
-  try {
-    await claimAndPushJobToAgent({ id, agentId: printer.agentId });
-  } catch (e) {
-    console.warn(`[actions] WS push failed for job ${id}:`, e);
-  }
-
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager" });
   revalidatePath("/dashboard");
-  return { id };
+  return { id: result.id };
 }
 
 export async function createTestPrintJob(printerId: string) {
@@ -132,9 +95,12 @@ export async function createTestPrintJob(printerId: string) {
   const agent = await db.query.agents.findFirst({
     where: eq(agents.id, printer.agentId),
   });
+  if (!agent) throw new Error("Printer owner agent not found");
 
-  const payload = buildTestPrintPayload(printer.name, agent?.name ?? printer.agentId);
-  return createPrintJob(printerId, payload);
+  const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager-test" });
+  revalidatePath("/dashboard");
+  return { id: result.id };
 }
 
 export async function setPrinterLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {

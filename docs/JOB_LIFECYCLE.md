@@ -4,202 +4,202 @@ Everything below is implemented in:
 
 * `src/lib/job-status.ts` — the state machine
 * `src/lib/job-delivery.ts` — claim / delivery / ack / release
-* `src/app/api/print/jobs/route.ts` — job creation (Odoo)
-* `src/app/actions.ts` — job creation (manager test print)
-* `src/app/api/agent/jobs/route.ts` — poll claim, TTL sweep, stale reclaim, status PATCH
+* `src/lib/print-job-service.ts` — the single job-creation invariant boundary
+* `src/app/api/print/jobs/route.ts` — Odoo API
+* `src/app/actions.ts` — Manager actions
+* `src/app/api/printers/[id]/test-print/route.ts` — Manager/Odoo test print
+* `src/app/api/agent/jobs/route.ts` — poll claim, TTL sweep, stale recovery, status PATCH
 * `src/server/ws.ts` — WebSocket delivery
 * `agent/internal/agent/agent.go`, `agent/internal/queue/queue.go` — agent side
 
 ## 1. States
 
-```
-queued ──claim (gateway, transactional)──► claimed ──delivery──► printing ──► success
-                                              │                      │
-                                              └──────────────────────┴──► failed
+```text
+queued ──claim (gateway, transactional)──► claimed ──printing──► success
+                                              │              └──► failed
+                                              └──────────────────► failed
 any non-terminal state ──TTL passed──► expired
 ```
 
-`JOB_STATUSES = queued | claimed | printing | success | failed | expired`
-(`src/lib/job-status.ts`). `success`, `failed` and `expired` are terminal.
+`success`, `failed` and `expired` are terminal.
 
-Transitions an **agent** may request via `PATCH /api/agent/jobs`:
-
-| from | allowed to |
-|---|---|
-| `queued` | *(nothing — an agent can never move a job out of queued)* |
-| `claimed` | `printing`, `failed`, `expired` |
-| `printing` | `success`, `failed`, `expired` |
-| terminal | *(nothing)* |
-
-`queued → claimed` happens **only** server-side, inside the claim transaction.
+An agent may request only `claimed → printing|failed` and `printing → success|failed`.
+`queued → claimed` is gateway-controlled and can never be requested by the agent.
 
 ## 2. Creation
 
-1. `POST /api/print/jobs` authenticates the Odoo key (branch-scoped) and checks the
-   key's `allowedDocumentTypes` (compared case-insensitively, like routing).
-2. The payload is validated against the shared contract (`type` ∈ `raw|escpos|pdf`,
-   `encoding: "base64"`, decoded size 1 B … 5 MiB, canonical base64).
-3. `expiresAt` defaults to now + 1 h; an explicit value must be a future ISO-8601 instant.
-4. **Idempotency**: if `idempotencyKey` is supplied and a job already exists for
-   `(branch_id, idempotency_key)`, the existing job is returned with HTTP 200. Otherwise a
-   new id `job_<nanoid(12)>` is generated. Concurrent duplicates collide on the partial
-   unique index `print_jobs_branch_idempotency_unique` and are resolved to the same existing
-   job. **A retry or redelivery never creates a second job id.**
-5. Routing resolves the printer (§3). Failures return an error code instead of a job.
-6. The row is inserted with `status='queued'`, then the gateway attempts claim-and-deliver
-   (§4). The HTTP response reports the **real** row status: `claimed` when the job was
-   delivered to a connected agent, `queued` when it is waiting for the poll path.
+All print creation paths use `src/lib/print-job-service.ts` after their caller-specific
+authentication/routing checks. The shared service is the authoritative boundary for:
+
+* printer/agent/branch lifecycle validation;
+* virtual/redirected printer rejection;
+* payload capability validation;
+* per-agent in-flight capacity;
+* idempotency uniqueness;
+* durable `queued` insertion;
+* claim-and-deliver through the WebSocket fast path, with polling as fallback.
+
+Odoo branch-routed requests additionally resolve a printer through routing first so fallback
+selection and document-type authorization remain Odoo-specific policy. Manager and test-print
+requests cannot bypass the shared safety invariants.
+
+`expiresAt` defaults to now + 1 h and must be a future ISO-8601 instant when supplied.
+Idempotent retries return the existing job with the same id; redelivery never creates a new id.
 
 ## 3. Routing
 
 `resolvePrinterForJob({branchId, destinationId, documentType, payloadType})`:
 
-1. branch must exist → else `INVALID_BRANCH` (400)
-2. destination must exist **in that branch** → else `INVALID_DESTINATION` (400)
-3. enabled bindings for (branch, destination) are loaded; the document type is matched
-   case-insensitively, an empty binding type is a wildcard → no match ⇒ `NO_ROUTE` (404)
-4. candidates are ordered by ascending `priority` and each is checked in turn; a candidate
-   is skipped when the printer row is missing, belongs to another branch, is disabled,
-   is `offline`/`error`, fails the capability check, or its agent belongs to another branch
-5. the first surviving candidate wins; `fallbackUsed` and the full `fallbackChain` are
-   returned for auditing
-6. if nothing survives, the most specific reason is returned:
-   `CAPABILITY_MISMATCH` (422) → `PRINTER_OFFLINE` (503) → `PRINTER_DISABLED` (409) →
-   `NO_PRINTER_FOUND` (404). A database failure is `INTERNAL_ERROR` (500), never a fake 404.
-
-`PRINTER_OFFLINE` is preferred over `PRINTER_DISABLED` when both occurred, because an
-offline printer may recover on its own (retry) while a disabled one needs a configuration
-change.
+1. branch must exist;
+2. destination must exist in that branch;
+3. enabled bindings are matched case-insensitively; empty document type is a wildcard;
+4. candidates are ordered by priority and checked for branch ownership, lifecycle, runtime
+   availability and payload capability;
+5. the first valid candidate wins and fallback information is returned for audit;
+6. failures remain typed (`CAPABILITY_MISMATCH`, `PRINTER_OFFLINE`, `PRINTER_DISABLED`, etc.)
+   rather than being disguised as successful jobs.
 
 ## 4. Claim before delivery
 
-The gateway never hands a job to an agent before it owns it
-(`claimAndPushJobToAgent` in `src/server/ws.ts`, `claimJobForDelivery` in
-`src/lib/job-delivery.ts`):
+The gateway must own a job before an agent may execute it.
 
-1. no open socket for that agent → return `no_socket`; the row stays `queued` for the poll
-   path (nothing is claimed, `delivery_attempts` stays 0)
-2. otherwise, in ONE transaction:
-   ```sql
-   SELECT id FROM print_jobs
-    WHERE id = $1 AND agent_id = $2 AND status = 'queued' AND expires_at > now()
-      FOR UPDATE SKIP LOCKED;
-   UPDATE print_jobs
-      SET status='claimed', claimed_at=now(), updated_at=now(),
-          delivery_attempts = delivery_attempts + 1
-    WHERE id = $1 AND agent_id = $2 AND status='queued' AND expires_at > now()
-   RETURNING …;
-   ```
-   A concurrent claimer (second WS push, poll, another gateway instance) gets nothing →
-   `not_claimable`.
-3. after COMMIT the envelope is written to exactly one open socket (the newest); writing to
-   every socket of the agent would be a duplicate delivery
-4. on a successful write, `delivered_at` is stamped
-5. if the write fails, `releaseUndeliveredClaim` puts the row back to `queued`
-   (`claimed_at = NULL`, same job id) — or fails it explicitly once
-   `MAX_DELIVERY_ATTEMPTS` (5) is reached.
+For WebSocket delivery:
 
-For the poll path the claim and the delivery record commit together, because the HTTP
-response is the delivery (`delivered_at = now()`, `acked_at = NULL`,
-`delivery_attempts + 1` in the same UPDATE).
+1. no open socket → `no_socket`; the job stays `queued`;
+2. otherwise `claimJobForDelivery` atomically changes `queued → claimed` in a transaction;
+3. after the transaction commits, the envelope is written to exactly one open socket;
+4. after a successful socket write, `delivered_at` is stamped;
+5. if the write fails, the claim is immediately released back to `queued` under the same job id,
+   or the job is failed after `MAX_DELIVERY_ATTEMPTS`.
+
+For polling:
+
+1. the poll transaction claims queued or stale delivery claims;
+2. the returned rows are `claimed`;
+3. **polling does not set `delivered_at`** because returning an HTTP response is not proof that
+   the agent received/processed the body;
+4. the agent sends `job_ack` after receipt, which sets `acked_at` and, when needed,
+   `delivered_at`.
+
+Therefore `delivered_at` has one consistent meaning: the gateway has handed the job to the
+agent transport. `acked_at` is the stronger application-level receipt confirmation.
 
 ## 5. Acknowledgement
 
-The agent replies `{"type":"job_ack","jobId":"…"}` immediately on receipt — including for a
-duplicate it will not print. The gateway sets `acked_at` (and `delivered_at` if missing) and
-**does not change the job status**: an ack means "received", never "printed".
-Unknown message types are ignored. See [WEBSOCKET_PROTOCOL.md](WEBSOCKET_PROTOCOL.md).
+The agent sends `{"type":"job_ack","jobId":"…"}` immediately after receiving a job and
+before printing. The gateway records `acked_at` and leaves the job status unchanged.
+
+An ACK is not proof that paper was printed. Late ACKs for terminal jobs are ignored.
+Duplicate deliveries are also ACKed so the gateway can distinguish receipt from printing.
 
 ## 6. Printing and reporting
 
-The agent, per job: TTL re-check → local terminal check → printer lookup → payload parse →
-capability gate → per-printer mutex → local `queue.Push` + `printing` → `PATCH printing` →
-physical print (20 s context timeout) → local `success`/`failed` → `PATCH success|failed`
-with the real error text.
+The agent performs:
 
-Status PATCH rules (`src/app/api/agent/jobs/route.ts`): the job must belong to the calling
-agent (and its branch), TTL always wins (past `expires_at` ⇒ the row is set to `expired` and
-the call returns 409), and the transition must be allowed by `canTransition` (else 409).
+1. TTL re-check;
+2. local terminal/idempotency check;
+3. printer lookup;
+4. payload parse and capability gate;
+5. per-printer serialization;
+6. durable local queue insertion and local `printing` state;
+7. `PATCH printing` to the gateway;
+8. physical print with a bounded execution context;
+9. local `success`/`failed` persistence;
+10. `PATCH success|failed` with the actual result.
+
+A successful RAW/TCP write means bytes were handed to the configured transport. It does not
+prove that paper physically emerged from the printer.
 
 ## 7. Failure, retry and recovery
 
-| Situation | What happens |
+| Situation | Behaviour |
 |---|---|
-| WebSocket write fails after the claim | Claim released, row back to `queued` with the same id; after 5 delivery attempts the job is failed with an explicit error |
-| Agent disconnects before reporting | The claim goes stale after `CLAIM_LEASE_SECONDS` (90 s). The next poll reclaims it: `status='claimed'`, `claimed_at=now()`, `retries + 1`, **same job id** |
-| Stale claim with `retries >= 5` | Job is set to `failed` with "exceeded max retries after a stale claim" |
-| TTL passes | The TTL sweep in the poll endpoint (and the PATCH handler) sets the job to `expired` |
-| Printer error | Agent reports `failed` with the backend's real error text (never a swallowed error) |
-| Capability mismatch detected on the agent | `failed` with `CAPABILITY_MISMATCH: …` |
-| Duplicate delivery of a job that already succeeded locally | Not printed again; the stored terminal result is re-reported |
-| Duplicate delivery of a job that failed locally | Retried — the gateway only redelivers after an explicit reclaim that already incremented `retries` |
-| Agent crashed **while printing** | See §9 |
+| No WS socket | Job remains `queued`; poll can claim it later |
+| WS write fails after claim | Immediate requeue under the same id; delivery attempt is counted |
+| Five failed WS deliveries | Job becomes `failed` with an explicit delivery error |
+| Stale `claimed` job | Reclaimed after `CLAIM_LEASE_SECONDS` (90 s), `retries + 1` |
+| Stale `claimed` with retry budget exhausted | Permanently `failed` |
+| Active `printing` job | **Not** reclaimed by the 90 s delivery lease |
+| Stale `printing` job | Recovered only after the separate `STALE_PRINTING_SECONDS` execution backstop (10 min) |
+| TTL passes | Job becomes `expired`; TTL is independent of claim/execution leases |
+| Printer error | Agent reports `failed` with the backend error |
+| Capability mismatch | Agent reports `failed` with `CAPABILITY_MISMATCH` |
+| Duplicate already-successful local job | Not printed again; terminal result is re-reported |
+| Agent crash during printing | Local result becomes `AGENT_RESTART_DURING_PRINT`; physical output is treated as unknown |
+
+The important distinction is that the **90-second lease is a delivery lease, not a printing
+lease**. A printer taking longer than 90 seconds cannot be classified as a lost delivery.
 
 ## 8. Field reference
 
-| Column | Set by | Meaning |
-|---|---|---|
-| `expires_at` | Job creation (Odoo `expiresAt` or now + 1 h) | Business TTL of the job. Never shortened by a claim. Past it, the job is `expired` regardless of what the agent reports |
-| `claimed_at` | Claim (WS or poll) | When the gateway took ownership. The claim **lease** is `claimed_at + 90 s` (`CLAIM_LEASE_SECONDS` in `src/lib/job-delivery.ts` == `STALE_CLAIM_SECONDS` in the poll route) |
-| `delivery_attempts` | Every claim | How many times the gateway tried to hand the job over. Bounded by `MAX_DELIVERY_ATTEMPTS = 5` for undelivered WS claims |
-| `delivered_at` | WS: after a successful socket write. Poll: in the claim statement | The job actually left the gateway |
-| `acked_at` | `job_ack` from the agent | The agent confirmed receipt. Never implies printing |
-| `retries` | Stale-claim reclaim in the poll endpoint | How many times the job was re-delivered after a lost/stale claim. `>= 5` ⇒ permanent failure |
-| `updated_at` | Every mutation | Also used as the staleness clock for `claimed`/`printing` rows |
-| `error` | Agent PATCH, delivery release, retry exhaustion | Human-readable reason, truncated to 2000 chars |
-
-Two distinct clocks: **TTL** (`expires_at`, business deadline) and **claim lease**
-(`claimed_at`/`updated_at` + 90 s, delivery deadline). They are deliberately independent —
-overwriting `expires_at` with the lease would silently change job expiry semantics.
-
-## 9. Agent crash behaviour (at-least-once, made visible)
-
-A job that was still physically printing when the agent process stopped has an **unknown**
-outcome: the printer may have produced the full document, part of it, or nothing.
-
-At startup the agent scans its local queue (`Queue.MarkInterrupted`), moves every row still
-in `printing` to a terminal local `failed` state carrying the marker
-`AGENT_RESTART_DURING_PRINT`, logs a warning, and reports the failure to the gateway
-immediately (`recoverInterruptedJobs`). Previously such a row stayed `printing` locally and
-the gateway only noticed after the 90 s lease, then re-delivered the job and a duplicate
-page came out with nobody informed.
-
-What happens if that job is delivered again is a policy setting
-(`agent.reprint_after_crash` in the agent config):
-
-| value | behaviour |
+| Column | Meaning |
 |---|---|
-| `true` (default) | Print it again. No document is lost, but a duplicate page can be produced. This is the historical at-least-once behaviour |
-| `false` | Refuse and re-report the interruption. No duplicate is ever produced automatically; recovering the document requires a new job |
+| `expires_at` | Business TTL. Never shortened by claiming. |
+| `claimed_at` | Last gateway ownership claim time. |
+| `delivery_attempts` | Number of gateway claim/delivery attempts. |
+| `delivered_at` | Gateway successfully handed the job to its transport. |
+| `acked_at` | Agent explicitly confirmed receipt. |
+| `retries` | Number of stale-claim recovery cycles. |
+| `updated_at` | Last mutation time; used by delivery/execution recovery clocks. |
+| `error` | Latest human-readable failure/recovery reason, max 2000 chars. |
 
-**Neither setting provides exactly-once physical printing**, and this repository does not
-claim it anywhere. Covered by `TestInterruptedJobIsReportedAtStartup` and
-`TestReprintAfterCrashPolicy` (`agent/internal/agent/ws_delivery_test.go`) and
-`TestMarkInterruptedFlagsMidPrintJobs` (`agent/internal/queue/queue_test.go`).
+There are three independent concepts:
 
-## 10. Odoo-side mirror
+* **Business TTL:** `expires_at`.
+* **Delivery lease:** `claimed_at` / `updated_at` + 90 s while status is `claimed`.
+* **Execution recovery lease:** `updated_at` + 10 min while status is `printing`.
 
-`print_gateway.print_job` stores `gateway_job_id`, branch, destination, document type,
-printer, agent, status, error and the originating report metadata. The cron
-`Print Gateway: Sync Job Statuses` (every 2 minutes) calls
-`GET /api/print/jobs?id=…` for every non-terminal job and normalises `completed → success`.
+The execution backstop is intentionally longer than the agent's normal physical print timeout.
+It exists to recover jobs when an agent process dies and never reports a terminal result.
 
-## Agent and printer lifecycle invariants
+## 9. Agent crash behaviour
 
-Agents and Printers are never physically deleted by normal application flows. Use `disabled` to stop runtime use without retiring identity; use `retired` for terminal decommissioning. `retired` cannot transition back to `active` or `disabled`. Historical Jobs remain queryable.
+A job physically printing when the agent stops has an unknown physical outcome: full output,
+partial output, or no output.
 
-Disabling or retiring an Agent revokes its credentials and disables all of its Printers. A disabled Agent can later be enabled only with fresh pairing credentials. A retired Agent must be replaced by a new identity.
+At startup `Queue.MarkInterrupted` marks local printing rows with
+`AGENT_RESTART_DURING_PRINT`, and `recoverInterruptedJobs` reports the failure to the gateway.
+The agent never claims that an unknown physical result was successfully printed.
 
-## Agent and printer lifecycle invariants
+`agent.reprint_after_crash` controls whether a subsequent delivery may be printed again. Even
+when enabled, this is at-least-once delivery and can produce duplicate physical output.
+Exactly-once physical printing is not claimed by this system.
 
-Agents and Printers are never physically deleted by normal application flows. `retired` is terminal, and historical Jobs remain queryable. Disabling or retiring an Agent revokes its credentials and disables all of its Printers. Re-enabling a disabled Agent requires fresh pairing credentials.
-## Production Engineering Semantics
+## 10. Capacity and idempotency
 
-- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
-- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
-- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
-- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
-- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
-- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
-- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
+All job creation paths serialize capacity reservation with a transaction-scoped PostgreSQL
+advisory lock per agent. The limit is `MAX_AGENT_IN_FLIGHT_JOBS = 500` and counts `claimed`
+and `printing` rows with a live business TTL.
 
+Idempotency is enforced by the database unique constraint on `(branch_id, idempotency_key)`
+when a key is supplied. The shared service also handles the race where two callers check for
+the same key concurrently: one insert wins and the other resolves the duplicate to the same
+persisted job.
+
+## 11. Ownership invariants
+
+The canonical ownership chain is:
+
+```text
+Branch → Agent → Printer
+```
+
+Odoo owns business configuration such as branches, destinations, document types and bindings.
+The Gateway/Agent owns runtime agents, physical printers and runtime status.
+
+A binding cannot route across branches, and Odoo sync never invents a physical printer.
+
+## 12. Lifecycle invariants
+
+Agents and printers are lifecycle-managed rather than casually deleted. `retired` is terminal.
+Disabling or retiring an agent disables its printers and revokes its credentials. Re-enabling a
+disabled agent requires fresh pairing credentials.
+
+## 13. Production engineering rules
+
+* Use the shared print-job service for every new print entry point.
+* Never set `delivered_at` merely because a poll query selected a row.
+* Never use the 90-second delivery lease to reclaim active printing work.
+* Keep the same job id across retries and redelivery.
+* Treat physical printing as at-least-once, not exactly-once.
+* PostgreSQL integration tests are required for claim, capacity and idempotency correctness.
