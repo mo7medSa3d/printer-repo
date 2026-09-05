@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { db } from "../../../../db";
+import { agents } from "../../../../db/schema";
 import { and, eq, gt } from "drizzle-orm";
-import { generateSecret, hashSecret } from "@/lib/agent-auth";
+import { generateSecret, hashSecret } from "../../../../lib/agent-auth";
 import {
   clientIpFrom,
   inspectPairingRateLimit,
   recordPairingFailure,
   recordPairingSuccess,
-} from "@/lib/auth-rate-limit";
-import { hasBodyOverLimit } from "@/lib/request-limits";
+} from "../../../../lib/auth-rate-limit";
+import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { z } from "zod";
 
 const MAX_REGISTRATION_BODY_BYTES = 64 * 1024;

@@ -9,7 +9,7 @@ import {
   sha256,
   type Fixture,
 } from "./helpers/pg";
-import { POST as printJobsPOST } from "@/app/api/print/jobs/route";
+import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 

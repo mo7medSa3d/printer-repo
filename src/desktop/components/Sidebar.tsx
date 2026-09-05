@@ -11,7 +11,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
-import { StatusDot } from "@/components/ui";
+import { StatusDot } from "../../components/ui";
 import type { Page } from "../types";
 
 export interface NavItem {

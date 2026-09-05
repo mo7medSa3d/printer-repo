@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createHash } from "crypto";
-import { isOdooKeyAllowedForDocumentType, isBranchScopedKeyAllowed } from "@/lib/odoo-auth";
+import { isOdooKeyAllowedForDocumentType, isBranchScopedKeyAllowed } from "../src/lib/odoo-auth";
 
 describe("Phase 1 branch authorization", () => {
   it("rejects a branch-scoped key when the request targets another branch", () => {
@@ -31,7 +31,7 @@ const findFirstMocks = {
   printJobs: vi.fn(),
 };
 
-vi.mock("@/db", () => {
+vi.mock("../src/db", () => {
   const tx = {
     execute: vi.fn().mockResolvedValue({ rows: [{ count: 0 }] }),
     insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
@@ -102,7 +102,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
     findFirstMocks.branches.mockResolvedValue(makeBranch("branch_b"));
-    const { POST } = await import("@/app/api/print/jobs/route");
+    const { POST } = await import("../src/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
     expect(res.status).toBe(403);
@@ -113,7 +113,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_a"));
     findFirstMocks.branches.mockResolvedValue(makeBranch("branch_a"));
-    const { POST } = await import("@/app/api/print/jobs/route");
+    const { POST } = await import("../src/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
     expect(res.status).toBe(201);
@@ -124,7 +124,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
     findFirstMocks.branches.mockResolvedValue(makeBranch("branch_b"));
-    const { POST } = await import("@/app/api/print/jobs/route");
+    const { POST } = await import("../src/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
     expect(res.status).toBe(403);

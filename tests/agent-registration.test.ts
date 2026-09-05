@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from "vitest";
-import { POST as registerPOST } from "@/app/api/agent/register/route";
+import { POST as registerPOST } from "../src/app/api/agent/register/route";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, closePool, pool } from "./helpers/pg";
 
 const suite = describe.skipIf(!hasTestDatabase);

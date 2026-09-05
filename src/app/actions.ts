@@ -1,16 +1,16 @@
 "use server";
 
-import { db } from "@/db";
-import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "@/db/schema";
+import { db } from "../db";
+import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "../db/schema";
 import { eq, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
-import { generatePairingCode } from "@/lib/agent-auth";
-import { buildTestPrintPayload } from "@/lib/payload";
-import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
-import { createPrintJobForPrinter } from "@/lib/print-job-service";
-import { canTransitionLifecycle } from "@/lib/lifecycle";
+import { generatePairingCode } from "../lib/agent-auth";
+import { buildTestPrintPayload } from "../lib/payload";
+import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../lib/manager-auth";
+import { createPrintJobForPrinter } from "../lib/print-job-service";
+import { canTransitionLifecycle } from "../lib/lifecycle";
 
 async function requireManager() {
   const token = (await cookies()).get(getManagerCookieName())?.value ?? null;

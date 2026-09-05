@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canTransition, isTerminal, isJobStatus } from "@/lib/job-status";
+import { canTransition, isTerminal, isJobStatus } from "../src/lib/job-status";
 
 describe("job-status", () => {
   it("terminal blocks all", () => {

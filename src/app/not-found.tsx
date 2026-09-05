@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Compass, LayoutDashboard, Home } from "lucide-react";
-import { BrandMark, Button } from "@/components/ui";
+import { BrandMark, Button } from "../components/ui";
 
 export default function NotFound() {
   return (

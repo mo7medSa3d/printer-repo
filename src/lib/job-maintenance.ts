@@ -1,6 +1,6 @@
-import { db } from "@/db";
+import { db } from "../db";
 import { sql } from "drizzle-orm";
-import { incrementMetric } from "@/lib/metrics";
+import { incrementMetric } from "./metrics";
 
 export const STALE_CLAIM_SECONDS = 90;
 export const STALE_PRINTING_SECONDS = 10 * 60;

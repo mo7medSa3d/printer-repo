@@ -8,7 +8,7 @@ import {
   Input,
   Select,
   ErrorState,
-} from "@/components/ui";
+} from "../../components/ui";
 import { registerPrinter, type PrinterInfo } from "../lib/ipc";
 import { errMsg, friendlyPrinterError, isProductionPrinter } from "../lib/printers";
 

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, Printer, ShieldCheck, Zap, Globe, Cpu } from "lucide-react";
-import { Button } from "@/components/ui";
+import { Button } from "../components/ui";
 
 export default function Home() {
   return (

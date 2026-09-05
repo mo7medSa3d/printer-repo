@@ -9,9 +9,9 @@ import {
   sha256,
   type Fixture,
 } from "./helpers/pg";
-import { resolvePrinterForJob, selectBestBinding } from "@/lib/routing";
-import { getAgentAvailability } from "@/lib/agent-availability";
-import { POST as printJobsPOST } from "@/app/api/print/jobs/route";
+import { resolvePrinterForJob, selectBestBinding } from "../src/lib/routing";
+import { getAgentAvailability } from "../src/lib/agent-availability";
+import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 

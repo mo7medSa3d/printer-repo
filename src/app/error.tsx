@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, LayoutDashboard } from "lucide-react";
-import { Button, Mono } from "@/components/ui";
+import { Button, Mono } from "../components/ui";
 
 /**
  * Branded error boundary for the web console.

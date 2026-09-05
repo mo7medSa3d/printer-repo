@@ -1,13 +1,13 @@
-import { db } from "@/db";
-import { printJobs } from "@/db/schema";
-import { validateAgent } from "@/lib/agent-auth";
+import { db } from "../../../../db";
+import { printJobs } from "../../../../db/schema";
+import { validateAgent } from "../../../../lib/agent-auth";
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { isJobStatus, canTransition, isTerminal, type JobStatus } from "@/lib/job-status";
-import { logInfo, logWarn, requestIdFrom } from "@/lib/log";
-import { incrementMetric } from "@/lib/metrics";
-import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "@/lib/job-maintenance";
-import { hasBodyOverLimit } from "@/lib/request-limits";
+import { isJobStatus, canTransition, isTerminal, type JobStatus } from "../../../../lib/job-status";
+import { logInfo, logWarn, requestIdFrom } from "../../../../lib/log";
+import { incrementMetric } from "../../../../lib/metrics";
+import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "../../../../lib/job-maintenance";
+import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 export const dynamic = "force-dynamic";
 const MAX_CLAIM_BATCH = 20;

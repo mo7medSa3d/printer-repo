@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { createAgent, createTestPrintJob, deleteAgent, setAgentLifecycle, setPrinterLifecycle } from "@/app/actions";
+import { createAgent, createTestPrintJob, deleteAgent, setAgentLifecycle, setPrinterLifecycle } from "../actions";
 import {
   Plus,
   Printer as PrinterIcon,
@@ -31,7 +31,7 @@ import {
   agentTone,
   printerTone,
   jobTone,
-} from "@/components/ui";
+} from "../../components/ui";
 
 type Branch = { id: string; name: string; enabled: boolean };
 type Agent = {

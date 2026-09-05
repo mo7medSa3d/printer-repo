@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, printers } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
-import { validateOdooKey } from "@/lib/odoo-auth";
+import { db } from "../../../../../db";
+import { agents, printers } from "../../../../../db/schema";
+import { validateManager } from "../../../../../lib/manager-auth";
+import { validateOdooKey } from "../../../../../lib/odoo-auth";
 import { eq } from "drizzle-orm";
-import { createPrintJobForPrinter, AgentQueueFullError } from "@/lib/print-job-service";
-import { buildTestPrintPayload } from "@/lib/payload";
+import { createPrintJobForPrinter, AgentQueueFullError } from "../../../../../lib/print-job-service";
+import { buildTestPrintPayload } from "../../../../../lib/payload";
 
 export const dynamic = "force-dynamic";
 

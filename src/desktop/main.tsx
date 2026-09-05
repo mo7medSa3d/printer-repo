@@ -24,7 +24,7 @@ import {
   StatusBadge,
   StatusDot,
   Toast as ToastView,
-} from "@/components/ui";
+} from "../components/ui";
 import { PageHeader } from "./ui";
 import { JobTimeline } from "./components/JobTimeline";
 import { Sidebar, type NavItem } from "./components/Sidebar";

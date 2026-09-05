@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, pool, closePool, type Fixture } from "./helpers/pg";
-import { PATCH as jobStatusPATCH } from "@/app/api/agent/jobs/route";
+import { PATCH as jobStatusPATCH } from "../src/app/api/agent/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 

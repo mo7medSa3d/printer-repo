@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, branches } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../db";
+import { agents, branches } from "../../../db/schema";
+import { validateManager } from "../../../lib/manager-auth";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { createAgent } from "@/app/actions";
+import { createAgent } from "../../actions";
 
 export const dynamic = "force-dynamic";
 

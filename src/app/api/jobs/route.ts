@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { printJobs } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../db";
+import { printJobs } from "../../../db/schema";
+import { validateManager } from "../../../lib/manager-auth";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { isJobStatus } from "@/lib/job-status";
+import { isJobStatus } from "../../../lib/job-status";
 
 export const dynamic = "force-dynamic";
 

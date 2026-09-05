@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { canTransitionLifecycle, lifecycleAllowsNewJobs } from "@/lib/lifecycle";
-import { normalizeLegacyPrinterInput, printerInputSchema } from "@/lib/printer-model";
-import { validatePrintJobPayload } from "@/lib/payload";
+import { canTransitionLifecycle, lifecycleAllowsNewJobs } from "../src/lib/lifecycle";
+import { normalizeLegacyPrinterInput, printerInputSchema } from "../src/lib/printer-model";
+import { validatePrintJobPayload } from "../src/lib/payload";
 
 const b64 = (value: string) => Buffer.from(value, "binary").toString("base64");
 

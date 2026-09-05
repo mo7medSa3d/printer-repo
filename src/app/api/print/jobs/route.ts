@@ -1,18 +1,18 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, branches, printJobs, printers } from "@/db/schema";
-import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "@/lib/odoo-auth";
-import { validatePrintJobPayload } from "@/lib/payload";
-import { resolvePrinterForJob } from "@/lib/routing";
-import { requestIdFrom } from "@/lib/log";
-import { incrementMetric } from "@/lib/metrics";
-import { AgentQueueFullError, createPrintJobForPrinter } from "@/lib/print-job-service";
-import { hasBodyOverLimit } from "@/lib/request-limits";
+import { db } from "../../../../db";
+import { agents, branches, printJobs, printers } from "../../../../db/schema";
+import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../lib/odoo-auth";
+import { validatePrintJobPayload } from "../../../../lib/payload";
+import { resolvePrinterForJob } from "../../../../lib/routing";
+import { requestIdFrom } from "../../../../lib/log";
+import { incrementMetric } from "../../../../lib/metrics";
+import { AgentQueueFullError, createPrintJobForPrinter } from "../../../../lib/print-job-service";
+import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
-export { MAX_AGENT_IN_FLIGHT_JOBS } from "@/lib/print-job-service";
+export { MAX_AGENT_IN_FLIGHT_JOBS } from "../../../../lib/print-job-service";
 
 const MAX_PRINT_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 const legacyBodySchema = z.object({ printerId: z.string().min(1).max(120), payload: z.unknown(), expiresAt: z.string().optional(), idempotencyKey: z.string().max(200).optional() });

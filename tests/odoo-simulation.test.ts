@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
+import { validatePrintJobPayload, buildTestPrintPayload } from "../src/lib/payload";
 
 // This test is the local Odoo/API simulation harness.
 // It uses POST /api/print/jobs as the Odoo boundary, exercising real auth + validation paths

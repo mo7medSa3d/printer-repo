@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents } from "@/db/schema";
-import { validateOdooKey } from "@/lib/odoo-auth";
+import { db } from "../../../../db";
+import { agents } from "../../../../db/schema";
+import { validateOdooKey } from "../../../../lib/odoo-auth";
 import { eq, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";

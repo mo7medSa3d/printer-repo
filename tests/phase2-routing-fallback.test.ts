@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectFallbackBindings, validatePayloadForPrinter, isPrinterAvailableForJob } from "@/lib/routing";
+import { selectFallbackBindings, validatePayloadForPrinter, isPrinterAvailableForJob } from "../src/lib/routing";
 
 describe("Phase 2 routing fallback", () => {
   it("returns fallback chain sorted by priority", () => {

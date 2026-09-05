@@ -1,11 +1,11 @@
-import { db } from "@/db";
-import { agents, branches, printers, printJobs } from "@/db/schema";
+import { db } from "../../db";
+import { agents, branches, printers, printJobs } from "../../db/schema";
 import { count, desc, eq } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
+import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../../lib/manager-auth";
 import DashboardClient from "./dashboard-client";
-import { JobCleanupButton } from "@/components/JobCleanupButton";
+import { JobCleanupButton } from "../../components/JobCleanupButton";
 
 export const dynamic = "force-dynamic";
 

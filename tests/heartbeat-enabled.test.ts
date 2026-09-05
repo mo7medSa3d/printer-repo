@@ -8,7 +8,7 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { POST as heartbeatPOST } from "@/app/api/agent/heartbeat/route";
+import { POST as heartbeatPOST } from "../src/app/api/agent/heartbeat/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 

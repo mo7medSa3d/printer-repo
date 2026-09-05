@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
-import { validatePrintJobPayload } from "@/lib/payload";
-import { validatePayloadForPrinter, selectBestBinding } from "@/lib/routing";
-import { isOdooKeyAllowedForDocumentType } from "@/lib/odoo-auth";
-import { canTransition } from "@/lib/job-status";
+import { validatePrintJobPayload } from "../src/lib/payload";
+import { validatePayloadForPrinter, selectBestBinding } from "../src/lib/routing";
+import { isOdooKeyAllowedForDocumentType } from "../src/lib/odoo-auth";
+import { canTransition } from "../src/lib/job-status";
 
 describe("regression: collision-safe job IDs removed from route layer", () => {
   it("does not use a truncated hash and keeps job ID generation centralized", () => {

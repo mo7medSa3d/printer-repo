@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
+import { validatePrintJobPayload, buildTestPrintPayload } from "../src/lib/payload";
 
 describe("payload", () => {
   it("validates raw and escpos", () => {

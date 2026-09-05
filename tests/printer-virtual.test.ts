@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isPrinterAvailableForJob } from "@/lib/routing";
-import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
+import { isPrinterAvailableForJob } from "../src/lib/routing";
+import { isVirtualPrinterRecord } from "../src/lib/printer-virtual";
 
 const VIRTUAL = [
   { name: "Microsoft Print to PDF", record: { printerType: "virtual" } },

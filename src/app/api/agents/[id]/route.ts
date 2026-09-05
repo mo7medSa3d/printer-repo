@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents, printers, printJobs } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
-import { canTransitionLifecycle } from "@/lib/lifecycle";
+import { db } from "../../../../db";
+import { agents, printers, printJobs } from "../../../../db/schema";
+import { validateManager } from "../../../../lib/manager-auth";
+import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { eq, count, desc } from "drizzle-orm";
 import { z } from "zod";
-import { generatePairingCode } from "@/lib/agent-auth";
+import { generatePairingCode } from "../../../../lib/agent-auth";
 
 export const dynamic = "force-dynamic";
 const patchSchema = z.object({ lifecycle: z.enum(["active", "disabled", "retired"]) }).strict();

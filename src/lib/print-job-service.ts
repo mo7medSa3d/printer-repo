@@ -1,9 +1,9 @@
-import { db } from "@/db";
-import { agents, branches, printers, printJobs } from "@/db/schema";
-import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
-import { validatePayloadForPrinter } from "@/lib/routing";
-import { validatePrintJobPayload } from "@/lib/payload";
-import { claimAndPushJobToAgent } from "@/server/ws";
+import { db } from "../db";
+import { agents, branches, printers, printJobs } from "../db/schema";
+import { isVirtualPrinterRecord } from "./printer-virtual";
+import { validatePayloadForPrinter } from "./routing";
+import { validatePrintJobPayload } from "./payload";
+import { claimAndPushJobToAgent } from "../server/ws";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 

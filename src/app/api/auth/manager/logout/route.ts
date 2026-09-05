@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { validateManager, revokeManagerSession, clearManagerCookieHeader } from "@/lib/manager-auth";
+import { validateManager, revokeManagerSession, clearManagerCookieHeader } from "../../../../../lib/manager-auth";
 
 export async function POST(req: Request) {
   const claims = await validateManager(req);

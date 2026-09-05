@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername } from "@/lib/manager-auth";
+import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername } from "../../../../../lib/manager-auth";
 import {
   clientIpFrom,
   inspectAuthRateLimit,
   recordAuthFailure,
   recordAuthSuccess,
-} from "@/lib/auth-rate-limit";
-import { hasBodyOverLimit } from "@/lib/request-limits";
-import { logWarn, logInfo, requestIdFrom } from "@/lib/log";
+} from "../../../../../lib/auth-rate-limit";
+import { hasBodyOverLimit } from "../../../../../lib/request-limits";
+import { logWarn, logInfo, requestIdFrom } from "../../../../../lib/log";
 
 const INVALID = "Invalid credentials";
 

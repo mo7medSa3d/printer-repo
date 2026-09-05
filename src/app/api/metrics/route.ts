@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { validateManager } from "@/lib/manager-auth";
-import { renderPrometheusMetrics } from "@/lib/metrics";
+import { validateManager } from "../../../lib/manager-auth";
+import { renderPrometheusMetrics } from "../../../lib/metrics";
 
 export const dynamic = "force-dynamic";
 

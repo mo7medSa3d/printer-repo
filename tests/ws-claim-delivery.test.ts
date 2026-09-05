@@ -13,9 +13,9 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { attachAgentWSS, claimAndPushJobToAgent } from "@/server/ws";
-import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS } from "@/lib/job-delivery";
-import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "@/app/api/agent/jobs/route";
+import { attachAgentWSS, claimAndPushJobToAgent } from "../src/server/ws";
+import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
+import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
 
 /**
  * PART 1 regression suite — the WebSocket claim race.

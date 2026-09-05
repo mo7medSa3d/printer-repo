@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrivateNetworkAddress } from "@/lib/network-address";
+import { isPrivateNetworkAddress } from "../src/lib/network-address";
 
 describe("isPrivateNetworkAddress", () => {
   it("accepts intended private and link-local IPv4 ranges", () => {

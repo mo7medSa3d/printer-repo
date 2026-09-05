@@ -1,10 +1,10 @@
-import { db } from "@/db";
-import { agents, printers } from "@/db/schema";
-import { validateAgent } from "@/lib/agent-auth";
+import { db } from "../../../../db";
+import { agents, printers } from "../../../../db/schema";
+import { validateAgent } from "../../../../lib/agent-auth";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { DEVICE_CLASSES, PRINTER_TYPES } from "@/lib/printer-model";
-import { hasBodyOverLimit } from "@/lib/request-limits";
+import { DEVICE_CLASSES, PRINTER_TYPES } from "../../../../lib/printer-model";
+import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);

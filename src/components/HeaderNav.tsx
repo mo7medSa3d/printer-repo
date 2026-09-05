@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, LogIn, Menu, X, Home } from "lucide-react";
-import { BrandMark } from "@/components/brand";
+import { BrandMark } from "./brand";
 
 const navLinks = [
   { href: "/", label: "Home", icon: Home },

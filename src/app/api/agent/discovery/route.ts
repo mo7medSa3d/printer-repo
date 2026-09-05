@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { discoverySessions, discoveredDevices } from "@/db/schema";
-import { validateAgent } from "@/lib/agent-auth";
+import { db } from "../../../../db";
+import { discoverySessions, discoveredDevices } from "../../../../db/schema";
+import { validateAgent } from "../../../../lib/agent-auth";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { nanoid } from "nanoid";
-import { hasBodyOverLimit } from "@/lib/request-limits";
-import { isPrivateNetworkAddress } from "@/lib/network-address";
+import { hasBodyOverLimit } from "../../../../lib/request-limits";
+import { isPrivateNetworkAddress } from "../../../../lib/network-address";
 
 export const dynamic = "force-dynamic";
 const MAX_DISCOVERY_BODY_BYTES = 2 * 1024 * 1024;

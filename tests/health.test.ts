@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readFileSync } from "fs";
 import { hasTestDatabase, applyMigrations, closePool } from "./helpers/pg";
-import { GET as healthGET } from "@/app/api/health/route";
+import { GET as healthGET } from "../src/app/api/health/route";
 
 describe("health endpoint contract", () => {
   it("does not expose inventory or job counts", () => {

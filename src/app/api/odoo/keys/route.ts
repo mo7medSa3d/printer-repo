@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { apiKeys } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
-import { generateOdooApiKey } from "@/lib/odoo-auth";
+import { db } from "../../../../db";
+import { apiKeys } from "../../../../db/schema";
+import { validateManager } from "../../../../lib/manager-auth";
+import { generateOdooApiKey } from "../../../../lib/odoo-auth";
 import { desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";

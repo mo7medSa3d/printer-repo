@@ -21,7 +21,7 @@ import {
   Mono,
   StatusBadge,
   StatusDot,
-} from "@/components/ui";
+} from "../../components/ui";
 import { SettingsSection } from "../ui";
 import type { DesktopState } from "../types";
 import { friendlyPrinterError } from "../lib/printers";

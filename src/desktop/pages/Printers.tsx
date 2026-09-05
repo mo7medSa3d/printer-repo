@@ -12,7 +12,7 @@ import {
   Select,
   StatusBadge,
   StatusDot,
-} from "@/components/ui";
+} from "../../components/ui";
 import { Toolbar } from "../ui";
 import { PrinterAvatar } from "../ui";
 import type { DesktopState } from "../types";

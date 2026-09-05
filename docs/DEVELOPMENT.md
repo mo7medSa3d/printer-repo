@@ -144,8 +144,8 @@ in [../API.md](../API.md) and [../PRINTERS.md](../PRINTERS.md).
   [SECURITY.md](SECURITY.md) §7.
 * Do not add a dependency for styling or convenience; the design tokens live in
   `src/app/globals.css` ([../DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md)).
-* Server components must not import `@/components/ui` (it pulls in client hooks); use
-  `@/components/brand` for the server-rendered layout.
+* Server components must not import `src/components/ui` (it pulls in client hooks); use
+  `src/components/brand` for the server-rendered layout.
 
 ## 9. Before opening a pull request
 

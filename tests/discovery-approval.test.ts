@@ -8,10 +8,10 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { createManagerSession } from "@/lib/manager-auth";
-import { POST as discoveryReportPOST } from "@/app/api/agent/discovery/route";
-import { POST as verifyPOST } from "@/app/api/agents/[id]/discovered-printers/[deviceId]/verify/route";
-import { POST as provisionPOST } from "@/app/api/agents/[id]/discovered-printers/[deviceId]/provision/route";
+import { createManagerSession } from "../src/lib/manager-auth";
+import { POST as discoveryReportPOST } from "../src/app/api/agent/discovery/route";
+import { POST as verifyPOST } from "../src/app/api/agents/[id]/discovered-printers/[deviceId]/verify/route";
+import { POST as provisionPOST } from "../src/app/api/agents/[id]/discovered-printers/[deviceId]/provision/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 

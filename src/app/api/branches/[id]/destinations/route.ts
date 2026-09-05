@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { destinations } from "@/db/schema";
-import { validateManager } from "@/lib/manager-auth";
+import { db } from "../../../../../db";
+import { destinations } from "../../../../../db/schema";
+import { validateManager } from "../../../../../lib/manager-auth";
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
