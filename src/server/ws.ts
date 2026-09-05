@@ -153,7 +153,12 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
   };
 }
 
-export function attachAgentWSS(server: HttpServer) {
+export type AgentWSSOptions = {
+  enableJobNotifications?: boolean;
+};
+
+export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}) {
+  const { enableJobNotifications = true } = options;
   const wss = new WebSocketServer({ noServer: true, path: "/api/agent/ws", maxPayload: MAX_WS_MESSAGE_BYTES });
 
   const interval = setInterval(() => {
@@ -167,10 +172,12 @@ export function attachAgentWSS(server: HttpServer) {
   wss.on("close", () => clearInterval(interval));
 
   let stopNotificationListener: (() => Promise<void>) | null = null;
-  void startJobNotificationListener().then((stop) => { stopNotificationListener = stop; }).catch((error) => {
-    console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
-  });
-  wss.on("close", () => { void stopNotificationListener?.(); });
+  if (enableJobNotifications) {
+    void startJobNotificationListener().then((stop) => { stopNotificationListener = stop; }).catch((error) => {
+      console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
+    });
+    wss.on("close", () => { void stopNotificationListener?.(); });
+  }
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
