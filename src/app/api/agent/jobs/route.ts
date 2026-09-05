@@ -11,8 +11,9 @@ import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 export const dynamic = "force-dynamic";
 const MAX_CLAIM_BATCH = 20;
-export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
+export const MAX_AGENT_IN_FLIGHT_JOBS = 64;
 const MAX_ERROR_LENGTH = 2000;
+const RETRYABLE_CRASH_MARKER = "AGENT_RESTART_DURING_PRINT_RETRYABLE:";
 
 export async function GET(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
@@ -150,7 +151,27 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: `Job transition raced with another update${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
   }
 
-  if (!canTransition(currentStatus, requestedStatus)) return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
+  // A printing agent may refresh the execution lease without changing state.
+  if (currentStatus === "printing" && requestedStatus === "printing") {
+    const refreshed = await db.update(printJobs)
+      .set({ error: errorMessage, updatedAt: new Date() })
+      .where(and(whereClause, eq(printJobs.status, "printing")))
+      .returning({ status: printJobs.status });
+    if (refreshed.length !== 1) return NextResponse.json({ error: "Concurrent status transition rejected" }, { status: 409 });
+    return NextResponse.json({ success: true, status: "printing", heartbeat: true });
+  }
+
+  // Crash recovery is allowed to requeue only with the exact server-issued marker.
+  const retryAfterCrash = currentStatus === "printing" &&
+    requestedStatus === "queued" &&
+    typeof rawError === "string" &&
+    rawError.startsWith(RETRYABLE_CRASH_MARKER);
+  if (!retryAfterCrash && !canTransition(currentStatus, requestedStatus)) {
+    return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
+  }
+  if (retryAfterCrash && job.retries >= MAX_RETRIES) {
+    return NextResponse.json({ error: "Job retry budget exhausted", status: "failed" }, { status: 409 });
+  }
 
   const updated = await db.update(printJobs)
     .set({
@@ -158,6 +179,7 @@ export async function PATCH(req: Request) {
       error: errorMessage,
       updatedAt: new Date(),
       ...(requestedStatus === "claimed" ? { claimedAt: new Date() } : {}),
+      ...(retryAfterCrash ? { claimedAt: null, deliveredAt: null, ackedAt: null, retries: sql`${printJobs.retries} + 1` } : {}),
     })
     .where(and(whereClause, eq(printJobs.status, currentStatus)))
     .returning({ status: printJobs.status });
@@ -170,5 +192,5 @@ export async function PATCH(req: Request) {
 
   incrementMetric(`print_jobs_${requestedStatus}_total`);
   logInfo(`print.job.${requestedStatus}`, { requestId, jobId, agentId: agent.id });
-  return NextResponse.json({ success: true, status: requestedStatus });
+  return NextResponse.json({ success: true, status: requestedStatus, ...(retryAfterCrash ? { retryScheduled: true } : {}) });
 }
