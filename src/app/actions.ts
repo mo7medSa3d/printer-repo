@@ -2,26 +2,15 @@
 
 import { db } from "@/db";
 import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "@/db/schema";
-import { eq, count, sql } from "drizzle-orm";
+import { eq, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { generatePairingCode } from "@/lib/agent-auth";
-import { validatePrintJobPayload, buildTestPrintPayload } from "@/lib/payload";
-import { isVirtualPrinterRecord } from "@/lib/printer-virtual";
-import { validatePayloadForPrinter } from "@/lib/routing";
+import { buildTestPrintPayload } from "@/lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "@/lib/manager-auth";
-import { claimAndPushJobToAgent } from "@/server/ws";
+import { createPrintJobForPrinter } from "@/lib/print-job-service";
 import { canTransitionLifecycle } from "@/lib/lifecycle";
-
-const MAX_AGENT_IN_FLIGHT_JOBS = 500;
-
-class AgentQueueFullError extends Error {
-  code = "AGENT_QUEUE_FULL" as const;
-  constructor(public readonly agentId: string, public readonly inFlight: number) {
-    super(`Agent ${agentId} has reached the maximum of ${MAX_AGENT_IN_FLIGHT_JOBS} in-flight jobs`);
-  }
-}
 
 async function requireManager() {
   const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
@@ -81,8 +70,6 @@ export async function deleteAgent(id: string) {
       throw new Error("This agent has print history and cannot be deleted. Retire the agent to preserve audit history.");
     }
 
-    // Discovery sessions/devices are operational data, not print history.
-    // Remove them before deleting the agent to satisfy the foreign keys.
     await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, agent.id));
     await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, agent.id));
     await tx.delete(agents).where(eq(agents.id, agent.id));
@@ -93,76 +80,9 @@ export async function deleteAgent(id: string) {
 
 export async function createPrintJob(printerId: string, payload: unknown) {
   await requireManager();
-  if (typeof printerId !== "string" || !printerId.trim()) throw new Error("printer id is required");
-
-  const printer = await db.query.printers.findFirst({
-    where: eq(printers.id, printerId.trim()),
-  });
-
-  if (!printer) throw new Error("Printer not found");
-  if (printer.lifecycle !== "active") throw new Error(`Printer is ${printer.lifecycle}`);
-  if (isVirtualPrinterRecord(printer)) throw new Error("Printer is virtual or redirected");
-  if (printer.status !== "online") throw new Error(`Printer is not online (status=${printer.status})`);
-
-  const validatedPayload = validatePrintJobPayload(payload);
-  const payloadType = validatedPayload.type;
-  const capability = validatePayloadForPrinter(payloadType, {
-    protocol: printer.protocol,
-    connectionType: printer.connectionType,
-    capabilities: printer.capabilities,
-  });
-  if (!capability.ok) throw new Error(capability.reason);
-
-  const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (!ownerAgent) throw new Error("Printer owner agent not found");
-  if (ownerAgent.lifecycle !== "active") throw new Error(`Agent is ${ownerAgent.lifecycle}`);
-  if (!ownerAgent.branchId) throw new Error("Printer owner agent has no branch");
-
-  const ownerBranch = await db.query.branches.findFirst({ where: eq(branches.id, ownerAgent.branchId) });
-  if (!ownerBranch) throw new Error("Printer owner branch not found");
-  if (!ownerBranch.enabled) throw new Error("Printer owner branch is disabled");
-
-  const id = `job_${nanoid(10)}`;
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60);
-
-  await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ownerAgent.id}))`);
-
-    const countResult = await tx.execute(sql`
-      SELECT COUNT(*)::int AS count
-      FROM print_jobs
-      WHERE agent_id = ${ownerAgent.id}
-        AND status IN ('claimed', 'printing')
-        AND expires_at > now()
-    `);
-    const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
-    if (inFlight >= MAX_AGENT_IN_FLIGHT_JOBS) {
-      throw new AgentQueueFullError(ownerAgent.id, inFlight);
-    }
-
-    await tx.insert(printJobs).values({
-      id,
-      branchId: ownerBranch.id,
-      agentId: ownerAgent.id,
-      printerId: printer.id,
-      status: "queued" as const,
-      payload: validatedPayload,
-      requestedBy: "manager",
-      expiresAt,
-    });
-  });
-
-  try {
-    const outcome = await claimAndPushJobToAgent({ id, agentId: printer.agentId });
-    if (outcome === "failed") {
-      console.warn(`[actions] job ${id} exhausted its delivery budget after a failed WS push`);
-    }
-  } catch (e) {
-    console.warn(`[actions] WS push failed for job ${id}:`, e);
-  }
-
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager" });
   revalidatePath("/dashboard");
-  return { id };
+  return { id: result.id };
 }
 
 export async function createTestPrintJob(printerId: string) {
@@ -170,15 +90,17 @@ export async function createTestPrintJob(printerId: string) {
   const printer = await db.query.printers.findFirst({
     where: eq(printers.id, printerId),
   });
-
   if (!printer) throw new Error("Printer not found");
 
   const agent = await db.query.agents.findFirst({
     where: eq(agents.id, printer.agentId),
   });
+  if (!agent) throw new Error("Printer owner agent not found");
 
-  const payload = buildTestPrintPayload(printer.name, agent?.name ?? printer.agentId);
-  return createPrintJob(printerId, payload);
+  const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager-test" });
+  revalidatePath("/dashboard");
+  return { id: result.id };
 }
 
 export async function setPrinterLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
