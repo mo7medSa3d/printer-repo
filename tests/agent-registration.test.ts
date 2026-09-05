@@ -100,7 +100,7 @@ suite("agent registration contract", () => {
       const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
         method: "POST",
         headers,
-        body: JSON.stringify({ pairingCode: `AAAAA${i}` }),
+        body: JSON.stringify({ pairingCode: "AAAAAA" }),
       }));
       expect(response.status).toBe(400);
     }
