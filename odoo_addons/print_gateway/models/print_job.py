@@ -18,14 +18,7 @@ class PrintGatewayPrintJob(models.Model):
     document_type = fields.Char()
     printer_id = fields.Many2one('print_gateway.printer', ondelete='set null')
     agent_id = fields.Many2one('print_gateway.agent', ondelete='set null')
-    status = fields.Selection([
-        ('queued', 'Queued'),
-        ('claimed', 'Claimed'),
-        ('printing', 'Printing'),
-        ('success', 'Success'),
-        ('failed', 'Failed'),
-        ('expired', 'Expired'),
-    ], default='queued', index=True)
+    status = fields.Selection([('queued', 'Queued'), ('claimed', 'Claimed'), ('printing', 'Printing'), ('success', 'Success'), ('failed', 'Failed'), ('expired', 'Expired')], default='queued', index=True)
     payload = fields.Text(help='Full canonical print payload serialized as JSON; retained for durable retry. Never logged or exposed in operational logs.')
     error = fields.Text()
     requested_by = fields.Char(default='odoo')
@@ -39,11 +32,10 @@ class PrintGatewayPrintJob(models.Model):
     report_name = fields.Char(string='Report Name', help='Technical report name, e.g., sale.report_saleorder_document')
     report_id = fields.Many2one('ir.actions.report', string='Report', ondelete='set null', help='Linked Odoo report')
 
-    _sql_constraints = [
-        ('branch_idempotency_unique',
-         'unique(branch_id, idempotency_key)',
-         'This print operation was already submitted for this branch.'),
-    ]
+    _branch_idempotency_unique = models.Constraint(
+        'UNIQUE(branch_id, idempotency_key)',
+        'This print operation was already submitted for this branch.',
+    )
 
     _VALID_GATEWAY_STATUSES = frozenset({'queued', 'claimed', 'printing', 'success', 'failed', 'expired', 'completed'})
     _TERMINAL_GATEWAY_STATUSES = frozenset({'success', 'failed', 'expired'})
@@ -81,25 +73,10 @@ class PrintGatewayPrintJob(models.Model):
                 payload_obj = json.loads(payload_raw)
             except (TypeError, ValueError) as exc:
                 raise ValueError("Persisted print payload is invalid JSON; refusing to retry an ambiguous operation") from exc
-            result = job.branch_id.create_print_job(
-                job.destination_id.gateway_destination_id or job.destination_id.id,
-                job.document_type,
-                payload_obj,
-                odoo_model=job.odoo_model,
-                odoo_record_id=job.odoo_record_id,
-                report_xml_id=job.report_xml_id,
-                report_name=job.report_name,
-                report_id=job.report_id.id if job.report_id else None,
-                idempotency_key=job.idempotency_key,
-            )
+            result = job.branch_id.create_print_job(job.destination_id.gateway_destination_id or job.destination_id.id, job.document_type, payload_obj, odoo_model=job.odoo_model, odoo_record_id=job.odoo_record_id, report_xml_id=job.report_xml_id, report_name=job.report_name, report_id=job.report_id.id if job.report_id else None, idempotency_key=job.idempotency_key)
             if result.gateway_job_id and result.gateway_job_id != job.gateway_job_id:
                 normalized = self._normalize_gateway_status(result.status)
-                job.write({
-                    'gateway_job_id': result.gateway_job_id,
-                    'status': normalized or job.status,
-                    'last_sync_at': fields.Datetime.now(),
-                    'error': False,
-                })
+                job.write({'gateway_job_id': result.gateway_job_id, 'status': normalized or job.status, 'last_sync_at': fields.Datetime.now(), 'error': False})
         return True
 
     def action_sync_status(self):
@@ -115,19 +92,11 @@ class PrintGatewayPrintJob(models.Model):
                     data = resp.json()
                     remote_status = data.get('status') or data.get('state')
                     accepted_status = self._should_accept_status_update(job.status, remote_status)
-                    vals = {
-                        'error': data.get('error'),
-                        'last_sync_at': fields.Datetime.now(),
-                    }
+                    vals = {'error': data.get('error'), 'last_sync_at': fields.Datetime.now()}
                     if accepted_status is not None:
                         vals['status'] = accepted_status
                     elif remote_status is not None:
-                        _logger.warning(
-                            "Ignoring invalid or regressive Gateway status for job %s: local=%s remote=%s",
-                            job.gateway_job_id,
-                            job.status,
-                            remote_status,
-                        )
+                        _logger.warning("Ignoring invalid or regressive Gateway status for job %s: local=%s remote=%s", job.gateway_job_id, job.status, remote_status)
                     job.write(vals)
                 else:
                     _logger.warning("Job %s status sync returned %s", job.gateway_job_id, resp.status_code)
