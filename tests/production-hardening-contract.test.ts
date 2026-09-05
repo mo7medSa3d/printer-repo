@@ -13,14 +13,16 @@ describe("production hardening contracts", () => {
     expect(hasBodyOverLimit(new Request("http://test"), 2048)).toBe(false);
   });
 
-  it("uses only the declared Content-Length at the custom server and does not consume request streams", () => {
+  it("enforces a hard byte ceiling for both declared and chunked API request bodies", () => {
     const server = read("server.ts");
     expect(server).toContain("const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
     expect(server).toContain('if (!req.url?.startsWith("/api/")) return true;');
     expect(server).toContain('["POST", "PUT", "PATCH", "DELETE"]');
     expect(server).toContain('"REQUEST_BODY_TOO_LARGE"');
-    expect(server).not.toContain('req.on("data"');
-    expect(server).toContain("consuming it before handing the request to Next.js");
+    expect(server).toContain('req.on("data"');
+    expect(server).toContain("received += Buffer.byteLength(chunk)");
+    expect(server).toContain("received > MAX_API_BODY_BYTES");
+    expect(server).toContain("req.destroy()");
   });
 
   it("keeps Docker migration out of runtime startup and orders Compose migration before gateway", () => {
@@ -46,6 +48,9 @@ describe("production hardening contracts", () => {
     expect(tags).toContain("0012_runtime_state_checks");
     expect(tags).toContain("0013_runtime_state_constraint_scope_fix");
     expect(tags).toContain("0014_discovery_state_checks");
+    expect(tags).toContain("0015_metrics_and_agent_notifications");
+    expect(tags).toContain("0016_print_job_rate_limits");
+    expect(tags).toContain("0017_notify_requeued_jobs");
     expect(read("drizzle/0013_runtime_state_constraint_scope_fix.sql")).toContain("current_schema()");
     expect(read("drizzle/0014_discovery_state_checks.sql")).toContain("discovered_devices_candidate_status_check");
   });
