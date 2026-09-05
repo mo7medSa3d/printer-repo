@@ -34,16 +34,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          migration_status="$(docker compose ps -a --format '{{.Service}} {{.Status}}' migrate | tail -n 1)"
-          echo "Migration status: $migration_status"
-          case "$migration_status" in
-            migrate\ *\"Exited (0)\"*) ;;
-            *)
-              echo "Migration service did not exit successfully" >&2
-              docker compose logs --no-color migrate >&2 || true
-              exit 1
-              ;;
-          esac
+          migration_container="$(docker compose ps -aq migrate)"
+          if [ -z "$migration_container" ]; then
+            echo "Migration container was not created" >&2
+            docker compose ps -a >&2
+            exit 1
+          fi
+
+          migration_exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$migration_container")"
+          echo "Migration exit code: $migration_exit_code"
+          if [ "$migration_exit_code" != "0" ]; then
+            echo "Migration service did not exit successfully" >&2
+            docker compose logs --no-color migrate >&2 || true
+            exit 1
+          fi
 
           healthy=0
           for i in $(seq 1 60); do
