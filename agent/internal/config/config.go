@@ -28,6 +28,22 @@ type Config struct {
 	Printers []PrinterConfig `yaml:"printers"`
 }
 
+type PrinterConfig struct {
+	ID             string                 `yaml:"id"`
+	Name           string                 `yaml:"name"`
+	Type           string                 `yaml:"type"`
+	Endpoint       string                 `yaml:"endpoint"`
+	Protocol       string                 `yaml:"protocol"`
+	SpoolerName    string                 `yaml:"spooler_name,omitempty"`
+	ConnectionType string                 `yaml:"connection_type,omitempty"`
+	PrinterType    string                 `yaml:"printer_type,omitempty"`
+	USBVID         string                 `yaml:"usb_vid,omitempty"`
+	USBPID         string                 `yaml:"usb_pid,omitempty"`
+	USBSerial      string                 `yaml:"usb_serial,omitempty"`
+	Capabilities   map[string]interface{} `yaml:"capabilities,omitempty"`
+	Enabled        *bool                  `yaml:"enabled,omitempty"`
+}
+
 func (c *Config) ReprintAfterCrashEnabled() bool {
 	if c == nil || c.Agent.ReprintAfterCrash == nil {
 		return true
