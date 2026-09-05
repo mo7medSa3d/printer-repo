@@ -11,15 +11,21 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
+FROM node:24.20.0-alpine AS runtime-deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+
 FROM node:24.20.0-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
-# The gateway uses a custom Next.js server (server.ts) which also hosts the
-# Agent WebSocket. Keep tsx available at runtime because server.ts is TypeScript.
-COPY --from=deps /app/node_modules ./node_modules
+# Keep only production dependencies in the final image. `tsx` is an explicit
+# runtime dependency because the custom HTTP/WebSocket server and migration
+# command execute TypeScript directly.
+COPY --from=runtime-deps /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/server.ts ./server.ts
 COPY --from=build /app/src ./src
