@@ -39,8 +39,20 @@ export async function GET(req: Request) {
 
   // Only CLAIMED rows use the short delivery lease. PRINTING rows have a
   // separate execution lease so a slow printer is never mistaken for a lost
-  // delivery. A printing job is reclaimed only after the longer execution
-  // lease, which is the crash-recovery backstop.
+  // delivery. A printing job is failed after the longer execution lease even
+  // when retries is still zero; retry count tracks delivery attempts and
+  // cannot be used as proof that physical execution is safe to replay.
+  await db.execute(sql`
+    UPDATE print_jobs
+    SET status = 'failed',
+        error = 'AGENT_EXECUTION_TIMEOUT: agent execution lease expired (agent likely crashed during physical printing)',
+        updated_at = now()
+    WHERE agent_id = ${agent.id}
+      AND status = 'printing'
+      AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
+      ${branchFilter}
+  `);
+
   await db.execute(sql`
     UPDATE print_jobs
     SET status = 'failed',
@@ -49,18 +61,6 @@ export async function GET(req: Request) {
     WHERE agent_id = ${agent.id}
       AND status = 'claimed'
       AND updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
-      AND retries >= ${MAX_RETRIES}
-      ${branchFilter}
-  `);
-
-  await db.execute(sql`
-    UPDATE print_jobs
-    SET status = 'failed',
-        error = 'exceeded max retries after a stale printing lease (agent likely crashed during execution)',
-        updated_at = now()
-    WHERE agent_id = ${agent.id}
-      AND status = 'printing'
-      AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
       AND retries >= ${MAX_RETRIES}
       ${branchFilter}
   `);
