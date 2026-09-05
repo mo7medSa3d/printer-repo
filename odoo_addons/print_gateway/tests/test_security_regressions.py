@@ -46,9 +46,8 @@ class TestPrintGatewaySecurityCompanyIsolation(PrintGatewaySecurityCase):
         self.destination_b = self._destination(self.branch_b, 'POS B')
 
     def test_user_cannot_read_other_company_branches(self):
-        branches = self.env['print_gateway.branch'].with_user(self.user_a).search([])
-        self.assertIn(self.branch_a, branches)
-        self.assertNotIn(self.branch_b, branches)
+        with self.assertRaises(AccessError):
+            self.env['print_gateway.branch'].with_user(self.user_a).search([])
 
     def test_user_cannot_write_other_company_destination(self):
         with self.assertRaises(AccessError):
@@ -169,8 +168,9 @@ class TestPrintGatewaySecurityAccessControl(PrintGatewaySecurityCase):
                 'gateway_api_key': 'key',
             })
 
-    def test_user_can_read_branch(self):
-        self.assertEqual(self.branch.with_user(self.user).name, 'Access Branch')
+    def test_regular_user_cannot_read_branch(self):
+        with self.assertRaises(AccessError):
+            self.branch.with_user(self.user).read(['name'])
 
 
 class TestPrintGatewayLifecycleOwnership(PrintGatewaySecurityCase):
