@@ -21,7 +21,7 @@ cp .env.docker.example .env
 
 Set at minimum:
 
-- `POSTGRES_PASSWORD` — strong random database password.
+- `POSTGRES_PASSWORD` — strong random database password. Compose passes the database credentials to the Gateway and migration service as structured `PG*` variables, so URI-reserved characters in the password do not need manual URL escaping.
 - `GATEWAY_JWT_SECRET` — at least 32 random characters; preferably 64+.
 - `MANAGER_USERNAME` and `MANAGER_PASSWORD_HASH` — prefer the password hash over a plaintext manager password.
 
@@ -86,7 +86,7 @@ Do not run `docker compose down -v` on a production/staging database unless the 
 For a customer deployment, take a PostgreSQL backup before importing or changing customer data. A simple logical backup is:
 
 ```bash
-docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" > backup.sql
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > backup.sql
 ```
 
 Restore into a stopped/new staging database with `psql` as appropriate for the customer's backup.

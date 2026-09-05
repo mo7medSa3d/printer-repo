@@ -49,7 +49,10 @@ suite("WS claim-before-delivery", () => {
     server = createServer((_req, res) => {
       res.writeHead(404).end();
     });
-    attachAgentWSS(server);
+    // These tests explicitly invoke claimAndPushJobToAgent. The production
+    // PostgreSQL NOTIFY listener would race that manual claim, so keep the
+    // listener disabled here and cover its cross-instance wakeup separately.
+    attachAgentWSS(server, { enableJobNotifications: false });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
   });
