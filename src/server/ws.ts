@@ -67,6 +67,22 @@ export function getAgentWsCount(agentId: string): number {
   return agentSockets.get(agentId)?.size ?? 0;
 }
 
+export function closeAgentSockets(agentId: string): number {
+  const set = agentSockets.get(agentId);
+  if (!set) return 0;
+  let closed = 0;
+  for (const ws of [...set]) {
+    try {
+      ws.close(1008, "Agent disabled or retired");
+    } catch {
+      try { ws.terminate(); } catch {}
+    }
+    closed += 1;
+  }
+  agentSockets.delete(agentId);
+  return closed;
+}
+
 export function hasOpenAgentSocket(agentId: string): boolean {
   const set = agentSockets.get(agentId);
   if (!set) return false;
@@ -273,7 +289,10 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
-    if (!url.startsWith("/api/agent/ws")) return;
+    if (!url.startsWith("/api/agent/ws")) {
+      socket.destroy();
+      return;
+    }
 
     const clientKey = websocketClientKey(req);
     try {
