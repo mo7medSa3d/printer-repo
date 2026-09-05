@@ -11,7 +11,8 @@ import (
 )
 
 // discoverIPPPrinters uses standards-based DNS-SD/mDNS first and a verified
-// IPP TCP/631 fallback. An open port alone is never exposed as a printer.
+// IPP TCP/631 fallback. An open port or an mDNS advertisement alone is never
+// exposed as a verified IPP printer.
 func discoverIPPPrinters(ctx context.Context) ([]DeviceInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -20,14 +21,55 @@ func discoverIPPPrinters(ctx context.Context) ([]DeviceInfo, error) {
 	if mdnsErr != nil {
 		log.Printf("[discovery] IPP mDNS discovery warning: %v", mdnsErr)
 	}
+
+	// mDNS proves service advertisement, but it does not prove that the IPP
+	// endpoint is currently reachable and speaking IPP. Verify each advertised
+	// endpoint before surfacing it as an IPP printer.
+	verifiedMDNS := make([]DeviceInfo, 0, len(mdnsFound))
+	for _, d := range mdnsFound {
+		if ctx.Err() != nil {
+			break
+		}
+		if d.Endpoint == "" {
+			continue
+		}
+		printer, err := NewIPPPrinter(d.Endpoint, d.Name)
+		if err != nil {
+			log.Printf("[discovery] rejecting malformed mDNS IPP endpoint %q: %v", d.Endpoint, err)
+			continue
+		}
+		verifyCtx, verifyCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		attrs, err := printer.getPrinterAttributes(verifyCtx)
+		verifyCancel()
+		if err != nil || !isVerifiedIPPAttributes(attrs) {
+			if err != nil {
+				log.Printf("[discovery] mDNS IPP verification failed for %s: %v", d.Endpoint, err)
+			}
+			continue
+		}
+		if d.Capabilities == nil {
+			d.Capabilities = make(map[string]interface{})
+		}
+		d.Capabilities["ipp_verified"] = true
+		d.Capabilities["ipp_url"] = printer.URL
+		for _, key := range []string{"printer-state", "printer-state-reasons", "printer-is-accepting-jobs", "printer-uri-supported", "document-format-supported", "printer-make-and-model", "printer-info", "printer-name", "ipp-versions-supported"} {
+			if v := attrs[key]; v != "" {
+				d.Capabilities[key] = v
+			}
+		}
+		d.Endpoint = printer.URL
+		d.ID = StableIDForDevice(d)
+		verifiedMDNS = append(verifiedMDNS, d)
+	}
+
 	tcpFound, tcpErr := discoverIPPviaTCP(ctx)
 	if tcpErr != nil {
 		log.Printf("[discovery] IPP TCP discovery warning: %v", tcpErr)
 	}
 
 	seen := make(map[string]bool)
-	out := make([]DeviceInfo, 0, len(mdnsFound)+len(tcpFound))
-	for _, d := range append(mdnsFound, tcpFound...) {
+	out := make([]DeviceInfo, 0, len(verifiedMDNS)+len(tcpFound))
+	for _, d := range append(verifiedMDNS, tcpFound...) {
 		key := strings.ToLower(net.JoinHostPort(d.NetworkAddress, fmt.Sprintf("%d", d.Port)))
 		if key == ":0" || seen[key] {
 			continue
