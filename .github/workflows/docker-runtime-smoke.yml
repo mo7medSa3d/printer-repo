@@ -36,22 +36,18 @@ jobs:
           GATEWAY_DOMAIN: print.example.com
         run: |
           set -euo pipefail
-
           migration_container="$(docker compose ps -aq migrate)"
           if [ -z "$migration_container" ]; then
             echo "Migration container was not created" >&2
             docker compose ps -a >&2
             exit 1
           fi
-
           migration_exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$migration_container")"
           echo "Migration exit code: $migration_exit_code"
           if [ "$migration_exit_code" != "0" ]; then
-            echo "Migration service did not exit successfully" >&2
             docker compose logs --no-color migrate >&2 || true
             exit 1
           fi
-
           healthy=0
           for i in $(seq 1 60); do
             if docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
@@ -60,13 +56,55 @@ jobs:
             fi
             sleep 2
           done
-
           docker compose ps -a
           if [ "$healthy" -ne 1 ]; then
             echo "Gateway did not become healthy within 120 seconds" >&2
             exit 1
           fi
           docker compose exec -T gateway node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>r.text()).then(console.log)"
+
+      - name: Exercise custom server HTTP guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T gateway node <<'NODE'
+          const http = require('node:http');
+          const net = require('node:net');
+
+          function request(options, body) {
+            return new Promise((resolve, reject) => {
+              const req = http.request({host:'127.0.0.1', port:3000, ...options}, res => {
+                res.resume();
+                res.on('end', () => resolve(res.statusCode));
+              });
+              req.on('error', reject);
+              if (body !== undefined) req.end(body); else req.end();
+            });
+          }
+
+          async function main() {
+            const small = await request({method:'POST', path:'/api/agent/register', headers:{'content-type':'application/json','content-length':'2'}}, '{}');
+            if (small !== 400) throw new Error(`custom server POST reached wrong status: ${small}`);
+
+            const oversized = await request({method:'POST', path:'/api/agent/register', headers:{'content-type':'application/json','content-length':String(8*1024*1024+1)}});
+            if (oversized !== 413) throw new Error(`oversized POST expected 413, got ${oversized}`);
+
+            const chunked = await request({method:'POST', path:'/api/agent/register', headers:{'content-type':'application/json','transfer-encoding':'chunked'}}, '{}');
+            if (chunked !== 411) throw new Error(`chunked POST expected 411, got ${chunked}`);
+
+            await new Promise((resolve, reject) => {
+              const s = net.connect(3000, '127.0.0.1');
+              let settled = false;
+              const done = (err) => { if (settled) return; settled = true; s.destroy(); err ? reject(err) : resolve(); };
+              s.setTimeout(2000, () => done(new Error('wrong-path upgrade socket was not closed')));
+              s.on('connect', () => s.write('GET /not-agent-ws HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n'));
+              s.on('close', () => done());
+              s.on('error', err => done(err));
+            });
+            console.log('custom server HTTP guards passed');
+          }
+          main().catch(err => { console.error(err); process.exit(1); });
+          NODE
 
       - name: Show logs on failure
         if: failure()
