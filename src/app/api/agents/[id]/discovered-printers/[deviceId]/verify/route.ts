@@ -37,8 +37,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const updated = await db.update(discoveredDevices)
     .set({
+      // Approval is authorization, not technical evidence. Preserve the
+      // discovery confidence score generated from actual device observations.
       verification: "verified",
-      confidence: "high",
       candidateStatus: "verified",
       updatedAt: new Date(),
     })
