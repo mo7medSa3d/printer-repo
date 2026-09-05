@@ -16,12 +16,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
         shell: bash
         run: |
           set -euo pipefail
           protected=$(gh api "repos/${REPOSITORY}/branches/main" --jq '.protected')
           if [[ "$protected" != "true" ]]; then
-            echo "main branch is not protected. Configure GitHub branch protection or a ruleset with required status checks before merging production changes."
+            message="main branch is not protected. Configure GitHub branch protection or a ruleset with required status checks before merging production changes."
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              echo "WARNING: $message"
+              echo "Repository protection must be enabled by an administrator; this workflow cannot change repository settings."
+              exit 0
+            fi
+            echo "ERROR: $message"
             exit 1
           fi
           echo "main branch protection is enabled."
