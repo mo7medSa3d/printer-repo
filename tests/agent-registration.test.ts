@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from "vitest";
 import { POST as registerPOST } from "@/app/api/agent/register/route";
+import { generatePairingCode } from "@/lib/agent-auth";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, closePool, pool } from "./helpers/pg";
 
 const suite = describe.skipIf(!hasTestDatabase);
@@ -24,9 +25,15 @@ suite("agent registration contract", () => {
     await truncateAll();
   });
 
+  it("generates exactly six numeric pairing digits", () => {
+    for (let i = 0; i < 100; i++) {
+      expect(generatePairingCode()).toMatch(/^\d{6}$/);
+    }
+  });
+
   it("pairs using only the one-time pairing code and derives branch from the pre-provisioned agent", async () => {
     const f = await seedFixture();
-    const pairingCode = "ABCD23";
+    const pairingCode = "123456";
     await pool().query(
       `UPDATE agents SET pairing_code = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
       [pairingCode, f.agentId],
@@ -65,14 +72,14 @@ suite("agent registration contract", () => {
   it("rejects a client-supplied branchId before any ownership lookup", async () => {
     const f = await seedFixture();
     await pool().query(
-      `UPDATE agents SET pairing_code = 'ABCD23', pairing_code_expires_at = now() + interval '30 minutes' WHERE id = $1`,
+      `UPDATE agents SET pairing_code = '123456', pairing_code_expires_at = now() + interval '30 minutes' WHERE id = $1`,
       [f.agentId],
     );
 
     const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pairingCode: "ABCD23", branchId: "attacker-branch" }),
+      body: JSON.stringify({ pairingCode: "123456", branchId: "attacker-branch" }),
     }));
 
     expect(response.status).toBe(400);
@@ -90,18 +97,29 @@ suite("agent registration contract", () => {
     expect(await response.json()).toEqual({ error: "branchId is not accepted during registration" });
   });
 
-  it("invalid pairing attempts are rate-limited", async () => {
+  it("rejects non-numeric and non-six-digit pairing codes", async () => {
+    for (const pairingCode of ["12345", "1234567", "ABC123", "12 3456"]) {
+      const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-real-ip": "127.0.0.61" },
+        body: JSON.stringify({ pairingCode }),
+      }));
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("rate-limits invalid pairing attempts independently of the submitted code", async () => {
     await seedFixture();
     const headers = {
       "content-type": "application/json",
       "x-real-ip": "127.0.0.60",
     };
 
-    for (let i = 0; i < 5; i++) {
+    for (const pairingCode of ["100000", "200000", "300000", "400000", "500000"]) {
       const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
         method: "POST",
         headers,
-        body: JSON.stringify({ pairingCode: `BAD00${i}` }),
+        body: JSON.stringify({ pairingCode }),
       }));
       expect(response.status).toBe(400);
     }
@@ -109,7 +127,7 @@ suite("agent registration contract", () => {
     const limited = await registerPOST(new Request("http://gateway.test/api/agent/register", {
       method: "POST",
       headers,
-      body: JSON.stringify({ pairingCode: "BAD999" }),
+      body: JSON.stringify({ pairingCode: "999999" }),
     }));
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBeTruthy();
