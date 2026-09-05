@@ -127,7 +127,7 @@ export async function POST(req: Request) {
 
     try {
       const result = await createPrintJobForPrinter(parsed.printerId, validatedPayload, { requestedBy: "odoo-legacy", idempotencyKey: parsed.idempotencyKey ?? null, expiresAt });
-      return NextResponse.json({ jobId: result.id, status: result.status, printerId: result.printerId, agentId: result.agentId, branchId: result.branchId });
+      return NextResponse.json({ jobId: result.id, status: result.status, printerId: result.printerId, agentId: result.agentId, branchId: result.branchId }, { status: 201 });
     } catch (e: unknown) {
       if (e instanceof AgentQueueFullError) {
         incrementMetric("print_jobs_backpressure_total");
