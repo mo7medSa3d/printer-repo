@@ -8,7 +8,7 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { sweepPrintJobs, MAX_RETRIES } from "../src/lib/job-maintenance";
+import { sweepPrintJobs, MAX_RETRIES, STALE_PRINTING_SECONDS } from "../src/lib/job-maintenance";
 import { GET as agentJobsGET } from "../src/app/api/agent/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
@@ -72,7 +72,7 @@ suite("server-side print job maintenance", () => {
   });
 
   it("fails stale printing leases without requeueing physical execution", async () => {
-    await insertJob("job-stale-printing", "printing", 0, 11 * 60, 3600);
+    await insertJob("job-stale-printing", "printing", 0, STALE_PRINTING_SECONDS + 1, 3600);
     const result = await sweepPrintJobs();
     expect(result.stalePrinting).toBe(1);
     const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-stale-printing"]);
