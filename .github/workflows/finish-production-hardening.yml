@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/full-production-hardening-2026-09
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -30,7 +33,7 @@ jobs:
         run: python3 scripts/finish-production-hardening.py
       - name: Format changed Go files
         working-directory: agent
-        run: gofmt -w internal/agent/agent.go internal/agent/discovery_manager.go internal/agent/config/config.go 2>/dev/null || true
+        run: gofmt -w internal/agent/agent.go internal/agent/discovery_manager.go internal/config/config.go
       - name: Verify lockfile and Go syntax
         working-directory: agent
         run: go test -run '^$' ./...
