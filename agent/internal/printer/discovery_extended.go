@@ -25,21 +25,19 @@ type DiscoveryCandidate struct {
 
 // DiscoverySource constants — discovery origin, NOT printer protocol.
 const (
-	SourceMDNS          = "mdns"
-	SourceIPP           = "ipp"
-	SourceIPPS          = "ipps"
-	SourceRAW           = "raw"
-	SourceLPR           = "lpr"
-	SourceSNMP          = "snmp"
-	SourceWSD           = "wsd"
-	SourceSpooler       = "windows_spooler"
-	SourceUSB           = "usb"
-	SourceSubnet        = "subnet"
-	SourceConfig        = "config"
-	SourceRegistry      = "registry"
+	SourceMDNS     = "mdns"
+	SourceIPP      = "ipp"
+	SourceIPPS     = "ipps"
+	SourceRAW      = "raw"
+	SourceLPR      = "lpr"
+	SourceSNMP     = "snmp"
+	SourceWSD      = "wsd"
+	SourceSpooler  = "windows_spooler"
+	SourceUSB      = "usb"
+	SourceSubnet   = "subnet"
+	SourceConfig   = "config"
+	SourceRegistry = "registry"
 )
-
-// confidence helpers
 
 func confidenceForDevice(sources []string, verification string, manufacturer, model string) string {
 	hasVerified := verification == "verified"
@@ -67,7 +65,6 @@ func containsDiscoverySource(a []string, s string) bool {
 
 // Deduplication: stable identity priority as per spec:
 // 1. UUID, 2. serial+manufacturer/model, 3. MAC, 4. IP+URI, 5. hostname+port
-
 func dedupeKey(di DeviceInfo) string {
 	if di.Capabilities != nil {
 		if v, ok := di.Capabilities["uuid"]; ok && fmt.Sprint(v) != "" {
@@ -109,8 +106,6 @@ func dedupeKey(di DeviceInfo) string {
 
 // SNMP discovery: safe read-only query for printer MIB.
 // Uses UDP 161 with community "public" (never hardcodes private credentials).
-// Queries: sysDescr (1.3.6.1.2.1.1.1.0), sysName (1.3.6.1.2.1.1.5.0), hrDeviceDescr (1.3.6.1.2.1.25.3.2.1.3), printer MIB 1.3.6.1.2.1.43.5.1.1.17 (prtGeneralSerialNumber)
-
 func discoverSNMPPrinters(ctx context.Context, targets []string) []DeviceInfo {
 	if len(targets) == 0 {
 		return nil
@@ -152,6 +147,7 @@ func discoverSNMPPrinters(ctx context.Context, targets []string) []DeviceInfo {
 	case <-ctx.Done():
 	}
 	close(results)
+
 	var out []DeviceInfo
 	seen := make(map[string]bool)
 	for di := range results {
@@ -166,7 +162,6 @@ func discoverSNMPPrinters(ctx context.Context, targets []string) []DeviceInfo {
 }
 
 func probeSNMPHost(ctx context.Context, host string, timeout time.Duration) *DeviceInfo {
-	// Build SNMPv1 GET for sysDescr
 	pkt := buildSNMPGet([]string{"1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.5.0"})
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, "161"))
 	if err != nil {
@@ -188,20 +183,16 @@ func probeSNMPHost(ctx context.Context, host string, timeout time.Duration) *Dev
 		return nil
 	}
 	resp := buf[:n]
-	// Very minimal validation: response should contain "1.3.6.1.2.1.1.1.0" and be printable
 	sysDescr := extractSNMPString(resp)
 	if sysDescr == "" {
 		return nil
 	}
 	lower := strings.ToLower(sysDescr)
-	// Heuristic: printer if sysDescr mentions printer, jetdirect, laser, etc.
-	isPrinter := strings.Contains(lower, "printer") || strings.Contains(lower, "jetdirect") || strings.Contains(lower, "laser") || strings.Contains(lower, "zebra") || strings.Contains(lower, "epson") || strings.Contains(lower, "brother") || strings.Contains(lower, "hp") && strings.Contains(lower, "print")
-	if !isPrinter {
-		// Could still be printer, but need stronger signal: check if hrDeviceDescr contains printer
-		if !strings.Contains(lower, "print") {
-			return nil
-		}
+	isPrinter := strings.Contains(lower, "printer") || strings.Contains(lower, "jetdirect") || strings.Contains(lower, "laser") || strings.Contains(lower, "zebra") || strings.Contains(lower, "epson") || strings.Contains(lower, "brother") || (strings.Contains(lower, "hp") && strings.Contains(lower, "print"))
+	if !isPrinter && !strings.Contains(lower, "print") {
+		return nil
 	}
+
 	id := StableIDFromNetwork(host, 161)
 	di := DeviceInfo{
 		ID:             id,
@@ -217,7 +208,6 @@ func probeSNMPHost(ctx context.Context, host string, timeout time.Duration) *Dev
 		Enabled:        true,
 		Capabilities:   map[string]interface{}{"discovered_via": "snmp", "sysDescr": sysDescr, "snmp_verified": true},
 	}
-	// Try to parse manufacturer/model from sysDescr
 	if parts := strings.Fields(sysDescr); len(parts) >= 2 {
 		di.Capabilities["manufacturer"] = parts[0]
 	}
@@ -225,104 +215,154 @@ func probeSNMPHost(ctx context.Context, host string, timeout time.Duration) *Dev
 }
 
 func buildSNMPGet(oids []string) []byte {
-	// Minimal SNMPv1 GET construction (BER). Keep simple, not fully compliant but works for many agents.
-	// Structure: SEQUENCE { version, community, PDU }
 	var pdu bytes.Buffer
-	// PDU type GET 0xA0
 	pdu.WriteByte(0xA0)
-	pduLenPos := pdu.Len()
-	pdu.WriteByte(0) // placeholder
-	// request-id
-	pdu.Write([]byte{0x02, 0x04, 0x00, 0x00, 0x00, 0x01})
-	// error-status, error-index
-	pdu.Write([]byte{0x02, 0x01, 0x00, 0x02, 0x01, 0x00})
-	// varbind list
-	pdu.WriteByte(0x30) // SEQUENCE
-	vbLenPos := pdu.Len()
-	pdu.WriteByte(0)
+	pduContent := bytes.Buffer{}
+	pduContent.Write([]byte{0x02, 0x04, 0x00, 0x00, 0x00, 0x01})
+	pduContent.Write([]byte{0x02, 0x01, 0x00})
+	pduContent.Write([]byte{0x02, 0x01, 0x00})
+
+	varbinds := bytes.Buffer{}
 	for _, oid := range oids {
-		pdu.WriteByte(0x30) // varbind
-		pdu.WriteByte(0x06 + 5) // approximate
-		// OID
 		oidBytes := encodeOID(oid)
-		pdu.WriteByte(0x06)
-		pdu.WriteByte(byte(len(oidBytes)))
-		pdu.Write(oidBytes)
-		// NULL value
-		pdu.Write([]byte{0x05, 0x00})
+		var vb bytes.Buffer
+		vb.WriteByte(0x06)
+		writeBERLength(&vb, len(oidBytes))
+		vb.Write(oidBytes)
+		vb.Write([]byte{0x05, 0x00})
+
+		varbinds.WriteByte(0x30)
+		writeBERLength(&varbinds, vb.Len())
+		varbinds.Write(vb.Bytes())
 	}
-	// fix varbind len
-	vbLen := pdu.Len() - vbLenPos - 1
-	pdu.Bytes()[vbLenPos] = byte(vbLen)
-	// fix pdu len
-	pduLen := pdu.Len() - pduLenPos - 1
-	pdu.Bytes()[pduLenPos] = byte(pduLen)
-	// Full message
+
+	pduContent.WriteByte(0x30)
+	writeBERLength(&pduContent, varbinds.Len())
+	pduContent.Write(varbinds.Bytes())
+	writeBERLength(&pdu, pduContent.Len())
+	pdu.Write(pduContent.Bytes())
+
 	var msg bytes.Buffer
 	msg.WriteByte(0x30)
-	msgLenPos := msg.Len()
-	msg.WriteByte(0)
-	// version 0 (v1)
-	msg.Write([]byte{0x02, 0x01, 0x00})
-	// community "public"
-	msg.Write([]byte{0x04, 0x06})
-	msg.WriteString("public")
-	msg.Write(pdu.Bytes())
-	msgLen := msg.Len() - msgLenPos - 1
-	msg.Bytes()[msgLenPos] = byte(msgLen)
+	body := bytes.Buffer{}
+	body.Write([]byte{0x02, 0x01, 0x00}) // SNMPv1
+	body.Write([]byte{0x04, 0x06})
+	body.WriteString("public")
+	body.Write(pdu.Bytes())
+	writeBERLength(&msg, body.Len())
+	msg.Write(body.Bytes())
 	return msg.Bytes()
 }
 
+func writeBERLength(buf *bytes.Buffer, n int) {
+	if n < 0 {
+		return
+	}
+	if n < 128 {
+		buf.WriteByte(byte(n))
+		return
+	}
+	var tmp [8]byte
+	i := len(tmp)
+	for n > 0 {
+		i--
+		tmp[i] = byte(n)
+		n >>= 8
+	}
+	lengthBytes := tmp[i:]
+	buf.WriteByte(0x80 | byte(len(lengthBytes)))
+	buf.Write(lengthBytes)
+}
+
 func encodeOID(s string) []byte {
-	parts := strings.Split(s, ".")
-	var out []byte
+	parts := strings.Split(strings.TrimSpace(s), ".")
+	if len(parts) < 2 {
+		return nil
+	}
+	values := make([]int, len(parts))
 	for i, p := range parts {
-		var v int
-		fmt.Sscanf(p, "%d", &v)
-		if i == 0 {
-			continue
+		if _, err := fmt.Sscanf(p, "%d", &values[i]); err != nil || values[i] < 0 {
+			return nil
 		}
-		if i == 1 {
-			var first int
-			fmt.Sscanf(parts[0], "%d", &first)
-			out = append(out, byte(first*40+v))
-			continue
+	}
+	if values[0] > 2 || (values[0] < 2 && values[1] >= 40) {
+		return nil
+	}
+	var out []byte
+	appendBase128 := func(v int) {
+		if v == 0 {
+			out = append(out, 0)
+			return
 		}
-		// base128
-		if v < 128 {
-			out = append(out, byte(v))
-		} else {
-			out = append(out, byte(0x80| (v>>7)), byte(v&0x7F))
+		var tmp [8]byte
+		i := len(tmp)
+		for v > 0 {
+			i--
+			tmp[i] = byte(v & 0x7F)
+			v >>= 7
 		}
+		for j := i; j < len(tmp)-1; j++ {
+			out = append(out, tmp[j]|0x80)
+		}
+		out = append(out, tmp[len(tmp)-1])
+	}
+	appendBase128(values[0]*40 + values[1])
+	for _, v := range values[2:] {
+		appendBase128(v)
 	}
 	return out
 }
 
 func extractSNMPString(data []byte) string {
-	// Very naive: find first OCTET STRING (0x04) with printable content >5 chars
-	for i := 0; i < len(data)-6; i++ {
-		if data[i] == 0x04 {
-			l := int(data[i+1])
-			if l > 5 && l < 200 && i+2+l <= len(data) {
-				s := string(data[i+2 : i+2+l])
-				printable := true
-				for _, c := range s {
-					if c < 32 || c > 126 {
-						printable = false
-						break
-					}
-				}
-				if printable {
-					return s
-				}
+	targetOID := encodeOID("1.3.6.1.2.1.1.1.0")
+	if len(targetOID) == 0 {
+		return ""
+	}
+	for i := 0; i+len(targetOID) < len(data); i++ {
+		if !bytes.Equal(data[i:i+len(targetOID)], targetOID) {
+			continue
+		}
+		pos := i + len(targetOID)
+		if pos >= len(data) || data[pos] != 0x04 {
+			continue
+		}
+		pos++
+		length, next, ok := readBERLength(data, pos)
+		if !ok || next+length > len(data) || length == 0 || length > 512 {
+			continue
+		}
+		value := data[next : next+length]
+		for _, c := range value {
+			if c < 32 || c > 126 {
+				return ""
 			}
 		}
+		return string(value)
 	}
 	return ""
 }
 
+func readBERLength(data []byte, pos int) (length, next int, ok bool) {
+	if pos >= len(data) {
+		return 0, pos, false
+	}
+	first := data[pos]
+	pos++
+	if first&0x80 == 0 {
+		return int(first), pos, true
+	}
+	n := int(first & 0x7F)
+	if n == 0 || n > 4 || pos+n > len(data) {
+		return 0, pos, false
+	}
+	var v int
+	for i := 0; i < n; i++ {
+		v = (v << 8) | int(data[pos+i])
+	}
+	return v, pos + n, true
+}
+
 // LPR discovery: safe LPD probe on TCP 515.
-// Sends LPD queue name query without submitting job: LPR template \x02 + queue + "\n" then close.
 func discoverLPRPrinters(ctx context.Context, targets []string) []DeviceInfo {
 	if len(targets) == 0 {
 		return nil
@@ -386,18 +426,10 @@ func probeLPRHost(ctx context.Context, host string, timeout time.Duration) *Devi
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
-	// LPD: send Receive job query not supported, instead send queue status request: \x04queue\n
-	// Use queue "raw"
 	_, _ = conn.Write([]byte("\x04raw\n"))
 	buf := make([]byte, 256)
 	n, _ := conn.Read(buf)
-	if n == 0 {
-		// Open port but no LPD banner — still candidate but low confidence
-		return nil
-	}
-	// If response starts with \0, LPD acknowledged
-	if buf[0] != 0x00 {
-		// Not LPD, could still be printer but not verified LPR
+	if n == 0 || buf[0] != 0x00 {
 		return nil
 	}
 	id := StableIDFromNetwork(host, 515)
@@ -418,7 +450,6 @@ func probeLPRHost(ctx context.Context, host string, timeout time.Duration) *Devi
 
 // WSD discovery: WS-Discovery Probe via UDP multicast 239.255.255.250:3702
 func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
-	// WSD is Windows-specific, but we implement cross-platform probe; on non-Windows may find little.
 	probe := buildWSDProbe()
 	addr, err := net.ResolveUDPAddr("udp4", "239.255.255.250:3702")
 	if err != nil {
@@ -447,7 +478,6 @@ func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
 			continue
 		}
 		data := buf[:n]
-		// Rough filter: must contain printer or PrintService
 		if !bytes.Contains(data, []byte("printer")) && !bytes.Contains(data, []byte("Print")) && !bytes.Contains(data, []byte("wsd")) {
 			continue
 		}
@@ -456,7 +486,6 @@ func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
 			continue
 		}
 		seenIP[ip] = true
-		// Extract model/manufacturer if present
 		model := extractXMLTag(string(data), "wsdp:ModelName")
 		if model == "" {
 			model = extractXMLTag(string(data), "ModelName")
@@ -498,9 +527,9 @@ func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
 }
 
 func buildWSDProbe() []byte {
-	uuid := "urn:uuid:00000000-0000-0000-0000-000000000001"
+	uuid := fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano())
 	msg := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery">
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:wprt="http://schemas.microsoft.com/windows/2006/08/wdp/print">
 <soap:Header><wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action><wsa:MessageID>%s</wsa:MessageID><wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To></soap:Header>
 <soap:Body><wsd:Probe><wsd:Types>wprt:PrintDeviceType</wsd:Types></wsd:Probe></soap:Body>
 </soap:Envelope>`, uuid)
@@ -513,7 +542,6 @@ func extractXMLTag(s, tag string) string {
 	if idx < 0 {
 		return ""
 	}
-	// find > then content then </tag>
 	closeIdx := strings.Index(s[idx:], ">")
 	if closeIdx < 0 {
 		return ""
@@ -546,7 +574,6 @@ func discoverFullMDNS(ctx context.Context) []DeviceInfo {
 	if _, err := conn.Write(query); err != nil {
 		return nil
 	}
-	// also query _ipps._tcp and _printer._tcp
 	for _, svc := range []string{"_ipps._tcp.local", "_printer._tcp.local"} {
 		if q := buildMDNSQueryReal(svc); q != nil {
 			_, _ = conn.Write(q)
@@ -566,7 +593,6 @@ func discoverFullMDNS(ctx context.Context) []DeviceInfo {
 			continue
 		}
 		data := buf[:n]
-		// Parse DNS response for PTR/SRV/TXT/A records — minimal heuristic: look for printable host and port hints
 		hosts := parseMDNSHosts(data)
 		for _, h := range hosts {
 			if h.IP == "" {
@@ -629,29 +655,28 @@ type mdnsHost struct {
 
 func buildMDNSQueryReal(service string) []byte {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint16(0)) // ID 0
-	binary.Write(&buf, binary.BigEndian, uint16(0)) // flags
-	binary.Write(&buf, binary.BigEndian, uint16(1)) // QDCOUNT
-	binary.Write(&buf, binary.BigEndian, uint16(0)) // ANCOUNT
-	binary.Write(&buf, binary.BigEndian, uint16(0)) // NSCOUNT
-	binary.Write(&buf, binary.BigEndian, uint16(0)) // ARCOUNT
-	for _, part := range strings.Split(service, ".") {
+	binary.Write(&buf, binary.BigEndian, uint16(0))
+	binary.Write(&buf, binary.BigEndian, uint16(0))
+	binary.Write(&buf, binary.BigEndian, uint16(1))
+	binary.Write(&buf, binary.BigEndian, uint16(0))
+	binary.Write(&buf, binary.BigEndian, uint16(0))
+	binary.Write(&buf, binary.BigEndian, uint16(0))
+	for _, part := range strings.Split(strings.TrimSuffix(service, "."), ".") {
+		if len(part) > 63 {
+			return nil
+		}
 		buf.WriteByte(byte(len(part)))
 		buf.WriteString(part)
 	}
 	buf.WriteByte(0)
-	binary.Write(&buf, binary.BigEndian, uint16(12)) // PTR
-	binary.Write(&buf, binary.BigEndian, uint16(1))  // IN
+	binary.Write(&buf, binary.BigEndian, uint16(12))
+	binary.Write(&buf, binary.BigEndian, uint16(1))
 	return buf.Bytes()
 }
 
 func parseMDNSHosts(data []byte) []mdnsHost {
-	// Heuristic parser: scan for IPv4 addresses (4 bytes after A record hint) and TXT-like strings
 	var hosts []mdnsHost
 	s := string(data)
-	// Find IPs via simple scan for printable sequences resembling hostnames
-	// For production we would use miekg/dns, but stub parses TXT for product/model
-	// Extract TXT-like model
 	model := ""
 	if idx := strings.Index(strings.ToLower(s), "product="); idx >= 0 {
 		end := strings.Index(s[idx:], "\n")
@@ -670,15 +695,12 @@ func parseMDNSHosts(data []byte) []mdnsHost {
 			uuid = strings.TrimSpace(s[idx+5 : idx+end])
 		}
 	}
-	// Find IPv4 in data (A record 4-byte)
 	for i := 0; i < len(data)-4; i++ {
-		if data[i] == 0x00 && data[i+1] == 0x04 { // RDLENGTH 4
-			if i+6 <= len(data) {
-				ip := net.IPv4(data[i+2], data[i+3], data[i+4], data[i+5])
-				if ip.IsPrivate() && !ip.IsLoopback() {
-					hosts = append(hosts, mdnsHost{IP: ip.String(), Model: model, UUID: uuid})
-					break
-				}
+		if data[i] == 0x00 && data[i+1] == 0x04 && i+6 <= len(data) {
+			ip := net.IPv4(data[i+2], data[i+3], data[i+4], data[i+5])
+			if ip.IsPrivate() && !ip.IsLoopback() {
+				hosts = append(hosts, mdnsHost{IP: ip.String(), Model: model, UUID: uuid})
+				break
 			}
 		}
 	}
@@ -694,23 +716,16 @@ func isAllowedCIDR(cidr string) bool {
 	if err != nil {
 		return false
 	}
-	if !ipnet.IP.IsPrivate() {
-		return false
-	}
-	if ipnet.IP.IsLoopback() {
+	if !ipnet.IP.IsPrivate() || ipnet.IP.IsLoopback() {
 		return false
 	}
 	ones, bits := ipnet.Mask.Size()
-	if bits != 32 {
-		return false
-	}
-	if ones < 16 || ones > 30 {
+	if bits != 32 || ones < 16 || ones > 30 {
 		return false
 	}
 	return true
 }
 
 func init() {
-	// Ensure unused helpers are referenced
 	_ = extractXMLTag
 }
