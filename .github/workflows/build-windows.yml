@@ -146,6 +146,45 @@ jobs:
           Write-Host "NSIS EXE:"
           $exe | Select-Object FullName, Length
 
+      - name: Sign Windows release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
+            throw "Production Windows signing is mandatory on main. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD repository secrets."
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "odoo-print-signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+            $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" -ErrorAction Stop
+            $exe = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe" -ErrorAction Stop
+            foreach ($file in @($msi + $exe)) {
+              & signtool.exe sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" /f $certPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD /a $file.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed: $($file.FullName)" }
+            }
+          }
+          finally {
+            Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify Windows release signatures
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $files = @(
+            Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" -ErrorAction Stop
+            Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe" -ErrorAction Stop
+          )
+          foreach ($file in $files) {
+            & signtool.exe verify /pa /all $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode signature verification failed: $($file.FullName)" }
+            Write-Host "Verified signature: $($file.FullName)"
+          }
+
       - name: Install MSI and smoke-test installed app
         shell: pwsh
         run: |

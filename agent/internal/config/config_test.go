@@ -27,14 +27,11 @@ func TestValidatePrinterConfig(t *testing.T) {
 }
 
 func TestDefaultConfigPathProgramData(t *testing.T) {
-	// ensure PROGRAMDATA wins
 	orig := os.Getenv("PROGRAMDATA")
 	t.Setenv("PROGRAMDATA", `C:\ProgramData`)
 	got := DefaultConfigPath()
 	expected := filepath.Join(`C:\ProgramData`, "OdooPrintAgent", "config.yaml")
-	// On linux filepath.Join uses / but test checks suffix
 	if got != expected {
-		// normalize for linux runner: actual will be C:\ProgramData/OdooPrintAgent/config.yaml
 		if filepath.Base(got) != "config.yaml" {
 			t.Fatalf("expected config.yaml suffix, got %q", got)
 		}
@@ -52,5 +49,35 @@ func TestConfigValidate(t *testing.T) {
 	c.Server.URL = "htp://bad"
 	if err := c.Validate(); err == nil {
 		t.Fatalf("expected invalid url")
+	}
+}
+
+func TestConfigValidateRejectsHTTPByDefault(t *testing.T) {
+	t.Setenv("ODOO_PRINT_AGENT_ENV", "")
+	t.Setenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP", "")
+	c := &Config{}
+	c.Server.URL = "http://example.com"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected HTTP to be rejected by default")
+	}
+}
+
+func TestConfigValidateAllowsHTTPOnlyInExplicitDevelopmentMode(t *testing.T) {
+	t.Setenv("ODOO_PRINT_AGENT_ENV", "development")
+	t.Setenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP", "1")
+	c := &Config{}
+	c.Server.URL = "http://127.0.0.1:3000"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected explicit development HTTP to be valid, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsHTTPWhenOnlyFlagIsPresent(t *testing.T) {
+	t.Setenv("ODOO_PRINT_AGENT_ENV", "production")
+	t.Setenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP", "1")
+	c := &Config{}
+	c.Server.URL = "http://example.com"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected HTTP to remain rejected outside development")
 	}
 }

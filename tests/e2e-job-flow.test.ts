@@ -16,16 +16,6 @@ import { attachAgentWSS } from "../src/server/ws";
 import { POST as printJobsPOST, GET as printJobsGET } from "../src/app/api/print/jobs/route";
 import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
 
-/**
- * Gateway end-to-end flow with a real database and a real agent WebSocket
- * client: Odoo creates the job → routing picks the printer → the gateway
- * claims it → it is delivered → the agent acks and reports progress →
- * Odoo reads the final status.
- *
- * This is the software path only. It does NOT prove that paper came out of a
- * physical printer.
- */
-
 const suite = describe.skipIf(!hasTestDatabase);
 
 function pdfBase64() {
@@ -41,10 +31,7 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
   beforeAll(async () => {
     await applyMigrations();
     server = createServer((_req, res) => { res.writeHead(404).end(); });
-    // The first test explicitly verifies the synchronous WebSocket fast path.
-    // The production PostgreSQL NOTIFY listener is a separate cross-instance
-    // wakeup mechanism and would race that assertion, so disable it here.
-    attachAgentWSS(server, { enableJobNotifications: false });
+    attachAgentWSS(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
   });
@@ -83,7 +70,7 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     });
   }
 
-  it("delivers a PDF job to a connected agent as 'claimed' and completes it", async () => {
+  it("accepts a PDF job as queued while asynchronous delivery claims and completes it", async () => {
     const ws = await connectAgent(f);
     const received = new Promise<any>((resolve) => ws.once("message", (d) => resolve(JSON.parse(d.toString()))));
 
@@ -96,7 +83,9 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     }));
     expect(res.status).toBe(201);
     const created = await res.json();
-    expect(created.status).toBe("claimed");
+    // 201 means persisted/accepted. Delivery is asynchronous and must not be
+    // inferred from a race between the fast path and LISTEN/NOTIFY.
+    expect(created.status).toBe("queued");
     expect(created.printerId).toBe(f.printerId);
 
     const envelope = await received;
@@ -227,8 +216,6 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
     }));
     expect(ackRes.status).toBe(200);
 
-    // A status transition is not the delivery ACK. The WebSocket ack path is
-    // what records receipt, so delivered_at remains unset here.
     const printingRow = await jobRow(created.jobId);
     expect(printingRow.delivered_at).toBeNull();
 

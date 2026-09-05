@@ -15,20 +15,38 @@ import (
 	"github.com/odoo-print-agent/agent/internal/config"
 )
 
+func allowInsecureHTTP() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("ODOO_PRINT_AGENT_ENV")), "development") &&
+		os.Getenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP") == "1"
+}
+
+func validateServerURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid server URL: %w", err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("server URL host is empty")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && allowInsecureHTTP() {
+		return nil
+	}
+	if u.Scheme == "http" {
+		return fmt.Errorf("server URL must use https; insecure http is allowed only when ODOO_PRINT_AGENT_ENV=development and ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP=1")
+	}
+	return fmt.Errorf("server URL scheme must be https, got %q", u.Scheme)
+}
+
 // Register pairs this machine with the Gateway and persists the credentials
 // next to the existing config file. The secret is written to
 // %PROGRAMDATA%\OdooPrintAgent\config.yaml and is never echoed to stdout.
 func Register(serverURL, pairingCode, configPath string) error {
 	serverURL = strings.TrimRight(strings.TrimSpace(serverURL), "/")
-	u, err := url.Parse(serverURL)
-	if err != nil {
-		return fmt.Errorf("invalid server URL: %w", err)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("server URL must be http:// or https://")
-	}
-	if u.Host == "" {
-		return fmt.Errorf("server URL host is empty")
+	if err := validateServerURL(serverURL); err != nil {
+		return err
 	}
 	if strings.TrimSpace(pairingCode) == "" {
 		return fmt.Errorf("pairing code is empty")
@@ -83,8 +101,6 @@ func Register(serverURL, pairingCode, configPath string) error {
 		return fmt.Errorf("registration response did not contain agentId/secret")
 	}
 
-	// Load the existing config so printer configuration and agent name are
-	// preserved. config.Ensure already created the file on a fresh install.
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config before saving credentials: %w", err)

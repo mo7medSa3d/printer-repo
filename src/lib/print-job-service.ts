@@ -29,7 +29,13 @@ export type CreatePrintJobResult = {
   printerId: string;
   agentId: string;
   branchId: string;
-  status: "queued" | "claimed";
+  /**
+   * Creation is intentionally reported as queued. Delivery is asynchronous
+   * and may be claimed by either the local WebSocket fast path or another
+   * gateway instance consuming PostgreSQL NOTIFY. The persisted job row and
+   * subsequent status reads are authoritative for delivery state.
+   */
+  status: "queued";
 };
 
 function normalizeRequestedBy(value: string): string {
@@ -153,13 +159,8 @@ export async function createPrintJobForPrinter(
     documentType: options.documentType ?? null,
   });
 
-  let status: "queued" | "claimed" = "queued";
   try {
-    const outcome = await claimAndPushJobToAgent({ id, agentId: ownerAgent.id });
-    if (outcome === "delivered") status = "claimed";
-    if (outcome === "failed") {
-      console.warn(`[print-job-service] job ${id} exhausted its delivery budget after a failed WS push`);
-    }
+    await claimAndPushJobToAgent({ id, agentId: ownerAgent.id });
   } catch (error) {
     // The durable row is already queued. Delivery is best-effort and polling
     // remains the recovery path; never roll back a successfully persisted job
@@ -167,5 +168,8 @@ export async function createPrintJobForPrinter(
     console.warn(`[print-job-service] WS push failed for job ${id}:`, error);
   }
 
-  return { id, printerId: printer.id, agentId: ownerAgent.id, branchId: ownerBranch.id, status };
+  // The POST contract is intentionally stable: 201 means the job was
+  // accepted and persisted. The delivery state is observed via the job API,
+  // not inferred from a race between synchronous and notification delivery.
+  return { id, printerId: printer.id, agentId: ownerAgent.id, branchId: ownerBranch.id, status: "queued" };
 }
