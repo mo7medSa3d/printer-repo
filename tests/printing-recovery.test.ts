@@ -5,7 +5,7 @@ describe("printing crash recovery", () => {
   it("fails stale printing jobs without requiring delivery retries", () => {
     const src = readFileSync("src/app/api/agent/jobs/route.ts", "utf8");
     const start = src.indexOf("const STALE_PRINTING_SECONDS = 10 * 60");
-    const end = src.indexOf("await db.execute(sql`", start);
+    const end = src.indexOf("// Reclaim only stale CLAIMED", start);
     const block = src.slice(start, end);
 
     expect(block).toContain("const STALE_PRINTING_SECONDS = 10 * 60");
