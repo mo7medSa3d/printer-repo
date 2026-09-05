@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Odoo 19 compatibility helpers for Print Gateway."""
+"""Odoo 19 compatibility and user-facing error handling for Print Gateway."""
 
 from odoo import models, _
 from odoo.exceptions import ValidationError
@@ -7,10 +7,6 @@ from odoo.exceptions import ValidationError
 
 class PrintGatewayBranchOdoo19(models.Model):
     _inherit = 'print_gateway.branch'
-    _name_company_unique = models.Constraint(
-        'UNIQUE(name, company_id)',
-        'Branch name must be unique per company',
-    )
 
     def action_sync_from_gateway(self):
         try:
@@ -55,62 +51,6 @@ class PrintGatewayBranchOdoo19(models.Model):
             }
 
 
-class PrintGatewayDestinationOdoo19(models.Model):
-    _inherit = 'print_gateway.destination'
-    _name_branch_unique = models.Constraint(
-        'UNIQUE(name, branch_id)',
-        'Destination name must be unique per branch',
-    )
-
-
-class PrintGatewayDocumentTypeOdoo19(models.Model):
-    _inherit = 'print_gateway.document_type'
-    _name_branch_unique = models.Constraint(
-        'UNIQUE(name, branch_id)',
-        'Document type must be unique per branch',
-    )
-
-
-class PrintGatewayAgentOdoo19(models.Model):
-    _inherit = 'print_gateway.agent'
-    _gateway_agent_id_unique = models.Constraint(
-        'UNIQUE(gateway_agent_id)',
-        'Agent ID must be globally unique',
-    )
-
-
-class PrintGatewayPrinterOdoo19(models.Model):
-    _inherit = 'print_gateway.printer'
-    _gateway_printer_id_unique = models.Constraint(
-        'UNIQUE(gateway_printer_id)',
-        'Printer ID must be globally unique',
-    )
-
-
-class PrintGatewayPrinterBindingOdoo19(models.Model):
-    _inherit = 'print_gateway.printer_binding'
-    _priority_branch_dest_doctype_unique = models.Constraint(
-        'UNIQUE(branch_id, destination_id, document_type, priority)',
-        'Priority must be unique per branch/destination/document_type',
-    )
-
-
-class PrintGatewayPrintJobOdoo19(models.Model):
-    _inherit = 'print_gateway.print_job'
-    _branch_idempotency_unique = models.Constraint(
-        'UNIQUE(branch_id, idempotency_key)',
-        'This print operation was already submitted for this branch.',
-    )
-
-
-class PrintGatewayReportMappingOdoo19(models.Model):
-    _inherit = 'print_gateway.report_mapping'
-    _priority_unique = models.Constraint(
-        'UNIQUE(report_id, priority)',
-        'Priority must be unique per exact report.',
-    )
-
-
 class PrintGatewayAsyncPrintJobOdoo19(models.Model):
     _inherit = 'print_gateway.print_job'
 
@@ -119,7 +59,9 @@ class PrintGatewayAsyncPrintJobOdoo19(models.Model):
             return super().action_submit_pending()
         except Exception as exc:
             for job in self:
-                job.write({'error': str(exc)[:4000]})
+                job.write({
+                    'error': str(exc)[:4000],
+                })
             return False
 
 
