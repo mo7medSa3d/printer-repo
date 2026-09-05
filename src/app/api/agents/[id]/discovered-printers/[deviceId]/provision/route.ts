@@ -34,6 +34,33 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }, { status: 409 });
   }
 
+  // Discovery origins are not executable transports. Provision only when the
+  // Agent has reported an explicit print protocol that the Gateway understands.
+  const protocolMap: Record<string, { protocol: string; connectionType: string }> = {
+    ipp: { protocol: "ipp", connectionType: "ipp" },
+    ipps: { protocol: "ipps", connectionType: "ipps" },
+    raw: { protocol: "raw", connectionType: "network" },
+    escpos: { protocol: "escpos", connectionType: "network" },
+    lpr: { protocol: "raw", connectionType: "network" },
+    spooler: { protocol: "spooler", connectionType: "spooler" },
+    windows_spooler: { protocol: "spooler", connectionType: "spooler" },
+  };
+  const rawProtocol = (device.protocol ?? "").toLowerCase();
+  const transport = protocolMap[rawProtocol];
+  if (!transport) {
+    return NextResponse.json({
+      error: `UNSUPPORTED_DISCOVERY_TRANSPORT: ${device.protocol ?? "unknown"}. The candidate must report an explicit executable print transport before provisioning.`,
+      code: "UNSUPPORTED_DISCOVERY_TRANSPORT",
+    }, { status: 422 });
+  }
+
+  if (["ipp", "ipps", "raw"].includes(transport.protocol) && (!device.ipAddress || !device.port)) {
+    return NextResponse.json({
+      error: "MISSING_PRINTER_ENDPOINT: network printer requires ipAddress and port",
+      code: "MISSING_PRINTER_ENDPOINT",
+    }, { status: 422 });
+  }
+
   if (device.ipAddress && device.port) {
     const all = await db.query.printers.findMany({ where: eq(printers.agentId, agentId) });
     for (const p of all) {
@@ -42,32 +69,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       if (ip === device.ipAddress && cfg?.port === device.port) {
         await db.update(discoveredDevices)
           .set({ candidateStatus: "provisioned", provisionedPrinterId: p.id, updatedAt: new Date() })
-          .where(eq(discoveredDevices.id, deviceId));
+          .where(and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.candidateStatus, "verified")));
         return NextResponse.json({ printerId: p.id, already: true });
       }
     }
   }
 
   const printerId = `printer_${nanoid(10)}`;
-  const protocolMap: Record<string, string> = {
-    ipp: "ipp", ipps: "ipps", raw: "raw", lpr: "raw", wsd: "raw", mdns: "ipp", snmp: "raw",
-    usb: "raw", spooler: "spooler", windows_spooler: "spooler", escpos: "escpos",
-  };
-  const protocol = protocolMap[device.protocol ?? "unknown"];
-  if (!protocol) {
-    return NextResponse.json({ error: `UNSUPPORTED_DISCOVERY_PROTOCOL: ${device.protocol ?? "unknown"}`, code: "UNSUPPORTED_DISCOVERY_PROTOCOL" }, { status: 422 });
-  }
-
-  const connectionType = device.protocol === "usb"
-    ? "usb"
-    : device.protocol === "spooler" || device.protocol === "windows_spooler"
-      ? "spooler"
-      : device.protocol === "ipp"
-        ? "ipp"
-        : device.protocol === "ipps"
-          ? "ipps"
-          : "network";
-
   await db.transaction(async (tx) => {
     await tx.insert(printers).values({
       id: printerId,
@@ -75,8 +83,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       name: device.deviceName ?? device.model ?? `Printer ${device.ipAddress ?? deviceId}`,
       printerType: "physical",
       deviceClass: (device.deviceClass as any) ?? "unknown",
-      connectionType: connectionType as any,
-      protocol: protocol as any,
+      connectionType: transport.connectionType as any,
+      protocol: transport.protocol as any,
       status: "unknown",
       lifecycle: "active",
       config: { ip: device.ipAddress ?? undefined, port: device.port ?? undefined, address: device.uri ?? undefined } as any,
@@ -89,7 +97,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     await tx.update(discoveredDevices)
       .set({ candidateStatus: "provisioned", provisionedPrinterId: printerId, updatedAt: new Date() })
-      .where(eq(discoveredDevices.id, deviceId));
+      .where(and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.candidateStatus, "verified")));
   });
 
   return NextResponse.json({ printerId, already: false }, { status: 201 });
