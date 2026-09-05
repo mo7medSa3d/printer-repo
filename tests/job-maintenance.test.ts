@@ -9,6 +9,7 @@ import {
   type Fixture,
 } from "./helpers/pg";
 import { sweepPrintJobs, MAX_RETRIES } from "@/lib/job-maintenance";
+import { GET as agentJobsGET } from "@/app/api/agent/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 
@@ -44,12 +45,21 @@ suite("server-side print job maintenance", () => {
     expect(row.rows[0].status).toBe("expired");
   });
 
-  it("requeues stale claims and increments the retry budget", async () => {
+  it("requeues stale claims and the Agent can claim the recovered job", async () => {
     await insertJob("job-stale-claim", "claimed", 2, 120, 3600);
-    const result = await sweepPrintJobs();
+    const result = await sweepPrintJobs({ agentId: f.agentId, branchId: f.branchId });
     expect(result.requeuedClaims).toBe(1);
+
     const row = await pool().query(`SELECT status, retries, claimed_at, delivered_at, acked_at FROM print_jobs WHERE id = $1`, ["job-stale-claim"]);
     expect(row.rows[0]).toMatchObject({ status: "queued", retries: 3, claimed_at: null, delivered_at: null, acked_at: null });
+
+    const response = await agentJobsGET(new Request("http://gateway.test/api/agent/jobs", {
+      method: "GET",
+      headers: { Authorization: f.agentAuth },
+    }));
+    expect(response.status).toBe(200);
+    const claimed = await response.json();
+    expect(claimed.some((job: { id: string; status: string }) => job.id === "job-stale-claim" && job.status === "claimed")).toBe(true);
   });
 
   it("fails a stale claim after the retry budget is exhausted", async () => {
