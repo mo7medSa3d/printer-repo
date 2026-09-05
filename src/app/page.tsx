@@ -1,8 +1,16 @@
-import Link from "next/link";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { ArrowRight, Printer, ShieldCheck, Zap, Globe, Cpu } from "lucide-react";
 import { Button } from "../components/ui";
+import { getManagerCookieName, validateManagerClaims, verifyManagerToken } from "../lib/manager-auth";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
+  const claims = await validateManagerClaims(token ? verifyManagerToken(token) : null);
+  if (!claims) redirect("/login");
+
   return (
     <div className="flex flex-col items-center">
       <section className="w-full border-b border-edge bg-surface">
