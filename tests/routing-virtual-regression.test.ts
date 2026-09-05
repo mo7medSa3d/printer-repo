@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
  * Routing regression: the virtual-printer filter must not change how
  * physical printers are chosen.
  *
- * `resolvePrinterForJob` talks to the database, so `@/db` is replaced with a
+ * `resolvePrinterForJob` talks to the database, so the database module is replaced with a
  * test double. Everything else is the real routing layer, so these tests
  * exercise the actual candidate loop rather than re-implementing it.
  */
@@ -47,7 +47,7 @@ function requestedId(where: any): string | null {
   return requestedIds(where)[0] ?? null;
 }
 
-vi.mock("@/db", () => ({
+vi.mock("../src/db", () => ({
   db: {
     query: {
       branches: { findFirst: async ({ where }: any) => (requestedId(where) === state.branch?.id ? state.branch : null) },
@@ -59,8 +59,6 @@ vi.mock("@/db", () => ({
       },
       printerBindings: { findMany: async () => state.bindings },
       printers: {
-        // Keep findFirst for compatibility with any future routing helper,
-        // while the production resolver now uses the batched findMany path.
         findFirst: async ({ where }: any) => {
           const id = requestedId(where);
           return id ? (state.printers[id] ?? null) : null;
@@ -73,7 +71,6 @@ vi.mock("@/db", () => ({
         },
       },
       agents: {
-        // Keep findFirst for compatibility with any future routing helper.
         findFirst: async ({ where }: any) => {
           const id = requestedId(where);
           return id ? (state.agents[id] ?? null) : null;
@@ -88,7 +85,7 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { resolvePrinterForJob } from "@/lib/routing";
+import { resolvePrinterForJob } from "../src/lib/routing";
 
 function bind(printerId: string, priority: number, id = `b_${printerId}`) {
   return { id, branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId, priority, enabled: true };
