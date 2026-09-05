@@ -15,6 +15,9 @@ import (
 	"github.com/odoo-print-agent/agent/internal/config"
 )
 
+const pairingCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+const pairingCodeLength = 6
+
 func allowInsecureHTTP() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("ODOO_PRINT_AGENT_ENV")), "development") &&
 		os.Getenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP") == "1"
@@ -28,6 +31,12 @@ func validateServerURL(raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("server URL host is empty")
 	}
+	if u.User != nil {
+		return fmt.Errorf("server URL must not contain embedded credentials")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("server URL must not contain query strings or fragments")
+	}
 	if u.Scheme == "https" {
 		return nil
 	}
@@ -40,6 +49,19 @@ func validateServerURL(raw string) error {
 	return fmt.Errorf("server URL scheme must be https, got %q", u.Scheme)
 }
 
+func normalizeAndValidatePairingCode(raw string) (string, error) {
+	code := strings.ToUpper(strings.TrimSpace(raw))
+	if len(code) != pairingCodeLength {
+		return "", fmt.Errorf("pairing code must be exactly %d characters", pairingCodeLength)
+	}
+	for _, r := range code {
+		if !strings.ContainsRune(pairingCodeAlphabet, r) {
+			return "", fmt.Errorf("pairing code contains an invalid character; use the 6-character code shown in the dashboard")
+		}
+	}
+	return code, nil
+}
+
 // Register pairs this machine with the Gateway and persists the credentials
 // next to the existing config file. The secret is written to
 // %PROGRAMDATA%\OdooPrintAgent\config.yaml and is never echoed to stdout.
@@ -48,8 +70,9 @@ func Register(serverURL, pairingCode, configPath string) error {
 	if err := validateServerURL(serverURL); err != nil {
 		return err
 	}
-	if strings.TrimSpace(pairingCode) == "" {
-		return fmt.Errorf("pairing code is empty")
+	code, err := normalizeAndValidatePairingCode(pairingCode)
+	if err != nil {
+		return err
 	}
 
 	hostname, err := os.Hostname()
@@ -58,7 +81,7 @@ func Register(serverURL, pairingCode, configPath string) error {
 	}
 
 	payload := map[string]interface{}{
-		"pairingCode": strings.ToUpper(strings.TrimSpace(pairingCode)),
+		"pairingCode": code,
 		"metadata": map[string]string{
 			"hostname": hostname,
 			"os":       runtime.GOOS,
