@@ -1,10 +1,17 @@
 server:
-  url: "https://your-odoo-server.com"
+  # Production gateways must use HTTPS. Plain HTTP requires the explicit
+  # development-only environment opt-in described in the agent documentation.
+  url: "https://your-print-gateway.example.com"
 
 agent:
   id: ""
   secret: ""
   name: "Main Office Agent"
+  # Safe default: false prevents silent duplicate physical output after a crash.
+  # Set true only when the business accepts at-least-once reprinting.
+  reprint_after_crash: false
+  # Optional deterministic Windows PDF helper command, e.g. SumatraPDF.
+  # pdf_print_command: ["C:\\Program Files\\SumatraPDF\\SumatraPDF.exe", "-print-to", "{printer}", "{file}"]
 
 printers:
   - id: "printer_kitchen"
@@ -13,9 +20,9 @@ printers:
     endpoint: "192.168.1.50:9100"
     protocol: "escpos"
   
-  # NOTE: type "usb" validates but the Windows spooler backend is not wired
-  # yet — printer.New() rejects USB printers with an explicit error (see
-  # PRINTERS.md / factory.go). Prefer network (RAW TCP 9100) printers today.
+  # USB printers can be represented through the Windows spooler backend when a
+  # local Windows queue is available. Direct raw USB is intentionally not used
+  # as a network transport.
   - id: "printer_receipt"
     name: "Front Desk Printer"
     type: "network"
