@@ -3,14 +3,24 @@
 Agent-side discovery that respects `Branch → Agent → Printer` ownership.
 
 ## Architecture
-```
+```text
 Manager → POST /api/agents/:id/discovery → discovery_sessions (branch via agent)
 Agent poll → GET /api/agent/discovery → Discover (spooler, network, IPP, mDNS, SNMP, LPR, WSD, USB)
 Agent report → POST /api/agent/discovery {discoveryId, devices[]}
 Manager list → GET /api/agents/:id/discovery/:discoveryId
+Manager approve → POST /api/agents/:id/discovered-printers/:deviceId/verify
 Manager provision → POST /api/agents/:id/discovered-printers/:deviceId/provision → printers (via agentId)
 ```
+
 Ownership never bypasses Agent; `discovered_devices.branch_id` is derived from `agents.branch_id`.
+
+## Trust boundary
+
+Discovery results are observations, not authorization. The Gateway ignores agent-supplied `verification` and `confidence` values for provisioning decisions and persists incoming reports as `verification=candidate`, `confidence=low`.
+
+A manager must explicitly approve a candidate (`candidateStatus=discovered` → `verified`) before provisioning can create an operational `printers` row. This approval is an authorization decision; it does not claim that the Gateway technically probed every capability of the device.
+
+Only private IPv4 (RFC1918 + link-local) and IPv6 ULA/link-local addresses are accepted at the Gateway discovery boundary. Public/global, loopback, multicast, unspecified, malformed, or zone-indexed addresses are rejected.
 
 ## Protocol matrix
 
@@ -36,9 +46,9 @@ PCL is **not** a discovery protocol — never advertised.
 - Deduplication deterministic: UUID → serial+model → MAC → IP:port → spooler name.
 
 ## Confidence
-- HIGH: verified IPP/IPPS/spooler + model, or ≥2 sources + model
-- MEDIUM: verified or ≥2 sources or model
-- LOW: single open port candidate
+- Agent-generated confidence is informational only at ingestion.
+- Gateway persistence always starts candidates at LOW confidence.
+- Manager approval raises the authorization state to `verified/high`.
 
 ## Lifecycle
 `running → completed|partial|failed|cancelled` (partial = some detectors failed but results exist). Candidates TTL via `discovered_devices.candidate_status` (`discovered|verified|provisioned|ignored|expired`), provisioned history preserved.
