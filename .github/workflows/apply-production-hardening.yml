@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/full-production-hardening-2026-09
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -17,6 +20,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -52,6 +56,8 @@ jobs:
 
       - name: Commit hardening changes
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           rm -f scripts/apply-production-hardening.py .github/workflows/apply-production-hardening.yml
@@ -63,4 +69,4 @@ jobs:
             exit 0
           fi
           git commit -m "fix: complete production hardening pass"
-          git push
+          git push origin HEAD:${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
