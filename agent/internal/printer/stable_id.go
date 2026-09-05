@@ -53,9 +53,27 @@ func StableIDFromEndpoint(endpoint string) string {
 	return fmt.Sprintf("printer_ep_%x", h[:4])
 }
 
+// StableIDFromUUID derives a deterministic ID from a device UUID.
+// A printer UUID is preferable to an IP address because DHCP/network changes
+// do not change the physical device identity.
+func StableIDFromUUID(uuid string) string {
+	norm := strings.ToLower(strings.TrimSpace(uuid))
+	h := sha256.Sum256([]byte("uuid:" + norm))
+	return fmt.Sprintf("printer_uuid_%x", h[:4])
+}
+
 // StableIDForDevice returns deterministic ID based on available fields.
-// Priority: spooler > USB > network (including IPP URL host:port) > endpoint > name
+// Priority: UUID > spooler > USB > network (including IPP URL host:port) > endpoint > name
 func StableIDForDevice(d DeviceInfo) string {
+	if d.Capabilities != nil {
+		for _, key := range []string{"uuid", "printer_uuid"} {
+			if v, ok := d.Capabilities[key]; ok {
+				if uuid := strings.TrimSpace(fmt.Sprint(v)); uuid != "" {
+					return StableIDFromUUID(uuid)
+				}
+			}
+		}
+	}
 	if d.SpoolerName != "" {
 		return StableIDFromSpooler(d.SpoolerName)
 	}
@@ -63,8 +81,7 @@ func StableIDForDevice(d DeviceInfo) string {
 		return StableIDFromUSB(d.USBVID, d.USBPID, d.USBSerial, "")
 	}
 	if d.NetworkAddress != "" && d.Port != 0 {
-		// For IPP, use same net ID but prefix to avoid collision with RAW on same host:port?
-		// Keep net for both, dedup will handle via ID, but to keep distinct for IPP vs RAW on same port 631 vs 9100, net ID already differs by port.
+		// For network devices without a stronger identity, fall back to host:port.
 		return StableIDFromNetwork(d.NetworkAddress, d.Port)
 	}
 	if d.Endpoint != "" {
