@@ -7,6 +7,12 @@ from odoo.exceptions import ValidationError
 
 class PrintGatewayBranchOdoo19(models.Model):
     _inherit = 'print_gateway.branch'
+    _sql_constraints = []
+
+    _name_company_unique = models.Constraint(
+        'UNIQUE(name, company_id)',
+        'Branch name must be unique per company',
+    )
 
     def action_sync_from_gateway(self):
         try:
@@ -50,9 +56,34 @@ class PrintGatewayBranchOdoo19(models.Model):
                 },
             }
 
+    def cron_retry_pending_print_jobs(self):
+        Job = self.env['print_gateway.print_job']
+        pending = Job.search([
+            ('gateway_job_id', '=', False),
+            ('status', '=', 'queued'),
+        ], order='id asc', limit=100)
+        retried = 0
+        for job in pending:
+            try:
+                if job.action_submit_pending():
+                    retried += 1
+            except Exception as exc:
+                _logger.warning(
+                    "Pending Gateway print retry failed for operation %s: %s",
+                    job.id,
+                    str(exc),
+                )
+        return retried
+
 
 class PrintGatewayAsyncPrintJobOdoo19(models.Model):
     _inherit = 'print_gateway.print_job'
+    _sql_constraints = []
+
+    _branch_idempotency_unique = models.Constraint(
+        'UNIQUE(branch_id, idempotency_key)',
+        'This print operation was already submitted for this branch.',
+    )
 
     def action_submit_pending(self):
         try:
