@@ -4,10 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+type ippCapabilityCacheEntry struct {
+	formats []string
+	expires time.Time
+}
+
+var ippCapabilityCache sync.Map // map[string]ippCapabilityCacheEntry
 
 // SupportsKindVerified queries the printer's live IPP capabilities and only
 // reports a document kind when document-format-supported explicitly contains
@@ -18,17 +28,44 @@ func (p *IPPPrinter) SupportsKindVerified(ctx context.Context, kind string) bool
 	if !ok {
 		return false
 	}
-	attrs, err := p.getSupportedIPPFormats(ctx)
-	if err != nil {
-		return false
-	}
-	return containsCSVValue(attrs, format)
+	return containsFormat(p.supportedIPPFormats(ctx), format)
 }
 
-func (p *IPPPrinter) getSupportedIPPFormats(ctx context.Context) (string, error) {
+// SupportedKindsVerified fetches document-format-supported once and maps the
+// actual MIME types to the agent's supported document kinds.
+func (p *IPPPrinter) SupportedKindsVerified(ctx context.Context) []string {
+	formats := p.supportedIPPFormats(ctx)
+	kinds := make([]string, 0, 3)
+	for _, kind := range []string{KindRaw, KindESCPOS, KindPDF} {
+		if format, ok := ippDocumentFormatFor(kind); ok && containsFormat(formats, format) {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
+func (p *IPPPrinter) supportedIPPFormats(ctx context.Context) []string {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cached, ok := ippCapabilityCache.Load(p.URL); ok {
+		entry := cached.(ippCapabilityCacheEntry)
+		if time.Now().Before(entry.expires) {
+			return append([]string(nil), entry.formats...)
+		}
+		ippCapabilityCache.Delete(p.URL)
+	}
+
+	formats, err := p.getSupportedIPPFormats(ctx)
+	if err != nil {
+		return nil
+	}
+	vals := splitCSVFormats(formats)
+	ippCapabilityCache.Store(p.URL, ippCapabilityCacheEntry{formats: vals, expires: time.Now().Add(30 * time.Second)})
+	return append([]string(nil), vals...)
+}
+
+func (p *IPPPrinter) getSupportedIPPFormats(ctx context.Context) (string, error) {
 	request := buildIPPGetPrinterAttributesForFormats(p.URL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bytes.NewReader(request))
 	if err != nil {
@@ -43,22 +80,21 @@ func (p *IPPPrinter) getSupportedIPPFormats(ctx context.Context) (string, error)
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &ippHTTPStatusError{status: resp.StatusCode}
-	}
-	body := make([]byte, 64*1024)
-	n, err := resp.Body.Read(body)
-	if n == 0 && err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
 		return "", err
 	}
-	status, _ := parseIPPStatus(body[:n])
-	if !isSuccessfulIPPStatus(status) {
-		return "", &ippStatusError{status: status}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("unexpected IPP HTTP status %d", resp.StatusCode)
 	}
-	attrs := parseIPPAttributes(body[:n])
+	status, _ := parseIPPStatus(body)
+	if !isSuccessfulIPPStatus(status) {
+		return "", fmt.Errorf("unexpected IPP status 0x%04x", status)
+	}
+	attrs := parseIPPAttributes(body)
 	formats, ok := attrs["document-format-supported"]
 	if !ok || strings.TrimSpace(formats) == "" {
-		return "", &ippCapabilityError{}
+		return "", fmt.Errorf("printer did not report document-format-supported")
 	}
 	return formats, nil
 }
@@ -78,20 +114,23 @@ func buildIPPGetPrinterAttributesForFormats(printerURI string) []byte {
 	return buf.Bytes()
 }
 
-func containsCSVValue(csv, want string) bool {
-	for _, value := range strings.Split(csv, ",") {
-		if strings.EqualFold(strings.TrimSpace(value), want) {
+func splitCSVFormats(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, value := range parts {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func containsFormat(formats []string, want string) bool {
+	for _, format := range formats {
+		if strings.EqualFold(strings.TrimSpace(format), want) {
 			return true
 		}
 	}
 	return false
 }
-
-type ippHTTPStatusError struct{ status int }
-func (e *ippHTTPStatusError) Error() string { return "unexpected IPP HTTP status" }
-
-type ippStatusError struct{ status uint16 }
-func (e *ippStatusError) Error() string { return "unexpected IPP status" }
-
-type ippCapabilityError struct{}
-func (e *ippCapabilityError) Error() string { return "printer did not report document-format-supported" }
