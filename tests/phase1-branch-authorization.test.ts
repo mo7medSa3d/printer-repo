@@ -20,16 +20,14 @@ describe("Phase 1 branch authorization", () => {
   });
 });
 
-// --- C1 regression: legacy POST /api/print/jobs branch isolation ---
-//
-// Mocks @/db (a lazily-connected module, safe to mock without a live PG)
-// so the actual route handler runs end-to-end against fake rows, proving
-// the fix at the HTTP boundary rather than only at the helper-function level.
-
+// C1 regression: the legacy API must enforce the Odoo key's branch scope.
+// The route now delegates actual job creation to the shared service, so the
+// mock must include every DB relation that the shared service reads.
 const findFirstMocks = {
   apiKeys: vi.fn(),
   printers: vi.fn(),
   agents: vi.fn(),
+  branches: vi.fn(),
   printJobs: vi.fn(),
 };
 
@@ -45,6 +43,7 @@ vi.mock("@/db", () => {
         apiKeys: { findFirst: (...args: unknown[]) => findFirstMocks.apiKeys(...args) },
         printers: { findFirst: (...args: unknown[]) => findFirstMocks.printers(...args) },
         agents: { findFirst: (...args: unknown[]) => findFirstMocks.agents(...args) },
+        branches: { findFirst: (...args: unknown[]) => findFirstMocks.branches(...args) },
         printJobs: { findFirst: (...args: unknown[]) => findFirstMocks.printJobs(...args) },
       },
       transaction: async (callback: (tx: any) => Promise<unknown>) => callback(tx),
@@ -73,6 +72,10 @@ function makeAgent(branchId: string) {
   return { id: "agent_1", branchId, lifecycle: "active" };
 }
 
+function makeBranch(branchId: string) {
+  return { id: branchId, enabled: true };
+}
+
 function legacyRequest() {
   return new Request("http://localhost/api/print/jobs", {
     method: "POST",
@@ -90,6 +93,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.apiKeys.mockReset();
     findFirstMocks.printers.mockReset();
     findFirstMocks.agents.mockReset();
+    findFirstMocks.branches.mockReset();
     findFirstMocks.printJobs.mockReset();
   });
 
@@ -97,6 +101,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
+    findFirstMocks.branches.mockResolvedValue(makeBranch("branch_b"));
     const { POST } = await import("@/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
@@ -107,6 +112,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_a"));
+    findFirstMocks.branches.mockResolvedValue(makeBranch("branch_a"));
     const { POST } = await import("@/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
@@ -117,6 +123,7 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey(null));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
     findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
+    findFirstMocks.branches.mockResolvedValue(makeBranch("branch_b"));
     const { POST } = await import("@/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
