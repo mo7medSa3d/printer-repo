@@ -45,15 +45,15 @@ type PrinterConfig struct {
 }
 
 func (c *Config) ReprintAfterCrashEnabled() bool {
+	// Safe default: physical output after a crash is unknown. Operators must
+	// explicitly opt into at-least-once reprinting (and accept duplicates) by
+	// setting agent.reprint_after_crash: true.
 	if c == nil || c.Agent.ReprintAfterCrash == nil {
-		return true
+		return false
 	}
 	return *c.Agent.ReprintAfterCrash
 }
 
-// allowInsecureHTTP is intentionally opt-in and requires an explicit
-// development environment marker. Production agents therefore cannot silently
-// downgrade credential transport to plaintext HTTP.
 func allowInsecureHTTP() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("ODOO_PRINT_AGENT_ENV")), "development") &&
 		os.Getenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP") == "1"
@@ -79,22 +79,36 @@ func validateServerURL(raw string) error {
 	return fmt.Errorf("server.url scheme must be https, got %q", u.Scheme)
 }
 
+func defaultConfig() *Config {
+	cfg := &Config{}
+	cfg.Agent.ReprintAfterCrash = boolPtr(false)
+	return cfg
+}
+
+func boolPtr(v bool) *bool { return &v }
+
 func Load(path string) (*Config, error) {
 	if path == "" {
-		return &Config{}, nil
+		return defaultConfig(), nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Config{}, nil
+			return defaultConfig(), nil
 		}
 		return nil, err
 	}
 	defer f.Close()
 
-	var cfg Config
-	err = yaml.NewDecoder(f).Decode(&cfg)
-	return &cfg, err
+	cfg := defaultConfig()
+	err = yaml.NewDecoder(f).Decode(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Agent.ReprintAfterCrash == nil {
+		cfg.Agent.ReprintAfterCrash = boolPtr(false)
+	}
+	return cfg, nil
 }
 
 func Ensure(path string) error {
@@ -122,7 +136,7 @@ func Ensure(path string) error {
 	if runtime.GOOS == "windows" {
 		name = host
 	}
-	cfg := &Config{}
+	cfg := defaultConfig()
 	cfg.Agent.Name = name
 	if err := cfg.Save(path); err != nil {
 		return fmt.Errorf("create default config %s: %w", path, err)
