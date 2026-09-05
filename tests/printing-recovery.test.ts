@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 describe("printing crash recovery", () => {
   it("fails stale printing jobs without requiring delivery retries", () => {
     const src = readFileSync("src/app/api/agent/jobs/route.ts", "utf8");
-    const start = src.indexOf("UPDATE print_jobs", src.indexOf("const STALE_PRINTING_SECONDS = 10 * 60"));
+    const start = src.indexOf("error = 'AGENT_EXECUTION_TIMEOUT'");
+    const updateStart = src.lastIndexOf("UPDATE print_jobs", start);
     const end = src.indexOf("`);", start);
-    const sqlBlock = src.slice(start, end);
+    const sqlBlock = src.slice(updateStart, end);
 
     expect(sqlBlock).toContain("status = 'printing'");
     expect(sqlBlock).toContain("status = 'failed'");
