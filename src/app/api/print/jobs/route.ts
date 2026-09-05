@@ -6,13 +6,12 @@ import { validatePrintJobPayload } from "../../../../lib/payload";
 import { resolvePrinterForJob } from "../../../../lib/routing";
 import { requestIdFrom } from "../../../../lib/log";
 import { incrementMetric } from "../../../../lib/metrics";
-import { AgentQueueFullError, createPrintJobForPrinter } from "../../../../lib/print-job-service";
+import { AgentQueueFullError, AgentQueuedJobsFullError, BranchQueuedJobsFullError, createPrintJobForPrinter, PrintJobRateLimitError, MAX_AGENT_IN_FLIGHT_JOBS, MAX_AGENT_QUEUED_JOBS, MAX_BRANCH_QUEUED_JOBS, PRINT_JOB_RATE_LIMIT_PER_HOUR, PRINT_JOB_RATE_LIMIT_PER_MINUTE } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
-export { MAX_AGENT_IN_FLIGHT_JOBS } from "../../../../lib/print-job-service";
 
 const MAX_PRINT_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 const legacyBodySchema = z.object({ printerId: z.string().min(1).max(120), payload: z.unknown(), expiresAt: z.string().optional(), idempotencyKey: z.string().max(200).optional() });
@@ -27,7 +26,8 @@ function parseExpiresAt(str?: string) {
 }
 
 function errorStatus(message: string): number {
-  if (/not online/i.test(message) || /AGENT_QUEUE_FULL/i.test(message)) return 503;
+  if (/rate limit/i.test(message) || /PRINT_JOB_RATE_LIMITED/i.test(message)) return 429;
+  if (/not online/i.test(message) || /QUEUE_FULL/i.test(message)) return 503;
   if (/virtual|redirected|disabled|retired/i.test(message)) return 409;
   if (/capability|cannot print/i.test(message)) return 422;
   if (/not found/i.test(message)) return 404;
@@ -36,6 +36,19 @@ function errorStatus(message: string): number {
 
 function jobResponse(row: typeof printJobs.$inferSelect) {
   return { jobId: row.id, status: row.status, printerId: row.printerId, agentId: row.agentId, branchId: row.branchId, destinationId: row.destinationId, documentType: row.documentType };
+}
+
+function backpressureResponse(e: AgentQueueFullError | AgentQueuedJobsFullError | BranchQueuedJobsFullError) {
+  if (e instanceof AgentQueueFullError) return { error: e.code, code: e.code, agentId: e.agentId, inFlight: e.inFlight, limit: MAX_AGENT_IN_FLIGHT_JOBS, retryable: true };
+  if (e instanceof AgentQueuedJobsFullError) return { error: e.code, code: e.code, agentId: e.agentId, queued: e.queued, limit: MAX_AGENT_QUEUED_JOBS, retryable: true };
+  return { error: e.code, code: e.code, branchId: e.branchId, queued: e.queued, limit: MAX_BRANCH_QUEUED_JOBS, retryable: true };
+}
+
+function rateLimitResponse(e: PrintJobRateLimitError) {
+  return NextResponse.json({ error: e.code, code: e.code, retryable: true, retryAfterSeconds: e.retryAfterSeconds, limits: { perMinute: PRINT_JOB_RATE_LIMIT_PER_MINUTE, perHour: PRINT_JOB_RATE_LIMIT_PER_HOUR } }, {
+    status: 429,
+    headers: { "Retry-After": String(e.retryAfterSeconds), "Cache-Control": "no-store" },
+  });
 }
 
 export async function POST(req: Request) {
@@ -76,13 +89,17 @@ export async function POST(req: Request) {
     }
 
     try {
-      const result = await createPrintJobForPrinter(resolved.printer.id, validatedPayload, { requestedBy: "odoo", idempotencyKey: parsed.idempotencyKey ?? null, destinationId: parsed.destinationId, documentType: parsed.documentType, expiresAt });
+      const result = await createPrintJobForPrinter(resolved.printer.id, validatedPayload, { requestedBy: "odoo", idempotencyKey: parsed.idempotencyKey ?? null, destinationId: parsed.destinationId, documentType: parsed.documentType, expiresAt, rateLimitKeyId: odoo.id });
       incrementMetric("print_jobs_created_total");
       return NextResponse.json({ jobId: result.id, status: result.status, printerId: result.printerId, agentId: result.agentId, branchId: result.branchId, destinationId: parsed.destinationId, documentType: parsed.documentType, ...(resolved.fallbackUsed ? { fallbackUsed: true, fallbackChain: resolved.fallbackChain } : {}) }, { status: 201 });
     } catch (e: unknown) {
-      if (e instanceof AgentQueueFullError) {
+      if (e instanceof PrintJobRateLimitError) {
+        incrementMetric("print_jobs_rate_limited_total");
+        return rateLimitResponse(e);
+      }
+      if (e instanceof AgentQueueFullError || e instanceof AgentQueuedJobsFullError || e instanceof BranchQueuedJobsFullError) {
         incrementMetric("print_jobs_backpressure_total");
-        return NextResponse.json({ error: "AGENT_QUEUE_FULL", code: "AGENT_QUEUE_FULL", agentId: e.agentId, inFlight: e.inFlight, limit: 500, retryable: true }, { status: 503 });
+        return NextResponse.json(backpressureResponse(e), { status: 503 });
       }
       if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
         const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
@@ -97,9 +114,6 @@ export async function POST(req: Request) {
   if (legacyRoute.success) {
     const parsed = legacyRoute.data;
     const odoo = await validateOdooKey(req);
-    // Legacy direct-printer submission is retained for compatibility, but a
-    // global/unscoped key may no longer target arbitrary printers. Clients must
-    // migrate to the branch/destination/documentType API for routed printing.
     if (!odoo?.branchId) return NextResponse.json({ error: "Legacy direct printing requires a branch-scoped Odoo API key; migrate to /api/print/jobs routing" }, { status: 403 });
     if (!isOdooKeyAllowedForDocumentType(odoo, null, "write")) return NextResponse.json({ error: "API key is not allowed to create jobs" }, { status: 403 });
 
@@ -126,12 +140,16 @@ export async function POST(req: Request) {
     }
 
     try {
-      const result = await createPrintJobForPrinter(parsed.printerId, validatedPayload, { requestedBy: "odoo-legacy", idempotencyKey: parsed.idempotencyKey ?? null, expiresAt });
+      const result = await createPrintJobForPrinter(parsed.printerId, validatedPayload, { requestedBy: "odoo-legacy", idempotencyKey: parsed.idempotencyKey ?? null, expiresAt, rateLimitKeyId: odoo.id });
       return NextResponse.json({ jobId: result.id, status: result.status, printerId: result.printerId, agentId: result.agentId, branchId: result.branchId }, { status: 201 });
     } catch (e: unknown) {
-      if (e instanceof AgentQueueFullError) {
+      if (e instanceof PrintJobRateLimitError) {
+        incrementMetric("print_jobs_rate_limited_total");
+        return rateLimitResponse(e);
+      }
+      if (e instanceof AgentQueueFullError || e instanceof AgentQueuedJobsFullError || e instanceof BranchQueuedJobsFullError) {
         incrementMetric("print_jobs_backpressure_total");
-        return NextResponse.json({ error: "AGENT_QUEUE_FULL", code: "AGENT_QUEUE_FULL", agentId: e.agentId, inFlight: e.inFlight, limit: 500, retryable: true }, { status: 503 });
+        return NextResponse.json(backpressureResponse(e), { status: 503 });
       }
       if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
         const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, ownerAgent.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });

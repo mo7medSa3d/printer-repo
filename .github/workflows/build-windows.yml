@@ -20,29 +20,29 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: ".nvmrc"
           cache: npm
           cache-dependency-path: package-lock.json
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.27.1'
           cache: true
           cache-dependency-path: agent/go.sum
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust and Tauri
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/cargo-tauri.exe
@@ -116,7 +116,7 @@ jobs:
           $icons = @($conf.bundle.icon)
           if ($icons.Count -eq 0) { throw "No bundle.icon entries in src-tauri/tauri.conf.json" }
           foreach ($icon in $icons) {
-            $p = Join-Path "src-tauri" ($icon -replace '/', '\')
+            $p = Join-Path "src-tauri" ($icon -replace '/', '\\')
             if (-not (Test-Path $p)) { throw "Missing configured icon: $p" }
             $len = (Get-Item $p).Length
             if ($len -le 0) { throw "Empty configured icon: $p" }
@@ -205,7 +205,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows smoke test failed" }
 
       - name: Upload Windows MSI and NSIS EXE
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: Odoo-Print-Manager-Windows
           path: |

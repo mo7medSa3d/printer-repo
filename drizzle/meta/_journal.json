@@ -17,6 +17,7 @@
     {"idx":12,"version":"7","when":1788610000000,"tag":"0012_runtime_state_checks","breakpoints":false},
     {"idx":13,"version":"7","when":1788610000002,"tag":"0013_runtime_state_constraint_scope_fix","breakpoints":false},
     {"idx":14,"version":"7","when":1788610000003,"tag":"0014_discovery_state_checks","breakpoints":false},
-    {"idx":15,"version":"7","when":1788620000000,"tag":"0015_metrics_and_agent_notifications","breakpoints":false}
+    {"idx":15,"version":"7","when":1788620000000,"tag":"0015_metrics_and_agent_notifications","breakpoints":false},
+    {"idx":16,"version":"7","when":1788630000000,"tag":"0016_print_job_rate_limits","breakpoints":false}
   ]
 }
