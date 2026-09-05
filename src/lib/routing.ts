@@ -101,6 +101,26 @@ export type ResolveErrorCode =
   | "CAPABILITY_MISMATCH"
   | "INTERNAL_ERROR";
 
+type BranchRow = NonNullable<Awaited<ReturnType<typeof db.query.branches.findFirst>>>;
+type DestinationRow = NonNullable<Awaited<ReturnType<typeof db.query.destinations.findFirst>>>;
+type PrinterRow = NonNullable<Awaited<ReturnType<typeof db.query.printers.findFirst>>>;
+
+type ResolveSuccess = {
+  branch: BranchRow;
+  destination: DestinationRow;
+  binding: BindingCandidate;
+  printer: PrinterRow;
+  fallbackUsed: boolean;
+  fallbackChain: string[];
+};
+
+type ResolveFailure = {
+  error: ResolveErrorCode;
+  message: string;
+};
+
+export type ResolvePrinterResult = ResolveSuccess | ResolveFailure;
+
 export async function resolvePrinterForJob({
   branchId,
   destinationId,
@@ -111,11 +131,7 @@ export async function resolvePrinterForJob({
   destinationId: string;
   documentType?: string | null;
   payloadType?: string | null;
-}): Promise<
-  | { branch: any; destination: any; binding: BindingCandidate; printer: any; fallbackUsed: boolean; fallbackChain: string[] }
-  | { error: ResolveErrorCode; message: string }
-  | null
-> {
+}): Promise<ResolvePrinterResult> {
   try {
     const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId) });
     if (!branch) return { error: "INVALID_BRANCH", message: `Branch ${branchId} not found` };
@@ -137,9 +153,6 @@ export async function resolvePrinterForJob({
     const candidates = selectFallbackBindings(rows as BindingCandidate[], documentType ?? null);
     if (candidates.length === 0) return { error: "NO_ROUTE", message: `No matching binding for documentType ${documentType}` };
 
-    // Batch-load all candidate printers and their owner agents before walking
-    // the ordered fallback chain. This preserves selection semantics while
-    // reducing the previous 2N sequential DB round-trips to at most two.
     const printerIds = [...new Set(candidates.map((candidate) => candidate.printerId))];
     const printerRows = printerIds.length
       ? await db.query.printers.findMany({ where: inArray(printers.id, printerIds) })
@@ -166,7 +179,6 @@ export async function resolvePrinterForJob({
       const printer = printerById.get(binding.printerId);
       if (!printer) continue;
 
-      // Ownership is derived exclusively through Printer -> Agent -> Branch.
       const agent = agentById.get(printer.agentId);
       if (!agent) {
         return { error: "INTERNAL_ERROR", message: `printer ${printer.id} has no owner agent` };

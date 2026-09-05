@@ -41,7 +41,10 @@ suite("end-to-end job flow (Odoo → gateway → agent socket → status)", () =
   beforeAll(async () => {
     await applyMigrations();
     server = createServer((_req, res) => { res.writeHead(404).end(); });
-    attachAgentWSS(server);
+    // The first test explicitly verifies the synchronous WebSocket fast path.
+    // The production PostgreSQL NOTIFY listener is a separate cross-instance
+    // wakeup mechanism and would race that assertion, so disable it here.
+    attachAgentWSS(server, { enableJobNotifications: false });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
   });

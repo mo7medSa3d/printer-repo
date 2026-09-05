@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
+import type { PoolClient } from "pg";
 import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
 import {
@@ -14,7 +15,10 @@ type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
 const agentSockets = new Map<string, Set<AgentSocket>>();
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
+const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
 const PG_NOTIFY_CHANNEL = "print_gateway_agent_jobs";
+const PG_NOTIFY_RECONNECT_MIN_MS = 1_000;
+const PG_NOTIFY_RECONNECT_MAX_MS = 30_000;
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
   ws.agentId = agentId;
@@ -44,16 +48,25 @@ export function hasOpenAgentSocket(agentId: string): boolean {
 export function sendToAgent(agentId: string, message: unknown): boolean {
   const set = agentSockets.get(agentId);
   if (!set || set.size === 0) return false;
-  const open = [...set].filter((ws) => ws.readyState === WebSocket.OPEN);
+  const open = [...set]
+    .filter((ws) => ws.readyState === WebSocket.OPEN)
+    .reverse();
   if (open.length === 0) return false;
-  const target = open[open.length - 1];
-  try {
-    target.send(JSON.stringify(message));
-  } catch (e) {
-    console.warn(`[ws] send to agent ${agentId} failed:`, e);
-    return false;
+
+  const payload = JSON.stringify(message);
+  for (const target of open) {
+    if (target.bufferedAmount > MAX_WS_BUFFERED_BYTES) continue;
+    try {
+      target.send(payload);
+      return true;
+    } catch (e) {
+      console.warn(`[ws] send to agent ${agentId} failed; removing socket:`, e);
+      set.delete(target);
+      try { target.terminate(); } catch {}
+    }
   }
-  return true;
+  if (set.size === 0) agentSockets.delete(agentId);
+  return false;
 }
 
 export type JobDeliveryEnvelope = {
@@ -126,10 +139,12 @@ export async function handleAgentMessage(agentId: string, raw: string): Promise<
 }
 
 async function startJobNotificationListener(): Promise<() => Promise<void>> {
-  const client = await pool.connect();
-  let closed = false;
-  await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
-  client.on("notification", (notification) => {
+  let stopped = false;
+  let activeClient: PoolClient | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempt = 0;
+
+  const handleNotification = (notification: { channel?: string; payload?: string }) => {
     if (notification.channel !== PG_NOTIFY_CHANNEL || !notification.payload) return;
     try {
       const message = JSON.parse(notification.payload) as { jobId?: unknown; agentId?: unknown };
@@ -141,15 +156,63 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
     } catch {
       console.warn("[ws] ignored malformed PostgreSQL job notification");
     }
-  });
-  client.on("error", (error) => {
-    if (!closed) console.warn("[ws] PostgreSQL notification listener error:", error);
-  });
+  };
+
+  const scheduleReconnect = () => {
+    if (stopped || reconnectTimer) return;
+    const delay = Math.min(PG_NOTIFY_RECONNECT_MIN_MS * (2 ** reconnectAttempt), PG_NOTIFY_RECONNECT_MAX_MS);
+    reconnectAttempt = Math.min(reconnectAttempt + 1, 10);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delay);
+    console.warn(`[ws] PostgreSQL notification listener reconnecting in ${delay}ms`);
+  };
+
+  const disconnect = (client: PoolClient) => {
+    if (activeClient !== client) return;
+    activeClient = null;
+    try { client.release(true); } catch {}
+    if (!stopped) scheduleReconnect();
+  };
+
+  const connect = async (): Promise<void> => {
+    if (stopped || activeClient) return;
+    try {
+      const client = await pool.connect();
+      if (stopped) {
+        client.release();
+        return;
+      }
+      activeClient = client;
+      await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
+      reconnectAttempt = 0;
+      client.on("notification", handleNotification);
+      client.on("error", (error) => {
+        console.warn("[ws] PostgreSQL notification listener error:", error);
+        disconnect(client);
+      });
+      client.on("end", () => disconnect(client));
+    } catch (error) {
+      console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
+      scheduleReconnect();
+    }
+  };
+
+  await connect();
+
   return async () => {
-    if (closed) return;
-    closed = true;
+    if (stopped) return;
+    stopped = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    const client = activeClient;
+    activeClient = null;
+    if (!client) return;
     try { await client.query(`UNLISTEN ${PG_NOTIFY_CHANNEL}`); } catch {}
-    client.release();
+    try { client.release(); } catch {}
   };
 }
 
@@ -174,7 +237,7 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
   let stopNotificationListener: (() => Promise<void>) | null = null;
   if (enableJobNotifications) {
     void startJobNotificationListener().then((stop) => { stopNotificationListener = stop; }).catch((error) => {
-      console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
+      console.warn("[ws] failed to initialize PostgreSQL notification listener:", error);
     });
     wss.on("close", () => { void stopNotificationListener?.(); });
   }
