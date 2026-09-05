@@ -167,10 +167,8 @@ export function verifyManagerPassword(username: string, input: string): boolean 
     return compareStringsSafe(derived, hash.toLowerCase());
   }
 
-  // Plaintext credentials are a development-only convenience. Production
-  // must provide MANAGER_PASSWORD_HASH so a compromised environment/config
-  // cannot silently downgrade authentication to a raw password comparison.
-  if (process.env.NODE_ENV === "production") return false;
+  // Plaintext credentials are development-only. Production requires the
+  // scrypt-based MANAGER_PASSWORD_HASH configuration.
   if (process.env.NODE_ENV === "production") return false;
   if (process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD !== "1" || !expectedPass) return false;
   return compareStringsSafe(input, expectedPass);
