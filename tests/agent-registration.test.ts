@@ -26,7 +26,7 @@ suite("agent registration contract", () => {
 
   it("pairs using only the one-time pairing code and derives branch from the pre-provisioned agent", async () => {
     const f = await seedFixture();
-    const pairingCode = "ABCD23";
+    const pairingCode = "123423";
     await pool().query(
       `UPDATE agents SET pairing_code = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
       [pairingCode, f.agentId],
@@ -64,15 +64,16 @@ suite("agent registration contract", () => {
 
   it("rejects a client-supplied branchId before any ownership lookup", async () => {
     const f = await seedFixture();
+    const pairingCode = "123423";
     await pool().query(
-      `UPDATE agents SET pairing_code = 'ABCD23', pairing_code_expires_at = now() + interval '30 minutes' WHERE id = $1`,
-      [f.agentId],
+      `UPDATE agents SET pairing_code = $1, pairing_code_expires_at = now() + interval '30 minutes' WHERE id = $2`,
+      [pairingCode, f.agentId],
     );
 
     const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pairingCode: "ABCD23", branchId: "attacker-branch" }),
+      body: JSON.stringify({ pairingCode, branchId: "attacker-branch" }),
     }));
 
     expect(response.status).toBe(400);
@@ -101,7 +102,7 @@ suite("agent registration contract", () => {
       const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
         method: "POST",
         headers,
-        body: JSON.stringify({ pairingCode: `BAD00${i}` }),
+        body: JSON.stringify({ pairingCode: `99999${i}` }),
       }));
       expect(response.status).toBe(400);
     }
@@ -109,7 +110,7 @@ suite("agent registration contract", () => {
     const limited = await registerPOST(new Request("http://gateway.test/api/agent/register", {
       method: "POST",
       headers,
-      body: JSON.stringify({ pairingCode: "BAD999" }),
+      body: JSON.stringify({ pairingCode: "999999" }),
     }));
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBeTruthy();
