@@ -53,6 +53,13 @@ suite("discovery trust and approval flow", () => {
     }));
   }
 
+  async function managerRequest(token: string, path: string) {
+    return new Request(`http://gateway.test${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
   it("treats agent verification/confidence as untrusted observation data", async () => {
     const discoveryId = await createDiscoverySession();
     const res = await agentRequest(discoveryId, [{
@@ -103,31 +110,22 @@ suite("discovery trust and approval flow", () => {
       deviceName: "Approved Printer",
     }]);
 
+    const manager = await createManagerSession();
     const unapproved = await provisionPOST(
-      new Request("http://gateway.test/api/agents/" + f.agentId + "/discovered-printers/device-provision-1/provision", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${(await createManagerSession()).token}` },
-      }),
+      await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-provision-1/provision`),
       { params: Promise.resolve({ id: f.agentId, deviceId: "device-provision-1" }) } as any,
     );
     expect(unapproved.status).toBe(409);
     expect((await unapproved.json()).code).toBe("DEVICE_NOT_APPROVED");
 
-    const manager = await createManagerSession();
     const verify = await verifyPOST(
-      new Request("http://gateway.test/api/agents/" + f.agentId + "/discovered-printers/device-provision-1/verify", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${manager.token}` },
-      }),
+      await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-provision-1/verify`),
       { params: Promise.resolve({ id: f.agentId, deviceId: "device-provision-1" }) } as any,
     );
     expect(verify.status).toBe(200);
 
     const provision = await provisionPOST(
-      new Request("http://gateway.test/api/agents/" + f.agentId + "/discovered-printers/device-provision-1/provision", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${manager.token}` },
-      }),
+      await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-provision-1/provision`),
       { params: Promise.resolve({ id: f.agentId, deviceId: "device-provision-1" }) } as any,
     );
     expect(provision.status).toBe(201);
@@ -141,5 +139,43 @@ suite("discovery trust and approval flow", () => {
     expect(device.rows[0].confidence).toBe("low");
     expect(device.rows[0].candidate_status).toBe("provisioned");
     expect(device.rows[0].provisioned_printer_id).toBe(body.printerId);
+  });
+
+  it("serializes concurrent provisioning so one candidate cannot create two printers", async () => {
+    const discoveryId = await createDiscoverySession();
+    await agentRequest(discoveryId, [{
+      id: "device-concurrent-1",
+      source: ["ipp"],
+      protocol: "ipp",
+      ipAddress: "192.168.10.51",
+      port: 631,
+      uri: "ipp://192.168.10.51/ipp/print",
+      deviceName: "Concurrent Printer",
+    }]);
+
+    const manager = await createManagerSession();
+    const verify = await verifyPOST(
+      await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-concurrent-1/verify`),
+      { params: Promise.resolve({ id: f.agentId, deviceId: "device-concurrent-1" }) } as any,
+    );
+    expect(verify.status).toBe(200);
+
+    const [a, b] = await Promise.all([
+      provisionPOST(
+        await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-concurrent-1/provision`),
+        { params: Promise.resolve({ id: f.agentId, deviceId: "device-concurrent-1" }) } as any,
+      ),
+      provisionPOST(
+        await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-concurrent-1/provision`),
+        { params: Promise.resolve({ id: f.agentId, deviceId: "device-concurrent-1" }) } as any,
+      ),
+    ]);
+
+    expect([a.status, b.status].sort()).toEqual([200, 201]);
+    const count = await pool().query(
+      `SELECT count(*)::int AS count FROM printers WHERE agent_id = $1 AND config->>'ip' = $2 AND (config->>'port')::int = $3`,
+      [f.agentId, "192.168.10.51", 631],
+    );
+    expect(count.rows[0].count).toBe(1);
   });
 });
