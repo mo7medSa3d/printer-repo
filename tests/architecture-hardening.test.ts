@@ -64,7 +64,7 @@ describe("architecture hardening", () => {
     expect(src).toContain("eq(agents.pairingCode, normalizedCode)");
     expect(src).toContain("clientIpFrom(req)");
     expect(src).toContain("inspectPairingRateLimit");
-    expect(src).toContain("return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret });");
+    expect(src).toContain("return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret }, { status: 200 });");
   });
 
   it("installs security headers without forcing HSTS on development HTTP", () => {
