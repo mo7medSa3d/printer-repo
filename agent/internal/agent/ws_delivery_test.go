@@ -304,12 +304,13 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 // --- crash recovery (at-least-once made visible, NOT exactly-once) --------
 
 // A job that was still printing when the agent stopped must be reported to the
-// gateway as an explicit, marked failure at startup instead of silently
-// sitting in 'printing' until the claim lease expires.
+// gateway as an explicit, marked failure when reprint_after_crash is disabled.
 func TestInterruptedJobIsReportedAtStartup(t *testing.T) {
 	gw := newRecordingGateway(t)
 	p := &fakePrinter{}
 	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	no := false
+	ag.cfg.Agent.ReprintAfterCrash = &no
 
 	// Simulate the previous process dying mid-print.
 	if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
