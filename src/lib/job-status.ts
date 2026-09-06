@@ -18,14 +18,32 @@ export const JOB_STATUSES = [
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export const PHYSICAL_OUTCOMES = ["not_printed", "printed", "unknown"] as const;
+export type PhysicalOutcome = (typeof PHYSICAL_OUTCOMES)[number];
+
+/**
+ * A terminal logical failure does not necessarily mean that no paper came out.
+ * These markers identify cases where execution reached an ambiguous physical
+ * boundary (crash, execution timeout, or expiry while printing).
+ */
+export const PHYSICAL_OUTCOME_UNKNOWN_MARKERS = [
+  "AGENT_EXECUTION_TIMEOUT",
+  "AGENT_RESTART_DURING_PRINT",
+  "JOB_EXPIRED_DURING_PRINT",
+] as const;
+
+export function derivePhysicalOutcome(status: JobStatus | string, error: string | null | undefined): PhysicalOutcome {
+  if (status === "success") return "printed";
+  if (PHYSICAL_OUTCOME_UNKNOWN_MARKERS.some((marker) => (error ?? "").startsWith(marker))) return "unknown";
+  return "not_printed";
+}
+
 export function isJobStatus(value: unknown): value is JobStatus {
   return typeof value === "string" && (JOB_STATUSES as readonly string[]).includes(value);
 }
 
-const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set(["success", "failed", "expired"]);
-
 export function isTerminal(status: JobStatus): boolean {
-  return TERMINAL_STATUSES.has(status);
+  return new Set<JobStatus>(["success", "failed", "expired"]).has(status);
 }
 
 // Agents may report expiration when a delivered job has crossed its business
