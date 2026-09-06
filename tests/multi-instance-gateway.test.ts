@@ -311,6 +311,12 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     const messagesB: Record<string, unknown>[] = [];
     const wsA = new WebSocket(`ws://127.0.0.1:${portA}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
     const wsB = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
+    wsA.on("message", (data) => {
+      messagesA.push(JSON.parse(String(data)) as Record<string, unknown>);
+    });
+    wsB.on("message", (data) => {
+      messagesB.push(JSON.parse(String(data)) as Record<string, unknown>);
+    });
 
     await Promise.all([
       waitForWebSocketOpen(wsA, `Gateway ${portA}`, [gatewayA, gatewayB]),
@@ -338,7 +344,7 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
         if (winner === null) await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
-      expect(winner).toBe("A").toSatisfy || expect(["A", "B"]).toContain(winner);
+      expect(["A", "B"]).toContain(winner);
       const deliveredMessages = [...messagesA, ...messagesB].filter((message) =>
         message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim",
       );
