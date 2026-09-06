@@ -57,8 +57,9 @@ export function JobsPage({ s }: { s: DesktopState }) {
   useEffect(() => {
     let cancelled = false;
     if (!s.gatewayUrl) {
-      setAuthenticated(false);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
     getManagerSession(s.gatewayUrl)
       .then((status) => {
@@ -73,6 +74,8 @@ export function JobsPage({ s }: { s: DesktopState }) {
       cancelled = true;
     };
   }, [s.gatewayUrl]);
+
+  const managerAuthenticated = Boolean(s.gatewayUrl) && authenticated;
 
   const handleManagerLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -171,7 +174,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
             >
               Refresh
             </Button>
-            {authenticated ? (
+            {managerAuthenticated ? (
               <Button
                 variant="ghost"
                 onClick={handleManagerLogout}
@@ -191,7 +194,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
             </Button>
           </div>
         </div>
-        {authenticated && authExpiresAt ? (
+        {managerAuthenticated && authExpiresAt ? (
           <div className="border-t border-edge bg-surface-2/60 px-6 py-3 text-[12px] text-ink-3">
             Manager session active until {new Date(authExpiresAt).toLocaleString()}
           </div>
@@ -213,7 +216,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
         )}
       </Card>
 
-      {!authenticated && (s.jobsError?.includes("manager session") || s.jobsError?.includes("Manager")) ? (
+      {!managerAuthenticated && (s.jobsError?.includes("manager session") || s.jobsError?.includes("Manager")) ? (
         <Card className="overflow-hidden">
           <form onSubmit={handleManagerLogin} className="space-y-5 p-6 sm:p-7">
             <div className="flex items-start gap-3.5">
