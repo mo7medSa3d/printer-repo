@@ -3,10 +3,15 @@ import { createHash } from "crypto";
 import { isOdooKeyAllowedForDocumentType, isBranchScopedKeyAllowed } from "../src/lib/odoo-auth";
 
 describe("Phase 1 branch authorization", () => {
-  it("rejects a branch-scoped key when the request targets another branch", () => {
-    expect(isBranchScopedKeyAllowed("branch_a", "branch_b")).toBe(false);
-    expect(isBranchScopedKeyAllowed("branch_a", "branch_a")).toBe(true);
-    expect(isBranchScopedKeyAllowed(null, "branch_b")).toBe(true);
+  it("rejects a native branch-scoped key when the request targets another branch", () => {
+    expect(isBranchScopedKeyAllowed("odoo_company_1", "odoo_company_2")).toBe(false);
+    expect(isBranchScopedKeyAllowed("odoo_company_1", "odoo_company_1")).toBe(true);
+    expect(isBranchScopedKeyAllowed(null, "odoo_company_2")).toBe(true);
+  });
+
+  it("rejects legacy branch identities", () => {
+    expect(isBranchScopedKeyAllowed("branch_a", "branch_a")).toBe(false);
+    expect(isBranchScopedKeyAllowed("odoo_company_1", "branch_a")).toBe(false);
   });
 
   it("blocks read_only keys from writing jobs", () => {
@@ -25,9 +30,6 @@ describe("Phase 1 branch authorization", () => {
   });
 });
 
-// C1 regression: the legacy API must enforce the Odoo key's branch scope.
-// The route delegates actual job creation to the shared service, so the mock
-// includes the DB relations read by authentication and the shared job service.
 const findFirstMocks = {
   apiKeys: vi.fn(),
   printers: vi.fn(),
@@ -103,21 +105,21 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
   });
 
   it("blocks a branch-A-scoped key from creating a legacy job against a branch-B printer", async () => {
-    findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
+    findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("odoo_company_1"));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
-    findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
-    findFirstMocks.branches.mockResolvedValue(makeBranch("branch_b"));
+    findFirstMocks.agents.mockResolvedValue(makeAgent("odoo_company_2"));
+    findFirstMocks.branches.mockResolvedValue(makeBranch("odoo_company_2"));
     const { POST } = await import("../src/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
     expect(res.status).toBe(403);
   });
 
-  it("allows a branch-scoped key only when the printer owner is in that same branch", async () => {
-    findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("branch_a"));
+  it("allows a branch-scoped key only when the printer owner is in that same native Odoo branch", async () => {
+    findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey("odoo_company_1"));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
-    findFirstMocks.agents.mockResolvedValue(makeAgent("branch_a"));
-    findFirstMocks.branches.mockResolvedValue(makeBranch("branch_a"));
+    findFirstMocks.agents.mockResolvedValue(makeAgent("odoo_company_1"));
+    findFirstMocks.branches.mockResolvedValue(makeBranch("odoo_company_1"));
     const { POST } = await import("../src/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
@@ -127,8 +129,8 @@ describe("C1 regression — legacy POST /api/print/jobs branch isolation", () =>
   it("rejects global (null-branch) keys for legacy direct-printer submission", async () => {
     findFirstMocks.apiKeys.mockResolvedValue(makeOdooKey(null));
     findFirstMocks.printers.mockResolvedValue(makePrinter());
-    findFirstMocks.agents.mockResolvedValue(makeAgent("branch_b"));
-    findFirstMocks.branches.mockResolvedValue(makeBranch("branch_b"));
+    findFirstMocks.agents.mockResolvedValue(makeAgent("odoo_company_2"));
+    findFirstMocks.branches.mockResolvedValue(makeBranch("odoo_company_2"));
     const { POST } = await import("../src/app/api/print/jobs/route");
 
     const res = await POST(legacyRequest());
