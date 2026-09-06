@@ -18,11 +18,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify Cargo.lock is committed
+      - name: Verify Cargo.lock status
         shell: pwsh
         run: |
           if (-not (Test-Path src-tauri/Cargo.lock)) {
-            Write-Host "::warning::src-tauri/Cargo.lock is NOT committed — the MSI is built from floating dependency versions. Run: cd src-tauri; cargo generate-lockfile — then commit the file."
+            Write-Host "::warning::src-tauri/Cargo.lock is not committed yet. Generate it with 'cd src-tauri; cargo generate-lockfile' and commit the result before the production release."
           } else {
             Write-Host "Cargo.lock present."
           }
@@ -41,6 +41,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
+          toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
       - name: Cache Rust and Tauri
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -61,8 +62,8 @@ jobs:
             cargo tauri --version
             Write-Host "Tauri CLI restored from cache; skipping install."
           } else {
-            Write-Host "Tauri CLI not found in cache; installing..."
-            cargo install tauri-cli --version "^2" --locked
+            Write-Host "Tauri CLI not found in cache; installing 2.11.4..."
+            cargo install tauri-cli --version "=2.11.4" --locked
           }
       - name: Install dependencies
         run: npm ci
