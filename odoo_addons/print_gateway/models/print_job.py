@@ -20,6 +20,11 @@ class PrintGatewayPrintJob(models.Model):
     printer_id = fields.Many2one('print_gateway.printer', ondelete='set null')
     agent_id = fields.Many2one('print_gateway.agent', ondelete='set null')
     status = fields.Selection([('queued', 'Queued'), ('claimed', 'Claimed'), ('printing', 'Printing'), ('success', 'Success'), ('failed', 'Failed'), ('expired', 'Expired')], default='queued', index=True)
+    physical_outcome = fields.Selection([
+        ('not_printed', 'Definitely not printed'),
+        ('printed', 'Definitely printed'),
+        ('unknown', 'Possibly printed / unknown'),
+    ], compute='_compute_physical_outcome', string='Physical Outcome')
     payload = fields.Text(help='Full canonical print payload serialized as JSON; retained for durable retry. Never logged or exposed in operational logs.')
     error = fields.Text()
     requested_by = fields.Char(default='odoo')
@@ -40,6 +45,21 @@ class PrintGatewayPrintJob(models.Model):
 
     _VALID_GATEWAY_STATUSES = frozenset({'queued', 'claimed', 'printing', 'success', 'failed', 'expired', 'completed'})
     _TERMINAL_GATEWAY_STATUSES = frozenset({'success', 'failed', 'expired'})
+    _UNKNOWN_PHYSICAL_MARKERS = (
+        'AGENT_EXECUTION_TIMEOUT',
+        'AGENT_RESTART_DURING_PRINT',
+        'JOB_EXPIRED_DURING_PRINT',
+    )
+
+    @api.depends('status', 'error')
+    def _compute_physical_outcome(self):
+        for job in self:
+            if job.status == 'success':
+                job.physical_outcome = 'printed'
+            elif isinstance(job.error, str) and job.error.startswith(self._UNKNOWN_PHYSICAL_MARKERS):
+                job.physical_outcome = 'unknown'
+            else:
+                job.physical_outcome = 'not_printed'
 
     @classmethod
     def _normalize_gateway_status(cls, status):
