@@ -7,20 +7,15 @@ const windowsWorkflow = readFileSync(".github/workflows/build-windows.yml", "utf
 const runtimeSecret = readFileSync("src/lib/runtime-secret.ts", "utf8");
 const server = readFileSync("server.ts", "utf8");
 
-function workflowPermissionsBlock(): string {
-  const marker = "permissions:\n";
-  const start = windowsWorkflow.indexOf(marker);
-  if (start < 0) return "";
-  return windowsWorkflow.slice(start, windowsWorkflow.indexOf("    steps:", start));
-}
-
 describe("deployment security contracts", () => {
   it("mounts production secrets as Compose secrets instead of service environment values", () => {
     expect(compose).toContain("POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password");
     expect(compose).toContain("GATEWAY_JWT_SECRET_FILE: /run/secrets/gateway_jwt_secret");
     expect(compose).toContain("MANAGER_PASSWORD_HASH_FILE: /run/secrets/manager_password_hash");
     expect(compose).toContain("TRUST_PROXY_SECRET_FILE: /run/secrets/trust_proxy_secret");
-    expect(compose).toContain("secrets:\n  postgres_password:");
+    expect(compose).toMatch(/services:[\s\S]*postgres:[\s\S]*secrets:\s+- postgres_password/);
+    expect(compose).toMatch(/services:[\s\S]*migrate:[\s\S]*secrets:\s+- postgres_password/);
+    expect(compose).toMatch(/services:[\s\S]*gateway:[\s\S]*secrets:\s+- postgres_password[\s\S]*- gateway_jwt_secret[\s\S]*- manager_password_hash[\s\S]*- trust_proxy_secret/);
     expect(compose).not.toContain("PGPASSWORD: ${POSTGRES_PASSWORD");
     expect(compose).not.toContain("GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET");
     expect(compose).not.toContain("MANAGER_PASSWORD_HASH: ${MANAGER_PASSWORD_HASH");
@@ -41,9 +36,8 @@ describe("deployment security contracts", () => {
   });
 
   it("keeps the Windows workflow read-only and immutable", () => {
-    const permissions = workflowPermissionsBlock();
-    expect(permissions).toContain("contents: read");
-    expect(permissions).not.toContain("contents: write");
+    expect(windowsWorkflow).toMatch(/permissions:\s*\n\s+contents:\s+read/);
+    expect(windowsWorkflow).not.toMatch(/permissions:\s*[\s\S]*contents:\s+write/);
     expect(windowsWorkflow).not.toContain("git push");
     expect(windowsWorkflow).not.toContain("git commit");
     expect(windowsWorkflow).toContain("cargo metadata --locked --no-deps");
