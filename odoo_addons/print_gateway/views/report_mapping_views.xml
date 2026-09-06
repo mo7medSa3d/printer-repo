@@ -4,29 +4,35 @@
         <field name="name">print_gateway.report_mapping.form</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <form string="Report Mapping" class="o_pg_view o_pg_form">
+            <form string="Print Rule" class="o_pg_view o_pg_form">
                 <sheet>
                     <div class="o_pg_record_header">
-                        <div class="o_pg_record_icon"><i class="fa fa-file-text" role="img" aria-label="Report Mapping"/></div>
+                        <div class="o_pg_record_icon"><i class="fa fa-file-text" role="img" aria-label="Print Rule"/></div>
                         <div>
-                            <h1>Print Report</h1>
-                            <div class="text-muted">Connect an Odoo report to a document type and destination</div>
+                            <h1>Print Rule</h1>
+                            <div class="text-muted">Tell Odoo where a report should print. The rule is applied automatically when the document is printed.</div>
                         </div>
                         <div class="ms-auto"><field name="gateway_enabled" widget="boolean_toggle"/></div>
                     </div>
-                    <group string="Print Configuration">
+                    <group string="What is being printed">
                         <field name="report_id" options="{'no_create': True}" placeholder="Select an Odoo report"/>
                         <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="Select a document type"/>
+                    </group>
+                    <group string="Where it applies">
                         <field name="branch_id" options="{'no_create': True}"/>
-                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="Select a destination"/>
+                        <field name="pos_config_id" options="{'no_create': True}" domain="[('company_id','=',branch_id.company_id)]" placeholder="Optional: only this POS"/>
+                        <field name="picking_type_id" options="{'no_create': True}" domain="[('company_id','=',branch_id.company_id)]" placeholder="Optional: only this operation type"/>
+                    </group>
+                    <group string="Print destination">
+                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id),('enabled','=',True)]" placeholder="Select a destination"/>
                     </group>
                     <notebook>
                         <page string="Advanced" name="advanced">
                             <group string="Matching">
-                                <field name="priority" help="Lower number is preferred when more than one mapping matches."/>
+                                <field name="priority" help="Lower number is preferred. Context-specific rules take precedence over a branch-wide rule at the same priority."/>
                                 <field name="active" widget="boolean_toggle"/>
                             </group>
-                            <group string="Fallback Identifiers">
+                            <group string="Technical fallback">
                                 <field name="report_xml_id" class="o_pg_mono"/>
                                 <field name="report_name" class="o_pg_mono"/>
                                 <field name="model_name" class="o_pg_mono"/>
@@ -36,8 +42,9 @@
                         </page>
                     </notebook>
                     <div class="alert alert-info" role="alert">
-                        Normal setup is just <b>Report → Document Type → Branch → Destination</b>.
-                        Technical fallback identifiers are available under <b>Advanced</b> for administrators.
+                        <b>Automatic routing:</b> Odoo identifies the report and its native business context first.
+                        A POS-specific or warehouse-operation rule is preferred when present; otherwise the branch-wide rule is used.
+                        No destination is typed during printing.
                     </div>
                 </sheet>
             </form>
@@ -47,12 +54,14 @@
         <field name="name">print_gateway.report_mapping.list</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <list string="Report Mappings" class="o_pg_view o_pg_list"
+            <list string="Print Rules" class="o_pg_view o_pg_list"
                   decoration-success="gateway_enabled and active"
                   decoration-muted="not gateway_enabled or not active">
                 <field name="report_id"/>
-                <field name="document_type_id"/>
                 <field name="branch_id"/>
+                <field name="pos_config_id" optional="show"/>
+                <field name="picking_type_id" optional="show"/>
+                <field name="document_type_id"/>
                 <field name="destination_id"/>
                 <field name="gateway_enabled" widget="boolean_toggle"/>
                 <field name="active" widget="boolean_toggle" optional="show"/>
@@ -69,6 +78,8 @@
                 <field name="branch_id"/>
                 <field name="document_type_id"/>
                 <field name="destination_id"/>
+                <field name="pos_config_id"/>
+                <field name="picking_type_id"/>
                 <filter string="Active" name="active" domain="[('active','=',True)]"/>
                 <filter string="Gateway Enabled" name="gateway_enabled" domain="[('gateway_enabled','=',True)]"/>
                 <group>
@@ -79,12 +90,12 @@
         </field>
     </record>
     <record id="action_print_gateway_report_mapping" model="ir.actions.act_window">
-        <field name="name">Report Mappings</field>
+        <field name="name">Print Rules</field>
         <field name="res_model">print_gateway.report_mapping</field>
         <field name="view_mode">list,form</field>
         <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">No report mappings configured yet.</p>
-            <p>Select an Odoo report, document type, branch, and destination. Advanced fallback identifiers are optional.</p>
+            <p class="o_view_nocontent_smiling_face">No print rules configured yet.</p>
+            <p>Choose the Odoo report, branch, and destination once. Add a POS or warehouse operation when that report needs a different destination.</p>
         </field>
     </record>
 </odoo>
