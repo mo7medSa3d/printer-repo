@@ -142,7 +142,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
         idempotency_key: "legacy-upgrade-key",
       });
 
-      const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid = 'print_jobs'::regclass AND tgname = 'trg_print_jobs_notify_queued'`);
+      const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid = 'print_jobs'::regclass AND tgname = 'print_jobs_notify_agent_job_available'`);
       expect(trigger.rowCount).toBe(1);
     } finally {
       await pool.end();
