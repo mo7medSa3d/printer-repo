@@ -104,7 +104,7 @@ class PrintGatewayReportRoutingContractOdoo19(models.Model):
                 not branch.destination_ids.filtered(lambda d: d.enabled)
             ):
                 raise ValidationError(_(
-                    'Unable to determine a print destination for branch %s: '
+                    'No print destination is configured for branch %s: '
                     'there are no enabled destinations. Configure an explicit '
                     'destination in the report mapping or record.'
                 ) % branch.name)
@@ -116,7 +116,7 @@ class PrintGatewayReportRoutingContractOdoo19(models.Model):
             for record in records
             if getattr(record, 'company_id', False)
         }
-        if len(company_ids) > 1:
+        if len(company_ids) > 1 and not mapping_info:
             raise ValidationError(_(
                 'This report contains records with different print routing '
                 '(branch/destination/document type). Please print records '
