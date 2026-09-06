@@ -53,7 +53,7 @@ jobs:
           Pop-Location
           Write-Host "Cargo.lock is present and Cargo accepts the manifest in --locked mode."
       - name: Persist generated Cargo.lock
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha == github.sha
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
