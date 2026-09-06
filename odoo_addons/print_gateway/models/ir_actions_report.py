@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api, _
-from odoo.exceptions import UserError, ValidationError
+from odoo.exceptions import AccessError, UserError, ValidationError
 import base64
 import logging
 
@@ -74,10 +74,10 @@ class IrActionsReport(models.Model):
     def _determine_branch(self, record=None, mapping_info=None):
         if mapping_info and mapping_info.get('branch_id'):
             branch = mapping_info['branch_id']
-            if record and 'company_id' in record._fields and record.company_id and branch.company_id != record.company_id:
-                raise ValidationError(_(
-                    'Print Rule branch %s belongs to company %s, but record %s belongs to company %s.'
-                ) % (branch.name, branch.company_id.name, record.display_name, record.company_id.name))
+            if not self._user_has_branch_access(branch):
+                raise AccessError(_(
+                    'You do not have access to the Odoo company/branch %s.'
+                ) % branch.company_id.display_name)
             return branch
 
         if record:
@@ -208,10 +208,15 @@ class IrActionsReport(models.Model):
 
         routing_groups = []
         for record in records:
-            context_mapping = self._get_gateway_mapping(record=record) or mapping_info
-            branch = self._determine_branch(record, context_mapping)
-            destination = self._determine_destination(branch, record, context_mapping)
-            doc_type = self._determine_document_type(context_mapping, self)
+            contextual_mapping = self._get_gateway_mapping(record=record) or {}
+            if mapping_info:
+                contextual_mapping = {
+                    **contextual_mapping,
+                    **{key: value for key, value in mapping_info.items() if value is not None},
+                }
+            branch = self._determine_branch(record, contextual_mapping)
+            destination = self._determine_destination(branch, record, contextual_mapping)
+            doc_type = self._determine_document_type(contextual_mapping, self)
 
             matching_group = next((group for group in routing_groups if (
                 group['branch'].id == branch.id and
