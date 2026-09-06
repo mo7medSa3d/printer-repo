@@ -37,8 +37,8 @@ describe("regression: collision-safe job IDs removed from route layer", () => {
     expect(branch).toContain("for attempt in (1, 2)");
 
     const report = readFileSync("odoo_addons/print_gateway/models/async_report.py", "utf8");
-    expect(report).toContain("idempotency_key = uuid.uuid4().hex");
-    expect(report).toContain("'idempotency_key': idempotency_key");
+    expect(report).toMatch(/['\"]idempotency_key['\"]\s*:\s*uuid\.uuid4\(\)\.hex/);
+    expect(report).toContain("idempotency_key=job.idempotency_key");
   });
 });
 

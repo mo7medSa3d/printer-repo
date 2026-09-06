@@ -71,7 +71,7 @@ describe("Odoo addon static contracts", () => {
     const report = readFileSync(path.join(ADDON, "models/async_report.py"), "utf8");
     const job = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(report).not.toContain("current_minute");
-    expect(report).toContain("idempotency_key = uuid.uuid4().hex");
+    expect(report).toMatch(/['\"]idempotency_key['\"]\s*:\s*uuid\.uuid4\(\)\.hex/);
     expect(job).toContain("def action_submit_pending");
     expect(job).toContain("idempotency_key=job.idempotency_key");
     expect(job).toContain("json.loads(payload_raw)");
