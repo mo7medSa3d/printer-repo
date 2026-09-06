@@ -4,13 +4,9 @@ import { describe, expect, it } from "vitest";
 
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
 
-// Static contracts for the 2026-09 production-readiness fixes. These pin the
-// behavioral gates that are expensive to exercise end-to-end (they require a
-// live agent/DB) by asserting the exact source-level guards exist.
-describe("production fixes contracts (2026-09 audit)", () => {
+describe("production fixes contracts (2026-09)", () => {
   it("odoo sync wipe guard: an empty list cannot silently disable every row", () => {
     const sync = read("src/app/api/odoo/sync/route.ts");
-    // Explicit opt-in flag, checked per entity kind.
     expect(sync).toContain("const wipeRequested = body.wipe === true;");
     expect(sync).toContain(
       "empty destinations list would disable all existing destinations in this branch; if intentional, re-run the sync with \\\"wipe\\\": true",
@@ -21,8 +17,7 @@ describe("production fixes contracts (2026-09 audit)", () => {
     expect(sync).toContain(
       "empty bindings list would disable all existing printer bindings in this branch; if intentional, re-run the sync with \\\"wipe\\\": true",
     );
-    const guards = sync.split("!wipeRequested").length - 1;
-    expect(guards).toBeGreaterThanOrEqual(3);
+    expect(sync.split("!wipeRequested").length - 1).toBeGreaterThanOrEqual(3);
   });
 
   it("odoo sync GET is metadata-only and caps jobIds at 50", () => {
@@ -37,9 +32,7 @@ describe("production fixes contracts (2026-09 audit)", () => {
     expect(cols).toContain("status: printJobs.status");
     expect(cols).toContain("error: printJobs.error");
     expect(cols).not.toContain("payload");
-    expect(sync).toContain(
-      'return NextResponse.json({ branchId: branchFilter, agents: [], printers: [], jobs: jobRows, syncStatus: "success" });',
-    );
+    expect(sync).toContain('return NextResponse.json({ branchId: branchFilter, agents: [], printers: [], jobs: jobRows, syncStatus: "success" });');
   });
 
   it("heartbeat print-lease keep-alive: bounded job id list only, scoped to claimed/printing", () => {
@@ -49,8 +42,6 @@ describe("production fixes contracts (2026-09 audit)", () => {
     expect(normalized).toContain(".slice(0, MAX_KEEP_ALIVE_JOB_IDS)");
     expect(normalized).toContain("eq(printJobs.agentId, agent.id)");
     expect(normalized).toContain('inArray(printJobs.status, ["claimed", "printing"])');
-    // Formatting/indentation must not determine whether this behavioral
-    // contract passes. The production code only refreshes updatedAt.
     expect(normalized).toContain("db.update(printJobs) .set({ updatedAt: new Date() })");
     expect(normalized).not.toContain("db.update(printJobs) .set({ status");
   });
@@ -81,9 +72,38 @@ describe("production fixes contracts (2026-09 audit)", () => {
     expect(agent).toContain("WasInterrupted");
   });
 
-  it("job-maintenance: stale PRINTING jobs are requeued until the retry budget is exhausted", () => {
+  it("job-maintenance: stale PRINTING jobs are requeued until retry budget is exhausted", () => {
     const jm = read("src/lib/job-maintenance.ts");
     expect(jm).toContain("AGENT_EXECUTION_TIMEOUT");
-    expect(jm).toContain("requeue");
+    expect(jm).toContain("requeuedPrinting");
+    expect(jm).toContain("MAX_RETRIES");
+  });
+
+  it("Odoo cron reconciliation is bounded and batched", () => {
+    const jobs = read("odoo_addons/print_gateway/models/print_job.py");
+    expect(jobs).toContain("max_jobs = 100");
+    expect(jobs).toContain("max_branches = 20");
+    expect(jobs).toContain("max_runtime_seconds = 30");
+    expect(jobs).toContain("request_timeout_seconds = 5");
+    expect(jobs).toContain("batch_size = 50");
+    expect(jobs).toContain("/api/odoo/sync");
+    expect(jobs).toContain("jobIds");
+    expect(jobs).not.toContain("pending.action_sync_status()");
+  });
+
+  it("production startup refuses plaintext manager passwords", () => {
+    const server = read("server.ts");
+    expect(server).toContain("process.env.NODE_ENV === \"production\" && process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD === \"1\"");
+    expect(server).toContain("Refusing production startup with ALLOW_PLAINTEXT_MANAGER_PASSWORD=1");
+    expect(server).not.toContain("ALLOW_PLAINTEXT_MANAGER_PASSWORD=1 in production: the manager password is held in the environment");
+  });
+
+  it("Tauri background stop never uses global taskkill by image name", () => {
+    const agent = read("src-tauri/src/agent.rs");
+    expect(agent).toContain("const BACKGROUND_PID_FILE: &str = \"agent.pid\";");
+    expect(agent).toContain("taskkill_pid(pid, false)");
+    expect(agent).toContain("taskkill_pid(pid, true)");
+    expect(agent).not.toContain('.args(["/IM", "OdooPrintAgent.exe"])');
+    expect(agent).not.toContain('.args(["/F", "/IM", "OdooPrintAgent.exe"])');
   });
 });
