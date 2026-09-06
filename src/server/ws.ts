@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
+import type { Duplex } from "node:stream";
 import type { PoolClient } from "pg";
 import { isIP } from "node:net";
 import { pool } from "../db";
@@ -17,10 +18,7 @@ import {
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
-type WritableSocket = {
-  end(chunk?: string): boolean;
-  destroy(): void;
-};
+type WritableSocket = Pick<Duplex, "end" | "destroy">;
 
 const agentSockets = new Map<string, Set<AgentSocket>>();
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
