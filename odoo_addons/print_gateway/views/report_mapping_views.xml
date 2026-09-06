@@ -6,73 +6,71 @@
         <field name="arch" type="xml">
             <form string="Report Mapping" class="o_pg_view o_pg_form">
                 <sheet>
-                    <group string="Mapping">
-                        <field name="name" readonly="1"/>
-                        <field name="active" widget="boolean_toggle"/>
-                        <field name="gateway_enabled" widget="boolean_toggle"/>
-                        <field name="priority" help="Lower number = higher priority. When multiple mappings match a report, the lowest priority wins."/>
-                    </group>
-                    <group string="Report Identification (priority: report &gt; xml_id &gt; report_name &gt; model)">
-                        <field name="report_id" options="{'no_create': True}" placeholder="Select exact report action"/>
-                        <field name="report_xml_id" placeholder="e.g., sale.action_report_saleorder"/>
-                        <field name="report_name" placeholder="e.g., sale.report_saleorder_document"/>
-                        <field name="model_name" placeholder="e.g., sale.order"/>
-                    </group>
-                    <group string="Routing">
-                        <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="e.g., Receipt, Invoice"/>
-                        <field name="document_type_name" placeholder="Fallback string: order, invoice, delivery..."/>
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-file-text" role="img" aria-label="Report Mapping"/></div>
+                        <div>
+                            <h1>Print Report</h1>
+                            <div class="text-muted">Connect an Odoo report to a document type and destination</div>
+                        </div>
+                        <div class="ms-auto"><field name="gateway_enabled" widget="boolean_toggle"/></div>
+                    </div>
+                    <group string="Print Configuration">
+                        <field name="report_id" options="{'no_create': True}" placeholder="Select an Odoo report"/>
+                        <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="Select a document type"/>
                         <field name="branch_id" options="{'no_create': True}"/>
-                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
+                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="Select a destination"/>
                     </group>
+                    <notebook>
+                        <page string="Advanced" name="advanced">
+                            <group string="Matching">
+                                <field name="priority" help="Lower number is preferred when more than one mapping matches."/>
+                                <field name="active" widget="boolean_toggle"/>
+                            </group>
+                            <group string="Fallback Identifiers">
+                                <field name="report_xml_id" class="o_pg_mono"/>
+                                <field name="report_name" class="o_pg_mono"/>
+                                <field name="model_name" class="o_pg_mono"/>
+                                <field name="document_type_name"/>
+                                <field name="payload_type" readonly="1"/>
+                            </group>
+                        </page>
+                    </notebook>
                     <div class="alert alert-info" role="alert">
-                        <b>Queue semantics:</b> Gateway-enabled Odoo reports are persisted as durable print operations first.
-                        PDF rendering and Gateway submission happen in the background. A transport/render failure stays queued for retry;
-                        it does not silently fall back to a different print path after the user request has completed.
+                        Normal setup is just <b>Report → Document Type → Branch → Destination</b>.
+                        Technical fallback identifiers are available under <b>Advanced</b> for administrators.
                     </div>
                 </sheet>
             </form>
         </field>
     </record>
-
     <record id="view_print_gateway_report_mapping_tree" model="ir.ui.view">
         <field name="name">print_gateway.report_mapping.list</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <list string="Report Mappings" class="o_pg_view o_pg_list" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
-                <field name="name"/>
+            <list string="Report Mappings" class="o_pg_view o_pg_list"
+                  decoration-success="gateway_enabled and active"
+                  decoration-muted="not gateway_enabled or not active">
                 <field name="report_id"/>
-                <field name="report_xml_id"/>
-                <field name="report_name"/>
-                <field name="model_name"/>
                 <field name="document_type_id"/>
-                <field name="document_type_name"/>
                 <field name="branch_id"/>
                 <field name="destination_id"/>
                 <field name="gateway_enabled" widget="boolean_toggle"/>
-                <field name="priority"/>
-                <field name="active" widget="boolean_toggle"/>
+                <field name="active" widget="boolean_toggle" optional="show"/>
             </list>
         </field>
     </record>
-
     <record id="view_print_gateway_report_mapping_search" model="ir.ui.view">
         <field name="name">print_gateway.report_mapping.search</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
             <search>
                 <field name="name"/>
-                <field name="report_xml_id"/>
-                <field name="model_name"/>
-                <field name="report_name"/>
+                <field name="report_id"/>
                 <field name="branch_id"/>
                 <field name="document_type_id"/>
+                <field name="destination_id"/>
                 <filter string="Active" name="active" domain="[('active','=',True)]"/>
                 <filter string="Gateway Enabled" name="gateway_enabled" domain="[('gateway_enabled','=',True)]"/>
-                <separator/>
-                <filter string="Sale Order" name="sale_order" domain="[('model_name','=','sale.order')]"/>
-                <filter string="Invoice" name="invoice" domain="[('model_name','=','account.move')]"/>
-                <filter string="Delivery" name="delivery" domain="[('model_name','=','stock.picking')]"/>
-                <separator/>
                 <group>
                     <filter string="Branch" name="branch" context="{'group_by': 'branch_id'}"/>
                     <filter string="Document Type" name="document_type" context="{'group_by': 'document_type_id'}"/>
@@ -80,20 +78,13 @@
             </search>
         </field>
     </record>
-
     <record id="action_print_gateway_report_mapping" model="ir.actions.act_window">
         <field name="name">Report Mappings</field>
         <field name="res_model">print_gateway.report_mapping</field>
         <field name="view_mode">list,form</field>
         <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">
-                Create your first report mapping!
-            </p>
-            <p>
-                Map Odoo QWeb PDF reports to Print Gateway document types.
-                Priority: Report &gt; XML ID &gt; Report Name &gt; Model.
-                Report mappings intentionally produce PDF payloads only; RAW/ESC-POS jobs use the direct print-job APIs instead.
-            </p>
+            <p class="o_view_nocontent_smiling_face">No report mappings configured yet.</p>
+            <p>Select an Odoo report, document type, branch, and destination. Advanced fallback identifiers are optional.</p>
         </field>
     </record>
 </odoo>
