@@ -8,6 +8,7 @@ import { cleanupExpiredManagerSessions } from "./src/lib/manager-auth";
 import { applyApiCors, handleApiCorsPreflight } from "./src/server/cors";
 import { configuredOdooDatabaseName } from "./src/lib/odoo-auth";
 import { isTrustedProxyRequest, trustProxyEnabled } from "./src/server/trusted-proxy";
+import { runtimeSecret } from "./src/lib/runtime-secret";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -24,7 +25,7 @@ if (process.env.NODE_ENV === "production" && !configuredOdooDatabaseName()) {
 }
 
 if (process.env.NODE_ENV === "production" && trustProxyEnabled()) {
-  const proxySecret = process.env.TRUST_PROXY_SECRET?.trim();
+  const proxySecret = runtimeSecret("TRUST_PROXY_SECRET");
   if (!proxySecret || proxySecret.length < 32) {
     throw new Error("Refusing production startup with TRUST_PROXY enabled without TRUST_PROXY_SECRET (>=32 chars).");
   }
