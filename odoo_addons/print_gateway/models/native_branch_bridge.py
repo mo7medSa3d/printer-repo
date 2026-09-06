@@ -93,7 +93,7 @@ class PrintGatewayNativeBranchBridge(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         """Create only a configuration mirror for an existing Odoo company/branch."""
-        self.check_access_rights('create')
+        self.check_access('create')
         Company = self.env['res.company'].sudo()
         normalized = []
         seen_company_ids = set()
@@ -153,18 +153,15 @@ class PrintGatewayNativeBranchBridge(models.Model):
         return super().write(vals)
 
 
-class PrintGatewayResCompanyBridge(models.Model):
+class ResCompanyPrintGatewayMirror(models.Model):
     _inherit = 'res.company'
 
     def write(self, vals):
         result = super().write(vals)
         if 'name' in vals:
-            configs = self.env['print_gateway.branch'].sudo().search([('company_id', 'in', self.ids)])
+            Branch = self.env['print_gateway.branch'].sudo()
             for company in self:
-                configs.filtered(lambda c: c.company_id.id == company.id).with_context(
-                    _print_gateway_native_sync=True
-                ).write({
-                    'name': company.name,
-                    'gateway_branch_id': 'odoo_company_%s' % company.id,
-                })
+                mirror = Branch.search([('company_id', '=', company.id)], limit=1)
+                if mirror:
+                    mirror.with_context(_print_gateway_native_sync=True).write({'name': company.name})
         return result
