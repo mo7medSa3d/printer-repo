@@ -4,39 +4,48 @@
         <field name="name">print_gateway.print_job.form</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <form string="Print Job" class="o_pg_view o_pg_form">
+            <form string="Print Job" class="o_pg_view o_pg_form" create="0" delete="0">
                 <header>
                     <button name="action_sync_status" type="object" string="Sync Status" class="oe_highlight"/>
                 </header>
                 <sheet>
-                    <group string="Gateway">
-                        <field name="gateway_job_id" readonly="1"/>
-                        <field name="status" widget="badge"/>
-                        <field name="last_sync_at" readonly="1"/>
-                    </group>
-                    <group string="Routing">
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-print" role="img" aria-label="Print Job"/></div>
+                        <div>
+                            <h1><field name="gateway_job_id" readonly="1" class="o_pg_mono"/></h1>
+                            <div class="text-muted">Print operation history</div>
+                        </div>
+                        <div class="ms-auto"><field name="status" readonly="1" widget="badge"/></div>
+                    </div>
+                    <group string="Print Route">
                         <field name="branch_id" readonly="1"/>
                         <field name="destination_id" readonly="1"/>
                         <field name="document_type" readonly="1"/>
                         <field name="printer_id" readonly="1"/>
                         <field name="agent_id" readonly="1"/>
                     </group>
-                    <group string="Odoo Report">
+                    <group string="Odoo Record">
                         <field name="odoo_model" readonly="1"/>
                         <field name="odoo_record_id" readonly="1"/>
-                        <field name="report_xml_id" readonly="1"/>
                         <field name="report_name" readonly="1"/>
-                        <field name="report_id" readonly="1"/>
-                    </group>
-                    <group string="Payload">
-                        <field name="payload" readonly="1"/>
+                        <field name="create_date" readonly="1"/>
                     </group>
                     <group string="Result" invisible="status not in ['failed', 'expired']">
                         <field name="error" readonly="1"/>
                     </group>
+                    <notebook>
+                        <page string="Technical" name="technical">
+                            <group>
+                                <field name="report_xml_id" readonly="1" class="o_pg_mono"/>
+                                <field name="report_id" readonly="1"/>
+                                <field name="last_sync_at" readonly="1"/>
+                                <field name="payload" readonly="1"/>
+                            </group>
+                        </page>
+                    </notebook>
                     <div class="alert alert-info" role="alert">
-                        Jobs are created by Odoo when a mapped report is printed and their status is synced back
-                        from the Gateway. Statuses: queued → claimed → printing → success / failed / expired.
+                        This is a read-only history of jobs created by Odoo and synchronized with the Gateway.
+                        Failed jobs remain visible with their error so operators can diagnose the route without changing the original request.
                     </div>
                 </sheet>
             </form>
@@ -46,22 +55,21 @@
         <field name="name">print_gateway.print_job.list</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <list string="Print Jobs" class="o_pg_view o_pg_list"
+            <list string="Print Jobs" class="o_pg_view o_pg_list" create="0" delete="0"
                   decoration-success="status in ('success','completed')"
                   decoration-danger="status in ('failed','expired')"
                   decoration-warning="status=='printing'"
                   decoration-info="status=='claimed'"
                   decoration-muted="status=='queued'">
-                <field name="gateway_job_id"/>
+                <field name="create_date"/>
                 <field name="branch_id"/>
                 <field name="odoo_model"/>
                 <field name="odoo_record_id"/>
-                <field name="report_xml_id"/>
                 <field name="destination_id"/>
                 <field name="document_type"/>
                 <field name="printer_id"/>
                 <field name="status" widget="badge"/>
-                <field name="create_date"/>
+                <field name="gateway_job_id" optional="show" class="o_pg_mono"/>
             </list>
         </field>
     </record>
@@ -69,14 +77,10 @@
         <field name="name">Print Jobs</field>
         <field name="res_model">print_gateway.print_job</field>
         <field name="view_mode">list,form</field>
+        <field name="context">{'create': False, 'delete': False}</field>
         <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">
-                No print jobs yet — print a mapped report from Odoo to create one.
-            </p>
-            <p>
-                Print job history mirrors the Gateway queue. Errors and retries are visible per job;
-                failed jobs keep their original <b>Idempotency Key</b> so a retry never prints twice.
-            </p>
+            <p class="o_view_nocontent_smiling_face">No print jobs yet.</p>
+            <p>Print jobs appear here automatically when Odoo submits a mapped report to the Gateway.</p>
         </field>
     </record>
 </odoo>
