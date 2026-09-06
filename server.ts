@@ -12,6 +12,10 @@ const hostname = process.env.HOSTNAME ?? "0.0.0.0";
 const JOB_SWEEP_INTERVAL_MS = 30_000;
 const HOUSEKEEPING_INTERVAL_MS = 5 * 60_000;
 
+if (process.env.NODE_ENV === "production" && process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD === "1") {
+  throw new Error("Refusing production startup with ALLOW_PLAINTEXT_MANAGER_PASSWORD=1; configure MANAGER_PASSWORD_HASH instead.");
+}
+
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
@@ -56,9 +60,6 @@ app.prepare().then(() => {
   const housekeepingTimer = setInterval(housekeeping, HOUSEKEEPING_INTERVAL_MS);
   housekeepingTimer.unref();
 
-  if (process.env.NODE_ENV === "production" && process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD === "1") {
-    console.warn("[security] ALLOW_PLAINTEXT_MANAGER_PASSWORD=1 in production: the manager password is held in the environment, not as a hash. Prefer MANAGER_PASSWORD_HASH.");
-  }
   if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
     console.warn("[security] TRUST_PROXY enabled: client IP is taken from X-Forwarded-For. Only run behind a proxy that OVERWRITES that header with the real client address (the bundled Caddyfile does).");
   }
