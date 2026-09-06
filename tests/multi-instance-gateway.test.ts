@@ -5,30 +5,39 @@ import { WebSocket } from "ws";
 import {
   hasTestDatabase,
   applyMigrations,
-  truncateAll,
   seedFixture,
   closePool,
   pool,
   type Fixture,
 } from "./helpers/pg";
+import { getWorkerSchema, schemaSearchPath } from "../src/lib/worker-schema";
 
 const run = describe.skipIf(!hasTestDatabase || process.env.RUN_MULTI_INSTANCE_TEST !== "1");
 
-function startGateway(port: number, databaseName: string): ChildProcess {
+function startGateway(port: number, databaseName: string, workerSchema: string | null): ChildProcess {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_ENV: "production",
+    PORT: String(port),
+    HOSTNAME: "127.0.0.1",
+    TRUST_PROXY: "0",
+    ODOO_DATABASE_NAME: databaseName,
+    GATEWAY_JWT_SECRET: "test-secret-that-is-at-least-32-characters-long",
+    MANAGER_USERNAME: "test-manager",
+    MANAGER_PASSWORD_HASH: "",
+    // Vitest worker isolation is for the parent test process. The spawned
+    // production-like Gateway children must use the exact same schema as the
+    // parent or they will boot against separate empty schemas.
+    VITEST: "false",
+    VITEST_WORKER_ID: "",
+    VITEST_POOL_ID: "",
+  };
+  if (workerSchema) env.PGOPTIONS = `-c search_path=${schemaSearchPath(workerSchema)}`;
+
   return spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "server.ts"], {
     cwd: process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      PORT: String(port),
-      HOSTNAME: "127.0.0.1",
-      TRUST_PROXY: "0",
-      ODOO_DATABASE_NAME: databaseName,
-      GATEWAY_JWT_SECRET: "test-secret-that-is-at-least-32-characters-long",
-      MANAGER_USERNAME: "test-manager",
-      MANAGER_PASSWORD_HASH: "",
-    },
+    env,
   });
 }
 
@@ -69,12 +78,13 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
   const portA = 3111;
   const portB = 3112;
   const databaseName = "multi_instance_test";
+  const workerSchema = getWorkerSchema();
 
   beforeAll(async () => {
     await applyMigrations();
     fixture = await seedFixture();
-    gatewayA = startGateway(portA, databaseName);
-    gatewayB = startGateway(portB, databaseName);
+    gatewayA = startGateway(portA, databaseName, workerSchema);
+    gatewayB = startGateway(portB, databaseName, workerSchema);
     await Promise.all([waitForHealth(portA, gatewayA), waitForHealth(portB, gatewayB)]);
   });
 
