@@ -10,21 +10,24 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
   const agentFilter = scope.agentId ? sql`AND agent_id = ${scope.agentId}` : sql``;
   const branchFilter = scope.branchId ? sql`AND branch_id = ${scope.branchId}` : sql``;
 
+  // Expiry while PRINTING is not equivalent to an ordinary expiry: the agent
+  // may already have handed bytes to the printer. Preserve that uncertainty.
   const expired = await db.execute(sql`
     UPDATE print_jobs
-    SET status = 'expired', updated_at = now()
+    SET status = 'expired',
+        error = CASE
+          WHEN status = 'printing'
+            THEN 'JOB_EXPIRED_DURING_PRINT: physical output is unknown (full, partial or none)'
+          ELSE NULL
+        END,
+        updated_at = now()
     WHERE status NOT IN ('success', 'failed', 'expired')
       AND expires_at <= now()
       ${agentFilter}
       ${branchFilter}
-    RETURNING id
+    RETURNING id, status, error
   `);
 
-  // A stale claim means delivery ownership was acquired but the agent never
-  // advanced the job to PRINTING. Requeue it for the same agent so a temporarily
-  // lost WebSocket/poll cycle can recover without requiring the agent to remain
-  // alive at the exact moment the lease expires. Each recovery increments
-  // retries; once the retry budget is exhausted the job is failed explicitly.
   const requeuedClaims = await db.execute(sql`
     UPDATE print_jobs
     SET status = 'queued',
@@ -42,15 +45,6 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
     RETURNING id
   `);
 
-  // A stale PRINTING lease means the agent stopped reporting while the
-  // document was at the printer. The physical outcome is unknown, so we do
-  // NOT guess a terminal state: the job goes back to the queue and the
-  // (restarted) owner applies its crash-recovery policy —
-  // agent.reprint_after_crash=true reprints it (at-least-once), =false
-  // refuses and reports a terminal failure. A restarted agent keeps its
-  // lease fresh via heartbeat keep-alive, so a legitimately long print is
-  // never touched. Only an exhausted retry budget (or a lapsed business TTL)
-  // fails the job outright here.
   const requeuedPrinting = await db.execute(sql`
     UPDATE print_jobs
     SET status = 'queued',
@@ -72,7 +66,11 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
   const stalePrinting = await db.execute(sql`
     UPDATE print_jobs
     SET status = 'failed',
-        error = 'AGENT_EXECUTION_TIMEOUT: agent execution lease expired (agent likely crashed during physical printing; retry budget exhausted)',
+        error = CASE
+          WHEN expires_at <= now()
+            THEN 'JOB_EXPIRED_DURING_PRINT: physical output is unknown (full, partial or none)'
+          ELSE 'AGENT_EXECUTION_TIMEOUT: agent execution lease expired (agent likely crashed during physical printing; physical output is unknown)'
+        END,
         updated_at = now()
     WHERE status = 'printing'
       AND updated_at < now() - make_interval(secs => ${STALE_PRINTING_SECONDS})
@@ -102,10 +100,14 @@ export async function sweepPrintJobs(scope: { agentId?: string; branchId?: strin
     stalePrinting: stalePrinting.rows.length,
     exhaustedClaims: exhaustedClaims.rows.length,
   };
+  const unknownExpiryCount = expired.rows.filter((row) => String((row as { error?: unknown }).error ?? "").startsWith("JOB_EXPIRED_DURING_PRINT")).length;
   if (result.expired > 0) incrementMetric("print_jobs_expired_total", result.expired);
+  if (unknownExpiryCount > 0) incrementMetric("print_jobs_unknown_total", unknownExpiryCount);
   if (result.requeuedClaims > 0) incrementMetric("print_jobs_requeued_total", result.requeuedClaims);
   if (result.requeuedPrinting > 0) incrementMetric("print_jobs_restart_requeued_total", result.requeuedPrinting);
+  if (result.requeuedPrinting > 0) incrementMetric("print_jobs_unknown_total", result.requeuedPrinting);
   if (result.stalePrinting > 0) incrementMetric("print_jobs_failed_total", result.stalePrinting);
+  if (result.stalePrinting > 0) incrementMetric("print_jobs_unknown_total", result.stalePrinting);
   if (result.exhaustedClaims > 0) incrementMetric("print_jobs_failed_total", result.exhaustedClaims);
   return result;
 }
