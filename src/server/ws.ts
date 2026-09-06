@@ -71,15 +71,16 @@ function writeWsHttpError(socket: WritableSocket, status: number, body: string, 
     `Connection: close\r\n\r\n` +
     payload;
 
-  // Complete the HTTP response before closing the connection. Calling
-  // destroy() immediately after write() can turn a legitimate 4xx/5xx
-  // handshake rejection into ECONNRESET on the WebSocket client and hide the
-  // actual reason for the rejection.
   try {
     socket.end(response);
   } catch {
     try { socket.destroy(); } catch {}
   }
+}
+
+function logUpgradeError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[ws] upgrade handling failed: ${message.slice(0, 500)}`);
 }
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
@@ -322,45 +323,61 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
   }
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
-    const url = req.url ?? "";
-    if (!url.startsWith("/api/agent/ws")) {
-      writeWsHttpError(socket, 404, "Not Found");
-      return;
-    }
-
-    if (trustProxyEnabled() && !isTrustedProxyUpgrade(req.headers)) {
-      writeWsHttpError(socket, 400, "TRUSTED_PROXY_REQUIRED");
-      return;
-    }
-
-    const clientKey = websocketClientKey(req);
     try {
-      const decision = await inspectWsUpgradeRateLimit(clientKey);
-      if (!decision.allowed) {
-        writeWsHttpError(socket, 429, "Too many failed WebSocket authentication attempts", decision.retryAfterSec);
+      const url = req.url ?? "";
+      if (!url.startsWith("/api/agent/ws")) {
+        writeWsHttpError(socket, 404, "Not Found");
         return;
       }
-    } catch {
-      writeWsHttpError(socket, 503, "WebSocket authentication temporarily unavailable", 5);
-      return;
-    }
 
-    const auth = req.headers["authorization"] ?? req.headers["Authorization"];
-    const header = Array.isArray(auth) ? auth[0] : (auth as string | undefined) ?? null;
-    let agent: Awaited<ReturnType<typeof validateAgent>> = null;
-    try { agent = await validateAgent(header ?? null); } catch { agent = null; }
-    if (!agent) {
-      try { await recordWsUpgradeFailure(clientKey); } catch {}
-      writeWsHttpError(socket, 401, "Unauthorized");
-      return;
+      if (trustProxyEnabled() && !isTrustedProxyUpgrade(req.headers)) {
+        writeWsHttpError(socket, 400, "TRUSTED_PROXY_REQUIRED");
+        return;
+      }
+
+      const clientKey = websocketClientKey(req);
+      try {
+        const decision = await inspectWsUpgradeRateLimit(clientKey);
+        if (!decision.allowed) {
+          writeWsHttpError(socket, 429, "Too many failed WebSocket authentication attempts", decision.retryAfterSec);
+          return;
+        }
+      } catch (error) {
+        logUpgradeError(error);
+        writeWsHttpError(socket, 503, "WebSocket authentication temporarily unavailable", 5);
+        return;
+      }
+
+      const auth = req.headers["authorization"] ?? req.headers["Authorization"];
+      const header = Array.isArray(auth) ? auth[0] : (auth as string | undefined) ?? null;
+      let agent: Awaited<ReturnType<typeof validateAgent>> = null;
+      try {
+        agent = await validateAgent(header ?? null);
+      } catch (error) {
+        logUpgradeError(error);
+        agent = null;
+      }
+      if (!agent) {
+        try { await recordWsUpgradeFailure(clientKey); } catch (error) { logUpgradeError(error); }
+        writeWsHttpError(socket, 401, "Unauthorized");
+        return;
+      }
+
+      wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+        const aws = ws as AgentSocket;
+        aws.isAlive = true;
+        aws.on("pong", () => { aws.isAlive = true; });
+        trackAgentSocket(agent!.id, aws);
+        wss.emit("connection", ws, req);
+      });
+    } catch (error) {
+      logUpgradeError(error);
+      if (!socket.destroyed && !socket.writableEnded) {
+        writeWsHttpError(socket, 500, "WebSocket upgrade failed");
+      } else {
+        try { socket.destroy(); } catch {}
+      }
     }
-    wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-      const aws = ws as AgentSocket;
-      aws.isAlive = true;
-      aws.on("pong", () => { aws.isAlive = true; });
-      trackAgentSocket(agent!.id, aws);
-      wss.emit("connection", ws, req);
-    });
   });
 
   wss.on("connection", (ws: AgentSocket) => {
