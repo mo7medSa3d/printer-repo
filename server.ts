@@ -101,6 +101,8 @@ app.prepare().then(() => {
   }
 
   server.listen(port, hostname, () => {
-    console.log(`> Ready on http://${hostname}:${port} (Agent WS at /api/agent/ws)`);
+    const address = server.address();
+    const boundPort = typeof address === "object" && address !== null ? address.port : port;
+    console.log(`> Ready on http://${hostname}:${boundPort} (Agent WS at /api/agent/ws)`);
   });
 });
