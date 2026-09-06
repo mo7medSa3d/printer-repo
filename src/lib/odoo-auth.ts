@@ -69,7 +69,7 @@ export function isOdooKeyAllowedForDocumentType(
 export async function validateOdooKey(
   req: Request,
   expectedBranchId?: string | null,
-  operation: "read" | "write" = "read"
+  operation?: "read" | "write"
 ) {
   const auth = req.headers.get("authorization") ?? req.headers.get("x-api-key") ?? "";
   let raw = "";
@@ -84,7 +84,12 @@ export async function validateOdooKey(
   const row = await db.query.apiKeys.findFirst({ where: eq(apiKeys.hashedKey, hashed) });
   if (!row || row.revokedAt) return null;
   if (!isBranchScopedKeyAllowed(row.branchId, expectedBranchId)) return null;
-  if (!isOdooKeyAllowedForDocumentType(row, undefined, operation)) return null;
+
+  // GET/HEAD/OPTIONS are reads; every other HTTP method is potentially mutating.
+  // Callers may explicitly override this when an endpoint has unusual semantics.
+  const effectiveOperation = operation ?? (["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase()) ? "read" : "write");
+  if (!isOdooKeyAllowedForDocumentType(row, undefined, effectiveOperation)) return null;
+
   if (!timingSafeEqualStr(row.hashedKey, hashed)) return null;
   db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.id)).then(() => {}).catch(() => {});
   return row;
