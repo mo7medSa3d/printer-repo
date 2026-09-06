@@ -98,7 +98,7 @@ func (s *Store) SaveSecret(key, secret string) error {
 	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("storage: write %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := replaceFile(tmp, p); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("storage: replace %s: %w", p, err)
 	}
