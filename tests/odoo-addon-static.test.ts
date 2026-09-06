@@ -21,14 +21,24 @@ describe("Odoo addon static contracts", () => {
 
   it("persists the operation id before the Gateway HTTP call", () => {
     const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
-    expect(src).toContain("idempotency_key");
-    expect(src).toContain("persist the operation ID BEFORE");
     const createFn = src.indexOf("def create_print_job");
     expect(createFn).toBeGreaterThan(-1);
-    expect(src.indexOf("Job.create", createFn)).toBeLessThan(src.indexOf("requests.post", createFn));
+
+    const createSection = src.slice(createFn);
+    const persistenceMatches = ["Job.create", "existing = Job.create"]
+      .map((needle) => createSection.indexOf(needle))
+      .filter((index) => index >= 0);
+    expect(persistenceMatches.length).toBeGreaterThan(0);
+    const persistenceIndex = Math.min(...persistenceMatches);
+    const httpIndex = createSection.indexOf("requests.post");
+
+    expect(httpIndex).toBeGreaterThan(-1);
+    expect(persistenceIndex).toBeLessThan(httpIndex);
+    expect(src).toContain("idempotency_key");
     expect(src).toContain("for attempt in (1, 2)");
     expect(src).toContain("idempotency_key = uuid.uuid4().hex");
     expect(src).toContain("with self.env.cr.savepoint()");
+
     const jobModel = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(jobModel).toContain("models.Constraint");
     expect(jobModel).toContain("UNIQUE(branch_id, idempotency_key)");
@@ -38,8 +48,9 @@ describe("Odoo addon static contracts", () => {
     const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
     expect(src).toContain("last_sync_status");
     expect(src).toContain("last_sync_error");
-    expect(src).toContain("There is no distributed transaction");
+    expect(src).toMatch(/errors\.append\([^\n]*branch\.name/);
     expect(src).toContain("Sync partially failed");
+    expect(src).toMatch(/last_sync_status['\"]\s*:\s*['\"]failed['\"]/);
   });
 
   it("requires an affirmative JSON success response for gateway push sync", () => {
