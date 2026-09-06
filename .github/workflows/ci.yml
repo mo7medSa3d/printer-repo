@@ -79,6 +79,10 @@ jobs:
             echo 'Odoo 19 incompatibility detected: use <list> and direct modifiers instead of <tree>, attrs, or states.'
             exit 1
           fi
+      - name: Build Next.js
+        # The production HTTP acceptance tests execute against this production build,
+        # covering the custom server layer that in-process route tests bypass.
+        run: npm run build
       - name: Run unit tests (no DB)
         run: npm run test:unit
       - name: Wait for PostgreSQL
@@ -108,8 +112,6 @@ jobs:
       - name: Go race tests
         working-directory: agent
         run: go test -count=1 -race -p 2 ./...
-      - name: Build Next.js
-        run: npm run build
 
   odoo19:
     runs-on: ubuntu-latest
