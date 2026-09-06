@@ -15,15 +15,15 @@ Implementation: `src/server/ws.ts` (gateway, attached to the HTTP server in `ser
 | Fan-out | The gateway tracks `Map<agentId, Set<socket>>`; a job is written to **one** open socket (the newest) so a second socket of the same agent is not a duplicate delivery |
 | Plain HTTP GET | `GET /api/agent/ws` returns `426 Upgrade Required` (`src/app/api/agent/ws/route.ts`) |
 
-Only the agent uses a WebSocket. The desktop manager and the dashboard poll over HTTPS.
+Only the agent uses a WebSocket. The desktop manager and dashboard poll over HTTPS.
 
 Reconnect (agent side): jittered exponential backoff starting at 5 s, doubling to a 60 s
 maximum, reset to 5 s after a successful connection.
 
 ## 2. Gateway → Agent: `print_job`
 
-Sent **only after** the job has been claimed (`status='claimed'` committed). Exact shape
-produced by `buildJobEnvelope`:
+Sent only after the job has been claimed (`status='claimed'` committed). Exact shape produced by
+`buildJobEnvelope`:
 
 ```json
 {
@@ -47,13 +47,9 @@ produced by `buildJobEnvelope`:
 }
 ```
 
-The flat `id` / `printerId` / `payload` / `expiresAt` keys are aliases kept so an older agent
-build (which read the job fields directly off the message) still works against a new gateway.
-The agent parser accepts both shapes (`extractJobFromWSMessage`): an envelope with
-`type: "print_job"`, or a legacy bare job object with an `id`. Any other `type` is ignored.
-
-No other message type is sent by the gateway today; in particular no jobs are pushed on
-connect, and there is no live printer-probe command.
+The flat `id` / `printerId` / `payload` / `expiresAt` keys are aliases retained for backwards
+compatibility with older agents. The agent parser accepts both the current envelope and a legacy
+bare job object with an `id`. Any other `type` is ignored.
 
 ## 3. Agent → Gateway: `job_ack`
 
@@ -61,27 +57,20 @@ connect, and there is no live printer-probe command.
 { "type": "job_ack", "jobId": "job_V1StGXR8Z5jd" }
 ```
 
-* Sent immediately when the job is received, **before** printing.
-* Sent for duplicates too, including a job the agent will not print because it already
-  completed locally — so the gateway can distinguish "lost delivery" from "duplicate".
-* Effect on the gateway (`recordJobAck`): `acked_at = now()` and `delivered_at =
-  COALESCE(delivered_at, now())`.
-* What it does **not** do: it never changes `status`, never counts as progress, and never
-  means paper came out. An ack for an unknown job id is logged and ignored.
-* Writes are serialised with a mutex on the agent (gorilla/websocket allows one writer) and
-  use a 10 s write deadline.
-
-Any other agent→gateway frame is ignored (it only refreshes the liveness flag).
-Non-JSON frames are dropped silently.
+* Sent immediately when the job is received, before printing.
+* Sent for duplicates too, including a job the agent will not print because it already completed locally.
+* Effect on the gateway: `acked_at = now()` and `delivered_at = COALESCE(delivered_at, now())`.
+* It never changes logical job status and never means paper came out.
+* Writes are serialised with an agent-side mutex and use a 10 s write deadline.
 
 ## 4. Ordering guarantees
 
-```
-claim transaction COMMIT   →   socket write   →   delivered_at   →   job_ack   →   acked_at
+```text
+claim transaction COMMIT → socket write → delivered_at → job_ack → acked_at
 ```
 
-The agent can never observe a job that is still `queued`: the claim is committed before the
-first byte is written. "Sent" is therefore never confused with "executed".
+The agent cannot observe a job that is still `queued`: the claim is committed before the first byte
+is written. "Sent" is therefore never confused with "executed".
 
 ## 5. Delivery failure
 
@@ -89,44 +78,49 @@ first byte is written. "Sent" is therefore never confused with "executed".
 
 | Outcome | Meaning | Row state afterwards |
 |---|---|---|
-| `delivered` | Claimed and written to a socket | `claimed`, `delivered_at` set, `delivery_attempts + 1` |
+| `delivered` | Claimed and written to a socket | `claimed`, `delivered_at` set |
 | `no_socket` | Agent not connected — nothing was claimed | unchanged `queued` |
-| `not_claimable` | Already claimed/terminal/expired or lost the race | unchanged |
-| `requeued` | Claim taken, socket write failed, claim released | `queued`, `claimed_at = NULL`, same job id |
-| `failed` | As above but `delivery_attempts >= 5` | `failed` with an explicit error |
+| `not_claimable` | Already claimed/terminal/expired or lost the race | unchanged `queued`/terminal |
+| `requeued` | Claim taken, socket write failed, claim released | `queued`, same job id |
+| `failed` | Delivery budget exhausted | `failed` with explicit delivery error |
 
 `MAX_DELIVERY_ATTEMPTS = 5` (`src/lib/job-delivery.ts`).
 
-## 6. Polling fallback and stale-claim recovery
+## 6. Polling fallback and recovery leases
 
-* When the socket is down, the agent polls `GET /api/agent/jobs` every 10 s. The response
-  rows are already `claimed`.
-* While the socket is up, the agent still polls every third tick (~30 s) as a safety net
-  (`wsSafetyPollEvery` in `agent/internal/agent/agent.go`). This is what recovers a job that
-  was claimed for WebSocket delivery but never arrived — without it the row would sit
-  `claimed` until the agent happened to disconnect.
-* The poll endpoint reclaims `claimed`/`printing` rows that have been silent for
-  `90 s` (`STALE_CLAIM_SECONDS` == `CLAIM_LEASE_SECONDS`), incrementing `retries` and
-  re-delivering **the same job id**. After `retries >= 5` the job is failed permanently.
+* When the socket is down, the agent polls `GET /api/agent/jobs` every 10 s.
+* While the socket is up, the agent still polls every third tick (~30 s) as a safety net for a lost
+  WebSocket delivery.
+* **Delivery lease:** a silent `claimed` job may be reclaimed after `STALE_CLAIM_SECONDS` (90 s).
+  This is a transport-recovery lease only; it does not classify physical printing.
+* **Execution lease:** a silent `printing` job uses the separate `STALE_PRINTING_SECONDS` backstop
+  (10 minutes). It is intentionally longer than the normal agent print timeout and is refreshed by
+  heartbeat keep-alives while the agent legitimately holds the job.
+* A stale `printing` recovery records an explicit interruption/timeout marker. It does not silently
+  claim that the printer definitely produced no output. The derived physical outcome is `unknown`.
+* Retries use the same `jobId`; no recovery path creates a second logical job.
 
-## 7. Duplicate delivery behaviour
+## 7. Duplicate and crash semantics
 
-* Gateway side: a second push for the same job returns `not_claimable` and sends nothing.
-* Agent side: `dispatchJob` drops a job that is already in flight; `processJob` re-reports
-  the stored terminal result for a job that already succeeded locally instead of printing it
-  again. Both paths still send `job_ack`.
+* Gateway side: a second push for the same job is not claimable and is not sent as a second logical delivery.
+* Agent side: `dispatchJob` drops a job already in flight, and `processJob` re-reports the stored terminal
+  result for a job already succeeded locally instead of physically printing it again.
+* A process crash while the printer is active yields `AGENT_RESTART_DURING_PRINT`; the physical output is
+  **UNKNOWN** (full, partial, or none).
+* `agent.reprint_after_crash=false` is the safe default and prevents automatic reprinting of the interrupted
+  operation. `true` explicitly opts into at-least-once reprinting and possible duplicate paper.
+* The protocol does not claim exactly-once physical printing.
 
 ## 8. Tests
 
 | Behaviour | Test |
 |---|---|
-| Claim committed before the socket write; envelope carries `status: "claimed"` | `tests/ws-claim-delivery.test.ts` — "Test 1" |
-| `job_ack` records receipt without changing status | same file — "Test 1b" |
-| A fast agent cannot PATCH out of `queued` | "Test 2" |
-| Undelivered claim is requeued under the same id / fails after 5 attempts / stale lease reclaim | "Test 3a–3d" |
-| Duplicate push delivers once | "Test 4" |
-| Concurrent claimers / concurrent polls | "Test 5", "Test 5b" |
-| Terminal job is never re-delivered | "Test 6" |
-| Envelope parsing (envelope + legacy), acks on duplicates | `agent/internal/agent/ws_delivery_test.go` |
+| Claim committed before socket write; envelope carries `status: "claimed"` | `tests/ws-claim-delivery.test.ts` |
+| ACK records receipt without changing status | `tests/ws-claim-delivery.test.ts` |
+| Undelivered claim is requeued / budget exhausted / delivery lease recovery | `tests/ws-claim-delivery.test.ts` |
+| Duplicate push and terminal duplicate protection | `tests/ws-claim-delivery.test.ts`, `agent/internal/agent/ws_delivery_test.go` |
+| Lifecycle fencing | `tests/lifecycle-delivery.test.ts` |
+| Unknown physical outcome after stale printing/crash | `tests/job-maintenance.test.ts`, `tests/physical-outcome.test.ts`, agent crash tests |
+| Migration and multi-instance DB behaviour | `tests/migration-upgrade.integration.test.ts`, `tests/multi-instance-gateway.test.ts` |
 
-These tests require the Node dependencies and, for database-backed cases, a real PostgreSQL instance; see [TESTING.md](TESTING.md). They were not executable in this workspace.
+These tests require Node dependencies and, for database-backed cases, PostgreSQL; see [TESTING.md](TESTING.md).
