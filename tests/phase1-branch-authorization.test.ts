@@ -14,6 +14,11 @@ describe("Phase 1 branch authorization", () => {
     expect(isOdooKeyAllowedForDocumentType({ scope: "standard", allowedDocumentTypes: ["receipt"] }, "receipt", "write")).toBe(true);
   });
 
+  it("rejects unknown API key scopes instead of treating them as write-capable", () => {
+    expect(isOdooKeyAllowedForDocumentType({ scope: "admin", allowedDocumentTypes: null }, undefined, "read")).toBe(false);
+    expect(isOdooKeyAllowedForDocumentType({ scope: "admin", allowedDocumentTypes: ["receipt"] }, "receipt", "write")).toBe(false);
+  });
+
   it("enforces document-type allowlists when configured", () => {
     expect(isOdooKeyAllowedForDocumentType({ allowedDocumentTypes: ["receipt", "label"] }, "invoice", "write")).toBe(false);
     expect(isOdooKeyAllowedForDocumentType({ allowedDocumentTypes: ["receipt", "label"] }, "label", "write")).toBe(true);
