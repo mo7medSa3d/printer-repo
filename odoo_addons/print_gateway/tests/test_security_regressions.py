@@ -170,7 +170,7 @@ class TestPrintGatewaySecurityAccessControl(PrintGatewaySecurityCase):
             })
 
     def test_user_can_read_branch(self):
-        self.assertEqual(self.branch.with_user(self.user).name, 'Access Branch')
+        self.assertEqual(self.branch.with_user(self.user).name, self.company.name)
 
 
 class TestPrintGatewayLifecycleOwnership(PrintGatewaySecurityCase):
@@ -191,8 +191,9 @@ class TestPrintGatewayLifecycleOwnership(PrintGatewaySecurityCase):
 
     def test_printer_branch_is_derived_and_immutable(self):
         self.assertEqual(self.printer.branch_id, self.agent.branch_id)
-        other_branch = self._branch(self.company, 'Other Lifecycle Branch')
-        other_agent = self.env['print_gateway.agent'].with_company(self.company).create({
+        other_company = self.env['res.company'].create({'name': 'Other Lifecycle Company'})
+        other_branch = self._branch(other_company, 'Other Lifecycle Branch')
+        other_agent = self.env['print_gateway.agent'].with_company(other_company).create({
             'name': 'Other Lifecycle Agent',
             'gateway_agent_id': 'agt_other_lifecycle_security',
             'branch_id': other_branch.id,
@@ -209,10 +210,11 @@ class TestPrintGatewayLifecycleOwnership(PrintGatewaySecurityCase):
             self.printer.unlink()
 
     def test_cross_branch_binding_is_blocked(self):
-        other_branch = self._branch(self.company, 'Binding Other Branch')
+        other_company = self.env['res.company'].create({'name': 'Binding Other Company'})
+        other_branch = self._branch(other_company, 'Binding Other Branch')
         other_destination = self._destination(other_branch, 'Binding Other POS')
         with self.assertRaises(ValidationError):
-            self.env['print_gateway.printer_binding'].with_company(self.company).create({
+            self.env['print_gateway.printer_binding'].create({
                 'branch_id': other_branch.id,
                 'destination_id': other_destination.id,
                 'printer_id': self.printer.id,
@@ -281,7 +283,7 @@ class TestGatewayApiKeyReadProtection(PrintGatewaySecurityCase):
 
     def test_regular_user_can_read_non_secret_fields(self):
         values = self.branch.with_user(self.user).read(['name', 'gateway_url'])
-        self.assertEqual(values[0]['name'], 'Key Branch')
+        self.assertEqual(values[0]['name'], self.company.name)
         self.assertEqual(values[0]['gateway_url'], 'https://gateway.example.com')
 
     def test_key_field_hidden_from_regular_user_fields_get(self):
