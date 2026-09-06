@@ -7,6 +7,7 @@ use crate::paths;
 use crate::logging;
 
 const SERVICE_NAME: &str = "OdooPrintAgent";
+const BACKGROUND_PID_FILE: &str = "agent.pid";
 
 fn resource_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().resource_dir().ok()
@@ -16,9 +17,6 @@ fn current_exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
 }
 
-/// Resolve the bundled OdooPrintAgent.exe in production, with a dev check
-/// under the repository's `agent/` directory. Never depends on the process
-/// current working directory.
 pub fn agent_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     resolve_executable(app, "OdooPrintAgent.exe")
 }
@@ -37,9 +35,6 @@ fn resolve_executable(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, Str
         candidates.push(dir.join("resources").join(name));
         candidates.push(dir.join(name));
     }
-    // Development fallback (repository checkout): compiled into debug builds
-    // only, so the release installer never carries a reference to the
-    // developer's working directory.
     #[cfg(debug_assertions)]
     {
         let dev_base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("agent");
@@ -129,6 +124,54 @@ fn run_net(action: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
+fn background_pid_path() -> Result<PathBuf, String> {
+    paths::ensure_agent_data_root()
+        .map(|root| root.join(BACKGROUND_PID_FILE))
+        .map_err(|e| format!("create agent data dir: {e}"))
+}
+
+#[cfg(windows)]
+fn read_background_pid() -> Option<u32> {
+    let path = background_pid_path().ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    raw.trim().parse::<u32>().ok()
+}
+
+#[cfg(windows)]
+fn clear_background_pid() {
+    if let Ok(path) = background_pid_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(windows)]
+fn write_background_pid(pid: u32) -> Result<(), String> {
+    let path = background_pid_path()?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, pid.to_string())
+        .map_err(|e| format!("write background pid: {e}"))?;
+    std::fs::rename(&tmp, &path)
+        .map_err(|e| format!("commit background pid: {e}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn taskkill_pid(pid: u32, force: bool) -> Result<std::process::Output, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let pid_arg = pid.to_string();
+    let mut cmd = Command::new("taskkill");
+    if force {
+        cmd.args(["/PID", &pid_arg, "/T", "/F"]);
+    } else {
+        cmd.args(["/PID", &pid_arg, "/T"]);
+    }
+    cmd.creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("taskkill PID {pid} failed: {e}"))
+}
+
+#[cfg(windows)]
 fn spawn_background(app: &tauri::AppHandle) -> Result<u32, String> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -149,6 +192,7 @@ fn spawn_background(app: &tauri::AppHandle) -> Result<u32, String> {
         .spawn()
         .map_err(|e| format!("spawn agent {} (config {}) : {e}", path.display(), config.display()))?;
     let pid = child.id();
+    write_background_pid(pid)?;
     logging::info(&format!("started OdooPrintAgent.exe pid={pid} config={}", config.display()));
     Ok(pid)
 }
@@ -158,10 +202,6 @@ fn spawn_background(_app: &tauri::AppHandle) -> Result<u32, String> {
     Err("OdooPrintAgent.exe can only be launched on Windows".into())
 }
 
-/// Ensure exactly one agent instance is running. If an installed Windows
-/// service can be started, start that first; otherwise launch the bundled
-/// executable as a detached background process so a non-elevated user can use
-/// the app immediately after install.
 pub fn ensure_started(app: &tauri::AppHandle) -> Result<(), String> {
     if is_running(app) {
         logging::info("agent is already running");
@@ -193,29 +233,18 @@ pub fn stop(app: &tauri::AppHandle) -> Result<(), String> {
         } else {
             #[cfg(windows)]
             {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                let pid = read_background_pid().ok_or_else(|| {
+                    "background agent is running but its owned PID record is missing; refusing to kill arbitrary OdooPrintAgent.exe processes".to_string()
+                })?;
 
-                // Two-stage stop (audit #21): ask the process to exit
-                // first, then force-kill only if it does not drain within
-                // the grace window. A service-mode agent already drains
-                // in-flight jobs (program.Stop); a detached process that
-                // ignores the graceful request is still recoverable — on
-                // next start the agent reports its interrupted jobs as
-                // AGENT_RESTART_DURING_PRINT, so a hard kill never leaves
-                // the gateway with an unknown physical outcome.
-                let out = Command::new("taskkill")
-                    .args(["/IM", "OdooPrintAgent.exe"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output()
-                    .map_err(|e| format!("taskkill failed: {e}"))?;
+                let out = taskkill_pid(pid, false)?;
                 if !out.status.success() {
                     logging::warn(&format!(
-                        "graceful taskkill reported: {}",
+                        "graceful taskkill for owned agent pid={pid} reported: {}",
                         String::from_utf8_lossy(&out.stderr).trim()
                     ));
                 } else {
-                    logging::info("taskkill (graceful) requested agent shutdown");
+                    logging::info(&format!("graceful shutdown requested for owned agent pid={pid}"));
                 }
 
                 for _ in 0..5 {
@@ -226,19 +255,16 @@ pub fn stop(app: &tauri::AppHandle) -> Result<(), String> {
                 }
 
                 if is_process_running(app) {
-                    let out = Command::new("taskkill")
-                        .args(["/F", "/IM", "OdooPrintAgent.exe"])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output()
-                        .map_err(|e| format!("taskkill /F failed: {e}"))?;
+                    let out = taskkill_pid(pid, true)?;
                     if !out.status.success() {
                         return Err(format!(
-                            "taskkill /F failed: {}",
+                            "force stop of owned agent pid={pid} failed: {}",
                             String::from_utf8_lossy(&out.stderr).trim()
                         ));
                     }
-                    logging::warn("agent did not exit within the grace window; forced termination");
+                    logging::warn(&format!("owned agent pid={pid} did not exit within the grace window; forced termination"));
                 }
+                clear_background_pid();
             }
         }
     }
