@@ -50,8 +50,9 @@ class PrintGatewayNativeBranchBridge(models.Model):
             'company_id': company.id,
             'name': company.name,
             'gateway_branch_id': self._native_gateway_branch_id(company),
-            # A newly discovered scope is disabled until Gateway credentials
-            # and routing configuration are explicitly completed.
+            # Discovery only creates configuration mirrors. Do not activate a
+            # scope merely because it exists in Odoo; an administrator must
+            # explicitly enable printing after configuring the Gateway.
             'enabled': False,
         }
 
@@ -111,6 +112,8 @@ class PrintGatewayNativeBranchBridge(models.Model):
 
         This method is incapable of creating the business branch because the
         only authoritative identity is the existing ``res.company`` id.
+        Existing explicit configuration values are preserved; identity fields
+        are always derived from the native Odoo record.
         """
         Company = self.env['res.company'].sudo()
         normalized = []
@@ -121,7 +124,13 @@ class PrintGatewayNativeBranchBridge(models.Model):
             if not company:
                 raise ValidationError(_('The selected Odoo company/branch does not exist.'))
             company.ensure_one()
-            vals.update(self._native_discovery_values(company))
+            vals.update({
+                'company_id': company.id,
+                'name': company.name,
+                'gateway_branch_id': self._native_gateway_branch_id(company),
+            })
+            if 'enabled' not in vals:
+                vals['enabled'] = False
             normalized.append(vals)
         return super().create(normalized)
 
