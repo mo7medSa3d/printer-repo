@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createServer } from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { WebSocket } from "ws";
@@ -8,17 +9,36 @@ import {
   seedFixture,
   closePool,
   pool,
+  insertQueuedJob,
   type Fixture,
 } from "./helpers/pg";
 import { getWorkerSchema } from "../src/lib/worker-schema";
 
 const run = describe.skipIf(!hasTestDatabase || process.env.RUN_MULTI_INSTANCE_TEST !== "1");
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+type GatewayProcess = {
+  child: ChildProcess;
+  output: () => string;
+};
+
+async function findFreePort(): Promise<number> {
+  const server = createServer();
+  server.unref();
+  server.listen({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("failed to determine an available TCP port");
+  }
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  return port;
 }
 
-function startGateway(port: number, databaseName: string, workerSchema: string | null): ChildProcess {
+function startGateway(port: number, databaseName: string, workerSchema: string | null): GatewayProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: "production",
@@ -31,9 +51,8 @@ function startGateway(port: number, databaseName: string, workerSchema: string |
     MANAGER_PASSWORD_HASH: "",
   };
 
-  // A spawned production-like Gateway must not inherit Vitest's worker
-  // isolation variables. Pass the exact parent worker schema explicitly so
-  // both Gateway instances use the same PostgreSQL test data as this process.
+  // Spawned production-like Gateways must not inherit Vitest worker identity.
+  // The exact isolated schema is handed over explicitly to both processes.
   delete env.VITEST;
   delete env.VITEST_WORKER_ID;
   delete env.VITEST_POOL_ID;
@@ -41,38 +60,49 @@ function startGateway(port: number, databaseName: string, workerSchema: string |
   if (workerSchema) env.TEST_WORKER_SCHEMA = workerSchema;
   else delete env.TEST_WORKER_SCHEMA;
 
-  return spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "server.ts"], {
+  const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "server.ts"], {
     cwd: process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
     env,
   });
+
+  let output = "";
+  const appendOutput = (chunk: Buffer | string) => {
+    output += String(chunk);
+    if (output.length > 16_384) output = output.slice(-16_384);
+  };
+  child.stdout?.on("data", appendOutput);
+  child.stderr?.on("data", appendOutput);
+  child.on("error", (error) => appendOutput(`\n[child error] ${error.stack ?? error.message}\n`));
+
+  return { child, output: () => output };
 }
 
-async function waitForHealth(port: number, child: ChildProcess): Promise<void> {
+async function waitForHealth(port: number, gateway: GatewayProcess): Promise<void> {
   const deadline = Date.now() + 20_000;
-  let output = "";
-  child.stdout?.on("data", (chunk) => { output += String(chunk); });
-  child.stderr?.on("data", (chunk) => { output += String(chunk); });
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`gateway ${port} exited before becoming healthy: ${output}`);
+    if (gateway.child.exitCode !== null) {
+      throw new Error(`gateway ${port} exited before becoming healthy:\n${gateway.output()}`);
+    }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (response.ok) return;
     } catch {
-      // server still starting
+      // The listener may still be starting.
     }
-    await sleep(100);
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`gateway ${port} did not become healthy: ${output}`);
+  throw new Error(`gateway ${port} did not become healthy:\n${gateway.output()}`);
 }
 
-async function waitForWebSocketOpen(ws: WebSocket, label: string): Promise<void> {
+async function waitForWebSocketOpen(ws: WebSocket, label: string, gateways: GatewayProcess[] = []): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     const finishReject = (error: Error) => {
       if (settled) return;
       settled = true;
-      reject(error);
+      const diagnostics = gateways.map((gateway, index) => `\n--- Gateway ${index + 1} output ---\n${gateway.output()}`).join("");
+      reject(new Error(`${error.message}${diagnostics}`));
     };
     const finishResolve = () => {
       if (settled) return;
@@ -101,36 +131,113 @@ async function waitForWebSocketOpen(ws: WebSocket, label: string): Promise<void>
   });
 }
 
-async function stopGateway(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  await Promise.race([
-    once(child, "exit").then(() => undefined),
-    new Promise<void>((resolve) => setTimeout(() => {
-      if (child.exitCode === null) child.kill("SIGKILL");
+async function waitForMessage(
+  messages: Record<string, unknown>[],
+  predicate: (message: Record<string, unknown>) => boolean,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const existing = messages.find(predicate);
+  if (existing) return existing;
+
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      const found = messages.find(predicate);
+      if (found) {
+        resolve(found);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error("timed out waiting for expected WebSocket message"));
+        return;
+      }
+      setTimeout(poll, 25);
+    };
+    poll();
+  });
+}
+
+async function stopGateway(gateway: GatewayProcess): Promise<void> {
+  if (gateway.child.exitCode !== null) return;
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
       resolve();
-    }, 5_000)),
-  ]);
+    };
+    const killTimer = setTimeout(() => {
+      if (gateway.child.exitCode === null) gateway.child.kill("SIGKILL");
+      finish();
+    }, 5_000);
+
+    gateway.child.once("exit", finish);
+    gateway.child.kill("SIGTERM");
+  });
 }
 
 run("multi-instance Gateway / PostgreSQL source of truth", () => {
   let fixture: Fixture;
-  let gatewayA: ChildProcess;
-  let gatewayB: ChildProcess;
-  const portA = 3111;
-  const portB = 3112;
+  let gatewayA: GatewayProcess;
+  let gatewayB: GatewayProcess;
+  let portA: number;
+  let portB: number;
   const databaseName = "multi_instance_test";
   const workerSchema = getWorkerSchema();
 
   beforeAll(async () => {
     await applyMigrations();
     fixture = await seedFixture();
+    [portA, portB] = await Promise.all([findFreePort(), findFreePort()]);
     gatewayA = startGateway(portA, databaseName, workerSchema);
     gatewayB = startGateway(portB, databaseName, workerSchema);
-    await Promise.all([waitForHealth(portA, gatewayA), waitForHealth(portB, gatewayB)]);
-    // The WS module establishes PostgreSQL LISTEN asynchronously. This is a
-    // small stabilization delay, not a substitute for sharing the DB schema.
-    await sleep(500);
+
+    await Promise.all([
+      waitForHealth(portA, gatewayA),
+      waitForHealth(portB, gatewayB),
+    ]);
+
+    // Prove the PostgreSQL LISTEN/NOTIFY path is live before the real tests.
+    // The job itself is the durable source of truth; repeated NOTIFY calls are
+    // only wake-ups, so there is no dependency on an arbitrary startup sleep.
+    const readinessJobId = `multi-instance-ready-${Date.now()}-${process.pid}`;
+    await insertQueuedJob(fixture, readinessJobId);
+    const readinessMessages: Record<string, unknown>[] = [];
+    const readinessWs = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, {
+      headers: { Authorization: fixture.agentAuth },
+    });
+    readinessWs.on("message", (data) => {
+      readinessMessages.push(JSON.parse(String(data)) as Record<string, unknown>);
+    });
+    await waitForWebSocketOpen(readinessWs, `Gateway ${portB} readiness`, [gatewayA, gatewayB]);
+
+    try {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        await pool().query("SELECT pg_notify('print_gateway_agent_jobs', $1)", [
+          JSON.stringify({ jobId: readinessJobId, agentId: fixture.agentId }),
+        ]);
+        const row = await pool().query("SELECT status, agent_id FROM print_jobs WHERE id = $1", [readinessJobId]);
+        const message = readinessMessages.find((candidate) =>
+          candidate.type === "print_job" && (candidate.job as { id?: unknown } | undefined)?.id === readinessJobId,
+        );
+        if (row.rows[0]?.status === "claimed" && row.rows[0]?.agent_id === fixture.agentId && message) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const row = await pool().query("SELECT status, agent_id FROM print_jobs WHERE id = $1", [readinessJobId]);
+      const message = readinessMessages.find((candidate) =>
+        candidate.type === "print_job" && (candidate.job as { id?: unknown } | undefined)?.id === readinessJobId,
+      );
+      expect(row.rows[0]?.status).toBe("claimed");
+      expect(row.rows[0]?.agent_id).toBe(fixture.agentId);
+      expect(message).toBeDefined();
+    } finally {
+      readinessWs.close();
+      await pool().query("DELETE FROM print_jobs WHERE id = $1", [readinessJobId]);
+    }
   });
 
   beforeEach(async () => {
@@ -143,25 +250,14 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
   });
 
   it("delivers a job created on Gateway A to an agent connected to Gateway B", async () => {
+    const messages: Record<string, unknown>[] = [];
     const ws = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, {
       headers: { Authorization: fixture.agentAuth },
     });
-    const messagePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("timed out waiting for cross-instance print_job")), 10_000);
-      ws.on("message", (data) => {
-        clearTimeout(timer);
-        resolve(JSON.parse(String(data)) as Record<string, unknown>);
-      });
-      ws.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      ws.on("close", () => {
-        clearTimeout(timer);
-      });
+    ws.on("message", (data) => {
+      messages.push(JSON.parse(String(data)) as Record<string, unknown>);
     });
-    await waitForWebSocketOpen(ws, `Gateway ${portB}`);
-    await sleep(200);
+    await waitForWebSocketOpen(ws, `Gateway ${portB}`, [gatewayA, gatewayB]);
 
     try {
       const response = await fetch(`http://127.0.0.1:${portA}/api/print/jobs`, {
@@ -181,7 +277,11 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
       expect(response.status).toBe(201);
       const created = await response.json() as { id: string };
 
-      const message = await messagePromise;
+      const message = await waitForMessage(
+        messages,
+        (candidate) => candidate.type === "print_job" && (candidate.job as { id?: unknown } | undefined)?.id === created.id,
+        10_000,
+      );
       expect(message.type).toBe("print_job");
       expect((message.job as { id: string }).id).toBe(created.id);
 
@@ -212,25 +312,22 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     wsB.on("message", collectMessage(messagesB));
 
     await Promise.all([
-      waitForWebSocketOpen(wsA, `Gateway ${portA}`),
-      waitForWebSocketOpen(wsB, `Gateway ${portB}`),
+      waitForWebSocketOpen(wsA, `Gateway ${portA}`, [gatewayA, gatewayB]),
+      waitForWebSocketOpen(wsB, `Gateway ${portB}`, [gatewayA, gatewayB]),
     ]);
-    await sleep(200);
 
     try {
-      // Exercise the actual PostgreSQL LISTEN/NOTIFY cross-instance path.
-      await pool().query("SELECT pg_notify('print_gateway_agent_jobs', $1)", [
-        JSON.stringify({ jobId: "multi-claim", agentId: fixture.agentId }),
-      ]);
-
       const deadline = Date.now() + 5_000;
       let delivered: Record<string, unknown>[] = [];
-      while (Date.now() < deadline) {
+      while (Date.now() < deadline && delivered.length === 0) {
+        await pool().query("SELECT pg_notify('print_gateway_agent_jobs', $1)", [
+          JSON.stringify({ jobId: "multi-claim", agentId: fixture.agentId }),
+        ]);
         delivered = [...messagesA, ...messagesB].filter((message) =>
-          message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim"
+          message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim",
         );
         if (delivered.length === 1) break;
-        await sleep(50);
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
       expect(delivered).toHaveLength(1);
