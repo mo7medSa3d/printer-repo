@@ -83,7 +83,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
       await pool.query(`INSERT INTO branches (id, company_id, name, enabled) VALUES ($1, $2, 'Legacy Branch', true)`, [branchId, "legacy-company"]);
       await pool.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle) VALUES ($1, $2, 'Legacy Agent', $3, 'online', 'active')`, [agentId, branchId, "upgrade-secret-hash"]);
       await pool.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle) VALUES ($1, $2, 'Legacy Printer', 'physical', 'thermal', 'network', 'raw', 'online', 'active')`, [printerId, agentId]);
-      await pool.query(`INSERT INTO destinations (id, branch_id, name, destination_type, enabled) VALUES ($1, $2, 'Legacy POS', 'pos', true)`, [destinationId, branchId]);
+      await pool.query(`INSERT INTO destinations (id, branch_id, name, type, enabled) VALUES ($1, $2, 'Legacy POS', 'pos', true)`, [destinationId, branchId]);
       await pool.query(`INSERT INTO printer_bindings (id, branch_id, destination_id, printer_id, priority, enabled) VALUES ($1, $2, $3, $4, 1, true)`, [bindingId, branchId, destinationId, printerId]);
       await pool.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'Legacy API key', $3)`, [apiKeyId, branchId, hash]);
       await pool.query(`INSERT INTO print_jobs (id, branch_id, destination_id, agent_id, printer_id, status, payload, expires_at, created_at, updated_at, idempotency_key, retries, delivery_attempts) VALUES ($1, $2, $3, $4, $5, 'queued', '{}'::jsonb, now() + interval '1 hour', now(), now(), 'legacy-upgrade-key', 0, 0)`, [jobId, branchId, destinationId, agentId, printerId]);
