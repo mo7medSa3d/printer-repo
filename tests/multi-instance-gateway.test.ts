@@ -66,6 +66,41 @@ async function waitForHealth(port: number, child: ChildProcess): Promise<void> {
   throw new Error(`gateway ${port} did not become healthy: ${output}`);
 }
 
+async function waitForWebSocketOpen(ws: WebSocket, label: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finishReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const finishResolve = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    ws.once("open", finishResolve);
+    ws.once("error", (error) => {
+      finishReject(new Error(`${label} WebSocket error: ${error.message}`));
+    });
+    ws.once("unexpected-response", (_request, response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8").slice(0, 500);
+        finishReject(new Error(`${label} WebSocket HTTP ${response.statusCode}: ${body || "<empty body>"}`));
+      });
+      response.on("error", () => {
+        finishReject(new Error(`${label} WebSocket HTTP ${response.statusCode}: response body read failed`));
+      });
+    });
+    ws.once("close", (code, reason) => {
+      finishReject(new Error(`${label} WebSocket closed before open: ${code} ${String(reason)}`));
+    });
+  });
+}
+
 async function stopGateway(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null) return;
   child.kill("SIGTERM");
@@ -125,7 +160,7 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
         clearTimeout(timer);
       });
     });
-    await once(ws, "open");
+    await waitForWebSocketOpen(ws, `Gateway ${portB}`);
     await sleep(200);
 
     try {
@@ -176,7 +211,10 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     wsA.on("message", collectMessage(messagesA));
     wsB.on("message", collectMessage(messagesB));
 
-    await Promise.all([once(wsA, "open"), once(wsB, "open")]);
+    await Promise.all([
+      waitForWebSocketOpen(wsA, `Gateway ${portA}`),
+      waitForWebSocketOpen(wsB, `Gateway ${portB}`),
+    ]);
     await sleep(200);
 
     try {
