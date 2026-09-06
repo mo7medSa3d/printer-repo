@@ -19,8 +19,7 @@ import (
 // secretStoreKey is the key under which the agent's gateway credential is
 // sealed in the platform secret store (DPAPI on Windows, owner-only file
 // elsewhere). The secret must NOT live in plaintext YAML: on Windows the
-// 0600 mode is advisory and the ProgramData config is readable by any local
-// user, which would hand them full agent identity towards the gateway.
+// ProgramData config is not an acceptable place for the gateway credential.
 const secretStoreKey = "agent_secret"
 
 type Config struct {
@@ -54,13 +53,10 @@ type PrinterConfig struct {
 }
 
 func (c *Config) ReprintAfterCrashEnabled() bool {
-	// A nil pointer can still occur in zero-value Config values used by older
-	// callers/tests. Preserve that compatibility value, while every real config
-	// creation/load path explicitly initializes the persisted policy to false.
-	if c == nil || c.Agent.ReprintAfterCrash == nil {
-		return true
-	}
-	return *c.Agent.ReprintAfterCrash
+	// A missing/zero-value policy is unsafe if it enables a second physical
+	// print after an interrupted side effect. Treat nil as the documented safe
+	// default; production config loading also materializes false explicitly.
+	return c != nil && c.Agent.ReprintAfterCrash != nil && *c.Agent.ReprintAfterCrash
 }
 
 func allowInsecureHTTP() bool {
@@ -121,9 +117,6 @@ func Load(path string) (*Config, error) {
 		cfg.Agent.ReprintAfterCrash = boolPtr(false)
 	}
 
-	// Restore the sealed gateway credential, and migrate legacy plaintext
-	// secrets (written by older versions) into the store. A successful migration
-	// is required before returning so a plaintext credential is never left on disk.
 	dir := filepath.Dir(path)
 	if dir == "" || dir == "." {
 		if d, err := ExecutableDir(); err == nil {
@@ -194,9 +187,6 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
 
-	// Seal the gateway credential outside the plaintext YAML. The in-memory
-	// config keeps the secret (callers need it immediately); only the
-	// persisted copy is stripped.
 	toSave := *c
 	if c.Agent.Secret != "" {
 		if err := storage.NewStore(dir).SaveSecret(secretStoreKey, c.Agent.Secret); err != nil {
@@ -257,164 +247,4 @@ func DefaultConfigPath() string {
 		return "config.yaml"
 	}
 	return filepath.Join(dir, "config.yaml")
-}
-
-func LocalConfigPath() string {
-	if override := os.Getenv("ODOO_PRINT_AGENT_DATA_DIR"); override != "" {
-		return filepath.Join(override, "config.yaml")
-	}
-	if la := os.Getenv("LOCALAPPDATA"); la != "" {
-		return filepath.Join(la, "OdooPrintAgent", "config.yaml")
-	}
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, ".config", "odoo-print-agent", "config.yaml")
-	}
-	return DefaultConfigPath()
-}
-
-func LegacyConfigPath() string {
-	dir, err := ExecutableDir()
-	if err != nil {
-		return "config.yaml"
-	}
-	return filepath.Join(dir, "config.yaml")
-}
-
-func QueueDBPath(configPath string) string {
-	dir := filepath.Dir(configPath)
-	if dir == "" || dir == "." {
-		if d, err := ExecutableDir(); err == nil {
-			dir = d
-		}
-	}
-	return filepath.Join(dir, "agent.db")
-}
-
-func DefaultLogDir(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), "logs")
-}
-
-func DefaultLogPath(configPath string) string {
-	return filepath.Join(DefaultLogDir(configPath), "agent.log")
-}
-
-func (c *Config) Validate() error {
-	if c.Server.URL != "" {
-		if err := validateServerURL(c.Server.URL); err != nil {
-			return err
-		}
-	}
-	if c.Agent.ID != "" && c.Server.URL == "" {
-		return fmt.Errorf("agent.id is set but server.url is empty; re-pair or set server.url")
-	}
-	if c.Agent.ID != "" && c.Agent.Secret == "" {
-		return fmt.Errorf("agent.id is set but agent.secret is empty; re-pair the agent")
-	}
-	for _, p := range c.Printers {
-		if err := ValidatePrinterConfig(p); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-var printerIDRe = regexp.MustCompile(`^[a-z0-9_][a-z0-9_-]*$`)
-
-func (p PrinterConfig) NormalizedType() string {
-	t := p.ConnectionType
-	if t == "" {
-		t = p.Type
-	}
-	t = strings.ToLower(strings.TrimSpace(t))
-	switch t {
-	case "tcp":
-		return "network"
-	case "":
-		return "network"
-	default:
-		return t
-	}
-}
-
-func (p PrinterConfig) NormalizedProtocol() string {
-	proto := strings.ToLower(strings.TrimSpace(p.Protocol))
-	if proto == "" {
-		return "raw"
-	}
-	if proto == "windows_spooler" {
-		return "spooler"
-	}
-	return proto
-}
-
-func (p PrinterConfig) IsEnabled() bool {
-	if p.Enabled != nil {
-		return *p.Enabled
-	}
-	return true
-}
-
-func ValidatePrinterConfig(p PrinterConfig) error {
-	if p.ID == "" {
-		return fmt.Errorf("printer missing id")
-	}
-	if !printerIDRe.MatchString(p.ID) {
-		return fmt.Errorf("printer %q: id must match %s", p.ID, printerIDRe.String())
-	}
-	if p.Name == "" {
-		return fmt.Errorf("printer %s: name required", p.ID)
-	}
-	nt := p.NormalizedType()
-	switch nt {
-	case "network", "usb", "spooler", "ipp", "ipps":
-	default:
-		return fmt.Errorf("printer %s: type must be network/usb/spooler/ipp/ipps, got %q", p.ID, p.Type)
-	}
-	proto := p.NormalizedProtocol()
-	switch proto {
-	case "raw", "escpos", "ipp", "ipps", "spooler", "":
-	default:
-		return fmt.Errorf("printer %s: protocol must be raw/escpos/ipp/ipps/spooler, got %q", p.ID, p.Protocol)
-	}
-	if nt == "network" || nt == "ipp" || nt == "ipps" {
-		ep := p.Endpoint
-		if nt == "ipp" && ep == "" {
-			return nil
-		}
-		if ep == "" {
-			return fmt.Errorf("printer %s: network endpoint required (ip:port)", p.ID)
-		}
-		if strings.HasPrefix(proto, "ipp") || strings.HasPrefix(ep, "ipp://") || strings.HasPrefix(ep, "http") {
-			return nil
-		}
-		host, portStr, err := net.SplitHostPort(ep)
-		if err != nil {
-			return fmt.Errorf("printer %s: endpoint must be ip:port, got %q", p.ID, p.Endpoint)
-		}
-		if host == "" || net.ParseIP(strings.Trim(host, "[]")) == nil {
-			if strings.Contains(host, " ") {
-				return fmt.Errorf("printer %s: invalid host %q", p.ID, host)
-			}
-		}
-		port, err := strconv.Atoi(portStr)
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("printer %s: invalid port %q", p.ID, portStr)
-		}
-	}
-	if nt == "spooler" {
-		if p.SpoolerName == "" && p.Endpoint == "" {
-			return fmt.Errorf("printer %s: spooler printer requires spooler_name or endpoint", p.ID)
-		}
-	}
-	return nil
-}
-
-func RegistryPath(configPath string) string {
-	dir := filepath.Dir(configPath)
-	if dir == "" || dir == "." {
-		if d, err := ExecutableDir(); err == nil {
-			dir = d
-		}
-	}
-	return filepath.Join(dir, "printers.json")
 }
