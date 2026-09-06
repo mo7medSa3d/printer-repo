@@ -36,6 +36,7 @@ class PrintGatewayNativeBranchBridge(models.Model):
     )
     gateway_url = fields.Char(
         required=False,
+        default='',
         help='Gateway base URL for this Odoo company/branch.',
     )
 
@@ -49,7 +50,9 @@ class PrintGatewayNativeBranchBridge(models.Model):
             'company_id': company.id,
             'name': company.name,
             'gateway_branch_id': self._native_gateway_branch_id(company),
-            'enabled': bool(getattr(company, 'active', True)),
+            # A newly discovered scope is disabled until Gateway credentials
+            # and routing configuration are explicitly completed.
+            'enabled': False,
         }
 
     @api.model
@@ -106,8 +109,8 @@ class PrintGatewayNativeBranchBridge(models.Model):
     def create(self, vals_list):
         """Create only a configuration mirror for an existing Odoo company/branch.
 
-        This method is deliberately incapable of creating the business branch:
-        the only authoritative relation is ``company_id`` -> ``res.company``.
+        This method is incapable of creating the business branch because the
+        only authoritative identity is the existing ``res.company`` id.
         """
         Company = self.env['res.company'].sudo()
         normalized = []
