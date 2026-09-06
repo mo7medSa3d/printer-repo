@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Security hardening for branch Gateway credentials."""
+"""Security hardening for branch Gateway credentials and tenant binding."""
 
 from urllib.parse import urlparse
 
@@ -14,6 +14,20 @@ class PrintGatewayBranchSecurity(models.Model):
         groups='base.group_system',
         copy=False,
     )
+
+    def _gateway_headers(self):
+        """Add the Odoo database identity to every Gateway request.
+
+        The Gateway is deliberately deployed one Odoo database per Gateway
+        installation. Including the database name on the wire lets the
+        Gateway reject accidental cross-database reuse even when two Odoo
+        databases contain the same native company id (for example both have
+        ``odoo_company_1``).
+        """
+        self.ensure_one()
+        headers = super()._gateway_headers()
+        headers['X-Odoo-Database'] = self.env.cr.dbname
+        return headers
 
     @api.constrains('gateway_url')
     def _check_gateway_url_https(self):
