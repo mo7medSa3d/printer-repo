@@ -120,7 +120,9 @@ prove that paper physically emerged from the printer.
 | Stale `claimed` job | Reclaimed after `CLAIM_LEASE_SECONDS` (90 s), `retries + 1` |
 | Stale `claimed` with retry budget exhausted | Permanently `failed` |
 | Active `printing` job | **Not** reclaimed by the 90 s delivery lease |
-| Stale `printing` job | Recovered only after the separate `STALE_PRINTING_SECONDS` execution backstop (10 min) |
+| Stale `printing` job | Backstopped by the separate `STALE_PRINTING_SECONDS` execution lease (10 min; the agent refreshes it via heartbeat keep-alive while it legitimately works the job). While retry budget remains it is **requeued** to `queued` with `AGENT_RESTART_DURING_PRINT` so the crash-recovery policy (`reprint_after_crash`) can re-deliver it |
+| Stale `printing` with retry budget exhausted (or TTL passed) | `failed` with `AGENT_EXECUTION_TIMEOUT`; a late physical success reported by the agent may still override it (below) |
+| Agent success after a sweep failure | Accepted once, only when the job is `failed` with an `AGENT_EXECUTION_TIMEOUT`/`AGENT_RESTART_DURING_PRINT` marker, no later result was recorded, and the failure is < 24 h old (`isLateSuccessAllowed`) — the agent is the source of truth for the physical outcome |
 | TTL passes | Job becomes `expired`; TTL is independent of claim/execution leases |
 | Printer error | Agent reports `failed` with the backend error |
 | Capability mismatch | Agent reports `failed` with `CAPABILITY_MISMATCH` |

@@ -9,13 +9,25 @@ import (
 
 const maxPrintBytes = 5 * 1024 * 1024
 
+const (
+	// dialTimeout bounds the TCP handshake only — never the document.
+	dialTimeout = 10 * time.Second
+	// writeStallTimeout bounds a SINGLE socket write. A 5MB document on a
+	// slow thermal printer legitimately takes minutes to transfer, so the
+	// whole transfer must NOT be capped by one overall timer (that cut
+	// long writes mid-payload and left partial prints). Instead: each write
+	// may block at most this long before we conclude the device is stuck.
+	writeStallTimeout = 60 * time.Second
+)
+
 type NetworkPrinter struct {
 	Address string // e.g. "192.168.1.50:9100"
 }
 
-// Print transmits data over RAW TCP with context-aware dialing, deadline,
-// and a loop that handles short writes. Success means the bytes were handed
-// to the OS socket — NOT that paper physically came out. See PRINTERS.md.
+// Print transmits data over RAW TCP with context-aware dialing, per-write
+// stall detection, and a loop that handles short writes. Success means the
+// bytes were handed to the OS socket — NOT that paper physically came out.
+// See PRINTERS.md.
 func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("refusing to print empty payload")
@@ -23,19 +35,12 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) > maxPrintBytes {
 		return fmt.Errorf("payload %d bytes exceeds %d limit", len(data), maxPrintBytes)
 	}
-	d := net.Dialer{Timeout: 5 * time.Second}
+	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", p.Address, err)
 	}
 	defer conn.Close()
-
-	// Bound total I/O to context deadline or 15s fallback
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
-	} else {
-		_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-	}
 
 	written := 0
 	for written < len(data) {
@@ -45,6 +50,10 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 		default:
 		}
+		// Per-write stall bound: a healthy printer (or even a slow thermal)
+		// keeps accepting socket data continuously; a single Write blocked
+		// this long means the device died mid-stream.
+		_ = conn.SetWriteDeadline(time.Now().Add(writeStallTimeout))
 		n, err := conn.Write(data[written:])
 		written += n
 		if err != nil {

@@ -14,7 +14,9 @@ export async function GET(req: Request) {
   if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const filter = requestedBranch ?? odoo.branchId ?? null;
   try {
-    const query = db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt));
+    // Bounded: a branch with thousands of printers (plus 16KB configs) must
+    // not produce an unbounded response.
+    const query = db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt)).limit(500);
     const rows = filter ? await query.where(eq(agents.branchId, filter)) : await query;
     return NextResponse.json(rows.filter(({ printer }) => !isVirtualPrinterRecord(printer)).map(({ printer, branchId }) => ({ ...printer, branchId })));
   } catch {

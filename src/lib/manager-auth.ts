@@ -130,8 +130,22 @@ export async function cleanupExpiredManagerSessions(now = new Date()): Promise<n
   return result.rows.length;
 }
 
+/**
+ * The session cookie must be `Secure` in any TLS-terminated deployment.
+ * Default: Secure when NODE_ENV=production (the Docker/Caddy deployments).
+ * Explicit COOKIE_SECURE=1/0 overrides the default for special topologies
+ * (e.g. local TLS via mkcert in dev, or an internal HTTP-only load balancer
+ * that terminates TLS elsewhere and must NOT mark the cookie Secure).
+ */
+function managerCookieSecure(): boolean {
+  const override = process.env.COOKIE_SECURE;
+  if (override === "1" || override === "true") return true;
+  if (override === "0" || override === "false") return false;
+  return process.env.NODE_ENV === "production";
+}
+
 export function managerCookieHeader(token: string, exp: Date): string {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const secure = managerCookieSecure() ? "; Secure" : "";
   return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax${secure}; Expires=${exp.toUTCString()}; Max-Age=${MAX_AGE_SECONDS}`;
 }
 

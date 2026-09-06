@@ -49,6 +49,22 @@ const shutdownGrace = 25 * time.Second
 // stuck until the socket drops.
 const wsSafetyPollEvery = 3
 
+// printDocumentTimeout bounds a single physical print as a function of the
+// payload size. Base 2m covers dial + spooler setup + a small receipt; each
+// megabyte adds 30s, which is generous even for a 9600-baud thermal
+// (~1.2KB/s). This is a HARD cap against a permanently stuck device — the
+// transport applies tighter per-write stall detection — and it is sized so a
+// legitimate 5MB job (~4m) completes well inside the window.
+func printDocumentTimeout(payloadBytes int) time.Duration {
+	const base = 2 * time.Minute
+	const perMB = 30 * time.Second
+	mb := int64(payloadBytes) / (1024 * 1024)
+	if mb < 0 {
+		mb = 0
+	}
+	return base + time.Duration(mb)*perMB
+}
+
 type Agent struct {
 	cfg          *config.Config
 	configPath   string
@@ -75,6 +91,13 @@ type Agent struct {
 	// printers probing at 2s, slow gateway) must never let ticks pile up.
 	hbMu   sync.Mutex
 	pollMu sync.Mutex
+
+	// discoverySem bounds concurrent gateway-directed discovery sessions to
+	// one: each session is a full bounded LAN scan (30s bound), and piling
+	// them up per pending session (as an unbounded go-per-session did)
+	// would fork a scan per session. Pending sessions expire on the
+	// gateway in 60s, so the next poll tick simply picks the rest up.
+	discoverySem chan struct{}
 
 	// shutdownCh is closed exactly once when Run begins stopping; dispatchJob
 	// refuses new work afterwards so the queue is never closed while jobs are
@@ -144,10 +167,11 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		printerConfigs: make(map[string]config.PrinterConfig),
 		queue:          q,
 		jobLocks:       make(map[string]*sync.Mutex),
-		execSem:        make(chan struct{}, maxConcurrentJobs),
-		pendingSlots:   make(chan struct{}, maxPendingJobs),
-		inFlight:       make(map[string]struct{}),
-		shutdownCh:     make(chan struct{}),
+		execSem:      make(chan struct{}, maxConcurrentJobs),
+		pendingSlots: make(chan struct{}, maxPendingJobs),
+		inFlight:     make(map[string]struct{}),
+		shutdownCh:   make(chan struct{}),
+		discoverySem: make(chan struct{}, 1),
 	}
 
 	// An explicitly configured PDF helper takes precedence over the platform
@@ -441,34 +465,47 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// recoverInterruptedJobs reports jobs that were still physically printing when
+// recoverInterruptedJobs handles jobs that were still physically printing when
 // the previous agent process stopped.
 //
 // Their outcome is genuinely unknown (the printer may have printed everything,
-// part of the document, or nothing), so the agent does NOT guess: it marks
-// them terminal locally with queue.InterruptedMarker and tells the gateway the
-// job failed with that explicit reason. Without this the row stayed 'printing'
-// locally and the gateway only noticed after the 90s claim lease, then
-// re-delivered the job and a duplicate page came out with nobody informed.
+// part of the document, or nothing), so the agent does NOT guess. The local
+// row is marked terminal with queue.InterruptedMarker in both cases; what
+// differs is what is told to the gateway, per agent.reprint_after_crash:
 //
-// This is honest at-least-once behaviour made visible — it is NOT exactly-once
-// printing. Set agent.reprint_after_crash: false to stop the agent from
-// automatically printing such a job again (see processJob).
+//   - true:  report NOTHING. The gateway's lease handling (90s claim lease,
+//     10min printing lease) hands the job back to the queue, redelivers it,
+//     and this agent prints it again — honest at-least-once behaviour that
+//     may duplicate paper. The WasInterrupted gate in processJob is the
+//     local backstop for duplicate deliveries.
+//   - false: report the job failed with an explicit reason so the gateway
+//     stops immediately and the document is never silently reprinted.
+//
+// Either way this is NOT exactly-once printing; the physical outcome of the
+// interrupted attempt is unknown and that is what gets recorded.
 func (a *Agent) recoverInterruptedJobs() {
 	interrupted, err := a.queue.MarkInterrupted()
 	if err != nil {
 		log.Printf("WARNING: could not scan the local queue for interrupted jobs: %v", err)
 	}
+	reprint := a.cfg.ReprintAfterCrashEnabled()
 	for _, job := range interrupted {
+		if reprint {
+			log.Printf(
+				"WARNING: job %s on printer %s was still printing when the agent stopped. Physical output is UNKNOWN (full, partial or none). reprint_after_crash=true: leaving the job to the gateway lease so it can be redelivered and reprinted.",
+				job.ID, job.PrinterID,
+			)
+			continue
+		}
 		log.Printf(
 			"WARNING: job %s on printer %s was still printing when the agent stopped. Physical output is UNKNOWN (full, partial or none). Reporting it as failed; reprint_after_crash=%v",
-			job.ID, job.PrinterID, a.cfg.ReprintAfterCrashEnabled(),
+			job.ID, job.PrinterID, reprint,
 		)
 		a.updateJobStatus(job.ID, "failed", queue.InterruptedMarker+
 			": the agent stopped while this job was printing; the physical output is unknown (full, partial or none)")
 	}
 	if len(interrupted) > 0 {
-		log.Printf("Crash recovery: %d job(s) were interrupted mid-print and reported to the gateway", len(interrupted))
+		log.Printf("Crash recovery: %d job(s) were interrupted mid-print (reprint_after_crash=%v)", len(interrupted), reprint)
 	}
 }
 
@@ -678,7 +715,14 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 	default:
 		a.forgetJob(jobID)
 		a.wg.Done() // undo the reservation; no goroutine will run
-		log.Printf("Job %s dropped: %d jobs already in flight; gateway will re-deliver after the claim lease expires.", jobID, maxPendingJobs)
+		log.Printf("Job %s dropped: %d jobs already in flight; handing it back to the gateway queue (pending_full).", jobID, maxPendingJobs)
+		// Tell the gateway NOW so the job is requeued immediately instead of
+		// sitting 'claimed' for the 90s lease. The gateway does NOT count
+		// this against the retry budget, so a saturated agent holding a big
+		// backlog cannot burn jobs into 'failed' (see the reject gate in
+		// src/app/api/agent/jobs). Best-effort: the lease reclaim is the
+		// backstop if this PATCH fails.
+		a.rejectJob(jobID)
 		return
 	}
 
@@ -709,6 +753,56 @@ func (a *Agent) forgetJob(id string) {
 	a.inFlightMu.Lock()
 	delete(a.inFlight, id)
 	a.inFlightMu.Unlock()
+}
+
+// inFlightJobIDs returns up to limit ids of jobs currently held by the
+// executor (waiting for an execution slot, running, or at the printer).
+// Used for the heartbeat keep-alive (gateway print-lease extension).
+func (a *Agent) inFlightJobIDs(limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	a.inFlightMu.Lock()
+	defer a.inFlightMu.Unlock()
+	if len(a.inFlight) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(a.inFlight))
+	for id := range a.inFlight {
+		ids = append(ids, id)
+		if len(ids) >= limit {
+			break
+		}
+	}
+	return ids
+}
+
+// rejectJob hands a claimed job back to the gateway queue because the local
+// executor is saturated (pendingSlots full). This is distinct from a real
+// print failure: the agent is healthy, it just cannot accept the job right
+// now. The gateway requeues it WITHOUT incrementing the retry budget, so a
+// temporarily overloaded agent never drives a healthy backlog into
+// 'exceeded max retries'. Best-effort — the gateway's 90s claim-lease
+// reclaim remains the backstop if this request fails or races.
+func (a *Agent) rejectJob(jobID string) {
+	reqURL := fmt.Sprintf("%s/api/agent/jobs", a.cfg.Server.URL)
+	body := map[string]interface{}{
+		// status "queued" + reason "pending_full" is the gateway's explicit
+		// rejection gate (claimed -> queued without burning retries).
+		"jobId":  jobID,
+		"status": "queued",
+		"reason": "pending_full",
+	}
+	resp, err := a.doAuthorizedRequest("PATCH", reqURL, body)
+	if err != nil {
+		log.Printf("Job %s: failed to report pending-full rejection: %v (claim lease remains the backstop)", jobID, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("Job %s: server rejected the pending-full rejection (%d): %s", jobID, resp.StatusCode, string(respBody))
+	}
 }
 
 // waitForJobs blocks until in-flight job handlers finish (bounded by
@@ -1006,6 +1100,16 @@ func (a *Agent) sendHeartbeat() {
 		"status":   "online",
 		"printers": a.printerStatusPayload(),
 	}
+	// Print-lease keep-alive: report every job id this agent currently holds
+	// (accepted + executing + physically printing). While this agent is
+	// alive and working those jobs, the gateway keeps their updated_at
+	// fresh, so a legitimately long print (or a job waiting behind the
+	// per-printer serialization lock) is never force-failed by the
+	// stale-printing sweep. A dead agent stops heartbeating and its jobs
+	// time out exactly as before. Capped: the gateway accepts at most 64.
+	if ids := a.inFlightJobIDs(64); len(ids) > 0 {
+		payload["keepAliveJobIds"] = ids
+	}
 	resp, err := a.doAuthorizedRequest("POST", reqURL, payload)
 	if err != nil {
 		log.Printf("Heartbeat failed: %v", err)
@@ -1153,7 +1257,14 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	// Report printing outside the per-printer lock (network I/O must not hold mutex)
 	a.updateJobStatus(jobID, "printing", "")
 
-	printCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// The document budget scales with size: a 5MB payload on a slow thermal
+	// legitimately needs minutes to transfer, so a fixed 20s cap used to cut
+	// long writes mid-payload (partial print + failed job). Transports
+	// enforce finer stall detection (per-write in network.go); this is the
+	// hard cap against a permanently stuck device. While printing, the
+	// heartbeat keep-alive keeps the gateway's 10-minute printing lease
+	// fresh, so a legitimately long print is never force-failed.
+	printCtx, cancel := context.WithTimeout(ctx, printDocumentTimeout(len(pl.Data)))
 	defer cancel()
 
 	// Physical print is serialized per printer; re-check dedup before printing

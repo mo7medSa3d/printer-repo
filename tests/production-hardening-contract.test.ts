@@ -13,16 +13,37 @@ describe("production hardening contracts", () => {
     expect(hasBodyOverLimit(new Request("http://test"), 2048)).toBe(false);
   });
 
-  it("enforces a hard byte ceiling for both declared and chunked API request bodies", () => {
+  it("keeps the API body guard stream-safe (declared size via header only, chunked via buffered clone)", () => {
+    // Regression guard for the P0 that 500'd every mutating /api/* request:
+    // the old implementation attached a "data" listener to the ORIGINAL
+    // request and passed that same disturbed stream to Next.js.
     const server = read("server.ts");
-    expect(server).toContain("const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
-    expect(server).toContain('if (!req.url?.startsWith("/api/")) return true;');
-    expect(server).toContain('["POST", "PUT", "PATCH", "DELETE"]');
-    expect(server).toContain('"REQUEST_BODY_TOO_LARGE"');
-    expect(server).toContain('req.on("data"');
-    expect(server).toContain("received += Buffer.byteLength(chunk)");
-    expect(server).toContain("received > MAX_API_BODY_BYTES");
-    expect(server).toContain("req.destroy()");
+    const guard = read("src/server/request-guard.ts");
+    expect(server).toContain("guardApiRequest(req, res)");
+    expect(server).not.toContain('req.on("data"');
+    expect(guard).toContain("export const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
+    expect(guard).toContain('const MUTATING_METHODS = ["POST", "PUT", "PATCH", "DELETE"];');
+    expect(guard).toContain("REQUEST_BODY_TOO_LARGE");
+    expect(guard).toContain("function cloneRequestWithBody(source: IncomingMessage, body: Buffer)");
+    expect(guard).toContain('new IncomingMessage(source.socket)');
+  });
+
+  it("runs a real-HTTP regression test for the body guard", () => {
+    // The guard must be exercised over real TCP (unit suite), and the built
+    // server must be exercised by the Next.js acceptance test.
+    expect(read("tests/request-guard-http.test.ts")).toContain("createServer");
+    expect(read("tests/server-http-acceptance.test.ts")).toContain("getRequestHandler");
+  });
+
+  it("keeps the bundled Caddy sanitizing forwarded-IP headers and capping request bodies", () => {
+    // The gateway's IP-scoped rate limiting (TRUST_PROXY=1) is only safe
+    // when the proxy OVERWRITES X-Forwarded-For with the real client
+    // address — appending (Caddy's default) would let clients spoof their
+    // IP and bypass every IP limit.
+    const caddy = read("Caddyfile");
+    expect(caddy).toContain("header_up X-Forwarded-For {http.request.remote.host}");
+    expect(caddy).toContain("header_up -X-Real-Ip");
+    expect(caddy).toContain("max_size 8MiB");
   });
 
   it("keeps Docker migration out of runtime startup and orders Compose migration before gateway", () => {

@@ -6,6 +6,7 @@ import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { eq, count, desc } from "drizzle-orm";
 import { z } from "zod";
 import { generatePairingCode } from "../../../../lib/agent-auth";
+import { closeAgentSockets, publishAgentSessionClose } from "../../../../server/ws";
 
 export const dynamic = "force-dynamic";
 const patchSchema = z.object({ lifecycle: z.enum(["active", "disabled", "retired"]) }).strict();
@@ -42,5 +43,17 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(eq(printers.agentId, id));
     }
   });
+
+  // The secret was just nullified, but an already-established WS socket
+  // would keep receiving jobs until it happens to reconnect. Close it
+  // immediately on this instance and ask the other instances to do the
+  // same (best-effort; the nullified secret already defeats re-auth).
+  if (next !== "active") {
+    try { closeAgentSockets(id); } catch { /* sockets already gone */ }
+    void publishAgentSessionClose(id).catch((error) => {
+      console.warn(`[agents] failed to publish session close for ${id}:`, error);
+    });
+  }
+
   return NextResponse.json({ ok: true, lifecycle: next, pairingCode });
 }

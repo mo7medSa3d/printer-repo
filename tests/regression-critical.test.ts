@@ -36,9 +36,11 @@ describe("regression: collision-safe job IDs removed from route layer", () => {
     expect(branch).toContain("requests.post");
     expect(branch).toContain("for attempt in (1, 2)");
 
-    const report = readFileSync("odoo_addons/print_gateway/models/ir_actions_report.py", "utf8");
-    expect(report).toContain("idempotency_key = _uuid.uuid4().hex");
-    expect(report).toContain("idempotency_key=idempotency_key");
+    // The idempotency key for the report path is generated in the live async
+    // path (audit #18 removed the dead synchronous override).
+    const report = readFileSync("odoo_addons/print_gateway/models/async_report.py", "utf8");
+    expect(report).toContain("idempotency_key = uuid.uuid4().hex");
+    expect(report).toContain("'idempotency_key': idempotency_key");
   });
 });
 

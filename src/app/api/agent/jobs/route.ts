@@ -3,7 +3,7 @@ import { printJobs } from "../../../../db/schema";
 import { validateAgent } from "../../../../lib/agent-auth";
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { isJobStatus, canTransition, isTerminal, type JobStatus } from "../../../../lib/job-status";
+import { isJobStatus, canTransition, isTerminal, isLateSuccessAllowed, type JobStatus } from "../../../../lib/job-status";
 import { logInfo, logWarn, requestIdFrom } from "../../../../lib/log";
 import { incrementMetric } from "../../../../lib/metrics";
 import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "../../../../lib/job-maintenance";
@@ -119,13 +119,14 @@ export async function PATCH(req: Request) {
   }
   if (hasBodyOverLimit(req, 64 * 1024)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
 
-  let body: { jobId?: unknown; status?: unknown; error?: unknown };
+  let body: { jobId?: unknown; status?: unknown; error?: unknown; reason?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
 
-  const { jobId, status: requestedStatus, error: rawError } = body;
+  const { jobId, status: requestedStatus, error: rawError, reason: rawReason } = body;
   if (typeof jobId !== "string" || !jobId) return NextResponse.json({ error: "jobId is required" }, { status: 400 });
   if (!isJobStatus(requestedStatus)) return NextResponse.json({ error: "status must be a valid job status" }, { status: 400 });
   const errorMessage = typeof rawError === "string" && rawError.length > 0 ? rawError.slice(0, MAX_ERROR_LENGTH) : null;
+  const reason = typeof rawReason === "string" ? rawReason.trim() : "";
 
   const whereClause = agent.branchId
     ? and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id), eq(printJobs.branchId, agent.branchId))
@@ -150,12 +151,50 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: `Job transition raced with another update${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
   }
 
+  // --- Agent rejection: hand a claimed job back to the queue.
+  // The agent received the job but its local queue was full (it will pick
+  // the job up again once it has capacity). This must NOT burn the retry
+  // budget — the claim CTE only increments `retries` when reclaiming a
+  // STALE claim, and a normal queued->claim never does.
+  if (requestedStatus === "queued" && currentStatus === "claimed") {
+    if (reason !== "pending_full") {
+      return NextResponse.json({ error: "Invalid status transition: claimed -> queued requires reason 'pending_full'" }, { status: 409 });
+    }
+    const updated = await db.update(printJobs)
+      .set({ status: "queued", error: null, updatedAt: new Date() })
+      .where(and(whereClause, eq(printJobs.status, "claimed")))
+      .returning({ status: printJobs.status });
+    if (updated.length !== 1) {
+      const winner = await db.query.printJobs.findFirst({ where: whereClause });
+      const winnerStatus = winner?.status as JobStatus | undefined;
+      return NextResponse.json({ error: `Concurrent status transition rejected${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
+    }
+    incrementMetric("print_jobs_rejected_total");
+    logInfo("print.job.rejected", { requestId, jobId, agentId: agent.id });
+    return NextResponse.json({ success: true, status: "queued" });
+  }
+
+  // --- Late physical-outcome override: failed -> success.
+  // The stale-printing sweep can fail a job (AGENT_EXECUTION_TIMEOUT) while
+  // the agent is actually still printing and eventually succeeds. The agent
+  // is the only source of truth about the physical outcome, so exactly one
+  // override is allowed — and only for our own lease/timeout failures,
+  // while recent. The LATE_SUCCESS error prefix below makes a second
+  // override impossible (isLateSuccessAllowed checks the original prefix).
+  let lateSuccess = false;
+  if (currentStatus === "failed" && requestedStatus === "success") {
+    if (!isLateSuccessAllowed({ status: currentStatus, error: job.error, updatedAt: job.updatedAt }, Date.now())) {
+      return NextResponse.json({ error: "Invalid status transition: failed -> success (late success not allowed for this job)" }, { status: 409 });
+    }
+    lateSuccess = true;
+  }
+
   if (!canTransition(currentStatus, requestedStatus)) return NextResponse.json({ error: `Invalid status transition: ${currentStatus} -> ${requestedStatus}` }, { status: 409 });
 
   const updated = await db.update(printJobs)
     .set({
       status: requestedStatus,
-      error: errorMessage,
+      error: lateSuccess ? `LATE_SUCCESS: ${job.error ?? "AGENT_EXECUTION_TIMEOUT"}` : errorMessage,
       updatedAt: new Date(),
       ...(requestedStatus === "claimed" ? { claimedAt: new Date() } : {}),
     })
@@ -169,6 +208,10 @@ export async function PATCH(req: Request) {
   }
 
   incrementMetric(`print_jobs_${requestedStatus}_total`);
+  if (lateSuccess) {
+    incrementMetric("print_jobs_late_success_total");
+    logInfo("print.job.late_success", { requestId, jobId, agentId: agent.id });
+  }
   logInfo(`print.job.${requestedStatus}`, { requestId, jobId, agentId: agent.id });
   return NextResponse.json({ success: true, status: requestedStatus });
 }

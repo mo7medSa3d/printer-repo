@@ -43,11 +43,25 @@ fn main() {
             {
                 use tauri_plugin_autostart::ManagerExt;
 
-                match app.autolaunch().enable() {
-                    Ok(_) => logging::info("desktop autostart enabled at Windows login"),
-                    Err(e) => logging::warn(&format!(
-                        "desktop autostart could not be enabled: {e}"
-                    )),
+                // Autostart defaults to ON only on the FIRST launch.
+                // Once the user has made a choice (set_autostart writes
+                // the marker file), this block must not override it —
+                // the old unconditional enable() silently re-enabled
+                // autostart on every app start, breaking the user's
+                // "off" choice. (audit #21)
+                let touched = paths::manager_data_root().join("autostart-user-choice");
+                if touched.exists() {
+                    logging::info("desktop autostart left as configured by the user");
+                } else {
+                    match app.autolaunch().enable() {
+                        Ok(_) => logging::info("desktop autostart enabled by default on first launch"),
+                        Err(e) => logging::warn(&format!(
+                            "desktop autostart could not be enabled by default: {e}"
+                        )),
+                    }
+                    if let Err(e) = std::fs::write(&touched, "1") {
+                        logging::warn(&format!("could not persist autostart marker: {e}"));
+                    }
                 }
             }
 

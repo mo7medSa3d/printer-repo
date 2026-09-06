@@ -24,8 +24,38 @@ const agentSockets = new Map<string, Set<AgentSocket>>();
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
 const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
 const PG_NOTIFY_CHANNEL = "print_gateway_agent_jobs";
+const PG_SESSIONS_CHANNEL = "print_gateway_agent_sessions";
 const PG_NOTIFY_RECONNECT_MIN_MS = 1_000;
 const PG_NOTIFY_RECONNECT_MAX_MS = 30_000;
+
+/**
+ * Immediately close every open WS session of an agent (used when the agent
+ * is disabled/retired: its secret is nullified at the same moment, but an
+ * already-established socket would otherwise keep receiving jobs until it
+ * happens to reconnect).
+ */
+export function closeAgentSockets(agentId: string): void {
+  const set = agentSockets.get(agentId);
+  if (!set || set.size === 0) return;
+  for (const ws of set) {
+    try { ws.close(4001, "agent deactivated"); } catch { try { ws.terminate(); } catch {} }
+  }
+}
+
+/**
+ * Ask every gateway instance to close this agent's sessions (cross-instance
+ * deployments). Fire-and-forget by the caller; the local instance also
+ * calls closeAgentSockets directly so it reacts without the NOTIFY round
+ * trip.
+ */
+export async function publishAgentSessionClose(agentId: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query(`SELECT pg_notify(${PG_SESSIONS_CHANNEL}, $1)`, [JSON.stringify({ agentId })]);
+  } finally {
+    try { client.release(); } catch {}
+  }
+}
 
 function websocketClientKey(req: IncomingMessage): string {
   if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
@@ -43,7 +73,7 @@ function websocketClientKey(req: IncomingMessage): string {
 
 function writeWsHttpError(socket: WritableSocket, status: number, body: string, retryAfterSec?: number) {
   const retry = retryAfterSec !== undefined ? `Retry-After: ${retryAfterSec}\r\n` : "";
-  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : "Unauthorized";
+  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : "Unauthorized";
   const payload = JSON.stringify({ error: body });
   socket.write(`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
   socket.destroy();
@@ -174,7 +204,18 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
   let reconnectAttempt = 0;
 
   const handleNotification = (notification: { channel?: string; payload?: string }) => {
-    if (notification.channel !== PG_NOTIFY_CHANNEL || !notification.payload) return;
+    if (!notification.payload) return;
+    if (notification.channel === PG_SESSIONS_CHANNEL) {
+      // Cross-instance "agent deactivated": drop its open sessions here too.
+      try {
+        const message = JSON.parse(notification.payload) as { agentId?: unknown };
+        if (typeof message.agentId === "string" && message.agentId) closeAgentSockets(message.agentId);
+      } catch {
+        console.warn("[ws] ignored malformed agent-session notification");
+      }
+      return;
+    }
+    if (notification.channel !== PG_NOTIFY_CHANNEL) return;
     try {
       const message = JSON.parse(notification.payload) as { jobId?: unknown; agentId?: unknown };
       if (typeof message.jobId !== "string" || typeof message.agentId !== "string") return;
@@ -215,6 +256,7 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
       }
       activeClient = client;
       await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
+      await client.query(`LISTEN ${PG_SESSIONS_CHANNEL}`);
       reconnectAttempt = 0;
       client.on("notification", handleNotification);
       client.on("error", (error) => {
@@ -241,6 +283,7 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
     activeClient = null;
     if (!client) return;
     try { await client.query(`UNLISTEN ${PG_NOTIFY_CHANNEL}`); } catch {}
+    try { await client.query(`UNLISTEN ${PG_SESSIONS_CHANNEL}`); } catch {}
     try { client.release(); } catch {}
   };
 }
@@ -273,7 +316,12 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
-    if (!url.startsWith("/api/agent/ws")) return;
+    if (!url.startsWith("/api/agent/ws")) {
+      // Answer and CLOSE: returning without touching the socket leaves a
+      // hung TCP connection (small DoS surface / resource leak).
+      writeWsHttpError(socket, 404, "Not Found");
+      return;
+    }
 
     const clientKey = websocketClientKey(req);
     try {

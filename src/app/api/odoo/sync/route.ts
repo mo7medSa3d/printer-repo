@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents, branches, destinations, printerBindings, documentTypes, printers, printJobs } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
-import { eq, desc, inArray, and, notInArray } from "drizzle-orm";
+import { eq, desc, inArray, and, notInArray, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -248,6 +248,32 @@ export async function POST(req: Request) {
       : [];
     const printerBranchById = new Map(existingPrinters.map((p) => [asId(p.id)!, asId(p.branchId)]));
 
+    // Wipe guard: an explicit empty array disables every row of that kind
+    // in the branch. That is legitimate when the branch genuinely has none
+    // left (fresh branch, or the admin deleted them all in Odoo), but it is
+    // a TOTAL print outage if it comes from a mis-scoped Odoo recordset
+    // (wrong company, broken view, ...). Disabling rows that currently
+    // exist therefore requires an explicit `wipe: true` in the payload.
+    const wipeRequested = body.wipe === true;
+    if (hasDestinations && rawDestinations.length === 0) {
+      const [{ count }] = await db.select({ count: sql`count(*)::int` }).from(destinations).where(eq(destinations.branchId, branchId));
+      if (Number(count) > 0 && !wipeRequested) {
+        details.push({ entity: "destination", id: null, reason: "empty destinations list would disable all existing destinations in this branch; if intentional, re-run the sync with \"wipe\": true" });
+      }
+    }
+    if (hasDocumentTypes && rawDocumentTypes.length === 0) {
+      const [{ count }] = await db.select({ count: sql`count(*)::int` }).from(documentTypes).where(eq(documentTypes.branchId, branchId));
+      if (Number(count) > 0 && !wipeRequested) {
+        details.push({ entity: "documentType", id: null, reason: "empty documentTypes list would disable all existing document types in this branch; if intentional, re-run the sync with \"wipe\": true" });
+      }
+    }
+    if (hasBindings && rawBindings.length === 0) {
+      const [{ count }] = await db.select({ count: sql`count(*)::int` }).from(printerBindings).where(eq(printerBindings.branchId, branchId));
+      if (Number(count) > 0 && !wipeRequested) {
+        details.push({ entity: "binding", id: null, reason: "empty bindings list would disable all existing printer bindings in this branch; if intentional, re-run the sync with \"wipe\": true" });
+      }
+    }
+
     // Cross-branch primary-key collision: destination/document-type/binding
     // ids are globally unique. Re-using an id that already belongs to another
     // branch would silently steal the row on ON CONFLICT DO UPDATE.
@@ -455,7 +481,44 @@ export async function POST(req: Request) {
   });
 }
 
-// Gateway -> Odoo status visibility: Odoo can GET sync status for printers/agents/jobs in its branch
+// Job fields that are safe to expose to Odoo. The `payload` column is
+// deliberately EXCLUDED: it carries the customer document (up to 5MB) and
+// must never leave the gateway in a sync/status response.
+const SYNC_JOB_COLUMNS = {
+  id: printJobs.id,
+  branchId: printJobs.branchId,
+  destinationId: printJobs.destinationId,
+  documentType: printJobs.documentType,
+  agentId: printJobs.agentId,
+  printerId: printJobs.printerId,
+  status: printJobs.status,
+  error: printJobs.error,
+  requestedBy: printJobs.requestedBy,
+  idempotencyKey: printJobs.idempotencyKey,
+  retries: printJobs.retries,
+  deliveryAttempts: printJobs.deliveryAttempts,
+  claimedAt: printJobs.claimedAt,
+  deliveredAt: printJobs.deliveredAt,
+  ackedAt: printJobs.ackedAt,
+  expiresAt: printJobs.expiresAt,
+  createdAt: printJobs.createdAt,
+  updatedAt: printJobs.updatedAt,
+} as const;
+
+const MAX_SYNC_JOB_IDS = 50;
+
+function parseSyncJobIds(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  const ids = raw.split(",").map((v) => v.trim()).filter((v) => v.length > 0 && v.length <= 120);
+  if (ids.length > MAX_SYNC_JOB_IDS) return null;
+  return ids;
+}
+
+// Gateway -> Odoo status visibility: Odoo can GET sync status for
+// printers/agents/jobs in its branch. Supports narrow queries:
+//   jobIds=<id1,id2,...>   (max 50) — batched status sync for the cron
+//   agentId=<id>           — single-agent status (action_sync_status)
+//   printerId=<id>         — single-printer status (action_sync_from_gateway)
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const branchId = url.searchParams.get("branchId");
@@ -463,6 +526,34 @@ export async function GET(req: Request) {
   if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const branchFilter = branchId ?? odoo.branchId ?? null;
+  const jobIds = parseSyncJobIds(url.searchParams.get("jobIds"));
+  if (jobIds !== null && jobIds.length === 0) {
+    return NextResponse.json({ error: "jobIds must contain at least one non-empty id" }, { status: 400 });
+  }
+  if (jobIds !== null && jobIds.length > MAX_SYNC_JOB_IDS) {
+    return NextResponse.json({ error: `jobIds accepts at most ${MAX_SYNC_JOB_IDS} ids` }, { status: 400 });
+  }
+  const agentIdFilter = url.searchParams.get("agentId")?.trim() || null;
+  const printerIdFilter = url.searchParams.get("printerId")?.trim() || null;
+  if ((agentIdFilter && agentIdFilter.length > 120) || (printerIdFilter && printerIdFilter.length > 120)) {
+    return NextResponse.json({ error: "agentId/printerId too long" }, { status: 400 });
+  }
+
+  // Batched job status: exactly the requested ids, metadata only (no
+  // payload), branch-scoped for branch keys.
+  if (jobIds !== null) {
+    let jobRows: any[];
+    try {
+      jobRows = await db.select(SYNC_JOB_COLUMNS)
+        .from(printJobs)
+        .where(and(inArray(printJobs.id, jobIds), branchFilter ? eq(printJobs.branchId, branchFilter) : undefined))
+        .orderBy(desc(printJobs.createdAt));
+    } catch (e) {
+      return NextResponse.json({ error: "database error while loading sync status" }, { status: 500 });
+    }
+    return NextResponse.json({ branchId: branchFilter, agents: [], printers: [], jobs: jobRows, syncStatus: "success" });
+  }
+
   // Return summary of agents/printers for this branch
   let agentRows: any[] = [];
   let printerRows: any[] = [];
@@ -470,15 +561,44 @@ export async function GET(req: Request) {
 
   try {
     if (branchFilter) {
-      agentRows = await db.select().from(agents).where(eq(agents.branchId, branchFilter)).orderBy(desc(agents.lastSeenAt)).limit(50);
-      const rows = await db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).where(eq(agents.branchId, branchFilter)).orderBy(desc(printers.updatedAt)).limit(100);
+      agentRows = await db.select().from(agents)
+        .where(agentIdFilter ? and(eq(agents.branchId, branchFilter), eq(agents.id, agentIdFilter)) : eq(agents.branchId, branchFilter))
+        .orderBy(desc(agents.lastSeenAt))
+        .limit(agentIdFilter ? 1 : 50);
+      const rows = await db.select({ printer: printers, branchId: agents.branchId })
+        .from(printers)
+        .innerJoin(agents, eq(agents.id, printers.agentId))
+        .where(and(eq(agents.branchId, branchFilter), printerIdFilter ? eq(printers.id, printerIdFilter) : undefined))
+        .orderBy(desc(printers.updatedAt))
+        .limit(printerIdFilter ? 1 : 100);
       printerRows = rows.map(({ printer, branchId }) => ({ ...printer, branchId }));
-      jobRows = await db.select().from(printJobs).where(eq(printJobs.branchId, branchFilter)).orderBy(desc(printJobs.createdAt)).limit(50);
+      jobRows = await db.select(SYNC_JOB_COLUMNS).from(printJobs)
+        .where(and(
+          eq(printJobs.branchId, branchFilter),
+          agentIdFilter ? eq(printJobs.agentId, agentIdFilter) : undefined,
+          printerIdFilter ? eq(printJobs.printerId, printerIdFilter) : undefined,
+        ))
+        .orderBy(desc(printJobs.createdAt))
+        .limit(50);
     } else {
-      agentRows = await db.select().from(agents).orderBy(desc(agents.lastSeenAt)).limit(20);
-      const rows = await db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt)).limit(20);
+      agentRows = await db.select().from(agents)
+        .where(agentIdFilter ? eq(agents.id, agentIdFilter) : undefined)
+        .orderBy(desc(agents.lastSeenAt))
+        .limit(agentIdFilter ? 1 : 20);
+      const rows = await db.select({ printer: printers, branchId: agents.branchId })
+        .from(printers)
+        .innerJoin(agents, eq(agents.id, printers.agentId))
+        .where(printerIdFilter ? eq(printers.id, printerIdFilter) : undefined)
+        .orderBy(desc(printers.updatedAt))
+        .limit(printerIdFilter ? 1 : 20);
       printerRows = rows.map(({ printer, branchId }) => ({ ...printer, branchId }));
-      jobRows = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(20);
+      jobRows = await db.select(SYNC_JOB_COLUMNS).from(printJobs)
+        .where(and(
+          agentIdFilter ? eq(printJobs.agentId, agentIdFilter) : undefined,
+          printerIdFilter ? eq(printJobs.printerId, printerIdFilter) : undefined,
+        ))
+        .orderBy(desc(printJobs.createdAt))
+        .limit(20);
     }
   } catch (e) {
     // Do not mask DB failures as an empty-but-successful status payload;

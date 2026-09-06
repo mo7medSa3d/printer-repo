@@ -84,6 +84,19 @@ cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
 pwsh -File scripts/build-windows-installer.ps1
 ```
 
+**`src-tauri/Cargo.lock` must be committed** (audit #8). It pins the exact
+Rust dependency versions so the MSI is reproducible, `cargo audit` inspects
+the versions that were actually built, and the CI cargo cache key is
+meaningful. After changing `Cargo.toml` dependencies, regenerate and commit:
+
+```bash
+cd src-tauri
+cargo generate-lockfile   # or: cargo update -p <crate> for a targeted bump
+```
+
+The `build-windows.yml` workflow emits a prominent warning if the lockfile is
+absent (the build still succeeds, but from unpinned dependencies).
+
 Artifacts: `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi` and
 `…/nsis/*-setup.exe`. The CI workflow additionally installs the MSI and runs
 `scripts/smoke-test-windows.ps1` against the installed application.
