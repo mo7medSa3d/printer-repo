@@ -24,10 +24,6 @@ class PrintGatewayAsyncReport(models.Model):
         """Persist a render descriptor; never render PDF or call Gateway here."""
         self.ensure_one()
 
-        mapping_info = self._get_gateway_mapping()
-        if not mapping_info or not mapping_info.get('gateway_enabled'):
-            return None
-
         model_name = self.model
         if not model_name:
             raise ValidationError(_("Report model not found"))
@@ -41,6 +37,12 @@ class PrintGatewayAsyncReport(models.Model):
             raise ValidationError(_("Cannot print an empty report."))
         if not records.exists():
             raise ValidationError(_("One or more records to print no longer exist."))
+
+        # Route from the first record's real Odoo context. The validator below
+        # re-evaluates every record so a heterogeneous recordset is rejected.
+        mapping_info = self._get_gateway_mapping(record=records[0])
+        if not mapping_info or not mapping_info.get('gateway_enabled'):
+            return None
 
         routing_groups = self._validate_recordset_routing_consistency(records, mapping_info)
         routing_group = routing_groups[0]
@@ -184,14 +186,9 @@ class PrintGatewayAsyncPrintJob(models.Model):
                 raise ValidationError(_("Report model changed for pending operation %s; refusing ambiguous rendering.") % job.id)
 
             try:
-                # Isolate rendering so a worker failure does not roll back the
-                # durable error state recorded on the queued outbox operation.
                 with self.env.cr.savepoint():
                     payload = report._generate_payload_for_report(report, res_ids, report_data)
             except Exception as exc:
-                # Keep the durable operation queued. A transient Odoo/report
-                # problem can be retried by the existing cron without creating
-                # a second idempotency key or a duplicate Gateway operation.
                 job.write({'error': str(exc)[:4000], 'last_sync_at': fields.Datetime.now()})
                 _logger.error("Async PDF rendering failed for print operation %s: %s", job.id, str(exc), exc_info=True)
                 raise
