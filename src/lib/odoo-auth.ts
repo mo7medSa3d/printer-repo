@@ -13,6 +13,22 @@ export function isNativeOdooBranchId(value: string | null | undefined): boolean 
   return typeof value === "string" && ODOO_BRANCH_ID_RE.test(value.trim());
 }
 
+/**
+ * Supported tenancy model: one Odoo database per Gateway installation.
+ * A production Gateway must bind Odoo API calls to this exact database name.
+ */
+export function configuredOdooDatabaseName(): string | null {
+  const value = process.env.ODOO_DATABASE_NAME?.trim();
+  if (!value || value.length > 63 || /[\r\n]/.test(value)) return null;
+  return value;
+}
+
+export function isOdooDatabaseAllowed(requestDatabase: string | null | undefined): boolean {
+  const configured = configuredOdooDatabaseName();
+  if (!configured) return process.env.NODE_ENV !== "production";
+  return typeof requestDatabase === "string" && requestDatabase.trim() === configured;
+}
+
 function hashKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
@@ -71,6 +87,11 @@ export async function validateOdooKey(
   expectedBranchId?: string | null,
   operation?: "read" | "write"
 ) {
+  // Tenant binding is checked before credential lookup so a request from an
+  // unbound Odoo database cannot probe the key space of this Gateway.
+  const requestDatabase = req.headers.get("x-odoo-database");
+  if (!isOdooDatabaseAllowed(requestDatabase)) return null;
+
   const auth = req.headers.get("authorization") ?? req.headers.get("x-api-key") ?? "";
   let raw = "";
   if (auth.startsWith("Bearer ")) raw = auth.slice(7).trim();
