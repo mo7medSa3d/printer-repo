@@ -3,13 +3,12 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      # The schema uses timestamp-without-time-zone and the gateway compares
-      # SQL now() against app-written timestamps: the whole deployment must
-      # run in UTC (see docs/DEPLOYMENT.md, Timezone requirement).
       TZ: UTC
       POSTGRES_DB: ${POSTGRES_DB:-odoo_print}
       POSTGRES_USER: ${POSTGRES_USER:-odoo_print}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -36,7 +35,9 @@ services:
       PGPORT: 5432
       PGDATABASE: ${POSTGRES_DB:-odoo_print}
       PGUSER: ${POSTGRES_USER:-odoo_print}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     command: ["npm", "run", "db:migrate"]
     networks:
       - printer_backend
@@ -58,18 +59,18 @@ services:
       PGPORT: 5432
       PGDATABASE: ${POSTGRES_DB:-odoo_print}
       PGUSER: ${POSTGRES_USER:-odoo_print}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:?GATEWAY_JWT_SECRET must be set in .env}
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      GATEWAY_JWT_SECRET_FILE: /run/secrets/gateway_jwt_secret
       MANAGER_USERNAME: ${MANAGER_USERNAME:-admin}
-      MANAGER_PASSWORD: ${MANAGER_PASSWORD:-}
-      MANAGER_PASSWORD_HASH: ${MANAGER_PASSWORD_HASH:-}
-      ALLOW_PLAINTEXT_MANAGER_PASSWORD: ${ALLOW_PLAINTEXT_MANAGER_PASSWORD:-}
+      MANAGER_PASSWORD_HASH_FILE: /run/secrets/manager_password_hash
+      ALLOW_PLAINTEXT_MANAGER_PASSWORD:
+      ODOO_DATABASE_NAME: ${ODOO_DATABASE_NAME:?ODOO_DATABASE_NAME must be set to the exact Odoo database name}
       STALE_AGENT_THRESHOLD_SECONDS: ${STALE_AGENT_THRESHOLD_SECONDS:-90}
-      # Required for per-IP rate limiting behind the bundled Caddy. Safe ONLY
-      # because the caddy service overwrites X-Forwarded-For with the real
-      # client address (see Caddyfile) — never set TRUST_PROXY=1 when the
-      # gateway is reachable directly from untrusted networks.
       TRUST_PROXY: ${TRUST_PROXY:-1}
+    secrets:
+      - postgres_password
+      - gateway_jwt_secret
+      - manager_password_hash
     expose:
       - "3000"
     healthcheck:
@@ -103,6 +104,14 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+
+secrets:
+  postgres_password:
+    environment: POSTGRES_PASSWORD
+  gateway_jwt_secret:
+    environment: GATEWAY_JWT_SECRET
+  manager_password_hash:
+    environment: MANAGER_PASSWORD_HASH
 
 networks:
   printer_backend:
