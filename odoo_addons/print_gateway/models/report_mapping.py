@@ -19,9 +19,8 @@ class PrintGatewayReportMapping(models.Model):
     branch_id = fields.Many2one('print_gateway.branch', string='Branch')
     destination_id = fields.Many2one('print_gateway.destination', string='Destination')
 
-    # Optional Odoo-native context selectors. A POS or warehouse operation
-    # can therefore have its own destination while a branch-wide report rule
-    # remains available as a fallback.
+    # Odoo-native context selectors. A POS or warehouse operation can have its
+    # own destination while a branch-wide report rule remains the fallback.
     pos_config_id = fields.Many2one(
         'pos.config',
         string='POS',
@@ -41,11 +40,11 @@ class PrintGatewayReportMapping(models.Model):
         required=True,
         help='QWeb reports remain PDF payloads. RAW/ESC/POS jobs use the direct print-job API.',
     )
-    priority = fields.Integer(default=10, help='Lower number = higher priority when multiple mappings match.')
+    priority = fields.Integer(default=10, help='Lower number = higher priority within the same context scope.')
 
     _priority_unique = models.Constraint(
-        'UNIQUE(report_id, priority)',
-        'Priority must be unique per exact report.',
+        'UNIQUE(report_id, priority, branch_id, pos_config_id, picking_type_id)',
+        'Priority must be unique within the same report and print-rule scope.',
     )
 
     @api.depends(
@@ -79,18 +78,27 @@ class PrintGatewayReportMapping(models.Model):
             if not rec.report_id and not rec.report_xml_id and not rec.report_name and not rec.model_name:
                 raise ValidationError(_('At least one of Report, Report XML ID, Report Name, or Model must be set.'))
 
-    @api.constrains('branch_id', 'destination_id', 'pos_config_id', 'picking_type_id')
+    @api.constrains('branch_id', 'destination_id', 'document_type_id', 'pos_config_id', 'picking_type_id')
     def _check_scope_consistency(self):
         for rec in self:
             if rec.destination_id and rec.branch_id and rec.destination_id.branch_id != rec.branch_id:
                 raise ValidationError(_('Destination %s must belong to the selected branch %s.') % (rec.destination_id.display_name, rec.branch_id.display_name))
+            if rec.document_type_id and rec.branch_id and rec.document_type_id.branch_id != rec.branch_id:
+                raise ValidationError(_('Document Type %s must belong to the selected branch %s.') % (rec.document_type_id.display_name, rec.branch_id.display_name))
+
             if rec.pos_config_id and rec.picking_type_id:
                 raise ValidationError(_('A print rule can target a POS or a warehouse operation type, not both.'))
-            if rec.pos_config_id and rec.branch_id and rec.pos_config_id.company_id:
-                if rec.pos_config_id.company_id.id != rec.branch_id.company_id.id:
+
+            if rec.pos_config_id:
+                if not rec.branch_id:
+                    raise ValidationError(_('A POS-specific print rule must select a branch.'))
+                if rec.pos_config_id.company_id and rec.pos_config_id.company_id != rec.branch_id.company_id:
                     raise ValidationError(_('POS %s belongs to another Odoo company/branch.') % rec.pos_config_id.display_name)
-            if rec.picking_type_id and rec.branch_id and rec.picking_type_id.company_id:
-                if rec.picking_type_id.company_id.id != rec.branch_id.company_id.id:
+
+            if rec.picking_type_id:
+                if not rec.branch_id:
+                    raise ValidationError(_('An operation-type-specific print rule must select a branch.'))
+                if rec.picking_type_id.company_id and rec.picking_type_id.company_id != rec.branch_id.company_id:
                     raise ValidationError(_('Operation Type %s belongs to another Odoo company/branch.') % rec.picking_type_id.display_name)
 
     @api.model
@@ -113,10 +121,12 @@ class PrintGatewayReportMapping(models.Model):
         if record is None:
             return candidates
         contextual = candidates.filtered(lambda mapping: self._context_matches(mapping, record))
+        # Context-specific rules are the deterministic override for the matching
+        # Odoo object. Priority only orders rules inside the same specificity.
         return contextual.sorted(
             key=lambda mapping: (
-                mapping.priority,
                 0 if (mapping.pos_config_id or mapping.picking_type_id) else 1,
+                mapping.priority,
                 mapping.id,
             )
         )
