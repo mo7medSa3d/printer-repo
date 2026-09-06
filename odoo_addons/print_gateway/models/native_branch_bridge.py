@@ -16,27 +16,20 @@ class PrintGatewayNativeBranchBridge(models.Model):
     _inherit = 'print_gateway.branch'
 
     company_id = fields.Many2one(
-        'res.company',
-        string='Odoo Company / Branch',
-        required=True,
-        readonly=True,
-        ondelete='restrict',
+        'res.company', string='Odoo Company / Branch', required=True,
+        readonly=True, ondelete='restrict',
         help='Existing Odoo company/branch represented by this Print Gateway configuration.',
     )
     name = fields.Char(
-        string='Branch Name',
-        readonly=True,
+        string='Branch Name', readonly=True,
         help='Inherited from the linked Odoo company/branch. Rename it in Odoo.',
     )
     gateway_branch_id = fields.Char(
-        string='Gateway Branch ID',
-        readonly=True,
-        copy=False,
+        string='Gateway Branch ID', readonly=True, copy=False,
         help='Stable Gateway identity derived from the Odoo company/branch id.',
     )
     gateway_url = fields.Char(
-        required=False,
-        default='',
+        required=False, default='',
         help='Gateway base URL for this Odoo company/branch.',
     )
 
@@ -50,19 +43,12 @@ class PrintGatewayNativeBranchBridge(models.Model):
             'company_id': company.id,
             'name': company.name,
             'gateway_branch_id': self._native_gateway_branch_id(company),
-            # Discovery only creates configuration mirrors. Do not activate a
-            # scope merely because it exists in Odoo; an administrator must
-            # explicitly enable printing after configuring the Gateway.
             'enabled': False,
         }
 
     @api.model
     def _sync_native_companies(self, companies=None):
-        """Discover existing Odoo company/branch records.
-
-        Only Print Gateway configuration mirrors are created here. The method
-        never creates or modifies the underlying ``res.company`` records.
-        """
+        """Discover existing Odoo company/branch records without creating them."""
         Company = self.env['res.company'].sudo()
         Branch = self.sudo()
         if companies is None:
@@ -83,17 +69,15 @@ class PrintGatewayNativeBranchBridge(models.Model):
                 updated += 1
                 continue
 
-            Branch.with_context(_print_gateway_native_sync=True).create(values)
+            Branch.with_context(_print_gateway_native_sync=True).with_company(company).create(values)
             created += 1
 
         return created, updated
 
     @api.model
     def action_refresh_from_odoo(self):
-        """Refresh Print Gateway mirrors from Odoo's existing companies/branches."""
         if not self.env.user.has_group('base.group_system'):
             raise AccessError(_('Only Odoo system administrators can refresh Print Gateway branches.'))
-
         created, updated = self._sync_native_companies()
         return {
             'type': 'ir.actions.client',
@@ -108,13 +92,8 @@ class PrintGatewayNativeBranchBridge(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
-        """Create only a configuration mirror for an existing Odoo company/branch.
-
-        This method is incapable of creating the business branch because the
-        only authoritative identity is the existing ``res.company`` id.
-        Existing explicit configuration values are preserved; identity fields
-        are always derived from the native Odoo record.
-        """
+        """Create only a configuration mirror for an existing Odoo company/branch."""
+        self.check_access_rights('create')
         Company = self.env['res.company'].sudo()
         normalized = []
         seen_company_ids = set()
@@ -125,18 +104,11 @@ class PrintGatewayNativeBranchBridge(models.Model):
             if not company:
                 raise ValidationError(_('The selected Odoo company/branch does not exist.'))
             company.ensure_one()
-
-            # A Gateway configuration is strictly one-to-one with an existing
-            # Odoo company/branch. Fail before INSERT so callers receive a
-            # deterministic validation error instead of a raw DB constraint
-            # error. The database constraint remains the final race-condition
-            # guard for concurrent requests.
             if company.id in seen_company_ids or self.search_count([('company_id', '=', company.id)]):
                 raise ValidationError(_(
                     'Odoo company/branch %s already has a Print Gateway configuration.'
                 ) % company.display_name)
             seen_company_ids.add(company.id)
-
             vals.update({
                 'company_id': company.id,
                 'name': company.name,
@@ -144,15 +116,15 @@ class PrintGatewayNativeBranchBridge(models.Model):
             })
             if 'enabled' not in vals:
                 vals['enabled'] = False
-            normalized.append(vals)
+            normalized.append((company, vals))
 
-        # The native bridge has already reduced the operation to existing
-        # Odoo company/branch identities. Run the base model's creation guard
-        # in an explicit internal context so discovery and controlled admin
-        # creation can mirror any existing Odoo company without granting
-        # regular users cross-company creation privileges through the base ORM.
-        self = self.with_context(_print_gateway_native_sync=True)
-        return super().create(normalized)
+        created = self.browse()
+        for company, vals in normalized:
+            creator = super(PrintGatewayNativeBranchBridge, self.with_company(company).with_context(
+                _print_gateway_native_sync=True
+            ))
+            created |= creator.create([vals])
+        return created
 
     @api.constrains('company_id')
     def _check_one_configuration_per_company(self):
