@@ -15,21 +15,6 @@ class PrintGatewayBranchSecurity(models.Model):
         copy=False,
     )
 
-    def read(self, fields):
-        # ``groups`` on a field only hides it from the web UI (fields_get /
-        # view rendering) — a direct RPC ``read`` still returns the value to
-        # any user with model read access (base.group_user can read
-        # print_gateway.branch). The gateway API key grants full access to
-        # the branch's data on the Gateway, so it must never leave the
-        # server for non-admins. Admins are unaffected; crons run as
-        # OdooBot which is a system admin.
-        if not self.env.user.has_group('base.group_system'):
-            if 'gateway_api_key' in fields:
-                raise AccessError(_(
-                    'Only Odoo system administrators can read the Gateway API key.'
-                ))
-        return super().read(fields)
-
     @api.constrains('gateway_url')
     def _check_gateway_url_https(self):
         for rec in self:
