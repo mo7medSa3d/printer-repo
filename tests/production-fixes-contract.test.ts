@@ -21,7 +21,6 @@ describe("production fixes contracts (2026-09 audit)", () => {
     expect(sync).toContain(
       "empty bindings list would disable all existing printer bindings in this branch; if intentional, re-run the sync with \\\"wipe\\\": true",
     );
-    // The guard must be active for all three entity kinds.
     const guards = sync.split("!wipeRequested").length - 1;
     expect(guards).toBeGreaterThanOrEqual(3);
   });
@@ -31,8 +30,6 @@ describe("production fixes contracts (2026-09 audit)", () => {
     expect(sync).toContain("const MAX_SYNC_JOB_IDS = 50;");
     expect(sync).toContain("if (ids.length > MAX_SYNC_JOB_IDS) return null;");
     expect(sync).toContain("jobIds accepts at most ${MAX_SYNC_JOB_IDS} ids");
-    // The batched-job response must never include the (sensitive, large)
-    // payload column.
     const colsStart = sync.indexOf("const SYNC_JOB_COLUMNS = {");
     const colsEnd = sync.indexOf("} as const;", colsStart);
     expect(colsStart).toBeGreaterThan(-1);
@@ -47,15 +44,15 @@ describe("production fixes contracts (2026-09 audit)", () => {
 
   it("heartbeat print-lease keep-alive: bounded job id list only, scoped to claimed/printing", () => {
     const hb = read("src/app/api/agent/heartbeat/route.ts");
-    expect(hb).toContain("const MAX_KEEP_ALIVE_JOB_IDS = 64;");
-    expect(hb).toContain(".slice(0, MAX_KEEP_ALIVE_JOB_IDS)");
-    // Only the agent's own in-flight jobs can be refreshed.
-    expect(hb).toContain("eq(printJobs.agentId, agent.id)");
-    expect(hb).toContain('inArray(printJobs.status, ["claimed", "printing"])');
-    // It refreshes the lease (updatedAt) only — the exact update statement
-    // sets updatedAt and nothing else (no status mutation), on printJobs.
-    expect(hb).toContain("db.update(printJobs)\n        .set({ updatedAt: new Date() })");
-    expect(hb).not.toContain("db.update(printJobs)\n        .set({ status");
+    const normalized = hb.replace(/\s+/g, " ");
+    expect(normalized).toContain("const MAX_KEEP_ALIVE_JOB_IDS = 64;");
+    expect(normalized).toContain(".slice(0, MAX_KEEP_ALIVE_JOB_IDS)");
+    expect(normalized).toContain("eq(printJobs.agentId, agent.id)");
+    expect(normalized).toContain('inArray(printJobs.status, ["claimed", "printing"])');
+    // Formatting/indentation must not determine whether this behavioral
+    // contract passes. The production code only refreshes updatedAt.
+    expect(normalized).toContain("db.update(printJobs) .set({ updatedAt: new Date() })");
+    expect(normalized).not.toContain("db.update(printJobs) .set({ status");
   });
 
   it("agent rejection gate: claimed->queued only with reason 'pending_full' (no retry burn)", () => {
@@ -66,20 +63,15 @@ describe("production fixes contracts (2026-09 audit)", () => {
 
   it("Go agent: size-aware print timeout and per-write stall deadline", () => {
     const agent = read("agent/internal/agent/agent.go");
-    // The physical print is bounded by document size, not a fixed 20s.
     expect(agent).toContain("printCtx, cancel := context.WithTimeout(ctx, printDocumentTimeout(len(pl.Data)))");
     expect(agent).toContain("func printDocumentTimeout(payloadBytes int) time.Duration {");
-    // A saturated executor hands jobs back to the gateway queue
-    // (pending_full) instead of silently dropping them until the lease.
     expect(agent).toContain("a.rejectJob(jobID)");
     expect(agent).toContain('"reason": "pending_full"');
-    // Discovery sessions are bounded to one concurrent run.
     expect(agent).toContain("discoverySem: make(chan struct{}, 1)");
     const net = read("agent/internal/printer/network.go");
     expect(net).toContain("dialTimeout = 10 * time.Second");
     expect(net).toContain("writeStallTimeout = 60 * time.Second");
     expect(net).toContain("_ = conn.SetWriteDeadline(time.Now().Add(writeStallTimeout))");
-    // No single whole-document connection deadline remains.
     expect(net).not.toContain("conn.SetDeadline(");
   });
 
@@ -91,8 +83,6 @@ describe("production fixes contracts (2026-09 audit)", () => {
 
   it("job-maintenance: stale PRINTING jobs are requeued until the retry budget is exhausted", () => {
     const jm = read("src/lib/job-maintenance.ts");
-    // Requeue (not fail) while retries remain; fail with the late-success
-    // marker once the budget is exhausted.
     expect(jm).toContain("AGENT_EXECUTION_TIMEOUT");
     expect(jm).toContain("requeue");
   });
