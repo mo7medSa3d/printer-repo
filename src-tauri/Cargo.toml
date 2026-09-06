@@ -6,15 +6,15 @@ authors = ["Odoo Print Agent"]
 license = "MIT"
 repository = "https://github.com/mo7medSa3d/printer-repo"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.90"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 url = "2.5.4"
 
