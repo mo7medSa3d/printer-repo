@@ -132,6 +132,13 @@ class PrintGatewayNativeBranchBridge(models.Model):
             if 'enabled' not in vals:
                 vals['enabled'] = False
             normalized.append(vals)
+
+        # The native bridge has already reduced the operation to an existing
+        # Odoo company/branch identity. Run the base model's creation guard in
+        # an explicit internal context so system-level discovery and controlled
+        # administrator creation can mirror any existing Odoo company without
+        # granting regular users cross-company creation privileges.
+        self = self.with_context(_print_gateway_native_sync=True)
         return super().create(normalized)
 
     @api.constrains('company_id')
