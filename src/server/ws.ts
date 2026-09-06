@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
 import { inspectWsUpgradeRateLimit, recordWsUpgradeFailure } from "../lib/ws-rate-limit";
+import { isTrustedProxyUpgrade, trustProxyEnabled } from "./trusted-proxy";
 import {
   claimJobForDelivery,
   markJobDelivered,
@@ -28,12 +29,6 @@ const PG_SESSIONS_CHANNEL = "print_gateway_agent_sessions";
 const PG_NOTIFY_RECONNECT_MIN_MS = 1_000;
 const PG_NOTIFY_RECONNECT_MAX_MS = 30_000;
 
-/**
- * Immediately close every open WS session of an agent (used when the agent
- * is disabled/retired: its secret is nullified at the same moment, but an
- * already-established socket would otherwise keep receiving jobs until it
- * happens to reconnect).
- */
 export function closeAgentSockets(agentId: string): void {
   const set = agentSockets.get(agentId);
   if (!set || set.size === 0) return;
@@ -42,12 +37,6 @@ export function closeAgentSockets(agentId: string): void {
   }
 }
 
-/**
- * Ask every gateway instance to close this agent's sessions (cross-instance
- * deployments). Fire-and-forget by the caller; the local instance also
- * calls closeAgentSockets directly so it reacts without the NOTIFY round
- * trip.
- */
 export async function publishAgentSessionClose(agentId: string): Promise<void> {
   const client = await pool.connect();
   try {
@@ -206,7 +195,6 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
   const handleNotification = (notification: { channel?: string; payload?: string }) => {
     if (!notification.payload) return;
     if (notification.channel === PG_SESSIONS_CHANNEL) {
-      // Cross-instance "agent deactivated": drop its open sessions here too.
       try {
         const message = JSON.parse(notification.payload) as { agentId?: unknown };
         if (typeof message.agentId === "string" && message.agentId) closeAgentSockets(message.agentId);
@@ -317,9 +305,12 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = req.url ?? "";
     if (!url.startsWith("/api/agent/ws")) {
-      // Answer and CLOSE: returning without touching the socket leaves a
-      // hung TCP connection (small DoS surface / resource leak).
       writeWsHttpError(socket, 404, "Not Found");
+      return;
+    }
+
+    if (trustProxyEnabled() && !isTrustedProxyUpgrade(req.headers)) {
+      writeWsHttpError(socket, 400, "TRUSTED_PROXY_REQUIRED");
       return;
     }
 
