@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """Bridge Print Gateway configuration to Odoo's native company/branch records.
 
-Odoo 19 represents branches in the ``res.company`` hierarchy.  This module
-must never create a second business Branch model.  ``print_gateway.branch`` is
-kept only as a configuration/runtime mirror so the existing Gateway routing
-models can remain stable during migration.
+Odoo 19 represents branches in the ``res.company`` hierarchy. The Print
+Gateway module never creates an Odoo branch. Its legacy ``print_gateway.branch``
+model is retained only as a one-to-one configuration mirror of an existing
+``res.company`` record so the current destination/agent/printer/routing models
+remain stable while the ownership model is migrated.
 """
 
 from odoo import api, fields, models, _
@@ -14,15 +15,13 @@ from odoo.exceptions import AccessError, ValidationError
 class PrintGatewayNativeBranchBridge(models.Model):
     _inherit = 'print_gateway.branch'
 
-    # These fields identify an existing Odoo company/branch. They are not a
-    # second branch identity and therefore cannot be edited from Print Gateway.
     company_id = fields.Many2one(
         'res.company',
         string='Odoo Company / Branch',
         required=True,
         readonly=True,
         ondelete='restrict',
-        help='Existing Odoo company/branch that owns this Print Gateway configuration.',
+        help='Existing Odoo company/branch represented by this Print Gateway configuration.',
     )
     name = fields.Char(
         string='Branch Name',
@@ -55,10 +54,10 @@ class PrintGatewayNativeBranchBridge(models.Model):
 
     @api.model
     def _sync_native_companies(self, companies=None):
-        """Discover existing Odoo company/branch records without creating them.
+        """Discover existing Odoo company/branch records.
 
-        The records created here are Print Gateway configuration mirrors only;
-        the underlying ``res.company`` records are never created or modified.
+        Only Print Gateway configuration mirrors are created here. The method
+        never creates or modifies the underlying ``res.company`` records.
         """
         Company = self.env['res.company'].sudo()
         Branch = self.sudo()
@@ -73,8 +72,6 @@ class PrintGatewayNativeBranchBridge(models.Model):
             values = self._native_discovery_values(company)
             existing = Branch.search([('company_id', '=', company.id)], limit=1)
             if existing:
-                # Keep administrative Gateway fields untouched; only refresh
-                # identity copied from the native Odoo record.
                 existing.with_context(_print_gateway_native_sync=True).write({
                     'name': values['name'],
                     'gateway_branch_id': values['gateway_branch_id'],
@@ -89,7 +86,7 @@ class PrintGatewayNativeBranchBridge(models.Model):
 
     @api.model
     def action_refresh_from_odoo(self):
-        """Expose native Odoo company/branch discovery to system administrators."""
+        """Refresh Print Gateway mirrors from Odoo's existing companies/branches."""
         if not self.env.user.has_group('base.group_system'):
             raise AccessError(_('Only Odoo system administrators can refresh Print Gateway branches.'))
 
@@ -99,7 +96,7 @@ class PrintGatewayNativeBranchBridge(models.Model):
             'tag': 'display_notification',
             'params': {
                 'title': _('Odoo Branches Refreshed'),
-                'message': _('%s configuration records created, %s refreshed. Odoo remains the source of truth for branches.') % (created, updated),
+                'message': _('%s configuration mirrors created, %s refreshed. No Odoo branches were created.') % (created, updated),
                 'type': 'success',
                 'sticky': False,
             },
@@ -107,24 +104,16 @@ class PrintGatewayNativeBranchBridge(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
-        """Reject user-created Print Gateway branches.
+        """Create only a configuration mirror for an existing Odoo company/branch.
 
-        A configuration mirror can only be created by the discovery routine,
-        and only for an already-existing ``res.company`` record.
+        This method is deliberately incapable of creating the business branch:
+        the only authoritative relation is ``company_id`` -> ``res.company``.
         """
-        if not self.env.context.get('_print_gateway_native_sync'):
-            raise AccessError(_(
-                'Print Gateway does not create branches. Create the company/branch in Odoo first, '
-                'then refresh Print Gateway to discover it.'
-            ))
-
         Company = self.env['res.company'].sudo()
         normalized = []
         for incoming in vals_list:
             vals = dict(incoming)
-            company_id = vals.get('company_id')
-            if not company_id:
-                raise ValidationError(_('An existing Odoo company/branch is required.'))
+            company_id = vals.get('company_id') or self.env.company.id
             company = Company.browse(company_id).exists()
             if not company:
                 raise ValidationError(_('The selected Odoo company/branch does not exist.'))
@@ -132,6 +121,20 @@ class PrintGatewayNativeBranchBridge(models.Model):
             vals.update(self._native_discovery_values(company))
             normalized.append(vals)
         return super().create(normalized)
+
+    @api.constrains('company_id')
+    def _check_one_configuration_per_company(self):
+        for rec in self:
+            if not rec.company_id:
+                raise ValidationError(_('Every Print Gateway configuration must reference an existing Odoo company/branch.'))
+            duplicate = self.search([
+                ('company_id', '=', rec.company_id.id),
+                ('id', '!=', rec.id),
+            ], limit=1)
+            if duplicate:
+                raise ValidationError(_(
+                    'Odoo company/branch %s already has a Print Gateway configuration.'
+                ) % rec.company_id.display_name)
 
     def write(self, vals):
         protected = {'company_id', 'gateway_branch_id'}
