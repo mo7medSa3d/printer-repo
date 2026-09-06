@@ -6,27 +6,34 @@
         <field name="arch" type="xml">
             <form string="Printer Binding" class="o_pg_view o_pg_form">
                 <sheet>
-                    <group string="Scope">
-                        <field name="branch_id"/>
-                        <field name="destination_id" domain="[('branch_id','=',branch_id)]"/>
-                        <field name="document_type_id" domain="[('branch_id','=',branch_id)]"/>
-                        <field name="document_type" placeholder="receipt / invoice / label / order (or leave empty for fallback)"/>
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-random" role="img" aria-label="Printer Binding"/></div>
+                        <div>
+                            <h1>Print Route</h1>
+                            <div class="text-muted">Choose where this document type should print</div>
+                        </div>
+                        <div class="ms-auto"><field name="enabled" widget="boolean_toggle"/></div>
+                    </div>
+                    <group string="Route">
+                        <field name="branch_id" options="{'no_create': True}"/>
+                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
+                        <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
+                        <field name="printer_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
                     </group>
-                    <group string="Target Printer">
-                        <field name="printer_id" domain="[('branch_id','=',branch_id)]"/>
-                        <field name="priority" help="1 = highest. Fallback tries the next priority if the first printer is offline."/>
-                        <field name="enabled" widget="boolean_toggle"/>
-                    </group>
-                    <group string="Gateway">
-                        <field name="gateway_binding_id" readonly="1"/>
-                        <field name="config_override" placeholder='{"copies": 2}' help="Optional JSON overrides merged into the default payload config for this binding."/>
-                    </group>
-                    <group>
-                        <field name="notes"/>
-                    </group>
+                    <group string="Notes"><field name="notes" placeholder="Optional notes for operators"/></group>
+                    <notebook>
+                        <page string="Advanced" name="advanced">
+                            <group>
+                                <field name="priority" help="Lower number is preferred when more than one printer matches."/>
+                                <field name="document_type" placeholder="Fallback type when no Document Type is selected"/>
+                                <field name="gateway_binding_id" readonly="1" class="o_pg_mono"/>
+                                <field name="config_override" placeholder="Optional JSON override"/>
+                            </group>
+                        </page>
+                    </notebook>
                     <div class="alert alert-info" role="alert">
-                        A binding routes <b>Branch → Destination → Document Type → Printer</b>. When several bindings match,
-                        the lowest priority number wins; if that printer is offline, the next priority is tried.
+                        Printing follows <b>Branch → Destination → Document Type → Printer</b>.
+                        The printer and its agent are already synchronized from the Gateway; this screen only defines the route.
                     </div>
                 </sheet>
             </form>
@@ -36,19 +43,22 @@
         <field name="name">print_gateway.printer_binding.list</field>
         <field name="model">print_gateway.printer_binding</field>
         <field name="arch" type="xml">
-            <list string="Bindings" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled" decoration-bf="priority == 1">
+            <list string="Print Routes" class="o_pg_view o_pg_list" decoration-success="enabled" decoration-muted="not enabled">
                 <field name="branch_id"/>
                 <field name="destination_id"/>
-                <field name="document_type"/>
+                <field name="document_type_id"/>
                 <field name="printer_id"/>
-                <field name="priority"/>
                 <field name="enabled" widget="boolean_toggle"/>
             </list>
         </field>
     </record>
     <record id="action_print_gateway_printer_binding" model="ir.actions.act_window">
-        <field name="name">Printer Bindings</field>
+        <field name="name">Print Routes</field>
         <field name="res_model">print_gateway.printer_binding</field>
         <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No print routes configured yet.</p>
+            <p>Choose a branch, destination, document type, and synchronized printer to define the route.</p>
+        </field>
     </record>
 </odoo>
