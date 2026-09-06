@@ -18,14 +18,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify Cargo.lock status
-        shell: pwsh
-        run: |
-          if (-not (Test-Path src-tauri/Cargo.lock)) {
-            Write-Host "::warning::src-tauri/Cargo.lock is not committed yet. Generate it with 'cd src-tauri; cargo generate-lockfile' and commit the result before the production release."
-          } else {
-            Write-Host "Cargo.lock present."
-          }
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -43,6 +35,20 @@ jobs:
         with:
           toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
+      - name: Generate or verify Cargo.lock
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src-tauri/Cargo.lock)) {
+            Write-Host "Cargo.lock is missing from the source tree; generating the lockfile from the pinned Tauri manifest."
+            Push-Location src-tauri
+            cargo generate-lockfile
+            Pop-Location
+          }
+          if (-not (Test-Path src-tauri/Cargo.lock)) { throw "Cargo.lock generation failed" }
+          Push-Location src-tauri
+          cargo metadata --locked --no-deps --format-version 1 | Out-Null
+          Pop-Location
+          Write-Host "Cargo.lock is present and Cargo accepts the manifest in --locked mode."
       - name: Cache Rust and Tauri
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -161,12 +167,13 @@ jobs:
           if (-not (Test-Path $installedExe)) { throw "Installed EXE missing after MSI install: $installDir" }
           & pwsh -NoProfile -File .\scripts\smoke-test-windows.ps1 -InstallDir $installDir
           if ($LASTEXITCODE -ne 0) { throw "Windows smoke test failed" }
-      - name: Upload Windows MSI and NSIS EXE
+      - name: Upload Windows MSI, NSIS EXE, and resolved Cargo.lock
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: Odoo-Print-Manager-Windows
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/Cargo.lock
           if-no-files-found: error
           compression-level: 9
