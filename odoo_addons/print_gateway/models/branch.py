@@ -9,20 +9,21 @@ import json
 
 _logger = logging.getLogger(__name__)
 
+
 class PrintGatewayBranch(models.Model):
     _name = 'print_gateway.branch'
     _description = 'Print Gateway Branch'
     _order = 'name'
 
-    name = fields.Char(string='Branch Name', required=True, help='e.g., Cairo Branch')
+    name = fields.Char(string='Branch Name', required=True, help='Name inherited from the Odoo company/branch.')
     company_id = fields.Many2one('res.company', string='Company', ondelete='cascade')
     gateway_url = fields.Char(string='Gateway URL', required=True, help='Base URL of print gateway, e.g., https://print.example.com')
     gateway_api_key = fields.Char(string='Gateway API Key', help='Odoo API key scoped to this branch (created in Gateway dashboard). Keep secret.', copy=False)
     enabled = fields.Boolean(default=True)
     description = fields.Text()
     location = fields.Char()
-    timezone = fields.Char(default='Africa/Cairo')
-    gateway_branch_id = fields.Char(string='Gateway Branch ID', help='ID in Gateway DB; defaults to Odoo record id if empty', copy=False)
+    timezone = fields.Char(default='UTC')
+    gateway_branch_id = fields.Char(string='Gateway Branch ID', help='Stable Gateway branch identity.', copy=False)
 
     destination_ids = fields.One2many('print_gateway.destination', 'branch_id', string='Destinations')
     printer_ids = fields.Many2many('print_gateway.printer', compute='_compute_printers', string='Printers', readonly=True)
@@ -41,19 +42,25 @@ class PrintGatewayBranch(models.Model):
     last_sync_error = fields.Text(string='Last Sync Error', readonly=True, copy=False)
     last_successful_sync_at = fields.Datetime(string='Last Successful Sync', readonly=True, copy=False)
 
-    _sql_constraints = [
-        ('name_company_unique', 'unique(name, company_id)', 'Branch name must be unique per company'),
-    ]
+    _name_company_unique = models.Constraint(
+        'unique(name, company_id)',
+        'Branch name must be unique per company',
+    )
 
-    def create(self, vals):
-        """Ensure created branch is in user's company."""
-        if 'company_id' not in vals:
-            vals['company_id'] = self.env.company.id
-        # Prevent users from creating branches in other companies
-        if vals.get('company_id') and vals['company_id'] != self.env.company.id:
-            from odoo.exceptions import AccessError
-            raise AccessError(_("You cannot create branches outside your company."))
-        return super().create(vals)
+    @api.model_create_multi
+    def create(self, vals_list):
+        """Create branch configuration records using Odoo 19's multi-create API."""
+        normalized = []
+        for incoming in vals_list:
+            vals = dict(incoming)
+            if 'company_id' not in vals:
+                vals['company_id'] = self.env.company.id
+            # Prevent users from creating branches in other companies.
+            if vals.get('company_id') and vals['company_id'] != self.env.company.id:
+                from odoo.exceptions import AccessError
+                raise AccessError(_("You cannot create branches outside your company."))
+            normalized.append(vals)
+        return super().create(normalized)
 
     def write(self, vals):
         """Prevent company change and validate access."""
@@ -110,7 +117,7 @@ class PrintGatewayBranch(models.Model):
         Job = self.env['print_gateway.print_job']
         pending = Job.search([('gateway_job_id', '=', False), ('status', '=', 'queued')], order='id asc', limit=100)
         retried = 0
-        for job in pending: 
+        for job in pending:
             try:
                 job.action_submit_pending()
                 retried += 1
@@ -129,8 +136,7 @@ class PrintGatewayBranch(models.Model):
                     'tag': 'display_notification',
                     'params': {'title': _('Connection OK'), 'message': _('Gateway reachable'), 'type': 'success'},
                 }
-            else:
-                raise ValidationError(_('Gateway returned %s: %s') % (resp.status_code, resp.text[:200]))
+            raise ValidationError(_('Gateway returned %s: %s') % (resp.status_code, resp.text[:200]))
         except requests.RequestException as e:
             raise ValidationError(_('Cannot reach Gateway: %s') % str(e))
 
@@ -151,16 +157,9 @@ class PrintGatewayBranch(models.Model):
         return body
 
     def action_sync_from_gateway(self):
-        """Pull runtime state in dependency order: Agents, then Printers.
-
-        Agents are required. Printer state is an optional runtime section for
-        status visibility, so an agent-success/printer-failure run is marked
-        partial rather than falsely successful. No failed HTTP response is
-        interpreted as success and no ownership relationship is guessed.
-        """
+        """Pull runtime state in dependency order: Agents, then Printers."""
         errors = []
         for branch in self:
-            started = fields.Datetime.now()
             try:
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
@@ -288,13 +287,7 @@ class PrintGatewayBranch(models.Model):
         return True
 
     def action_sync_to_gateway(self):
-        """Push branches/destinations/document_types/bindings to Gateway (Odoo -> Gateway).
-
-        Each branch is an independent HTTP call against a separate database.
-        There is no distributed transaction: Branch A succeeding and Branch B
-        failing is recorded per-branch (last_sync_status/last_sync_error) so a
-        retry converges without claiming atomicity across branches.
-        """
+        """Push branches/destinations/document_types/bindings to Gateway (Odoo -> Gateway)."""
         errors = []
         for branch in self:
             try:
@@ -351,8 +344,6 @@ class PrintGatewayBranch(models.Model):
                     'last_sync_error': False,
                 })
             except Exception as e:
-                # Persist the failure so a partial multi-branch sync is
-                # detectable and retryable. Do not stop remaining branches.
                 err = str(e)
                 _logger.error("Branch %s sync to gateway failed: %s", branch.name, err)
                 try:
@@ -371,14 +362,7 @@ class PrintGatewayBranch(models.Model):
 
     @staticmethod
     def _format_sync_error(resp):
-        """Turn the Gateway's structured sync error into a readable message.
-
-        The Gateway answers a rejected sync with
-        {"success": false, "error": "SYNC_VALIDATION_FAILED" |
-        "SYNC_DEPENDENCY_MISSING", "details": [{bindingId, printerId, reason}]}
-        and applies nothing at all. Showing the raw JSON blob hides which
-        binding is at fault, so the details are expanded here.
-        """
+        """Turn the Gateway's structured sync error into a readable message."""
         try:
             body = resp.json()
         except ValueError:
@@ -407,37 +391,13 @@ class PrintGatewayBranch(models.Model):
         return code
 
     def create_print_job(self, destination_id, document_type, payload, odoo_model=None, odoo_record_id=None, report_xml_id=None, report_name=None, report_id=None, idempotency_key=None, defer_until_commit=False):
-        """Helper to create a Gateway print job from Odoo business logic.
-        Resolves branch/destination/document_type and sends to Gateway.
-        Never hardcodes physical printer IDs.
-        Stores Odoo report metadata for tracing.
-        Idempotency: one persisted print_job row represents one logical Odoo
-        print operation. Its idempotency key is generated exactly once when
-        that local operation is created and is reused by all gateway retries.
-        A genuinely new manual print creates a new local print_job and therefore
-        a new key. Gateway enforces uniqueness via
-        PostgreSQL partial unique index on (branch_id, idempotency_key)
-        and handles concurrent duplicate inserts as 200 with the same
-        existing job returned. The jobId itself is a collision-safe
-        nanoid(12) and never truncated.
-
-        When ``defer_until_commit`` is true, this method implements the
-        outbox boundary used by Odoo report actions: the durable logical
-        operation is created in the current transaction, and the Gateway HTTP
-        call is registered as a post-commit callback using a fresh cursor.
-        A process crash before the callback runs leaves a queued row that the
-        scheduled retry worker can submit with the same idempotency key.
-        """
+        """Create a Gateway print job from Odoo business logic."""
         self.ensure_one()
-        # SECURITY: Verify user has access to this branch's company
         self._check_company_access()
         if not destination_id or not document_type:
             raise ValidationError(_('destination and document_type required'))
         headers = self._gateway_headers()
         base = self._gateway_base()
-        # Resolve destination and persist the operation ID BEFORE the HTTP
-        # call so a timeout after Gateway acceptance retries with the same
-        # key instead of minting a second logical job.
         dest = self.env['print_gateway.destination'].search([
             ('gateway_destination_id', '=', str(destination_id)),
             ('branch_id', '=', self.id),
@@ -451,10 +411,6 @@ class PrintGatewayBranch(models.Model):
                 candidate = self.env['print_gateway.destination'].browse(odoo_id)
                 if candidate.exists() and candidate.branch_id.id == self.id:
                     dest = candidate
-                else:
-                    dest = False
-            else:
-                dest = False
 
         try:
             payload_meta = json.dumps(payload, separators=(',', ':'), ensure_ascii=False) if payload is not None else ''
@@ -484,10 +440,6 @@ class PrintGatewayBranch(models.Model):
                 'report_xml_id': report_xml_id or False,
                 'report_name': report_name or False,
             }
-            # Unique (branch_id, idempotency_key) is the concurrent-safety
-            # gate on the Odoo side. Two workers that both miss the search
-            # collide here; the loser re-reads the winner inside a savepoint
-            # so the surrounding transaction is not aborted.
             try:
                 with self.env.cr.savepoint():
                     existing = Job.create(vals)
@@ -515,8 +467,6 @@ class PrintGatewayBranch(models.Model):
                         operation.action_submit_pending()
                         cr.commit()
                 except Exception as exc:
-                    # The local outbox row remains durable. The scheduled
-                    # retry job will submit the same idempotency key later.
                     _logger.error(
                         "Post-commit Gateway submission failed for operation %s on db %s: %s",
                         operation_id, dbname, str(exc), exc_info=True,
@@ -525,13 +475,6 @@ class PrintGatewayBranch(models.Model):
             self.env.cr.postcommit.add(_submit_after_commit)
             return existing
 
-        # Gateway IDs are string columns. Odoo int ids (record ids) MUST be
-        # stringified here: a bare int in JSON would make the Gateway's
-        # branchId/destinationId comparisons fail against its text columns
-        # (mismatch with branch-scoped API keys, routing 404, FK-less
-        # destination lookup). If sync ran, gateway_destination_id carries the
-        # id the Gateway stored for the Odoo destination; otherwise the Odoo
-        # record id is the stable id sent to the Gateway (sync creates it).
         data = {
             'branchId': str(self.gateway_branch_id or self.id),
             'destinationId': str(destination_id),
@@ -539,8 +482,6 @@ class PrintGatewayBranch(models.Model):
             'payload': payload,
             'idempotencyKey': idempotency_key,
         }
-        # Idempotent retry: reuse same idempotencyKey so second attempt
-        # returns existing job (200) rather than creating duplicate.
         last_exc = None
         for attempt in (1, 2):
             try:
@@ -549,14 +490,16 @@ class PrintGatewayBranch(models.Model):
             except (requests.Timeout, requests.ConnectionError) as e:
                 last_exc = e
                 if attempt == 1:
-                    _logger.warning("Print job POST timeout/connection error (attempt %s) for branch %s, retrying once with same idempotencyKey %s: %s", attempt, self.name, idempotency_key[:8], str(e))
+                    _logger.warning(
+                        "Print job POST timeout/connection error (attempt %s) for branch %s, retrying once with same idempotencyKey %s: %s",
+                        attempt, self.name, idempotency_key[:8], str(e),
+                    )
                     time.sleep(0.5)
                     continue
                 raise ValidationError(_('Print job failed: Gateway timeout/connection error after retry: %s') % str(e))
             except requests.RequestException as e:
                 raise ValidationError(_('Print job request failed: %s') % str(e))
         else:
-            # Should not reach here; last_exc is set
             raise ValidationError(_('Print job failed: %s') % str(last_exc))
         if resp.status_code not in (200, 201):
             raise ValidationError(_('Print job failed %s: %s') % (resp.status_code, resp.text[:500]))
@@ -566,24 +509,25 @@ class PrintGatewayBranch(models.Model):
             raise ValidationError(_('Gateway returned malformed JSON for print job response'))
         if not isinstance(j, dict) or not (j.get('jobId') or j.get('id')):
             raise ValidationError(_('Gateway returned an invalid print job response'))
-        # Resolve report_id if provided as xml_id
         report_rec_id = False
         if report_id:
             report_rec_id = report_id
         elif report_xml_id:
             try:
-                # report_xml_id may be like 'sale.action_report_saleorder'
                 if '.' in report_xml_id:
                     report_rec = self.env.ref(report_xml_id, raise_if_not_found=False)
                     if report_rec and report_rec._name == 'ir.actions.report':
                         report_rec_id = report_rec.id
             except Exception:
                 pass
+        printer = self.env['print_gateway.printer'].search([
+            ('gateway_printer_id', '=', j.get('printerId')),
+        ], limit=1)
         existing.write({
             'gateway_job_id': j.get('jobId') or j.get('id') or existing.gateway_job_id,
             'destination_id': dest.id if dest else existing.destination_id,
             'document_type': document_type,
-            'printer_id': self.env['print_gateway.printer'].search([('gateway_printer_id', '=', j.get('printerId'))], limit=1).id or existing.printer_id,
+            'printer_id': printer.id or existing.printer_id,
             'status': j.get('status') or existing.status or 'queued',
             'payload': payload_meta or existing.payload,
             'odoo_model': odoo_model or existing.odoo_model,
