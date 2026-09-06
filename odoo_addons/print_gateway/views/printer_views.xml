@@ -4,44 +4,48 @@
         <field name="name">print_gateway.printer.form</field>
         <field name="model">print_gateway.printer</field>
         <field name="arch" type="xml">
-            <form string="Printer" class="o_pg_view o_pg_form">
+            <form string="Printer" class="o_pg_view o_pg_form" create="0" delete="0">
                 <header>
                     <button name="action_test_print" type="object" string="Test Print" class="oe_highlight"/>
                     <button name="action_sync_from_gateway" type="object" string="Sync Status"/>
                 </header>
                 <sheet>
-                    <group string="Identity">
-                        <field name="name"/>
-                        <field name="branch_id"/>
-                        <field name="printer_type"/>
-                        <field name="device_class"/>
-                        <field name="lifecycle" widget="badge"/>
-                    </group>
-                    <group string="Connection">
-                        <field name="connection_type"/>
-                        <field name="protocol" help="Raw binary, ESC/POS, IPP/IPPS or Windows spooler — must match what the physical printer accepts."/>
-                        <field name="ip_address" placeholder="192.168.1.50" help="Network IP required for TCP / IPP / IPPS connections."/>
-                        <field name="port" placeholder="9100" help="Network port; 9100 for RAW, 631 for IPP."/>
-                        <field name="usb_serial" placeholder="USB serial" help="USB serial number when connected over USB."/>
-                        <field name="spooler_name" placeholder="e.g., EPSON TM-T88V" help="Windows spooler printer name when using the spooler transport."/>
-                    </group>
-                    <group string="Gateway Sync">
-                        <field name="gateway_printer_id" help="Printer identifier as known to the Gateway, e.g. printer_abc123."/>
-                        <field name="agent_id" readonly="1" help="Agent that currently owns this printer, set by the Gateway."/>
-                        <field name="status" readonly="1" widget="badge"/>
-                        <field name="last_seen_at" readonly="1"/>
-                    </group>
-                    <group string="Summary">
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-print" role="img" aria-label="Printer"/></div>
+                        <div>
+                            <h1><field name="name" readonly="1"/></h1>
+                            <div class="text-muted">Gateway-managed printer</div>
+                        </div>
+                        <div class="ms-auto"><field name="status" readonly="1" widget="badge"/></div>
+                    </div>
+                    <group string="Assignment">
+                        <field name="branch_id" readonly="1" options="{'no_create': True}"/>
+                        <field name="agent_id" readonly="1" options="{'no_create': True}"/>
+                        <field name="lifecycle" readonly="1" widget="badge"/>
                         <field name="binding_count" readonly="1"/>
                     </group>
                     <notebook>
-                        <page string="Bindings">
-                            <field name="binding_ids"/>
-                        </page>
-                        <page string="Destinations">
-                            <field name="destination_ids" readonly="1"/>
+                        <page string="Bindings"><field name="binding_ids"/></page>
+                        <page string="Destinations"><field name="destination_ids" readonly="1"/></page>
+                        <page string="Technical" name="technical">
+                            <group>
+                                <field name="printer_type" readonly="1"/>
+                                <field name="device_class" readonly="1"/>
+                                <field name="connection_type" readonly="1"/>
+                                <field name="protocol" readonly="1"/>
+                                <field name="ip_address" readonly="1"/>
+                                <field name="port" readonly="1"/>
+                                <field name="usb_serial" readonly="1"/>
+                                <field name="spooler_name" readonly="1"/>
+                                <field name="gateway_printer_id" readonly="1" class="o_pg_mono"/>
+                                <field name="last_seen_at" readonly="1"/>
+                            </group>
                         </page>
                     </notebook>
+                    <div class="alert alert-info" role="alert">
+                        Printer identity and connection details are synchronized from the Gateway. To route a document,
+                        select this printer from a binding; do not enter its network details manually in Odoo.
+                    </div>
                 </sheet>
             </form>
         </field>
@@ -50,18 +54,18 @@
         <field name="name">print_gateway.printer.list</field>
         <field name="model">print_gateway.printer</field>
         <field name="arch" type="xml">
-            <list string="Printers" class="o_pg_view o_pg_list"
+            <list string="Printers" class="o_pg_view o_pg_list" create="0" delete="0"
                   decoration-success="status=='online'"
                   decoration-warning="status=='busy'"
                   decoration-danger="status in ('offline','error')"
                   decoration-muted="status=='unknown'">
                 <field name="name"/>
                 <field name="branch_id"/>
-                <field name="connection_type"/>
-                <field name="device_class"/>
-                <field name="protocol"/>
+                <field name="agent_id" optional="show"/>
                 <field name="status" widget="badge"/>
-                <field name="lifecycle" widget="badge"/>
+                <field name="lifecycle" widget="badge" optional="show"/>
+                <field name="binding_count" optional="show"/>
+                <field name="last_seen_at" optional="show"/>
             </list>
         </field>
     </record>
@@ -69,36 +73,21 @@
         <field name="name">print_gateway.printer.kanban</field>
         <field name="model">print_gateway.printer</field>
         <field name="arch" type="xml">
-            <!-- Branded fleet card: same status vocabulary (dot + label) and
-                 the same card geometry as the desktop manager / web console. -->
-            <kanban class="o_pg_view o_pg_kanban" sample="1">
+            <kanban class="o_pg_view o_pg_kanban" sample="1" create="0" delete="0">
                 <field name="status"/>
                 <field name="lifecycle"/>
                 <templates>
                     <t t-name="kanban-box">
                         <div class="oe_kanban_global_click p-3">
                             <div class="d-flex align-items-start gap-2">
-                                <span class="o_pg_card_icon me-2">
-                                    <i class="fa fa-print" role="img" aria-label="Printer"/>
-                                </span>
+                                <span class="o_pg_card_icon me-2"><i class="fa fa-print" role="img" aria-label="Printer"/></span>
                                 <div class="flex-grow-1 overflow-hidden">
-                                    <div class="o_pg_card_title text-truncate">
-                                        <field name="name"/>
-                                    </div>
-                                    <div class="o_pg_card_meta text-truncate">
-                                        <field name="branch_id"/>
-                                    </div>
+                                    <div class="o_pg_card_title text-truncate"><field name="name"/></div>
+                                    <div class="o_pg_card_meta text-truncate"><field name="branch_id"/></div>
                                 </div>
-                                <span t-attf-class="o_pg_pill #{record.status.raw_value == 'online' ? 'o_pg_pill_ok' : record.status.raw_value == 'busy' ? 'o_pg_pill_warn' : record.status.raw_value == 'offline' or record.status.raw_value == 'error' ? 'o_pg_pill_bad' : ''}">
-                                    <field name="status"/>
-                                </span>
+                                <span t-attf-class="o_pg_pill #{record.status.raw_value == 'online' ? 'o_pg_pill_ok' : record.status.raw_value == 'busy' ? 'o_pg_pill_warn' : record.status.raw_value == 'offline' or record.status.raw_value == 'error' ? 'o_pg_pill_bad' : ''}"><field name="status"/></span>
                             </div>
-                            <div class="o_pg_card_meta mt-2">
-                                <field name="connection_type"/> · <field name="protocol"/>
-                            </div>
-                            <div class="o_pg_card_mono mt-1 text-truncate">
-                                <field name="gateway_printer_id"/>
-                            </div>
+                            <div class="o_pg_card_meta mt-2"><field name="agent_id"/> · <field name="binding_count"/> bindings</div>
                         </div>
                     </t>
                 </templates>
@@ -109,14 +98,10 @@
         <field name="name">Printers</field>
         <field name="res_model">print_gateway.printer</field>
         <field name="view_mode">list,kanban,form</field>
+        <field name="context">{'create': False, 'delete': False}</field>
         <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">
-                No printers yet — run <b>Sync Status</b> or a Gateway sync to pull registered printers.
-            </p>
-            <p>
-                Printer records are synced from the Gateway. Green rows are online, amber is busy,
-                red is offline or error, and muted is unknown.
-            </p>
+            <p class="o_view_nocontent_smiling_face">No printers have been synchronized yet.</p>
+            <p>Printers register through the Gateway. Select an existing printer when configuring a print binding.</p>
         </field>
     </record>
 </odoo>
