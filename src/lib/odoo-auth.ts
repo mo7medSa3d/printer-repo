@@ -6,6 +6,13 @@ import { createHash, randomBytes, timingSafeEqual } from "crypto";
 export const ODOO_API_KEY_SCOPES = ["standard", "read_only"] as const;
 export type OdooApiKeyScope = (typeof ODOO_API_KEY_SCOPES)[number];
 
+/** Native Odoo company/branch identifiers accepted by the Gateway. */
+export const ODOO_BRANCH_ID_RE = /^odoo_company_[1-9][0-9]*$/;
+
+export function isNativeOdooBranchId(value: string | null | undefined): boolean {
+  return typeof value === "string" && ODOO_BRANCH_ID_RE.test(value.trim());
+}
+
 function hashKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
@@ -23,7 +30,6 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 export function generateOdooApiKey(): { raw: string; hashed: string; id: string } {
   const raw = `odoo_${randomBytes(24).toString("base64url")}`;
   const hashed = hashKey(raw);
-  // id is hash prefix for lookup without scanning full table via hash
   const id = `key_${randomBytes(6).toString("hex")}`;
   return { raw, hashed, id };
 }
@@ -32,27 +38,14 @@ export function hashOdooKey(raw: string): string {
   return hashKey(raw);
 }
 
-/**
- * Odoo authenticates via Authorization: Bearer odoo_xxx  or  X-Api-Key: odoo_xxx
- * Separate from agent Bearer agt:secret. Never logs raw key.
- *
- * The Odoo addon historically sent Odoo record ids (ints) as branchId; the
- * Gateway stores ids as text and compares them. Normalize both sides to
- * strings so a scoped key still matches (no int/char drift breaking auth).
- */
+/** Branch-scoped keys may only authorize the exact native Odoo scope. */
 export function isBranchScopedKeyAllowed(keyBranchId: string | null | undefined, expectedBranchId?: string | null): boolean {
+  if (expectedBranchId && !isNativeOdooBranchId(String(expectedBranchId))) return false;
+  if (keyBranchId && !isNativeOdooBranchId(String(keyBranchId))) return false;
   if (!expectedBranchId) return true;
   return !keyBranchId || String(keyBranchId) === String(expectedBranchId);
 }
 
-/**
- * Document types are matched case-insensitively and whitespace-insensitively,
- * exactly like the routing layer (`selectBestBinding` in src/lib/routing.ts
- * lower-cases both sides). Odoo sends document types derived from user-visible
- * names ("Invoice"), while allow-lists are usually typed in lower case, so a
- * case-sensitive comparison here rejected legitimate jobs with 403 while
- * routing considered the very same value a match.
- */
 function normalizeDocumentType(value: string): string {
   return value.trim().toLowerCase();
 }
