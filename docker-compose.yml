@@ -67,10 +67,12 @@ services:
       ODOO_DATABASE_NAME: ${ODOO_DATABASE_NAME:?ODOO_DATABASE_NAME must be set to the exact Odoo database name}
       STALE_AGENT_THRESHOLD_SECONDS: ${STALE_AGENT_THRESHOLD_SECONDS:-90}
       TRUST_PROXY: ${TRUST_PROXY:-1}
+      TRUST_PROXY_SECRET_FILE: /run/secrets/trust_proxy_secret
     secrets:
       - postgres_password
       - gateway_jwt_secret
       - manager_password_hash
+      - trust_proxy_secret
     expose:
       - "3000"
     healthcheck:
@@ -90,6 +92,9 @@ services:
         condition: service_healthy
     environment:
       GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?GATEWAY_DOMAIN must be set to a DNS name for production TLS}
+      TRUST_PROXY_SECRET: ${TRUST_PROXY_SECRET:?TRUST_PROXY_SECRET must be set when TRUST_PROXY=1}
+    secrets:
+      - trust_proxy_secret
     ports:
       - "${GATEWAY_HTTP_PORT:-80}:80"
       - "${GATEWAY_HTTPS_PORT:-443}:443"
@@ -112,6 +117,8 @@ secrets:
     environment: GATEWAY_JWT_SECRET
   manager_password_hash:
     environment: MANAGER_PASSWORD_HASH
+  trust_proxy_secret:
+    environment: TRUST_PROXY_SECRET
 
 networks:
   printer_backend:
