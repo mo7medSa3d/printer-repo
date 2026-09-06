@@ -36,9 +36,14 @@ const handle = app.getRequestHandler();
 app.prepare().then(() => {
   const server = createServer((req, res) => {
     if (trustProxyEnabled() && req.url !== "/api/health") {
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (value == null) continue;
+        headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+      }
       const protocolReq = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url ?? "/"}`, {
         method: req.method ?? "GET",
-        headers: Object.entries(req.headers).flatMap(([key, value]) => value == null ? [] : [[key, Array.isArray(value) ? value.join(", ") : value]]),
+        headers,
       });
       if (!isTrustedProxyRequest(protocolReq)) {
         res.statusCode = 400;
