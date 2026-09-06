@@ -182,9 +182,8 @@ class TestMultiRecordRouting(TransactionCase):
         })
         partner_a = self.env['res.partner'].create({'name': 'Partner A', 'company_id': self.company_1.id})
         partner_b = self.env['res.partner'].create({'name': 'Partner B', 'company_id': self.company_2.id})
-        mapping_for_a = {'branch_id': self.branch_1, 'destination_id': self.dest_1}
         with self.assertRaises(ValidationError) as cm:
-            report._validate_recordset_routing_consistency(partner_a | partner_b, mapping_for_a)
+            report._validate_recordset_routing_consistency(partner_a | partner_b, {})
         self.assertIn('different print routing', str(cm.exception))
 
 
@@ -208,10 +207,7 @@ class TestCrossBranchValidation(TransactionCase):
             'enabled': True,
         })
         self.dest_2 = self.env['print_gateway.destination'].create({
-            'name': 'POS 2',
-            'branch_id': self.branch_2.id,
-            'destination_type': 'pos',
-            'enabled': True,
+            'name': 'POS 2', 'branch_id': self.branch_2.id, 'destination_type': 'pos', 'enabled': True,
         })
 
     def test_destination_from_wrong_branch_raises_error(self):
