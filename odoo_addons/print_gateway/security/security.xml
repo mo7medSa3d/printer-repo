@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Row-level security rules for branch/company isolation. -->
+    <!--
+        Company policy: users may read/write only records belonging to one of
+        the companies assigned to them. Odoo's `company_ids` contains all
+        accessible companies; `company_id` is only the currently selected one.
+        Configuration writes are separately restricted by ACLs/groups and model
+        checks, so these rules do not broaden CRUD permissions.
+    -->
 
     <record id="rule_branch_company_isolation" model="ir.rule">
-        <field name="name">Branch company isolation</field>
+        <field name="name">Branch accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_branch"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">1</field>
         <field name="perm_create">1</field>
@@ -14,10 +20,10 @@
     </record>
 
     <record id="rule_destination_branch_company" model="ir.rule">
-        <field name="name">Destination branch company isolation</field>
+        <field name="name">Destination accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_destination"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">1</field>
         <field name="perm_create">1</field>
@@ -25,10 +31,10 @@
     </record>
 
     <record id="rule_document_type_branch_company" model="ir.rule">
-        <field name="name">Document type branch company isolation</field>
+        <field name="name">Document type accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_document_type"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">1</field>
         <field name="perm_create">1</field>
@@ -36,10 +42,10 @@
     </record>
 
     <record id="rule_printer_branch_company" model="ir.rule">
-        <field name="name">Printer branch company isolation</field>
+        <field name="name">Printer accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_printer"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">0</field>
         <field name="perm_create">0</field>
@@ -47,22 +53,21 @@
     </record>
 
     <record id="rule_printer_binding_branch_company" model="ir.rule">
-        <field name="name">Printer binding branch company isolation</field>
+        <field name="name">Printer binding accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_printer_binding"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">0</field>
         <field name="perm_create">0</field>
         <field name="perm_unlink">0</field>
     </record>
 
-    <!-- System users retain binding administration, but remain company-scoped. -->
     <record id="rule_printer_binding_write_system_only" model="ir.rule">
-        <field name="name">Printer binding write system only</field>
+        <field name="name">Printer binding write system accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_printer_binding"/>
         <field name="groups" eval="[(4, ref('base.group_system'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">1</field>
         <field name="perm_create">1</field>
@@ -70,10 +75,10 @@
     </record>
 
     <record id="rule_agent_branch_company" model="ir.rule">
-        <field name="name">Agent branch company isolation</field>
+        <field name="name">Agent accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_agent"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">0</field>
         <field name="perm_create">0</field>
@@ -81,10 +86,10 @@
     </record>
 
     <record id="rule_print_job_branch_company" model="ir.rule">
-        <field name="name">Print job branch company isolation</field>
+        <field name="name">Print job accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_print_job"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">0</field>
         <field name="perm_create">0</field>
@@ -92,10 +97,10 @@
     </record>
 
     <record id="rule_report_mapping_branch_company" model="ir.rule">
-        <field name="name">Report mapping branch company isolation</field>
+        <field name="name">Report mapping accessible-company isolation</field>
         <field name="model_id" ref="model_print_gateway_report_mapping"/>
         <field name="groups" eval="[(4, ref('base.group_system'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">1</field>
         <field name="perm_create">1</field>
@@ -103,10 +108,10 @@
     </record>
 
     <record id="rule_report_mapping_user_readonly" model="ir.rule">
-        <field name="name">Report mapping user read-only</field>
+        <field name="name">Report mapping user accessible-company read-only</field>
         <field name="model_id" ref="model_print_gateway_report_mapping"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">[('branch_id.company_id', '=', user.company_id.id)]</field>
+        <field name="domain_force">[('branch_id.company_id', 'in', company_ids)]</field>
         <field name="perm_read">1</field>
         <field name="perm_write">0</field>
         <field name="perm_create">0</field>
