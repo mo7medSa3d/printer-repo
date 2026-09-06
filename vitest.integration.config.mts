@@ -16,6 +16,8 @@ export default defineConfig({
       "tests/heartbeat-enabled.test.ts",
       "tests/health.test.ts",
       "tests/agent-registration.test.ts",
+      "tests/migration-upgrade.integration.test.ts",
+      "tests/multi-instance-gateway.test.ts",
     ],
     pool: "forks",
     sequence: { concurrent: false },
