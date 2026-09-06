@@ -233,15 +233,104 @@ Auth: agent. In one request the gateway:
 The Gateway also uses the same claim service when PostgreSQL notifications trigger WebSocket
 push delivery.
 
+2. fails stale `claimed`/`printing` jobs with `retries >= 5`;
+3. claims, with `FOR UPDATE SKIP LOCKED` + `UPDATE … RETURNING`, up to 20 jobs that are
+   `queued` **or** stale `claimed`/`printing` (silent > 90 s, `retries < 5`, `retries + 1`),
+   stamping `claimed_at`, `delivered_at` and `delivery_attempts + 1`.
+
+All steps are scoped to the agent (and its branch when set). Two concurrent pollers can
+never receive the same job.
+
+**200** — array of already-claimed jobs:
+
+```json
+[{ "id":"job_V1StGXR8Z5jd", "branchId":"branch_cairo", "agentId":"agt_7f3c",
+   "printerId":"printer_spooler_9ab1", "destinationId":"dest_pos_1",
+   "documentType":"receipt", "status":"claimed",
+   "payload":{"type":"pdf","encoding":"base64","data":"…"},
+   "expiresAt":"2026-09-01T12:00:00.000Z", "retries":0 }]
+```
+
+### `PATCH /api/agent/jobs` — report progress
+
+Auth: agent. Body `{"jobId":"job_…","status":"printing|success|failed|expired","error":"…"}`
+(`error` optional, truncated to 2000 chars).
+
+Rules: the job must belong to this agent (and branch) → otherwise **404 "Job not found"**
+(identical for "unknown id" and "someone else's job", so ids cannot be probed); TTL wins
+(expired ⇒ the row is set to `expired`, response 409); the transition must be allowed
+(`claimed → printing|failed|expired`, `printing → success|failed|expired`) → otherwise 409.
+
+**200** `{"success":true,"status":"printing"}`.
+
+### `GET /api/agent/ws` / WebSocket upgrade
+
+`GET` over plain HTTP returns **426 Upgrade Required**. The real endpoint is the WebSocket
+upgrade handled in `server.ts`; see [docs/WEBSOCKET_PROTOCOL.md](docs/WEBSOCKET_PROTOCOL.md).
+
 ---
 
-## Notes on job semantics
+## 3. Manager (dashboard + desktop app)
 
-The Gateway's persisted job is the durable print-delivery record. An idempotency key identifies
-one logical print operation within a branch; it is intentionally not derived from the report name,
-record id, or current time. Reusing a key with materially different routing inputs or payload is
-an `IDEMPOTENCY_CONFLICT` and must not silently reuse the original job.
+All require a manager session unless stated otherwise.
 
-The Agent's terminal `success` means the bytes were accepted by the configured printer transport.
-For RAW TCP this is a successful socket write; it does not prove that paper physically exited the
-device. Device/spooler feedback is required for stronger physical-outcome semantics.
+| Endpoint | Notes |
+|---|---|
+| `POST /api/auth/manager/login` | `{username,password}` → `{ok:true,expiresAt}` + `Set-Cookie: mgr_session` (httpOnly, 8 h). 400 missing fields, 401 bad credentials, 429 too many attempts (`Retry-After`), 503 limiter store unavailable, 500 when manager auth is not configured |
+| `POST /api/auth/manager/logout` | Revokes the session row, clears the cookie |
+| `GET /api/auth/manager/me` | `{authenticated:true,jti,exp}` or 401 |
+| `GET /api/health` | **No auth.** Liveness only: `{ok:true}` when PostgreSQL answers `select 1`; `{ok:false}` + 500 when the database is unreachable. Inventory/job counts are **not** returned. |
+| `GET /api/agents` | List agents (secrets stripped) |
+| `GET /api/agents/:id` | `{agent, printers, jobCount}` (secret stripped), 404 unknown |
+| `GET /api/branches` · `POST /api/branches` | List / create a branch (`{name,description,location,timezone,enabled}` → 201 `{id,name}`) |
+| `GET/POST /api/branches/:id/destinations` | List / create destinations for the branch |
+| `GET/POST /api/branches/:id/printer-bindings` | List / create bindings. POST validates that the destination, the printer and the printer's agent all belong to the branch (400/404 otherwise) |
+| `GET /api/printers` · `POST /api/printers` | List / manually create a printer. Canonical writable model is `agentId`, `name`, `printerType`, `deviceClass`, `connectionType`, `protocol`, `config`, `capabilities`. Branch is derived from the Agent; `branchId`/`enabled` are rejected. 404 unknown agent, 409 duplicate id |
+| `GET/PATCH /api/printers/:id` | Read/update a printer. PATCH supports lifecycle `active|disabled|retired`; normal DELETE does not exist. `retired` is terminal. |
+| `POST /api/printers/:id/test-connection` | **Diagnostic RPC, creates no job.** Returns `{reachable, latencyMs, agentOnline, error}`. `latencyMs` is always `null`: the value comes from the last heartbeat, the gateway cannot dial the LAN. A live agent probe is not implemented |
+| `POST /api/printers/:id/test-print` | **Real job.** Accepts a manager session *or* a branch-scoped Odoo key (used by the addon's Test Print button). Builds an ESC/POS test payload and runs the normal pipeline → 201 `{ok:true,jobId,printerId}`. 404 unknown printer, 409 disabled printer |
+| `GET /api/jobs?status=&printerId=&agentId=&limit=` | Job list for the manager UI; filters are applied in SQL before `LIMIT` (max 200). 400 on an unknown status |
+| `GET /api/jobs/:id` | Single job row, 404 unknown |
+| `GET /api/odoo/keys` · `POST /api/odoo/keys` | List key metadata / create a key (`{name,branchId,scope,allowedDocumentTypes,description}`). Allowed scopes are `standard` and `read_only`. 201 returns the plaintext `apiKey` **once** |
+
+---
+
+## 4. Shared payload contract
+
+```json
+{ "type": "raw" | "escpos" | "pdf", "encoding": "base64", "data": "<base64 1 B … 5 MiB>" }
+```
+
+Enforced identically by `src/lib/payload.ts` (Zod + canonical base64 round-trip) and
+`agent/internal/payload/payload.go` (strict `base64.StdEncoding`). The three types are not
+interchangeable:
+
+| type | meaning | printers that accept it |
+|---|---|---|
+| `raw` | opaque printer-native byte stream | RAW TCP 9100, Windows spooler (RAW datatype), raw USB, IPP (`application/octet-stream`) |
+| `escpos` | ESC/POS command stream (`ESC @` … `GS V`) | same as `raw` — ESC/POS is a payload dialect, not a transport |
+| `pdf` | a real PDF document, validated (`%PDF-` … `%%EOF`) | Windows spooler through the PDF pipeline, IPP (`application/pdf`) |
+
+A `pdf` payload is never relabelled as `raw`. An incompatible combination fails with
+`CAPABILITY_MISMATCH` — HTTP 422 at creation time, or `job.status=failed` with
+`job.error` starting `CAPABILITY_MISMATCH:` when the agent detects it. Details and the
+per-backend matrix: [PRINTERS.md](PRINTERS.md).
+
+## 5. Job status vocabulary
+
+`queued → claimed → printing → success | failed`, plus `expired` for any non-terminal job
+past its TTL. The full state machine, the claim/delivery fields and the recovery rules are
+documented in [docs/JOB_LIFECYCLE.md](docs/JOB_LIFECYCLE.md).
+
+## Production Engineering Semantics
+
+- **Odoo print outbox:** report actions persist the logical operation and idempotency key inside the Odoo transaction. Gateway submission is registered as a post-commit job; a process crash before submission leaves the durable queued operation for the retry cron.
+- **Metrics:** manager-authenticated `GET /api/metrics` exposes process-local Prometheus counters; logs remain the authoritative event stream and never contain payload bytes or credentials.
+- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once. Reusing a branch-scoped key with materially different routing inputs or payload returns `IDEMPOTENCY_CONFLICT`.
+- **Job TTL:** default `expiresAt` is 1 hour; an explicit expiration cannot exceed 24 hours.
+- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
+- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
+- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
+- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
+- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
+- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
