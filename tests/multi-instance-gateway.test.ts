@@ -33,8 +33,6 @@ function startGateway(databaseName: string, workerSchema: string | null): Gatewa
     MANAGER_PASSWORD_HASH: "",
   };
 
-  // Spawned production-like Gateways must not inherit Vitest worker identity.
-  // The exact isolated schema is handed over explicitly to both processes.
   delete env.VITEST;
   delete env.VITEST_WORKER_ID;
   delete env.VITEST_POOL_ID;
@@ -70,9 +68,7 @@ function startGateway(databaseName: string, workerSchema: string | null): Gatewa
   };
   child.stdout?.on("data", appendOutput);
   child.stderr?.on("data", appendOutput);
-  child.on("error", (error) => {
-    appendOutput(`\n[child error] ${error.stack ?? error.message}\n`);
-  });
+  child.on("error", (error) => appendOutput(`\n[child error] ${error.stack ?? error.message}\n`));
   child.on("exit", (code, signal) => {
     if (!settledReady) {
       settledReady = true;
@@ -87,9 +83,7 @@ async function waitForHealth(gateway: GatewayProcess): Promise<number> {
   const port = await gateway.ready;
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    if (gateway.child.exitCode !== null) {
-      throw new Error(`gateway ${port} exited before becoming healthy:\n${gateway.output()}`);
-    }
+    if (gateway.child.exitCode !== null) throw new Error(`gateway ${port} exited before becoming healthy:\n${gateway.output()}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (response.ok) return port;
@@ -117,9 +111,7 @@ async function waitForWebSocketOpen(ws: WebSocket, label: string, gateways: Gate
     };
 
     ws.once("open", finishResolve);
-    ws.once("error", (error) => {
-      finishReject(new Error(`${label} WebSocket error: ${error.message}`));
-    });
+    ws.once("error", (error) => finishReject(new Error(`${label} WebSocket error: ${error.message}`)));
     ws.once("unexpected-response", (_request, response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -127,13 +119,9 @@ async function waitForWebSocketOpen(ws: WebSocket, label: string, gateways: Gate
         const body = Buffer.concat(chunks).toString("utf8").slice(0, 500);
         finishReject(new Error(`${label} WebSocket HTTP ${response.statusCode}: ${body || "<empty body>"}`));
       });
-      response.on("error", () => {
-        finishReject(new Error(`${label} WebSocket HTTP ${response.statusCode}: response body read failed`));
-      });
+      response.on("error", () => finishReject(new Error(`${label} WebSocket HTTP ${response.statusCode}: response body read failed`)));
     });
-    ws.once("close", (code, reason) => {
-      finishReject(new Error(`${label} WebSocket closed before open: ${code} ${String(reason)}`));
-    });
+    ws.once("close", (code, reason) => finishReject(new Error(`${label} WebSocket closed before open: ${code} ${String(reason)}`)));
   });
 }
 
@@ -196,6 +184,17 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
   beforeAll(async () => {
     await applyMigrations();
     fixture = await seedFixture();
+
+    // The multi-instance test intentionally exercises the public print-job
+    // routing path. Give its fixture a real branch/destination/document-type
+    // binding so a valid POST reaches job creation instead of correctly
+    // returning NO_ROUTE/404.
+    await pool().query(
+      `INSERT INTO printer_bindings (id, branch_id, destination_id, document_type, printer_id, priority, enabled)
+       VALUES ($1, $2, $3, 'receipt', $4, 1, true)`,
+      [`binding_${fixture.printerId}`, fixture.branchId, fixture.destinationId, fixture.printerId],
+    );
+
     gatewayA = startGateway(databaseName, workerSchema);
     gatewayB = startGateway(databaseName, workerSchema);
 
@@ -204,9 +203,6 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
       waitForHealth(gatewayB),
     ]);
 
-    // Prove the PostgreSQL LISTEN/NOTIFY path is live before the real tests.
-    // The job itself is the durable source of truth; repeated NOTIFY calls are
-    // only wake-ups, so there is no dependency on an arbitrary startup sleep.
     const readinessJobId = `multi-instance-ready-${Date.now()}-${process.pid}`;
     await insertQueuedJob(fixture, readinessJobId);
     const readinessMessages: Record<string, unknown>[] = [];
@@ -259,9 +255,7 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     const ws = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, {
       headers: { Authorization: fixture.agentAuth },
     });
-    ws.on("message", (data) => {
-      messages.push(JSON.parse(String(data)) as Record<string, unknown>);
-    });
+    ws.on("message", (data) => messages.push(JSON.parse(String(data)) as Record<string, unknown>));
     await waitForWebSocketOpen(ws, `Gateway ${portB}`, [gatewayA, gatewayB]);
 
     try {
@@ -279,21 +273,25 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
           payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
         }),
       });
-      expect(response.status).toBe(201);
-      const created = await response.json() as { id: string };
+      if (response.status !== 201) {
+        throw new Error(`Gateway A POST /api/print/jobs returned HTTP ${response.status}: ${await response.text()}`);
+      }
+      const created = await response.json() as { id?: string; jobId?: string };
+      const createdId = created.id ?? created.jobId;
+      expect(createdId).toBeTruthy();
 
       const message = await waitForMessage(
         ws,
         messages,
-        (candidate) => candidate.type === "print_job" && (candidate.job as { id?: unknown } | undefined)?.id === created.id,
+        (candidate) => candidate.type === "print_job" && (candidate.job as { id?: unknown } | undefined)?.id === createdId,
         10_000,
       );
       expect(message.type).toBe("print_job");
-      expect((message.job as { id: string }).id).toBe(created.id);
+      expect((message.job as { id: string }).id).toBe(createdId);
 
-      const row = await pool().query("SELECT status, agent_id FROM print_jobs WHERE id = $1", [created.id]);
-      expect(row.rows[0].status).toBe("claimed");
-      expect(row.rows[0].agent_id).toBe(fixture.agentId);
+      const row = await pool().query("SELECT status, agent_id FROM print_jobs WHERE id = $1", [createdId]);
+      expect(row.rows[0]?.status).toBe("claimed");
+      expect(row.rows[0]?.agent_id).toBe(fixture.agentId);
     } finally {
       ws.close();
     }
@@ -311,12 +309,8 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     const messagesB: Record<string, unknown>[] = [];
     const wsA = new WebSocket(`ws://127.0.0.1:${portA}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
     const wsB = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
-    wsA.on("message", (data) => {
-      messagesA.push(JSON.parse(String(data)) as Record<string, unknown>);
-    });
-    wsB.on("message", (data) => {
-      messagesB.push(JSON.parse(String(data)) as Record<string, unknown>);
-    });
+    wsA.on("message", (data) => messagesA.push(JSON.parse(String(data)) as Record<string, unknown>));
+    wsB.on("message", (data) => messagesB.push(JSON.parse(String(data)) as Record<string, unknown>));
 
     await Promise.all([
       waitForWebSocketOpen(wsA, `Gateway ${portA}`, [gatewayA, gatewayB]),
