@@ -6,6 +6,7 @@ import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
 import { inspectWsUpgradeRateLimit, recordWsUpgradeFailure } from "../lib/ws-rate-limit";
 import { isTrustedProxyUpgrade, trustProxyEnabled } from "./trusted-proxy";
+import { incrementMetric } from "../lib/metrics";
 import {
   claimJobForDelivery,
   markJobDelivered,
@@ -62,7 +63,7 @@ function websocketClientKey(req: IncomingMessage): string {
 
 function writeWsHttpError(socket: WritableSocket, status: number, body: string, retryAfterSec?: number) {
   const retry = retryAfterSec !== undefined ? `Retry-After: ${retryAfterSec}\r\n` : "";
-  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : "Unauthorized";
+  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : "Bad Request";
   const payload = JSON.stringify({ error: body });
   socket.write(`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
   socket.destroy();
@@ -76,8 +77,10 @@ function trackAgentSocket(agentId: string, ws: AgentSocket) {
     agentSockets.set(agentId, set);
   }
   set.add(ws);
+  void incrementMetric("websocket_connections_opened_total");
   ws.on("close", () => {
     set!.delete(ws);
+    void incrementMetric("websocket_connections_closed_total");
     if (set!.size === 0) agentSockets.delete(agentId);
   });
 }
@@ -224,6 +227,7 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
       reconnectTimer = null;
       void connect();
     }, delay);
+    void incrementMetric("postgres_notification_reconnects_total");
     console.warn(`[ws] PostgreSQL notification listener reconnecting in ${delay}ms`);
   };
 
@@ -248,11 +252,13 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
       reconnectAttempt = 0;
       client.on("notification", handleNotification);
       client.on("error", (error) => {
+        void incrementMetric("postgres_notification_errors_total");
         console.warn("[ws] PostgreSQL notification listener error:", error);
         disconnect(client);
       });
       client.on("end", () => disconnect(client));
     } catch (error) {
+      void incrementMetric("postgres_notification_failures_total");
       console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
       scheduleReconnect();
     }
