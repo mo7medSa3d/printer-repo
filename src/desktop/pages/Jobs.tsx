@@ -1,8 +1,10 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   CheckCircle2,
   Eye,
   Inbox,
+  KeyRound,
+  LogOut,
   Printer as PrinterIcon,
   RefreshCw,
   Search,
@@ -15,6 +17,7 @@ import {
   Card,
   EmptyState,
   ErrorState,
+  Field,
   Input,
   LoadingState,
   Modal,
@@ -25,7 +28,11 @@ import {
 import type { DesktopState } from "../types";
 import {
   cleanupLocalJobs,
+  getManagerSession,
+  loginManager,
+  logoutManager,
 } from "../lib/ipc";
+import { friendlyPrinterError } from "../lib/printers";
 import {
   jobDocType,
   jobId,
@@ -40,6 +47,70 @@ const TABS = ["all", "pending", "printing", "completed", "failed"] as const;
 export function JobsPage({ s }: { s: DesktopState }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [managerUsername, setManagerUsername] = useState("");
+  const [managerPassword, setManagerPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authExpiresAt, setAuthExpiresAt] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!s.gatewayUrl) {
+      setAuthenticated(false);
+      return;
+    }
+    getManagerSession(s.gatewayUrl)
+      .then((status) => {
+        if (cancelled) return;
+        setAuthenticated(status.authenticated);
+        setAuthExpiresAt(status.expiresAt ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAuthenticated(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [s.gatewayUrl]);
+
+  const handleManagerLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAuthError(null);
+    if (!s.gatewayUrl) {
+      setAuthError("Set the Gateway URL in Settings first.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      const status = await loginManager(s.gatewayUrl, managerUsername, managerPassword);
+      setAuthenticated(status.authenticated);
+      setAuthExpiresAt(status.expiresAt ?? null);
+      setManagerPassword("");
+      s.setMsg({ text: "Manager session established", type: "success" });
+      await s.refreshJobs();
+    } catch (error) {
+      setAuthError(friendlyPrinterError(error instanceof Error ? error.message : "Manager login failed"));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleManagerLogout = async () => {
+    if (!s.gatewayUrl) return;
+    setAuthBusy(true);
+    try {
+      await logoutManager(s.gatewayUrl);
+      setAuthenticated(false);
+      setAuthExpiresAt(null);
+      s.setMsg({ text: "Manager session closed", type: "success" });
+      s.refreshJobs();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Manager logout failed");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
 
   const tabCounts = {
     all: s.jobCounts.all,
@@ -61,8 +132,6 @@ export function JobsPage({ s }: { s: DesktopState }) {
             : `Removed ${deleted} terminal local print job${deleted === 1 ? "" : "s"}.`,
         type: "success",
       });
-      // The table is sourced from the Gateway. Local cleanup intentionally
-      // does not rewrite Gateway history, so no remote refresh is triggered.
     } catch (error) {
       s.setMsg({
         text: error instanceof Error ? error.message : "Failed to clean local print jobs",
@@ -102,6 +171,16 @@ export function JobsPage({ s }: { s: DesktopState }) {
             >
               Refresh
             </Button>
+            {authenticated ? (
+              <Button
+                variant="ghost"
+                onClick={handleManagerLogout}
+                loading={authBusy}
+                icon={<LogOut className="h-[18px] w-[18px]" />}
+              >
+                Sign out
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               onClick={() => setCleanupOpen(true)}
@@ -112,6 +191,11 @@ export function JobsPage({ s }: { s: DesktopState }) {
             </Button>
           </div>
         </div>
+        {authenticated && authExpiresAt ? (
+          <div className="border-t border-edge bg-surface-2/60 px-6 py-3 text-[12px] text-ink-3">
+            Manager session active until {new Date(authExpiresAt).toLocaleString()}
+          </div>
+        ) : null}
         {s.jobPrinterFilter && (
           <div className="flex items-center gap-3 border-t border-edge bg-surface-2/60 px-6 py-4">
             <span className="inline-flex items-center gap-2 rounded-lg border border-edge-accent bg-brand-subtle px-3 py-2 text-[13px] font-medium text-brand-subtle-text">
@@ -128,6 +212,57 @@ export function JobsPage({ s }: { s: DesktopState }) {
           </div>
         )}
       </Card>
+
+      {!authenticated && (s.jobsError?.includes("manager session") || s.jobsError?.includes("Manager")) ? (
+        <Card className="overflow-hidden">
+          <form onSubmit={handleManagerLogin} className="space-y-5 p-6 sm:p-7">
+            <div className="flex items-start gap-3.5">
+              <span className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
+                <KeyRound className="h-5 w-5" aria-hidden />
+              </span>
+              <div>
+                <h2 className="text-[17px] font-semibold text-ink">Gateway manager sign-in</h2>
+                <p className="mt-1 text-[13px] text-ink-3">
+                  The desktop app uses a short-lived bearer session for remote Gateway APIs. It does not depend on cross-site browser cookies.
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Username" htmlFor="desktop-manager-username">
+                <Input
+                  id="desktop-manager-username"
+                  value={managerUsername}
+                  onChange={(e) => setManagerUsername(e.target.value)}
+                  autoComplete="username"
+                  disabled={authBusy}
+                />
+              </Field>
+              <Field label="Password" htmlFor="desktop-manager-password">
+                <Input
+                  id="desktop-manager-password"
+                  type="password"
+                  value={managerPassword}
+                  onChange={(e) => setManagerPassword(e.target.value)}
+                  autoComplete="current-password"
+                  disabled={authBusy}
+                />
+              </Field>
+            </div>
+            {authError ? <ErrorState title="Manager authentication failed" message={authError} /> : null}
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                variant="primary"
+                loading={authBusy}
+                disabled={!s.gatewayUrl || !managerUsername || !managerPassword}
+                icon={<KeyRound className="h-4 w-4" />}
+              >
+                Sign in to Gateway
+              </Button>
+            </div>
+          </form>
+        </Card>
+      ) : null}
 
       <Card className="overflow-hidden">
         {s.jobsLoading ? (

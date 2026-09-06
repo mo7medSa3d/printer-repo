@@ -14,3 +14,4 @@ from . import branch_security
 from . import native_branch_bridge
 from . import async_report
 from . import odoo19_compat
+from . import branch_contract

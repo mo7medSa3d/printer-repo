@@ -5,6 +5,7 @@ import { guardApiRequest } from "./src/server/request-guard";
 import { sweepPrintJobs } from "./src/lib/job-maintenance";
 import { cleanupAuthRateLimits } from "./src/lib/auth-rate-limit";
 import { cleanupExpiredManagerSessions } from "./src/lib/manager-auth";
+import { applyApiCors, handleApiCorsPreflight } from "./src/server/cors";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -21,6 +22,9 @@ const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
   const server = createServer((req, res) => {
+    if (handleApiCorsPreflight(req, res)) return;
+    applyApiCors(req, res);
+
     guardApiRequest(req, res)
       .then((guarded) => {
         if (!guarded) return; // already answered (413/499/400)
