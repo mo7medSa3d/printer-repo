@@ -18,7 +18,7 @@ import {
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
 type WritableSocket = {
-  write(chunk: string): boolean;
+  end(chunk?: string): boolean;
   destroy(): void;
 };
 
@@ -63,10 +63,25 @@ function websocketClientKey(req: IncomingMessage): string {
 
 function writeWsHttpError(socket: WritableSocket, status: number, body: string, retryAfterSec?: number) {
   const retry = retryAfterSec !== undefined ? `Retry-After: ${retryAfterSec}\r\n` : "";
-  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : "Bad Request";
+  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : status === 401 ? "Unauthorized" : "Bad Request";
   const payload = JSON.stringify({ error: body });
-  socket.write(`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
-  socket.destroy();
+  const response =
+    `HTTP/1.1 ${status} ${statusText}\r\n` +
+    `Content-Type: application/json; charset=utf-8\r\n` +
+    `Content-Length: ${Buffer.byteLength(payload)}\r\n` +
+    retry +
+    `Connection: close\r\n\r\n` +
+    payload;
+
+  // Complete the HTTP response before closing the connection. Calling
+  // destroy() immediately after write() can turn a legitimate 4xx/5xx
+  // handshake rejection into ECONNRESET on the WebSocket client and hide the
+  // actual reason for the rejection.
+  try {
+    socket.end(response);
+  } catch {
+    try { socket.destroy(); } catch {}
+  }
 }
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
