@@ -615,7 +615,9 @@ pub async fn register_printer(request: RegisterPrinterRequest, app: tauri::AppHa
     let conn_lower = conn.trim().to_lowercase();
     let valid_conns = ["spooler", "network", "tcp", "usb", "ipp", "ipps"];
     if !valid_conns.contains(&conn_lower.as_str()) {
-        return Err("connection type must be spooler, network, usb, or ipp".into());
+        // List the ACTUALLY accepted types — the old message dropped the
+        // valid tcp/ipps options (audit #21).
+        return Err("connection type must be spooler, network, tcp, usb, ipp, or ipps".into());
     }
     run_blocking(move || {
         let cli = agent::cli_path(&app)?;
@@ -696,13 +698,21 @@ pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<Strin
         #[cfg(windows)]
         {
             use tauri_plugin_autostart::ManagerExt;
-            if enabled {
+            let result = if enabled {
                 app.autolaunch().enable().map_err(|e| format!("enable autostart: {}", e))?;
                 Ok("autostart enabled".into())
             } else {
                 app.autolaunch().disable().map_err(|e| format!("disable autostart: {}", e))?;
                 Ok("autostart disabled".into())
+            };
+            // Record that the user has explicitly chosen autostart so the
+            // app never re-enables it on a later start (see setup in main.rs).
+            let touched = paths::manager_data_root().join("autostart-user-choice");
+            if let Some(parent) = touched.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
+            let _ = std::fs::write(&touched, "1");
+            result
         }
         #[cfg(not(windows))]
         {

@@ -29,11 +29,13 @@ class PrintGatewayDestination(models.Model):
         'Destination name must be unique per branch',
     )
 
-    def get_printer_for_doctype(self, document_type_name):
-        """Returns printer record for document type, respecting priority fallback."""
-        self.ensure_one()
-        bindings = self.binding_ids.filtered(lambda b: b.enabled and (not b.document_type or b.document_type == document_type_name or (b.document_type_id and b.document_type_id.name == document_type_name))).sorted('priority')
-        if bindings:
-            return bindings[0].printer_id
-        fallback = self.binding_ids.filtered(lambda b: b.enabled).sorted('priority')
-        return fallback[0].printer_id if fallback else False
+    # NOTE (audit #19): routing is exclusively the Gateway's responsibility.
+    # This model previously carried a partial re-implementation
+    # (``get_printer_for_doctype``) that diverged from the gateway:
+    # case-sensitive document-type matching and a silent fallback to ANY
+    # enabled binding (the gateway is case/whitespace-insensitive and
+    # returns NO_ROUTE instead). The helper had no callers and was removed
+    # so the routing rules (trim + lower, exact match first, priority, no
+    # cross-doctype fallback) exist in exactly one place:
+    # ``src/lib/routing.ts`` (selectBestBinding / selectFallbackBindings),
+    # pinned by ``tests/routing-doctype-parity.test.ts``.

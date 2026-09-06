@@ -18,6 +18,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify Cargo.lock is committed
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src-tauri/Cargo.lock)) {
+            Write-Host "::warning::src-tauri/Cargo.lock is NOT committed — the MSI is built from floating dependency versions. Run: cd src-tauri; cargo generate-lockfile — then commit the file."
+          } else {
+            Write-Host "Cargo.lock present."
+          }
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -63,7 +71,17 @@ jobs:
       - name: Lint frontend
         run: npm run lint
       - name: Run Vitest suite
-        run: npm run test
+        run: npm run test -- --reporter=default --reporter=json --outputFile=vitest-results.json
+      - name: Report skipped (DB-gated) tests explicitly
+        shell: pwsh
+        run: |
+          $json = Get-Content vitest-results.json -Raw | ConvertFrom-Json
+          $skipped = [int]$json.numPendingTests
+          $total = [int]$json.numTotalTests
+          Write-Host "Vitest: $skipped of $total tests SKIPPED (DB-gated suites; no Postgres on this runner)."
+          if ($skipped -gt 0) {
+            Write-Host "::notice::No Postgres service on this runner — $skipped integration test(s) were skipped in the Windows build. Full integration coverage runs in the CI workflow (.github/workflows/ci.yml)."
+          }
       - name: Go vet
         working-directory: agent
         shell: pwsh

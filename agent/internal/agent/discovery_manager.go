@@ -32,7 +32,19 @@ func (a *Agent) pollDiscovery(ctx context.Context) {
 		if id == "" {
 			continue
 		}
-		go a.executeDiscoverySession(ctx, id)
+		// At most one discovery session runs at a time (full bounded LAN
+		// scan). A pending session expires on the gateway in 60s and each
+		// run is bounded to 30s, so anything skipped here is simply picked
+		// up on the next 30s poll tick — no goroutine pile-up.
+		select {
+		case a.discoverySem <- struct{}{}:
+			go func(sessionID string) {
+				defer func() { <-a.discoverySem }()
+				a.executeDiscoverySession(ctx, sessionID)
+			}(id)
+		default:
+			log.Printf("[discovery] session %s deferred: a discovery session is already running", id)
+		}
 	}
 }
 

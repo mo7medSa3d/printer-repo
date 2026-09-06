@@ -285,8 +285,8 @@ class IrActionsReport(models.Model):
             raise ValidationError(_("Cannot print an empty report."))
 
         # Resolve routing for EVERY record, including a single-record
-        # report. Returning branch=None for len==1 used to make
-        # _route_via_gateway fail closed with "No print branch configured"
+        # report. Returning branch=None for len==1 used to make the sync
+        # gateway path fail closed with "No print branch configured"
         # even when a unique branch existed — or, worse, skip validation
         # and fall through to records[0] elsewhere. Fail closed here.
         routing_groups = []
@@ -323,171 +323,11 @@ class IrActionsReport(models.Model):
             ) % len(routing_groups))
 
         return routing_groups
-
-    def _route_via_gateway(self, report_ref, res_ids, data=None):
-        """Main gateway routing logic. Returns print job record or raises.
-        SECURITY: Validates user has access to determined branch's company.
-
-        Processing order (FAIL-CLOSED):
-        1. Validate recordset is not empty
-        2. Validate routing is deterministic and consistent
-        3. Render PDF
-        4. Build payload
-        5. Create one persisted logical-operation identity
-        6. Call Gateway using that persisted identity
-        """
-        self.ensure_one()
-
-        # Step 1: Validate non-empty recordset
-        if not res_ids:
-            raise ValidationError(_("No records to print for report %s") % self.name)
-
-        # Get mapping
-        mapping_info = self._get_gateway_mapping()
-        if not mapping_info or not mapping_info.get('gateway_enabled'):
-            return None  # Not configured for gateway, fallback to normal
-
-        # Get the actual records
-        model_name = self.model
-        if not model_name:
-            # Try to get from report
-            report = self._get_report(report_ref) if hasattr(self, '_get_report') else self
-            model_name = report.model if hasattr(report, 'model') else None
-
-        if not model_name:
-            raise ValidationError(_("Report model not found"))
-
-        # Step 2: Validate recordset and routing consistency
-        try:
-            Model = self.env[model_name]
-        except KeyError:
-            raise ValidationError(_("Model %s not found") % model_name)
-
-        try:
-            records = Model.browse(res_ids)
-        except Exception as e:
-            raise ValidationError(_("Failed to load records: %s") % str(e))
-
-        # Check if records actually exist
-        if not records or len(records) == 0:
-            raise ValidationError(_("Cannot print an empty report."))
-
-        # Validate routing consistency
-        routing_groups = self._validate_recordset_routing_consistency(records, mapping_info)
-
-        # Use first (and only) routing group
-        routing_group = routing_groups[0]
-        branch = routing_group['branch']
-        destination = routing_group['destination']
-        document_type = routing_group['document_type']
-
-        if not branch:
-            raise ValidationError(_("No print branch configured. Please configure a Print Gateway Branch first."))
-        if not destination:
-            raise ValidationError(_("No destination configured for branch %s. Create a destination (POS/Kitchen/Warehouse).") % branch.name)
-
-        # SECURITY: Validate user has access to branch's company
-        if not self._user_has_branch_access(branch):
-            raise ValidationError(_("You do not have access to branch %s. Cannot print via this branch.") % branch.name)
-
-        # SECURITY: Validate record's company matches branch's company (if record has company field)
-        for record in records:
-            if 'company_id' in record._fields and record.company_id and record.company_id.id != branch.company_id.id:
-                raise ValidationError(_("Cannot route record from company %s to branch in company %s. Please route to correct company's branch.") % (record.company_id.name, branch.company_id.name))
-
-        # Step 3: Render PDF (only after routing validation)
-        payload = self._generate_payload_for_report(report_ref, res_ids, data)
-
-        # Step 4: Create exactly one logical-operation identity for this manual
-        # print invocation. The key is persisted before the network call by
-        # branch.create_print_job and is reused by timeout/worker retries.
-        import uuid as _uuid
-        idempotency_key = _uuid.uuid4().hex
-
-        # Step 5: Persist local outbox operation and submit only after the
-        # surrounding Odoo transaction commits. Retries use the persisted key.
-        try:
-            job = branch.create_print_job(
-                destination.gateway_destination_id or destination.id,
-                document_type,
-                payload,
-                odoo_model=model_name,
-                odoo_record_id=res_ids[0] if res_ids else None,
-                report_xml_id=self.get_external_id().get(self.id, '') if hasattr(self, 'get_external_id') else self.report_name,
-                report_name=self.report_name,
-                idempotency_key=idempotency_key,
-                defer_until_commit=True,
-            )
-            _logger.info("Report %s for %s[%s] persisted as logical print operation %s via %s -> %s (%s); Gateway submission is post-commit",
-                        self.report_name, model_name, res_ids, job.idempotency_key[:8], branch.name, destination.name, document_type)
-            return job
-        except ValidationError:
-            raise
-        except Exception as e:
-            _logger.error("Gateway print failed for report %s: %s", self.report_name, str(e))
-            # Check fallback behavior
-            mapping = mapping_info.get('mapping')
-            if mapping and not mapping.fallback_to_normal:
-                raise ValidationError(_("Gateway printing failed for %s: %s") % (self.name, str(e)))
-            elif self.print_gateway_enabled and not (mapping and mapping.fallback_to_normal):
-                raise ValidationError(_("Print Gateway failed for %s: %s. Check Gateway connection and try again.") % (self.name, str(e)))
-            raise
-
-    # Override report_action to intercept standard Print button
-    def report_action(self, docids, data=None, config=True):
-        """Override standard report action to optionally route via Gateway."""
-        self.ensure_one()
-
-        # Check if this report should be routed via gateway
-        # We need to be careful to not break non-PDF reports or many records
-        should_gateway = self._should_route_via_gateway()
-
-        if not should_gateway:
-            # Normal Odoo behavior
-            return super().report_action(docids, data=data, config=config)
-
-        # For gateway-enabled reports, we try to route via gateway
-        # But we need to handle the case where docids is None or empty (like for wizard)
-        if not docids:
-            return super().report_action(docids, data=data, config=config)
-
-        # Normalize docids
-        if isinstance(docids, int):
-            docids = [docids]
-        elif isinstance(docids, str):
-            # Could be a string ID
-            try:
-                docids = [int(docids)]
-            except (TypeError, ValueError):
-                return super().report_action(docids, data=data, config=config)
-
-        try:
-            # Try gateway routing
-            job = self._route_via_gateway(self, docids, data)
-            if job:
-                # Successfully queued via gateway - return notification
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('Print Job Queued'),
-                        'message': _('Report %s for %d record(s) persisted as operation %s (%s -> %s). Gateway submission will run after commit.') % (
-                            self.name, len(docids), job.idempotency_key[:8],
-                            job.branch_id.name, job.destination_id.name if job.destination_id else 'N/A',
-                            job.status
-                        ),
-                        'type': 'success',
-                        'sticky': False,
-                        'next': {'type': 'ir.actions.act_window_close'},
-                    }
-                }
-        except ValidationError:
-            raise
-        except UserError:
-            raise
-        except Exception as e:
-            _logger.error("Unexpected error in gateway report routing for %s: %s", self.report_name, str(e), exc_info=True)
-            raise UserError(_("Gateway printing failed: %s") % str(e))
-
-        # If gateway routing didn't create a job (shouldn't happen), fallback
-        return super().report_action(docids, data=data, config=config)
+    # NOTE (audit #18): the synchronous in-request ``report_action`` override
+    # and its ``_route_via_gateway`` helper (which rendered the PDF inside the
+    # user's request) were removed. ``report_action`` is defined in exactly
+    # one place now — ``async_report.py`` (loaded last in ``__init__.py``),
+    # which only persists a durable render descriptor; PDF rendering and the
+    # Gateway HTTP call happen in the pending-job cron/worker. Do not
+    # re-introduce a second ``report_action`` here: the last loaded extension
+    # silently wins and the other one becomes dead code.

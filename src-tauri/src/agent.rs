@@ -195,16 +195,49 @@ pub fn stop(app: &tauri::AppHandle) -> Result<(), String> {
             {
                 use std::os::windows::process::CommandExt;
                 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+                // Two-stage stop (audit #21): ask the process to exit
+                // first, then force-kill only if it does not drain within
+                // the grace window. A service-mode agent already drains
+                // in-flight jobs (program.Stop); a detached process that
+                // ignores the graceful request is still recoverable — on
+                // next start the agent reports its interrupted jobs as
+                // AGENT_RESTART_DURING_PRINT, so a hard kill never leaves
+                // the gateway with an unknown physical outcome.
                 let out = Command::new("taskkill")
-                    .args(["/F", "/IM", "OdooPrintAgent.exe"])
+                    .args(["/IM", "OdooPrintAgent.exe"])
                     .creation_flags(CREATE_NO_WINDOW)
                     .output()
                     .map_err(|e| format!("taskkill failed: {e}"))?;
                 if !out.status.success() {
-                    return Err(format!(
-                        "taskkill failed: {}",
+                    logging::warn(&format!(
+                        "graceful taskkill reported: {}",
                         String::from_utf8_lossy(&out.stderr).trim()
                     ));
+                } else {
+                    logging::info("taskkill (graceful) requested agent shutdown");
+                }
+
+                for _ in 0..5 {
+                    if !is_process_running(app) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+
+                if is_process_running(app) {
+                    let out = Command::new("taskkill")
+                        .args(["/F", "/IM", "OdooPrintAgent.exe"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .output()
+                        .map_err(|e| format!("taskkill /F failed: {e}"))?;
+                    if !out.status.success() {
+                        return Err(format!(
+                            "taskkill /F failed: {}",
+                            String::from_utf8_lossy(&out.stderr).trim()
+                        ));
+                    }
+                    logging::warn("agent did not exit within the grace window; forced termination");
                 }
             }
         }

@@ -27,8 +27,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   let body: { name?: unknown; type?: unknown; description?: unknown; zone?: unknown; enabled?: unknown };
   try { body = await req.json(); } catch { body = {}; }
 
-  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Unnamed Destination";
-  const type = typeof body.type === "string" && body.type.trim() ? body.type.trim() : "other";
+  const rawName = typeof body.name === "string" ? body.name.trim() : "";
+  if (rawName.length > 120) return NextResponse.json({ error: "name must be <= 120 characters" }, { status: 400 });
+  const name = rawName || "Unnamed Destination";
+  const rawType = typeof body.type === "string" ? body.type.trim() : "";
+  if (rawType.length > 60) return NextResponse.json({ error: "type must be <= 60 characters" }, { status: 400 });
+  const type = rawType || "other";
+  const description = typeof body.description === "string" ? body.description.slice(0, 500) : null;
+  const zone = typeof body.zone === "string" ? body.zone.slice(0, 120) : null;
   const destinationId = `dest_${nanoid(8)}`;
 
   await db.insert(destinations).values({
@@ -36,8 +42,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     branchId: id,
     name,
     type,
-    description: typeof body.description === "string" ? body.description : null,
-    zone: typeof body.zone === "string" ? body.zone : null,
+    description,
+    zone,
     enabled: typeof body.enabled === "boolean" ? body.enabled : true,
   });
 

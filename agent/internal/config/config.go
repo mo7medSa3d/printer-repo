@@ -12,7 +12,16 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/odoo-print-agent/agent/internal/storage"
 )
+
+// secretStoreKey is the key under which the agent's gateway credential is
+// sealed in the platform secret store (DPAPI on Windows, owner-only file
+// elsewhere). The secret must NOT live in plaintext YAML: on Windows the
+// 0600 mode is advisory and the ProgramData config is readable by any local
+// user, which would hand them full agent identity towards the gateway.
+const secretStoreKey = "agent_secret"
 
 type Config struct {
 	Server struct {
@@ -108,6 +117,25 @@ func Load(path string) (*Config, error) {
 	if cfg.Agent.ReprintAfterCrash == nil {
 		cfg.Agent.ReprintAfterCrash = boolPtr(false)
 	}
+
+	// Restore the sealed gateway credential, and migrate legacy plaintext
+	// secrets (written by older versions) into the store best-effort.
+	dir := filepath.Dir(path)
+	if dir == "" || dir == "." {
+		if d, err := ExecutableDir(); err == nil {
+			dir = d
+		}
+	}
+	store := storage.NewStore(dir)
+	if sealed, serr := store.GetSecret(secretStoreKey); serr == nil && sealed != "" {
+		cfg.Agent.Secret = sealed
+	} else if cfg.Agent.Secret != "" {
+		if merr := store.SaveSecret(secretStoreKey, cfg.Agent.Secret); merr == nil {
+			stripped := *cfg
+			stripped.Agent.Secret = ""
+			_ = stripped.Save(path)
+		}
+	}
 	return cfg, nil
 }
 
@@ -149,11 +177,27 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("config path is empty")
 	}
 	dir := filepath.Dir(path)
+	if dir == "" || dir == "." {
+		if d, err := ExecutableDir(); err == nil {
+			dir = d
+		}
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(c)
+	// Seal the gateway credential outside the plaintext YAML. The in-memory
+	// config keeps the secret (callers need it immediately); only the
+	// persisted copy is stripped.
+	toSave := *c
+	if c.Agent.Secret != "" {
+		if err := storage.NewStore(dir).SaveSecret(secretStoreKey, c.Agent.Secret); err != nil {
+			return fmt.Errorf("seal agent secret: %w", err)
+		}
+		toSave.Agent.Secret = ""
+	}
+
+	data, err := yaml.Marshal(&toSave)
 	if err != nil {
 		return fmt.Errorf("encode config %s: %w", path, err)
 	}

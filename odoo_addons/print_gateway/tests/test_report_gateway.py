@@ -63,6 +63,21 @@ class TestReportGateway(TransactionCase):
         self.assertEqual(job.status, 'queued')
         self.assertTrue(mock_post.called)
 
+    def test_effective_report_action_is_the_async_implementation(self):
+        # Audit #18 acceptance test: exactly one report_action override
+        # exists (async_report.py, loaded last). Proving the *effective*
+        # method is the async one guards against a silently-dead duplicate
+        # being re-introduced (MRO: last loaded extension wins).
+        from odoo.addons.print_gateway.models import async_report
+        report = self.env['ir.actions.report'].create({
+            'name': 'Precedence Report',
+            'model': 'res.partner',
+            'report_name': 'test.precedence_report',
+            'report_type': 'qweb-pdf',
+        })
+        effective = report.report_action.__func__
+        self.assertIs(effective, async_report.PrintGatewayAsyncReport.report_action)
+
     def test_gateway_report_action_only_persists_render_descriptor(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
         if not report:

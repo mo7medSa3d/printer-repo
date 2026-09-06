@@ -71,11 +71,22 @@ suite("server-side print job maintenance", () => {
     expect(row.rows[0].error).toContain("max retries");
   });
 
-  it("fails stale printing leases without requeueing physical execution", async () => {
+  it("requeues a stale printing lease so a restarted agent applies its crash-recovery policy", async () => {
     await insertJob("job-stale-printing", "printing", 0, 11 * 60, 3600);
     const result = await sweepPrintJobs();
+    expect(result.requeuedPrinting).toBe(1);
+    expect(result.stalePrinting).toBe(0);
+    const row = await pool().query(`SELECT status, retries, error FROM print_jobs WHERE id = $1`, ["job-stale-printing"]);
+    expect(row.rows[0].status).toBe("queued");
+    expect(Number(row.rows[0].retries)).toBe(1);
+    expect(row.rows[0].error).toContain("AGENT_RESTART_DURING_PRINT");
+  });
+
+  it("fails a stale printing lease only after the retry budget is exhausted", async () => {
+    await insertJob("job-stale-printing-exhausted", "printing", MAX_RETRIES, 11 * 60, 3600);
+    const result = await sweepPrintJobs();
     expect(result.stalePrinting).toBe(1);
-    const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-stale-printing"]);
+    const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-stale-printing-exhausted"]);
     expect(row.rows[0].status).toBe("failed");
     expect(row.rows[0].error).toContain("AGENT_EXECUTION_TIMEOUT");
   });

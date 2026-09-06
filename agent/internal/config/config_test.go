@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,5 +80,68 @@ func TestConfigValidateRejectsHTTPWhenOnlyFlagIsPresent(t *testing.T) {
 	c.Server.URL = "http://example.com"
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected HTTP to remain rejected outside development")
+	}
+}
+
+func TestConfigSaveSealsSecretOutsideYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	c := &Config{}
+	c.Server.URL = "https://example.com"
+	c.Agent.ID = "agent_1"
+	c.Agent.Secret = "super-secret-value"
+	c.Agent.Name = "test"
+	if err := c.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read yaml: %v", err)
+	}
+	if bytes.Contains(raw, []byte("super-secret-value")) {
+		t.Fatalf("secret must not be persisted in plaintext YAML")
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Agent.Secret != "super-secret-value" {
+		t.Fatalf("expected secret to be restored from the sealed store, got %q", loaded.Agent.Secret)
+	}
+}
+
+func TestConfigLoadMigratesLegacyPlaintextSecret(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	legacy := "server:\n  url: https://example.com\nagent:\n  id: agent_1\n  secret: legacy-plaintext\n  name: test\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Agent.Secret != "legacy-plaintext" {
+		t.Fatalf("secret not loaded: %q", loaded.Agent.Secret)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read yaml: %v", err)
+	}
+	if bytes.Contains(raw, []byte("legacy-plaintext")) {
+		t.Fatalf("legacy plaintext secret should have been migrated out of the YAML")
+	}
+
+	again, err := Load(path)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if again.Agent.Secret != "legacy-plaintext" {
+		t.Fatalf("secret not restored after migration: %q", again.Agent.Secret)
 	}
 }

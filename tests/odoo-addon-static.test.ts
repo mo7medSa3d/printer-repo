@@ -56,10 +56,14 @@ describe("Odoo addon static contracts", () => {
   });
 
   it("persists logical-operation identity and retries it after restart", () => {
-    const report = readFileSync(path.join(ADDON, "models/ir_actions_report.py"), "utf8");
+    // The live report path is the async one (audit #18 removed the dead
+    // synchronous override, which had its own divergent copy of this
+    // contract). The idempotency key is generated in async_report.py and
+    // reused verbatim by the pending-job retry in print_job.py.
+    const report = readFileSync(path.join(ADDON, "models/async_report.py"), "utf8");
     const job = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(report).not.toContain("current_minute");
-    expect(report).toContain("idempotency_key = _uuid.uuid4().hex");
+    expect(report).toContain("idempotency_key = uuid.uuid4().hex");
     expect(job).toContain("def action_submit_pending");
     expect(job).toContain("idempotency_key=job.idempotency_key");
     expect(job).toContain("json.loads(payload_raw)");

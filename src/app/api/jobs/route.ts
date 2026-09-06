@@ -30,8 +30,29 @@ export async function GET(req: Request) {
     ...(agentId ? [eq(printJobs.agentId, agentId)] : []),
   ];
 
+  // The list view must not ship the document payload (up to 5MB per row);
+  // single-job detail is available at /api/jobs/[id] which includes it.
   const rows = await db
-    .select()
+    .select({
+      id: printJobs.id,
+      branchId: printJobs.branchId,
+      destinationId: printJobs.destinationId,
+      documentType: printJobs.documentType,
+      agentId: printJobs.agentId,
+      printerId: printJobs.printerId,
+      status: printJobs.status,
+      error: printJobs.error,
+      requestedBy: printJobs.requestedBy,
+      idempotencyKey: printJobs.idempotencyKey,
+      retries: printJobs.retries,
+      deliveryAttempts: printJobs.deliveryAttempts,
+      claimedAt: printJobs.claimedAt,
+      deliveredAt: printJobs.deliveredAt,
+      ackedAt: printJobs.ackedAt,
+      expiresAt: printJobs.expiresAt,
+      createdAt: printJobs.createdAt,
+      updatedAt: printJobs.updatedAt,
+    })
     .from(printJobs)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(printJobs.createdAt))

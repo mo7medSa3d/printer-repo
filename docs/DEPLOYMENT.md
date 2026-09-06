@@ -22,6 +22,31 @@ Environment: `DATABASE_URL`, `GATEWAY_JWT_SECRET` (≥ 32 chars), `MANAGER_USERN
 `MANAGER_PASSWORD_HASH` (preferred), `GATEWAY_DOMAIN`, optional `PORT`/`HOSTNAME`.
 Full list: [CONFIGURATION.md](CONFIGURATION.md).
 
+### Timezone requirement (mandatory UTC)
+
+The schema stores all time columns as `timestamp` **without** time zone, and
+the gateway's correctness depends on the application and the database
+agreeing on "now": the 90-second stale-claim lease, the stale-`printing`
+sweep, `expires_at` TTLs and keep-alive leases all compare SQL `now()` with
+timestamps written by the Node process. If the gateway host/container runs in
+a non-UTC zone, those thresholds silently shift by the UTC offset — jobs can
+expire or be reclaimed hours early/late.
+
+**Run the gateway, the migrator and PostgreSQL in UTC.** The reference
+`docker-compose.yml` sets `TZ: UTC` on all three services; for bare-metal or
+VM deployments set `TZ=UTC` in the service environment (systemd:
+`Environment=TZ=UTC`, and consider `timedatectl set-timezone UTC`).
+
+Verification (must be ≈ 0):
+
+```sql
+SELECT now() AT TIME ZONE 'UTC' AS db_now_utc;
+```
+
+```bash
+date -u +%s   # host/app epoch vs. db_now_utc rendered in UTC
+```
+
 ### Reference TLS deployment
 
 The repository's `docker-compose.yml` runs the gateway privately behind Caddy. Set

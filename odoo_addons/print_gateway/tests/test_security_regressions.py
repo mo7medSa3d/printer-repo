@@ -251,3 +251,48 @@ class TestGatewayPullSyncStatus(PrintGatewaySecurityCase):
         self.assertEqual(result['tag'], 'display_notification')
         self.assertEqual(self.branch.last_sync_status, 'failed')
         self.assertIn('Agents endpoint must return an array', self.branch.last_sync_error)
+
+
+class TestGatewayApiKeyReadProtection(PrintGatewaySecurityCase):
+    """Audit #6: gateway_api_key must never reach a non-admin read payload.
+
+    ``groups='base.group_system'`` on the field only hides it from the web
+    UI; a direct RPC read must be rejected on the server side as well.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.company = self.env['res.company'].create({'name': 'Key Protection Co'})
+        self.user = self._user(self.company, 'pg_key_user')
+        self.admin = self.env['res.users'].create({
+            'login': 'pg_key_admin',
+            'name': 'Key Admin',
+            'company_ids': [(6, 0, [self.company.id])],
+            'company_id': self.company.id,
+            'group_ids': [(4, self.env.ref('base.group_system').id)],
+        })
+        self.branch = self._branch(self.company, 'Key Branch')
+
+    def test_regular_user_cannot_read_key_via_rpc(self):
+        # The audit acceptance test: group_user reading the branch's
+        # credential through the read RPC must be blocked.
+        with self.assertRaises(AccessError):
+            self.branch.with_user(self.user).read(['gateway_api_key'])
+
+    def test_regular_user_can_read_non_secret_fields(self):
+        values = self.branch.with_user(self.user).read(['name', 'gateway_url'])
+        self.assertEqual(values[0]['name'], 'Key Branch')
+        self.assertEqual(values[0]['gateway_url'], 'https://gateway.example.com')
+
+    def test_key_field_hidden_from_regular_user_fields_get(self):
+        field_names = self.branch.with_user(self.user).fields_get().keys()
+        self.assertNotIn('gateway_api_key', field_names)
+
+    def test_system_admin_can_read_key(self):
+        values = self.branch.with_user(self.admin).read(['gateway_api_key'])
+        self.assertEqual(values[0]['gateway_api_key'], 'test-key')
+
+    def test_sync_actions_require_admin(self):
+        for action in ('action_test_connection', 'action_sync_from_gateway', 'action_sync_to_gateway'):
+            with self.assertRaises(AccessError):
+                getattr(self.branch.with_user(self.user), action)()

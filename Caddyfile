@@ -1,4 +1,20 @@
 {$GATEWAY_DOMAIN} {
     encode gzip zstd
+
+    # The gateway derives the client IP from X-Forwarded-For when
+    # TRUST_PROXY=1 (per-IP rate limiting + WS connection caps). Overwrite
+    # the header with the real client address so an external client can
+    # never spoof its own X-Forwarded-For / X-Real-Ip, and strip X-Real-Ip
+    # entirely (the gateway only consults it as a last resort).
+    header_up X-Forwarded-For {http.request.remote.host}
+    header_up -X-Real-Ip
+
+    # Defense in depth: the gateway enforces an 8 MiB body ceiling on
+    # /api/* mutations; reject oversized bodies at the edge before they
+    # reach the application.
+    request_body {
+        max_size 8MiB
+    }
+
     reverse_proxy gateway:3000
 }

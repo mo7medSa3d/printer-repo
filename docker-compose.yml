@@ -3,6 +3,10 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
+      # The schema uses timestamp-without-time-zone and the gateway compares
+      # SQL now() against app-written timestamps: the whole deployment must
+      # run in UTC (see docs/DEPLOYMENT.md, Timezone requirement).
+      TZ: UTC
       POSTGRES_DB: ${POSTGRES_DB:-odoo_print}
       POSTGRES_USER: ${POSTGRES_USER:-odoo_print}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
@@ -27,6 +31,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
+      TZ: UTC
       PGHOST: postgres
       PGPORT: 5432
       PGDATABASE: ${POSTGRES_DB:-odoo_print}
@@ -46,6 +51,7 @@ services:
         condition: service_completed_successfully
     environment:
       NODE_ENV: production
+      TZ: UTC
       HOSTNAME: 0.0.0.0
       PORT: 3000
       PGHOST: postgres
@@ -59,7 +65,11 @@ services:
       MANAGER_PASSWORD_HASH: ${MANAGER_PASSWORD_HASH:-}
       ALLOW_PLAINTEXT_MANAGER_PASSWORD: ${ALLOW_PLAINTEXT_MANAGER_PASSWORD:-}
       STALE_AGENT_THRESHOLD_SECONDS: ${STALE_AGENT_THRESHOLD_SECONDS:-90}
-      TRUST_PROXY: "1"
+      # Required for per-IP rate limiting behind the bundled Caddy. Safe ONLY
+      # because the caddy service overwrites X-Forwarded-For with the real
+      # client address (see Caddyfile) — never set TRUST_PROXY=1 when the
+      # gateway is reachable directly from untrusted networks.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
     expose:
       - "3000"
     healthcheck:

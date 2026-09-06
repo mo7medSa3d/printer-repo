@@ -1,12 +1,13 @@
 import { db } from "../../../../db";
-import { agents, printers } from "../../../../db/schema";
+import { agents, printJobs, printers } from "../../../../db/schema";
 import { validateAgent } from "../../../../lib/agent-auth";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { DEVICE_CLASSES, PRINTER_TYPES } from "../../../../lib/printer-model";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
+const MAX_KEEP_ALIVE_JOB_IDS = 64;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
 const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]);
@@ -84,6 +85,28 @@ export async function POST(req: Request) {
     if (JSON.stringify(reportedPrinters).length > 256_000) return NextResponse.json({ error: "heartbeat printer metadata exceeds 256KB" }, { status: 400 });
 
     await db.update(agents).set({ status, lastSeenAt: new Date() }).where(eq(agents.id, agent.id));
+
+    // Print-lease keep-alive: the agent reports the job ids it has taken
+    // (gateway status claimed/printing). While the agent is alive and
+    // working those jobs, their `updated_at` stays fresh, so the
+    // stale-printing sweep (10 min) cannot fail a legitimately long print.
+    // A dead agent stops heartbeating, so its jobs still time out as
+    // before. Scoped to this agent's own non-terminal delivery states.
+    const rawKeepAlive: unknown[] = Array.isArray(body?.keepAliveJobIds) ? (body.keepAliveJobIds as unknown[]) : [];
+    const keepAliveJobIds = rawKeepAlive
+      .filter((v): v is string => typeof v === "string" && v.length > 0 && v.length <= 120)
+      .slice(0, MAX_KEEP_ALIVE_JOB_IDS);
+    if (keepAliveJobIds.length > 0) {
+      await db.update(printJobs)
+        .set({ updatedAt: new Date() })
+        .where(
+          and(
+            eq(printJobs.agentId, agent.id),
+            inArray(printJobs.status, ["claimed", "printing"]),
+            inArray(printJobs.id, keepAliveJobIds),
+          ),
+        );
+    }
 
     const skipped: string[] = [];
     for (const raw of reportedPrinters) {

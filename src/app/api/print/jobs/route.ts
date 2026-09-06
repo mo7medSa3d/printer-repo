@@ -173,6 +173,15 @@ export async function GET(req: Request) {
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 });
   const row = await db.query.printJobs.findFirst({ where: eq(printJobs.id, id) });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  if (odoo.branchId && row.branchId !== odoo.branchId) return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
+  if (odoo.branchId) {
+    if (row.branchId !== odoo.branchId) return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
+  } else {
+    // Operator-level (unscoped) keys must still name the branch they are
+    // looking up; blind cross-branch job lookup by id is not allowed.
+    const wantedBranch = branchIdFromQuery?.trim();
+    if (!wantedBranch || row.branchId !== wantedBranch) {
+      return NextResponse.json({ error: "branchId query param is required and must match the job's branch for unscoped keys" }, { status: 403 });
+    }
+  }
   return NextResponse.json({ jobId: row.id, status: row.status, printerId: row.printerId, agentId: row.agentId, branchId: row.branchId, destinationId: row.destinationId, documentType: row.documentType, error: row.error, retries: row.retries, expiresAt: row.expiresAt, updatedAt: row.updatedAt });
 }

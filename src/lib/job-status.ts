@@ -34,14 +34,52 @@ export function isTerminal(status: JobStatus): boolean {
 // transition. Claiming itself remains server-side only.
 const ALLOWED_TRANSITIONS: Record<JobStatus, ReadonlySet<JobStatus>> = {
   queued: new Set(["expired"]),
-  claimed: new Set(["printing", "failed", "expired"]),
+  // claimed -> queued is the agent's explicit rejection path: the agent
+  // received the job but its local queue was full, so it hands it back
+  // (see PATCH /api/agent/jobs, reason "pending_full"). The route gates
+  // this transition on the exact reason — it is never a general
+  // re-queueing capability.
+  claimed: new Set(["printing", "failed", "queued", "expired"]),
   printing: new Set(["success", "failed", "expired"]),
+  // failed -> success is NOT a general transition. It exists ONLY as the
+  // late physical-outcome override (isLateSuccessAllowed): the gateway's
+  // stale-printing sweep may have failed the job while the agent actually
+  // finished printing. The agent is the only source of truth about the
+  // physical outcome.
   success: new Set([]),
-  failed: new Set([]),
+  failed: new Set(["success"]),
   expired: new Set([]),
 };
 
 export function canTransition(from: JobStatus, to: JobStatus): boolean {
-  if (isTerminal(from)) return false;
+  if (isTerminal(from)) {
+    // The one terminal override: failed -> success (late physical outcome).
+    return from === "failed" && to === "success";
+  }
   return ALLOWED_TRANSITIONS[from]?.has(to) ?? false;
+}
+
+/**
+ * Errors that mark a failure as "the gateway gave up waiting for the
+ * physical print" — as opposed to a real print failure (connection
+ * refused, capability mismatch, ...). Only these may be overridden by a
+ * late agent success report.
+ */
+const LATE_SUCCESS_ERROR_MARKERS = ["AGENT_EXECUTION_TIMEOUT", "AGENT_RESTART_DURING_PRINT"] as const;
+
+/** A late success override is only meaningful while the failure is recent. */
+export const LATE_SUCCESS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export interface LateSuccessCandidate {
+  status: JobStatus;
+  error: string | null;
+  updatedAt: Date;
+}
+
+export function isLateSuccessAllowed(job: LateSuccessCandidate, nowMs: number): boolean {
+  if (job.status !== "failed") return false;
+  const error = job.error ?? "";
+  if (!LATE_SUCCESS_ERROR_MARKERS.some((marker) => error.startsWith(marker))) return false;
+  const age = nowMs - new Date(job.updatedAt).getTime();
+  return age >= 0 && age <= LATE_SUCCESS_MAX_AGE_MS;
 }
