@@ -25,8 +25,10 @@ suite("production-like PostgreSQL migration upgrade", () => {
 
   beforeAll(async () => {
     const source = new URL(process.env.DATABASE_URL!);
+    const adminUrl = new URL(source.toString());
+    adminUrl.pathname = "/postgres";
     tempDb = `upgrade_${Date.now()}_${randomBytes(3).toString("hex")}`;
-    admin = new Pool({ ...source, database: "postgres", max: 2 });
+    admin = new Pool({ connectionString: adminUrl.toString(), max: 2 });
     await admin.query(`CREATE DATABASE "${tempDb}"`);
 
     workDir = await mkdtemp(join(tmpdir(), "odoo-print-upgrade-"));
@@ -65,8 +67,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
   });
 
   it("applies current migration 0017 over an existing populated 0016 database without data loss", async () => {
-    const url = databaseUrlFor(tempDb);
-    const pool = new Pool({ connectionString: url, max: 4 });
+    const pool = new Pool({ connectionString: databaseUrlFor(tempDb), max: 4 });
     const db = drizzle(pool);
     try {
       await migrate(db, { migrationsFolder: oldDir });
