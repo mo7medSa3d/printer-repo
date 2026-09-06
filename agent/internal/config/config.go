@@ -16,11 +16,6 @@ import (
 	"github.com/odoo-print-agent/agent/internal/storage"
 )
 
-// secretStoreKey is the key under which the agent's gateway credential is
-// sealed in the platform secret store (DPAPI on Windows, owner-only file
-// elsewhere). The secret must NOT live in plaintext YAML: on Windows the
-// 0600 mode is advisory and the ProgramData config is readable by any local
-// user, which would hand them full agent identity towards the gateway.
 const secretStoreKey = "agent_secret"
 
 type Config struct {
@@ -28,11 +23,11 @@ type Config struct {
 		URL string `yaml:"url"`
 	} `yaml:"server"`
 	Agent struct {
-		ID     string `yaml:"id"`
-		Secret string `yaml:"secret"`
-		Name   string `yaml:"name"`
-		PDFPrintCommand []string `yaml:"pdf_print_command,omitempty"`
-		ReprintAfterCrash *bool `yaml:"reprint_after_crash,omitempty"`
+		ID               string   `yaml:"id"`
+		Secret           string   `yaml:"secret"`
+		Name             string   `yaml:"name"`
+		PDFPrintCommand  []string `yaml:"pdf_print_command,omitempty"`
+		ReprintAfterCrash *bool   `yaml:"reprint_after_crash,omitempty"`
 	} `yaml:"agent"`
 	Printers []PrinterConfig `yaml:"printers"`
 }
@@ -54,11 +49,8 @@ type PrinterConfig struct {
 }
 
 func (c *Config) ReprintAfterCrashEnabled() bool {
-	// A nil pointer can still occur in zero-value Config values used by older
-	// callers/tests. Preserve that compatibility value, while every real config
-	// creation/load path explicitly initializes the persisted policy to false.
 	if c == nil || c.Agent.ReprintAfterCrash == nil {
-		return true
+		return false
 	}
 	return *c.Agent.ReprintAfterCrash
 }
@@ -121,9 +113,6 @@ func Load(path string) (*Config, error) {
 		cfg.Agent.ReprintAfterCrash = boolPtr(false)
 	}
 
-	// Restore the sealed gateway credential, and migrate legacy plaintext
-	// secrets (written by older versions) into the store. A successful migration
-	// is required before returning so a plaintext credential is never left on disk.
 	dir := filepath.Dir(path)
 	if dir == "" || dir == "." {
 		if d, err := ExecutableDir(); err == nil {
@@ -194,9 +183,6 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
 
-	// Seal the gateway credential outside the plaintext YAML. The in-memory
-	// config keeps the secret (callers need it immediately); only the
-	// persisted copy is stripped.
 	toSave := *c
 	if c.Agent.Secret != "" {
 		if err := storage.NewStore(dir).SaveSecret(secretStoreKey, c.Agent.Secret); err != nil {
@@ -228,7 +214,7 @@ func (c *Config) Save(path string) error {
 	}
 	if err := replaceFile(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("commit config %s: %w", path, err)
+		return fmt.Errorf("commit config %s: %w", tmp, err)
 	}
 	_ = os.Chmod(path, 0600)
 	return nil

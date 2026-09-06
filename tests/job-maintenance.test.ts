@@ -41,8 +41,9 @@ suite("server-side print job maintenance", () => {
     await insertJob("job-expired-maintenance", "queued", 0, 120, -60);
     const result = await sweepPrintJobs();
     expect(result.expired).toBe(1);
-    const row = await pool().query(`SELECT status FROM print_jobs WHERE id = $1`, ["job-expired-maintenance"]);
+    const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-expired-maintenance"]);
     expect(row.rows[0].status).toBe("expired");
+    expect(row.rows[0].error).toBeNull();
   });
 
   it("requeues stale claims and the Agent can claim the recovered job", async () => {
@@ -71,23 +72,36 @@ suite("server-side print job maintenance", () => {
     expect(row.rows[0].error).toContain("max retries");
   });
 
-  it("requeues a stale printing lease so a restarted agent applies its crash-recovery policy", async () => {
+  it("marks a stale printing lease failed with UNKNOWN physical outcome and never requeues it", async () => {
     await insertJob("job-stale-printing", "printing", 0, 11 * 60, 3600);
     const result = await sweepPrintJobs();
-    expect(result.requeuedPrinting).toBe(1);
-    expect(result.stalePrinting).toBe(0);
+    expect(result.requeuedPrinting).toBe(0);
+    expect(result.stalePrinting).toBe(1);
     const row = await pool().query(`SELECT status, retries, error FROM print_jobs WHERE id = $1`, ["job-stale-printing"]);
-    expect(row.rows[0].status).toBe("queued");
-    expect(Number(row.rows[0].retries)).toBe(1);
-    expect(row.rows[0].error).toContain("AGENT_RESTART_DURING_PRINT");
+    expect(row.rows[0].status).toBe("failed");
+    expect(Number(row.rows[0].retries)).toBe(0);
+    expect(row.rows[0].error).toContain("AGENT_EXECUTION_TIMEOUT");
+    expect(row.rows[0].error).toContain("physical output is unknown");
   });
 
-  it("fails a stale printing lease only after the retry budget is exhausted", async () => {
-    await insertJob("job-stale-printing-exhausted", "printing", MAX_RETRIES, 11 * 60, 3600);
+  it("marks a printing job that expires during execution as UNKNOWN", async () => {
+    await insertJob("job-expired-printing", "printing", 0, 120, -60);
+    // The expiry pass runs first, so this is a terminal expiry with an
+    // explicit ambiguous physical outcome marker.
+    const result = await sweepPrintJobs();
+    expect(result.expired).toBe(1);
+    const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-expired-printing"]);
+    expect(row.rows[0].status).toBe("expired");
+    expect(row.rows[0].error).toContain("JOB_EXPIRED_DURING_PRINT");
+  });
+
+  it("fails a stale printing lease after retry history without creating another print attempt", async () => {
+    await insertJob("job-stale-printing-history", "printing", MAX_RETRIES, 11 * 60, 3600);
     const result = await sweepPrintJobs();
     expect(result.stalePrinting).toBe(1);
-    const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-stale-printing-exhausted"]);
+    const row = await pool().query(`SELECT status, retries, error FROM print_jobs WHERE id = $1`, ["job-stale-printing-history"]);
     expect(row.rows[0].status).toBe("failed");
+    expect(Number(row.rows[0].retries)).toBe(MAX_RETRIES);
     expect(row.rows[0].error).toContain("AGENT_EXECUTION_TIMEOUT");
   });
 });

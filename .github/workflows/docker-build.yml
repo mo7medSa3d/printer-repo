@@ -19,6 +19,8 @@ on:
 jobs:
   docker-build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,4 +33,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          MANAGER_PASSWORD_HASH: ci-salt:0123456789012345678901234567890123456789012345678901234567890123
+          TRUST_PROXY_SECRET: ci-only-proxy-secret-012345678901234567890123456789
+          ODOO_DATABASE_NAME: app_db
           GATEWAY_DOMAIN: print.example.com

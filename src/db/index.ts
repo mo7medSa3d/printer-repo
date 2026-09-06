@@ -1,8 +1,10 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type PoolConfig } from "pg";
 import { getWorkerSchema, schemaSearchPath } from "../lib/worker-schema";
+import { runtimeSecret } from "../lib/runtime-secret";
 
-const databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = runtimeSecret("DATABASE_URL");
+const pgPassword = runtimeSecret("PGPASSWORD");
 
 const globalForDb = globalThis as typeof globalThis & {
   __arenaNextJsPostgresqlPool?: Pool;
@@ -14,7 +16,7 @@ function createPool(): Pool {
     process.env.PGHOST ||
     process.env.PGDATABASE ||
     process.env.PGUSER ||
-    process.env.PGPASSWORD,
+    pgPassword,
   );
 
   if (!databaseUrl && !hasStructuredConfig) {
@@ -40,7 +42,7 @@ function createPool(): Pool {
         port: Number(process.env.PGPORT ?? "5432"),
         database: process.env.PGDATABASE,
         user: process.env.PGUSER,
-        password: process.env.PGPASSWORD,
+        password: pgPassword,
       };
 
   if (searchPath) {

@@ -12,13 +12,18 @@ manager or secret store in production — `.env` is git-ignored).
 | `DATABASE_URL` | **Yes** (runtime) | `src/db/index.ts`, `drizzle.config.ts` | PostgreSQL connection string. Missing at build time is tolerated (`next build` collects static metadata with a dummy pool that throws on use); missing at runtime makes every query fail |
 | `GATEWAY_JWT_SECRET` | **Yes** | `src/lib/manager-auth.ts` | HMAC secret for manager session JWTs, **≥ 32 characters**. Signing refuses to run with a shorter/absent value. Generate with `openssl rand -hex 32` |
 | `MANAGER_USERNAME` | **Yes** | `src/lib/manager-auth.ts` | Dashboard username. Without it, login returns HTTP 500 (fails closed) |
-| `MANAGER_PASSWORD` | one of the two | `src/lib/manager-auth.ts` | Plaintext password (development) |
+| `MANAGER_PASSWORD` | one of the two | `src/lib/manager-auth.ts` | Plaintext password (development only) |
 | `MANAGER_PASSWORD_HASH` | one of the two | `src/lib/manager-auth.ts` | Preferred in production: scrypt `salt:derived-hex` |
+| `ODOO_DATABASE_NAME` | **Yes in production** | `src/lib/odoo-auth.ts`, `server.ts` | Exact Odoo database served by this Gateway. One Odoo database per Gateway installation is supported |
+| `TRUST_PROXY_SECRET` | **Yes when `TRUST_PROXY=1` in production** | `server.ts`, `src/server/trusted-proxy.ts` | Shared private token Caddy sends to authenticate trusted forwarded-IP handling; **≥ 32 characters** |
 | `PORT` | No (default `3000`) | `server.ts` | HTTP + WebSocket port |
 | `HOSTNAME` | No (default `0.0.0.0`) | `server.ts` | Bind address |
 | `NODE_ENV` | No | `server.ts`, `src/db/index.ts` | `production` disables the dev connection-pool cache and Next dev mode |
 
-No other `process.env.*` reads exist in `src/`, `server.ts` or `scripts/`.
+Production Compose deployments should provide sensitive values through the mounted secret files
+(`GATEWAY_JWT_SECRET_FILE`, `MANAGER_PASSWORD_HASH_FILE`, `PGPASSWORD_FILE`, and
+`TRUST_PROXY_SECRET_FILE`). Plain environment variables remain supported as an explicit
+local-development fallback through `src/lib/runtime-secret.ts`.
 
 Generate a password hash:
 
@@ -29,21 +34,21 @@ node -e "const c=require('crypto');const s=c.randomBytes(8).toString('hex');cons
 ## 2. Agent (Go) — `config.yaml`
 
 Location (in priority order, `agent/internal/config/config.go`):
-`ODOO_PRINT_AGENT_DATA_DIR` → `%PROGRAMDATA%\OdooPrintAgent` →
-`%LOCALAPPDATA%\OdooPrintAgent` → the executable's directory.
+`ODOO_PRINT_AGENT_DATA_DIR` → `%PROGRAMDATA%\OdooPrintAgent` → `%LOCALAPPDATA%\OdooPrintAgent` →
+the executable's directory.
 
 ```yaml
 server:
   url: https://gateway.example.com
 
 agent:
-  id: agt_7f3c                # written by pairing
-  secret: "…"                 # written by pairing (DPAPI-sealed on Windows)
+  id: agt_7f3c                 # written by pairing
+  secret: "…"                  # written by pairing (DPAPI-sealed on Windows)
   name: "POS PC 1"
-  pdf_print_command: []       # optional PDF helper, argv form, {printer} and {file}
-  reprint_after_crash: true   # optional, default true
+  pdf_print_command: []        # optional PDF helper, argv form, {printer} and {file}
+  reprint_after_crash: false   # safe default; set true only when duplicate paper is accepted
 
-printers: []                  # optional/legacy; printers.json is canonical
+printers: []                   # optional/legacy; printers.json is canonical
 ```
 
 | Key | Default | Meaning |
@@ -51,8 +56,8 @@ printers: []                  # optional/legacy; printers.json is canonical
 | `server.url` | – | Gateway base URL. Validated (`Validate()`), no trailing slash needed |
 | `agent.id` / `agent.secret` | – | Credentials from pairing; sent as `Bearer <id>:<secret>` |
 | `agent.name` | host name | Shown in the dashboard |
-| `agent.pdf_print_command` | unset | External PDF helper executed **without a shell**; `{printer}` and `{file}` are whole argv elements. When unset, Windows uses the registered PDF handler (`ShellExecuteExW printto`); other platforms return an explicit "not supported" error |
-| `agent.reprint_after_crash` | `true` | May a job that was interrupted mid-print be printed again on re-delivery? `true` = at-least-once (may duplicate paper), `false` = never reprint automatically. Neither is exactly-once |
+| `agent.pdf_print_command` | unset | External PDF helper executed **without a shell**; `{printer}` and `{file}` are whole argv elements. When unset, Windows uses the registered PDF handler (`ShellExecuteExW printto`); other platforms return an explicit not-supported error |
+| `agent.reprint_after_crash` | `false` | Whether an interrupted mid-print job may be printed again automatically. `false` holds the job as physically **unknown** and prevents automatic duplicate output. `true` explicitly opts into at-least-once reprinting and possible duplicate paper. Neither mode is exactly-once |
 | `printers[]` | `[]` | Legacy static printer list: `id, name, type, endpoint, protocol, spooler_name, printer_type, usb_vid, usb_pid, usb_serial, enabled, capabilities` |
 
 Per-printer `capabilities.supported_protocols` overrides what the agent would otherwise
@@ -93,13 +98,13 @@ Configured through the Odoo UI, not files:
 | File | Purpose |
 |---|---|
 | `package.json` | Scripts: `dev`, `build`, `start`, `lint`, `typecheck`, `test`, `test:watch`, `db:push`, `db:generate`, `db:studio`, `desktop:dev`, `desktop:vite:build`, `desktop:build` |
-| `.nvmrc` / `.node-version` | Node version used by CI and local development (Node ≥ 22 is required by `engines`) |
-| `vitest.config.ts` | Test include pattern `tests/**/*.test.ts`, `@` → `src` alias |
+| `.nvmrc` / `.node-version` | Node version used by CI and local development |
+| `vitest.config.mts` | Vitest configuration |
 | `drizzle.config.ts` | Drizzle Kit: dialect, schema path, `DATABASE_URL` |
 | `next.config.ts`, `tsconfig.json`, `eslint.config.mjs`, `postcss.config.mjs` | Framework configuration |
 | `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/capabilities/` | Desktop bundle, permissions |
 | `.github/workflows/build-windows.yml` | Windows CI: typecheck, lint, vitest, `go vet`, `go test`, `go test -race`, Go builds, Tauri MSI+NSIS build, MSI install + smoke test, artifact upload |
-| `scripts/` | `build-windows-installer.ps1`, `smoke-test-windows.ps1`, `generate-icons.mjs`, `pg-concurrent-claim.sh` |
+| `scripts/` | Build, smoke-test, icon, and PostgreSQL verification helpers |
 
 ## 6. Ports and network
 

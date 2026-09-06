@@ -99,6 +99,12 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 'schema ok';"
       - name: Run integration tests (PostgreSQL)
         run: npm run test:integration
+      - name: Verify production-like migration upgrade
+        run: npm run test:integration -- --run tests/migration-upgrade.integration.test.ts
+      - name: Verify multi-instance Gateway delivery
+        env:
+          RUN_MULTI_INSTANCE_TEST: '1'
+        run: npm run test:integration -- --run tests/multi-instance-gateway.test.ts
       - name: Run complete test suite
         run: npm test
       - name: Go vet

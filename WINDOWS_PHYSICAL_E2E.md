@@ -17,7 +17,7 @@ Everything the automated suites do and do not cover is listed in [docs/TESTING.m
 | Printer | At least one real printer, installed as a Windows printer (spooler queue) and printing correctly from Notepad |
 | PDF handler | A PDF application registered for the `printto` verb (Adobe Reader, SumatraPDF …) **or** a helper configured through `agent.pdf_print_command` |
 | Second printer (optional but recommended) | A RAW/ESC-POS thermal printer on TCP :9100 for the capability-mismatch test |
-| Gateway | Reachable over HTTPS from the Windows PC, with a PostgreSQL database migrated through `drizzle/0005_auth_rate_limits.sql` |
+| Gateway | Reachable over HTTPS from the Windows PC, with a PostgreSQL database migrated through `drizzle/0017_notify_requeued_jobs.sql` |
 | Odoo | A live instance with the `print_gateway` addon installed |
 | Artifacts | `Odoo Print Manager` MSI or NSIS EXE from the `Build Windows Installer` workflow (or a local `cargo tauri build`) |
 
@@ -194,9 +194,10 @@ Confirm the printed page: correct document, correct pagination, correct printer,
    (`taskkill /F /IM OdooPrintAgent.exe`).
 2. Start it again.
 3. Expected: the agent logs `AGENT_RESTART_DURING_PRINT` for that job and reports it as
-   `failed` with the "physical output is unknown" reason.
+   `failed`; the Gateway/Manager must expose the derived physical outcome as `unknown`.
 4. With `agent.reprint_after_crash: false` in `config.yaml`, a re-delivery of that job must
-   **not** print again; with the default `true` it may print again (possible duplicate page).
+   **not** print again. To explicitly opt into a possible duplicate, set the policy to `true`;
+   that mode is at-least-once and may print the document again.
 
 **Record:** which policy was used and what came out of the printer.
 
@@ -225,7 +226,7 @@ Confirm the printed page: correct document, correct pagination, correct printer,
 | 17 | Final status | `success` in gateway and Odoo | | ☐ |
 | 18 | Capability mismatch | 422, no job, no output | | ☐ |
 | 19 | Deliberate failure + retry | same jobId, real error, recovery | | ☐ |
-| 20 | Crash behaviour (optional) | interruption reported, policy honoured | | ☐ |
+| 20 | Crash behaviour (optional) | interruption reported, physical outcome `unknown`, policy honoured | | ☐ |
 
 ### Identifiers from the successful run
 
@@ -252,6 +253,7 @@ Confirm the printed page: correct document, correct pagination, correct printer,
 
 Until both tables are filled in from a real machine, the correct wording everywhere else in
 this repository is: **`NOT VERIFIED — physical printer test unavailable`**.
+
 ## Production Engineering Semantics
 
 - **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
@@ -261,4 +263,3 @@ this repository is: **`NOT VERIFIED — physical printer test unavailable`**.
 - **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
 - **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
 - **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
-

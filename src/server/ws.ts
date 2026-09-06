@@ -1,10 +1,13 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server as HttpServer } from "http";
+import type { Duplex } from "node:stream";
 import type { PoolClient } from "pg";
 import { isIP } from "node:net";
 import { pool } from "../db";
 import { validateAgent } from "../lib/agent-auth";
 import { inspectWsUpgradeRateLimit, recordWsUpgradeFailure } from "../lib/ws-rate-limit";
+import { isTrustedProxyUpgrade, trustProxyEnabled } from "./trusted-proxy";
+import { incrementMetric } from "../lib/metrics";
 import {
   claimJobForDelivery,
   markJobDelivered,
@@ -15,10 +18,7 @@ import {
 
 type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 
-type WritableSocket = {
-  write(chunk: string): boolean;
-  destroy(): void;
-};
+type WritableSocket = Pick<Duplex, "end" | "destroy">;
 
 const agentSockets = new Map<string, Set<AgentSocket>>();
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
@@ -28,12 +28,6 @@ const PG_SESSIONS_CHANNEL = "print_gateway_agent_sessions";
 const PG_NOTIFY_RECONNECT_MIN_MS = 1_000;
 const PG_NOTIFY_RECONNECT_MAX_MS = 30_000;
 
-/**
- * Immediately close every open WS session of an agent (used when the agent
- * is disabled/retired: its secret is nullified at the same moment, but an
- * already-established socket would otherwise keep receiving jobs until it
- * happens to reconnect).
- */
 export function closeAgentSockets(agentId: string): void {
   const set = agentSockets.get(agentId);
   if (!set || set.size === 0) return;
@@ -42,12 +36,6 @@ export function closeAgentSockets(agentId: string): void {
   }
 }
 
-/**
- * Ask every gateway instance to close this agent's sessions (cross-instance
- * deployments). Fire-and-forget by the caller; the local instance also
- * calls closeAgentSockets directly so it reacts without the NOTIFY round
- * trip.
- */
 export async function publishAgentSessionClose(agentId: string): Promise<void> {
   const client = await pool.connect();
   try {
@@ -73,10 +61,26 @@ function websocketClientKey(req: IncomingMessage): string {
 
 function writeWsHttpError(socket: WritableSocket, status: number, body: string, retryAfterSec?: number) {
   const retry = retryAfterSec !== undefined ? `Retry-After: ${retryAfterSec}\r\n` : "";
-  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : "Unauthorized";
+  const statusText = status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : status === 404 ? "Not Found" : status === 401 ? "Unauthorized" : "Bad Request";
   const payload = JSON.stringify({ error: body });
-  socket.write(`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n${retry}Connection: close\r\n\r\n${payload}`);
-  socket.destroy();
+  const response =
+    `HTTP/1.1 ${status} ${statusText}\r\n` +
+    `Content-Type: application/json; charset=utf-8\r\n` +
+    `Content-Length: ${Buffer.byteLength(payload)}\r\n` +
+    retry +
+    `Connection: close\r\n\r\n` +
+    payload;
+
+  try {
+    socket.end(response);
+  } catch {
+    try { socket.destroy(); } catch {}
+  }
+}
+
+function logUpgradeError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[ws] upgrade handling failed: ${message.slice(0, 500)}`);
 }
 
 function trackAgentSocket(agentId: string, ws: AgentSocket) {
@@ -87,8 +91,10 @@ function trackAgentSocket(agentId: string, ws: AgentSocket) {
     agentSockets.set(agentId, set);
   }
   set.add(ws);
+  void incrementMetric("websocket_connections_opened_total");
   ws.on("close", () => {
     set!.delete(ws);
+    void incrementMetric("websocket_connections_closed_total");
     if (set!.size === 0) agentSockets.delete(agentId);
   });
 }
@@ -206,7 +212,6 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
   const handleNotification = (notification: { channel?: string; payload?: string }) => {
     if (!notification.payload) return;
     if (notification.channel === PG_SESSIONS_CHANNEL) {
-      // Cross-instance "agent deactivated": drop its open sessions here too.
       try {
         const message = JSON.parse(notification.payload) as { agentId?: unknown };
         if (typeof message.agentId === "string" && message.agentId) closeAgentSockets(message.agentId);
@@ -236,6 +241,7 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
       reconnectTimer = null;
       void connect();
     }, delay);
+    void incrementMetric("postgres_notification_reconnects_total");
     console.warn(`[ws] PostgreSQL notification listener reconnecting in ${delay}ms`);
   };
 
@@ -260,11 +266,13 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
       reconnectAttempt = 0;
       client.on("notification", handleNotification);
       client.on("error", (error) => {
+        void incrementMetric("postgres_notification_errors_total");
         console.warn("[ws] PostgreSQL notification listener error:", error);
         disconnect(client);
       });
       client.on("end", () => disconnect(client));
     } catch (error) {
+      void incrementMetric("postgres_notification_failures_total");
       console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);
       scheduleReconnect();
     }
@@ -315,42 +323,61 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
   }
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
-    const url = req.url ?? "";
-    if (!url.startsWith("/api/agent/ws")) {
-      // Answer and CLOSE: returning without touching the socket leaves a
-      // hung TCP connection (small DoS surface / resource leak).
-      writeWsHttpError(socket, 404, "Not Found");
-      return;
-    }
-
-    const clientKey = websocketClientKey(req);
     try {
-      const decision = await inspectWsUpgradeRateLimit(clientKey);
-      if (!decision.allowed) {
-        writeWsHttpError(socket, 429, "Too many failed WebSocket authentication attempts", decision.retryAfterSec);
+      const url = req.url ?? "";
+      if (!url.startsWith("/api/agent/ws")) {
+        writeWsHttpError(socket, 404, "Not Found");
         return;
       }
-    } catch {
-      writeWsHttpError(socket, 503, "WebSocket authentication temporarily unavailable", 5);
-      return;
-    }
 
-    const auth = req.headers["authorization"] ?? req.headers["Authorization"];
-    const header = Array.isArray(auth) ? auth[0] : (auth as string | undefined) ?? null;
-    let agent: Awaited<ReturnType<typeof validateAgent>> = null;
-    try { agent = await validateAgent(header ?? null); } catch { agent = null; }
-    if (!agent) {
-      try { await recordWsUpgradeFailure(clientKey); } catch {}
-      writeWsHttpError(socket, 401, "Unauthorized");
-      return;
+      if (trustProxyEnabled() && !isTrustedProxyUpgrade(req.headers)) {
+        writeWsHttpError(socket, 400, "TRUSTED_PROXY_REQUIRED");
+        return;
+      }
+
+      const clientKey = websocketClientKey(req);
+      try {
+        const decision = await inspectWsUpgradeRateLimit(clientKey);
+        if (!decision.allowed) {
+          writeWsHttpError(socket, 429, "Too many failed WebSocket authentication attempts", decision.retryAfterSec);
+          return;
+        }
+      } catch (error) {
+        logUpgradeError(error);
+        writeWsHttpError(socket, 503, "WebSocket authentication temporarily unavailable", 5);
+        return;
+      }
+
+      const auth = req.headers["authorization"] ?? req.headers["Authorization"];
+      const header = Array.isArray(auth) ? auth[0] : (auth as string | undefined) ?? null;
+      let agent: Awaited<ReturnType<typeof validateAgent>> = null;
+      try {
+        agent = await validateAgent(header ?? null);
+      } catch (error) {
+        logUpgradeError(error);
+        agent = null;
+      }
+      if (!agent) {
+        try { await recordWsUpgradeFailure(clientKey); } catch (error) { logUpgradeError(error); }
+        writeWsHttpError(socket, 401, "Unauthorized");
+        return;
+      }
+
+      wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+        const aws = ws as AgentSocket;
+        aws.isAlive = true;
+        aws.on("pong", () => { aws.isAlive = true; });
+        trackAgentSocket(agent!.id, aws);
+        wss.emit("connection", ws, req);
+      });
+    } catch (error) {
+      logUpgradeError(error);
+      if (!socket.destroyed && !socket.writableEnded) {
+        writeWsHttpError(socket, 500, "WebSocket upgrade failed");
+      } else {
+        try { socket.destroy(); } catch {}
+      }
     }
-    wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-      const aws = ws as AgentSocket;
-      aws.isAlive = true;
-      aws.on("pong", () => { aws.isAlive = true; });
-      trackAgentSocket(agent!.id, aws);
-      wss.emit("connection", ws, req);
-    });
   });
 
   wss.on("connection", (ws: AgentSocket) => {

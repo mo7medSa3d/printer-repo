@@ -2,13 +2,14 @@ import { db } from "../db";
 import { managerSessions } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { requiredRuntimeSecret, runtimeSecret } from "./runtime-secret";
 
 const COOKIE_NAME = "mgr_session";
 const MAX_AGE_SECONDS = 8 * 60 * 60;
 
 function getSecret(): string {
-  const s = process.env.GATEWAY_JWT_SECRET;
-  if (!s || s.length < 32) throw new Error("GATEWAY_JWT_SECRET must be set to >=32 chars");
+  const s = requiredRuntimeSecret("GATEWAY_JWT_SECRET");
+  if (s.length < 32) throw new Error("GATEWAY_JWT_SECRET must be >=32 chars");
   return s;
 }
 
@@ -130,13 +131,6 @@ export async function cleanupExpiredManagerSessions(now = new Date()): Promise<n
   return result.rows.length;
 }
 
-/**
- * The session cookie must be `Secure` in any TLS-terminated deployment.
- * Default: Secure when NODE_ENV=production (the Docker/Caddy deployments).
- * Explicit COOKIE_SECURE=1/0 overrides the default for special topologies
- * (e.g. local TLS via mkcert in dev, or an internal HTTP-only load balancer
- * that terminates TLS elsewhere and must NOT mark the cookie Secure).
- */
 function managerCookieSecure(): boolean {
   const override = process.env.COOKIE_SECURE;
   if (override === "1" || override === "true") return true;
@@ -160,9 +154,9 @@ function compareStringsSafe(a: string, b: string): boolean {
 }
 
 export function verifyManagerPassword(username: string, input: string): boolean {
-  const expectedUser = process.env.MANAGER_USERNAME;
-  const expectedHash = process.env.MANAGER_PASSWORD_HASH;
-  const expectedPass = process.env.MANAGER_PASSWORD;
+  const expectedUser = runtimeSecret("MANAGER_USERNAME");
+  const expectedHash = runtimeSecret("MANAGER_PASSWORD_HASH");
+  const expectedPass = runtimeSecret("MANAGER_PASSWORD");
   if (!expectedUser || typeof input !== "string") return false;
 
   const userOk = compareStringsSafe(username, expectedUser);
@@ -186,5 +180,5 @@ export function verifyManagerPassword(username: string, input: string): boolean 
 }
 
 export function getManagerUsername(): string | null {
-  return process.env.MANAGER_USERNAME ?? null;
+  return runtimeSecret("MANAGER_USERNAME") ?? null;
 }

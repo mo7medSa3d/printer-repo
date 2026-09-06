@@ -1,207 +1,104 @@
 # Job lifecycle
 
-Everything below is implemented in:
+The Gateway logical state and the physical outcome are separate. Logical state records what the
+software knows; physical outcome records what can actually be inferred after a side-effecting
+printer operation.
 
-* `src/lib/job-status.ts` — the state machine
-* `src/lib/job-delivery.ts` — claim / delivery / ack / release
-* `src/lib/print-job-service.ts` — the single job-creation invariant boundary
-* `src/app/api/print/jobs/route.ts` — Odoo API
-* `src/app/actions.ts` — Manager actions
-* `src/app/api/printers/[id]/test-print/route.ts` — Manager/Odoo test print
-* `src/app/api/agent/jobs/route.ts` — poll claim, TTL sweep, stale recovery, status PATCH
-* `src/server/ws.ts` — WebSocket delivery
-* `agent/internal/agent/agent.go`, `agent/internal/queue/queue.go` — agent side
-
-## 1. States
+## Logical states
 
 ```text
-queued ──claim (gateway, transactional)──► claimed ──printing──► success
-                                              │              └──► failed
-                                              └──────────────────► failed
-any non-terminal state ──TTL passed──► expired
+queued → claimed → printing → success
+                         └──→ failed
+non-terminal + TTL expiry → expired
 ```
 
-`success`, `failed` and `expired` are terminal.
+`success`, `failed`, and `expired` are terminal logical states.
 
-An agent may request only `claimed → printing|failed` and `printing → success|failed`.
-`queued → claimed` is gateway-controlled and can never be requested by the agent.
-
-## 2. Creation
-
-All print creation paths use `src/lib/print-job-service.ts` after their caller-specific
-authentication/routing checks. The shared service is the authoritative boundary for:
-
-* printer/agent/branch lifecycle validation;
-* virtual/redirected printer rejection;
-* payload capability validation;
-* per-agent in-flight capacity;
-* idempotency uniqueness;
-* durable `queued` insertion;
-* claim-and-deliver through the WebSocket fast path, with polling as fallback.
-
-Odoo branch-routed requests additionally resolve a printer through routing first so fallback
-selection and document-type authorization remain Odoo-specific policy. Manager and test-print
-requests cannot bypass the shared safety invariants.
-
-`expiresAt` defaults to now + 1 h and must be a future ISO-8601 instant when supplied.
-Idempotent retries return the existing job with the same id; redelivery never creates a new id.
-
-## 3. Routing
-
-`resolvePrinterForJob({branchId, destinationId, documentType, payloadType})`:
-
-1. branch must exist;
-2. destination must exist in that branch;
-3. enabled bindings are matched case-insensitively; empty document type is a wildcard;
-4. candidates are ordered by priority and checked for branch ownership, lifecycle, runtime
-   availability and payload capability;
-5. the first valid candidate wins and fallback information is returned for audit;
-6. failures remain typed (`CAPABILITY_MISMATCH`, `PRINTER_OFFLINE`, `PRINTER_DISABLED`, etc.)
-   rather than being disguised as successful jobs.
-
-## 4. Claim before delivery
-
-The gateway must own a job before an agent may execute it.
-
-For WebSocket delivery:
-
-1. no open socket → `no_socket`; the job stays `queued`;
-2. otherwise `claimJobForDelivery` atomically changes `queued → claimed` in a transaction;
-3. after the transaction commits, the envelope is written to exactly one open socket;
-4. after a successful socket write, `delivered_at` is stamped;
-5. if the write fails, the claim is immediately released back to `queued` under the same job id,
-   or the job is failed after `MAX_DELIVERY_ATTEMPTS`.
-
-For polling:
-
-1. the poll transaction claims queued or stale delivery claims;
-2. the returned rows are `claimed`;
-3. **polling does not set `delivered_at`** because returning an HTTP response is not proof that
-   the agent received/processed the body;
-4. the agent sends `job_ack` after receipt, which sets `acked_at` and, when needed,
-   `delivered_at`.
-
-Therefore `delivered_at` has one consistent meaning: the gateway has handed the job to the
-agent transport. `acked_at` is the stronger application-level receipt confirmation.
-
-## 5. Acknowledgement
-
-The agent sends `{"type":"job_ack","jobId":"…"}` immediately after receiving a job and
-before printing. The gateway records `acked_at` and leaves the job status unchanged.
-
-An ACK is not proof that paper was printed. Late ACKs for terminal jobs are ignored.
-Duplicate deliveries are also ACKed so the gateway can distinguish receipt from printing.
-
-## 6. Printing and reporting
-
-The agent performs:
-
-1. TTL re-check;
-2. local terminal/idempotency check;
-3. printer lookup;
-4. payload parse and capability gate;
-5. per-printer serialization;
-6. durable local queue insertion and local `printing` state;
-7. `PATCH printing` to the gateway;
-8. physical print with a bounded execution context;
-9. local `success`/`failed` persistence;
-10. `PATCH success|failed` with the actual result.
-
-A successful RAW/TCP write means bytes were handed to the configured transport. It does not
-prove that paper physically emerged from the printer.
-
-## 7. Failure, retry and recovery
-
-| Situation | Behaviour |
-|---|---|
-| No WS socket | Job remains `queued`; poll can claim it later |
-| WS write fails after claim | Immediate requeue under the same id; delivery attempt is counted |
-| Five failed WS deliveries | Job becomes `failed` with an explicit delivery error |
-| Stale `claimed` job | Reclaimed after `CLAIM_LEASE_SECONDS` (90 s), `retries + 1` |
-| Stale `claimed` with retry budget exhausted | Permanently `failed` |
-| Active `printing` job | **Not** reclaimed by the 90 s delivery lease |
-| Stale `printing` job | Backstopped by the separate `STALE_PRINTING_SECONDS` execution lease (10 min; the agent refreshes it via heartbeat keep-alive while it legitimately works the job). While retry budget remains it is **requeued** to `queued` with `AGENT_RESTART_DURING_PRINT` so the crash-recovery policy (`reprint_after_crash`) can re-deliver it |
-| Stale `printing` with retry budget exhausted (or TTL passed) | `failed` with `AGENT_EXECUTION_TIMEOUT`; a late physical success reported by the agent may still override it (below) |
-| Agent success after a sweep failure | Accepted once, only when the job is `failed` with an `AGENT_EXECUTION_TIMEOUT`/`AGENT_RESTART_DURING_PRINT` marker, no later result was recorded, and the failure is < 24 h old (`isLateSuccessAllowed`) — the agent is the source of truth for the physical outcome |
-| TTL passes | Job becomes `expired`; TTL is independent of claim/execution leases |
-| Printer error | Agent reports `failed` with the backend error |
-| Capability mismatch | Agent reports `failed` with `CAPABILITY_MISMATCH` |
-| Duplicate already-successful local job | Not printed again; terminal result is re-reported |
-| Agent crash during printing | Local result becomes `AGENT_RESTART_DURING_PRINT`; physical output is treated as unknown |
-
-The important distinction is that the **90-second lease is a delivery lease, not a printing
-lease**. A printer taking longer than 90 seconds cannot be classified as a lost delivery.
-
-## 8. Field reference
-
-| Column | Meaning |
-|---|---|
-| `expires_at` | Business TTL. Never shortened by claiming. |
-| `claimed_at` | Last gateway ownership claim time. |
-| `delivery_attempts` | Number of gateway claim/delivery attempts. |
-| `delivered_at` | Gateway successfully handed the job to its transport. |
-| `acked_at` | Agent explicitly confirmed receipt. |
-| `retries` | Number of stale-claim recovery cycles. |
-| `updated_at` | Last mutation time; used by delivery/execution recovery clocks. |
-| `error` | Latest human-readable failure/recovery reason, max 2000 chars. |
-
-There are three independent concepts:
-
-* **Business TTL:** `expires_at`.
-* **Delivery lease:** `claimed_at` / `updated_at` + 90 s while status is `claimed`.
-* **Execution recovery lease:** `updated_at` + 10 min while status is `printing`.
-
-The execution backstop is intentionally longer than the agent's normal physical print timeout.
-It exists to recover jobs when an agent process dies and never reports a terminal result.
-
-## 9. Agent crash behaviour
-
-A job physically printing when the agent stops has an unknown physical outcome: full output,
-partial output, or no output.
-
-At startup `Queue.MarkInterrupted` marks local printing rows with
-`AGENT_RESTART_DURING_PRINT`, and `recoverInterruptedJobs` reports the failure to the gateway.
-The agent never claims that an unknown physical result was successfully printed.
-
-`agent.reprint_after_crash` controls whether a subsequent delivery may be printed again. Even
-when enabled, this is at-least-once delivery and can produce duplicate physical output.
-Exactly-once physical printing is not claimed by this system.
-
-## 10. Capacity and idempotency
-
-All job creation paths serialize capacity reservation with a transaction-scoped PostgreSQL
-advisory lock per agent. The limit is `MAX_AGENT_IN_FLIGHT_JOBS = 500` and counts `claimed`
-and `printing` rows with a live business TTL.
-
-Idempotency is enforced by the database unique constraint on `(branch_id, idempotency_key)`
-when a key is supplied. The shared service also handles the race where two callers check for
-the same key concurrently: one insert wins and the other resolves the duplicate to the same
-persisted job.
-
-## 11. Ownership invariants
-
-The canonical ownership chain is:
+## Physical outcome
 
 ```text
-Branch → Agent → Printer
+not_printed
+printed
+unknown
 ```
 
-Odoo owns business configuration such as branches, destinations, document types and bindings.
-The Gateway/Agent owns runtime agents, physical printers and runtime status.
+`success` means the agent/backend reported successful operation. For RAW TCP and spooler backends
+this is evidence that the operation handed work to the transport; it is not a physical sensor
+proving paper emerged.
 
-A binding cannot route across branches, and Odoo sync never invents a physical printer.
+A job is `unknown` when the process lost the ability to prove whether the physical side effect
+happened, including an agent crash during printing, execution timeout, or TTL expiry while
+printing.
 
-## 12. Lifecycle invariants
+## Delivery lifecycle
 
-Agents and printers are lifecycle-managed rather than casually deleted. `retired` is terminal.
-Disabling or retiring an agent disables its printers and revokes its credentials. Re-enabling a
-disabled agent requires fresh pairing credentials.
+1. Print creation persists one durable `queued` row with a stable idempotency key when supplied.
+2. The Gateway claims a queued row transactionally only while branch, agent, and printer remain
+   eligible.
+3. The WebSocket fast path sends the claimed job to one open socket. A failed socket write is
+   released back to `queued` while no physical operation has started.
+4. Polling is a recovery path. Selecting a row for an HTTP response is not proof that the agent
+   received it; the agent sends `job_ack` after receipt.
+5. The agent enters `printing` before calling the printer backend and reports the final result.
 
-## 13. Production engineering rules
+## Lifecycle fencing
 
-* Use the shared print-job service for every new print entry point.
-* Never set `delivered_at` merely because a poll query selected a row.
-* Never use the 90-second delivery lease to reclaim active printing work.
-* Keep the same job id across retries and redelivery.
-* Treat physical printing as at-least-once, not exactly-once.
-* PostgreSQL integration tests are required for claim, capacity and idempotency correctness.
+Both WebSocket and polling claims revalidate inside PostgreSQL transactions:
+
+```text
+branch.enabled = true
+agent.lifecycle = active
+agent.status = online
+printer.lifecycle = active
+printer.status = online
+job.status = queued
+job.expires_at > now()
+```
+
+The owner rows are locked at the claim decision point. A lifecycle change is therefore serialized
+with the claim instead of being protected by an in-memory pre-check.
+
+## Failure semantics
+
+| Situation | Gateway behaviour | Physical outcome |
+|---|---|---|
+| No agent socket | job remains queued | not_printed |
+| WS write fails before delivery | same job requeued | not_printed |
+| Stale `claimed` lease | requeue until retry budget | not_printed |
+| Stale `claimed` after retry budget | terminal `failed` | not_printed |
+| Agent crashes during printing | interruption marker recorded | unknown |
+| Stale `printing` execution lease | terminal `failed` with `AGENT_EXECUTION_TIMEOUT` | unknown |
+| TTL expires while `printing` | terminal `expired` with `JOB_EXPIRED_DURING_PRINT` | unknown |
+| Capability/transport rejection before handoff | terminal `failed` | not_printed |
+| Successful agent result | terminal `success` | printed* |
+
+`*` `printed` means software-confirmed successful transport/backend completion, not a guarantee
+that the physical device produced the intended paper.
+
+## Unknown outcome policy
+
+The Gateway **does not automatically requeue a stale physical print**. A physical side effect may
+already have happened, and automatic retry could create duplicate business documents.
+
+The original job ID and diagnostic marker are preserved. An operator or a higher-level business
+workflow must reconcile an unknown document before creating a new print operation when duplicate
+paper would be harmful.
+
+A late agent `success` is accepted only for a recent terminal failure carrying an explicit unknown
+marker and only once. This closes the existing logical job rather than creating a second job.
+
+## Crash-reprint option
+
+The Go agent setting `agent.reprint_after_crash` is **false by default**. It is an explicit local
+business policy for deliberately retrying an interrupted operation. Enabling it means the resulting
+physical semantics are at-least-once and duplicate paper is possible. The normal Gateway
+maintenance loop does not silently enable this policy.
+
+## Idempotency and multi-instance operation
+
+Duplicate logical requests with the same branch-scoped idempotency key resolve to the same durable
+job, with the database uniqueness constraint as the concurrency backstop.
+
+Each Gateway process keeps WebSocket sockets in memory, but PostgreSQL is the durable source of
+truth. `LISTEN/NOTIFY` is a wake-up hint only; polling and transactional claims are the recovery
+path when a notification is lost or a Gateway replica restarts.

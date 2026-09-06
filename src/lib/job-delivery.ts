@@ -4,35 +4,12 @@ import { sql } from "drizzle-orm";
 /**
  * Ownership rules for handing a job to an agent.
  *
- * The gateway MUST own a job before an agent may execute it:
- *
- *   queued -> claimed -> (delivery to agent) -> printing -> success | failed
- *
- * `claimJobForDelivery` performs the queued->claimed transition inside a
- * single transaction (`SELECT ... FOR UPDATE SKIP LOCKED` + conditional
- * `UPDATE`). Only after that transaction commits may the job be written to a
- * socket, so an agent can never see a still-`queued` job as executable work
- * and can never win the race that produced "printer=SUCCESS / gateway=QUEUED".
- *
- * Two independent recovery paths cover a claim whose delivery is lost:
- *
- *  1. Immediate: `releaseUndeliveredClaim` puts the row straight back to
- *     `queued` when the socket write fails, so the poll path can pick it up
- *     on the next tick. The job id is never recreated.
- *  2. Backstop: the poll endpoint (`GET /api/agent/jobs`) reclaims
- *     `claimed`/`printing` rows that have been silent for
- *     `CLAIM_LEASE_SECONDS`, incrementing `retries`, and permanently fails
- *     them once the retry budget is exhausted.
- *
- * NOTE on the lease: `expires_at` is the business TTL supplied by Odoo and is
- * deliberately NOT overwritten by the claim. The claim lease is
- * `claimed_at + CLAIM_LEASE_SECONDS` (mirrors STALE_CLAIM_SECONDS in
- * `src/app/api/agent/jobs/route.ts`); shortening the caller's TTL to the lease
- * would silently change job expiry semantics.
+ * The gateway MUST own a job before an agent may execute it. Delivery claims
+ * also lock and validate the branch, agent and printer lifecycle in the same
+ * transaction so a job queued before an administrative disable/retire cannot
+ * bypass the lifecycle boundary through WebSocket delivery.
  */
 export const CLAIM_LEASE_SECONDS = 90;
-
-/** How many failed delivery attempts a job tolerates before it is failed. */
 export const MAX_DELIVERY_ATTEMPTS = 5;
 
 export type ClaimedJobRow = {
@@ -47,6 +24,7 @@ export type ClaimedJobRow = {
   expiresAt: Date;
   retries: number;
   deliveryAttempts: number;
+  error?: string | null;
 };
 
 const CLAIM_RETURNING = sql`
@@ -60,26 +38,38 @@ const CLAIM_RETURNING = sql`
   print_jobs.payload AS payload,
   print_jobs.expires_at AS "expiresAt",
   print_jobs.retries AS retries,
-  print_jobs.delivery_attempts AS "deliveryAttempts"
+  print_jobs.delivery_attempts AS "deliveryAttempts",
+  print_jobs.error AS error
 `;
 
 /**
  * Atomically take ownership of one queued job for `agentId`.
  *
- * Returns the claimed row (status is already `claimed` in the database when
- * this resolves) or null when the job is not claimable: unknown id, wrong
- * agent, already claimed by a concurrent claimer, past its TTL, or locked by
- * another transaction (SKIP LOCKED).
+ * Returns null when the job is not eligible. Eligibility is checked again at
+ * the actual delivery boundary: branch enabled, agent active+online and
+ * printer active+online must all hold while the owner rows are locked.
+ * PostgreSQL's `FOR UPDATE SKIP LOCKED` queue pattern is used here; because
+ * the query also locks the ownership rows explicitly, the concrete clause is
+ * `FOR UPDATE OF p, b, a, pr SKIP LOCKED`.
  */
 export async function claimJobForDelivery(jobId: string, agentId: string): Promise<ClaimedJobRow | null> {
   return db.transaction(async (tx) => {
     const locked = await tx.execute(sql`
-      SELECT id FROM print_jobs
-      WHERE id = ${jobId}
-        AND agent_id = ${agentId}
-        AND status = 'queued'
-        AND expires_at > now()
-      FOR UPDATE SKIP LOCKED
+      SELECT p.id
+      FROM print_jobs p
+      JOIN branches b ON b.id = p.branch_id
+      JOIN agents a ON a.id = p.agent_id
+      JOIN printers pr ON pr.id = p.printer_id
+      WHERE p.id = ${jobId}
+        AND p.agent_id = ${agentId}
+        AND p.status = 'queued'
+        AND p.expires_at > now()
+        AND b.enabled = true
+        AND a.lifecycle = 'active'
+        AND a.status = 'online'
+        AND pr.lifecycle = 'active'
+        AND pr.status = 'online'
+      FOR UPDATE OF p, b, a, pr SKIP LOCKED
     `);
     if (locked.rows.length === 0) return null;
 
@@ -99,7 +89,6 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
   });
 }
 
-/** Records that a claimed job actually left the gateway. */
 export async function markJobDelivered(jobId: string, agentId: string): Promise<void> {
   await db.execute(sql`
     UPDATE print_jobs
@@ -108,12 +97,6 @@ export async function markJobDelivered(jobId: string, agentId: string): Promise<
   `);
 }
 
-/**
- * Records the agent's explicit `job_ack`. Acknowledgement means "the agent
- * received the job", never "the job printed". Late ACKs for terminal jobs are
- * rejected so delivery bookkeeping cannot be mutated after the job outcome is
- * already final.
- */
 export async function recordJobAck(jobId: string, agentId: string): Promise<boolean> {
   const res = await db.execute(sql`
     UPDATE print_jobs
@@ -130,13 +113,6 @@ export async function recordJobAck(jobId: string, agentId: string): Promise<bool
 
 export type ReleaseOutcome = "requeued" | "failed" | "noop";
 
-/**
- * Undo a claim whose delivery never reached the agent.
- *
- * The same job id is reused (never recreated). Once a job has burned through
- * MAX_DELIVERY_ATTEMPTS it is failed with a real error instead of looping
- * forever, so an undeliverable job surfaces in Odoo rather than disappearing.
- */
 export async function releaseUndeliveredClaim(jobId: string, agentId: string, reason: string): Promise<ReleaseOutcome> {
   const requeued = await db.execute(sql`
     UPDATE print_jobs
@@ -167,6 +143,5 @@ export async function releaseUndeliveredClaim(jobId: string, agentId: string, re
   `);
   if (failed.rows.length > 0) return "failed";
 
-  // Row moved on already (agent reported progress, TTL sweep, poll reclaim).
   return "noop";
 }

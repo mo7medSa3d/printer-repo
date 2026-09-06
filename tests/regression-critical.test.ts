@@ -130,7 +130,7 @@ describe("regression: branch isolation and auth", () => {
   it("agent claims are branch-scoped", () => {
     const src = readFileSync("src/app/api/agent/jobs/route.ts", "utf8");
     expect(src).toContain("branchFilter");
-    expect(src).toContain("FOR UPDATE SKIP LOCKED");
+    expect(src).toMatch(/FOR UPDATE(?: OF [^\n]+)? SKIP LOCKED/);
   });
 });
 

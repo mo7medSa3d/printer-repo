@@ -8,6 +8,11 @@
 * One process serves both HTTP and the agent WebSocket (`server.ts`). In the reference production
   deployment the gateway listens privately on port `3000`; Caddy is the only public entry point.
 * Production traffic is HTTPS at Caddy on ports 80/443. Do not expose gateway port 3000 publicly.
+* **Tenancy model: one Odoo database per Gateway installation.** This repository does not support
+  multiple independent Odoo databases sharing one Gateway PostgreSQL instance. Production startup
+  requires `ODOO_DATABASE_NAME`, and every Odoo→Gateway request carries `X-Odoo-Database` with the
+  exact database name. Two Odoo databases may both contain `company_id = 1`; that is safe because
+  the database identity is a separate mandatory authorization boundary.
 
 ### Steps
 
@@ -18,7 +23,7 @@ npm run build
 NODE_ENV=production npm start
 ```
 
-Environment: `DATABASE_URL`, `GATEWAY_JWT_SECRET` (≥ 32 chars), `MANAGER_USERNAME`,
+Environment: `DATABASE_URL`, `ODOO_DATABASE_NAME`, `GATEWAY_JWT_SECRET` (≥ 32 chars), `MANAGER_USERNAME`,
 `MANAGER_PASSWORD_HASH` (preferred), `GATEWAY_DOMAIN`, optional `PORT`/`HOSTNAME`.
 Full list: [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -115,6 +120,9 @@ Recommended per-site checklist:
 
 Install the addon on the Odoo server, configure one branch per physical location with its
 own API key, and let the crons keep both sides in sync. Gateway URLs must be HTTPS in production.
+The addon automatically sends the current Odoo database name as `X-Odoo-Database`. Pointing two
+independent Odoo databases at the same Gateway is unsupported and must be treated as a deployment
+error, even when their native company ids happen to overlap.
 
 ## 4. CI/CD
 
@@ -132,8 +140,9 @@ runs require Authenticode signing secrets and verify signatures.
 5. Run Odoo 19 addon tests and XML validation
 6. Apply new migrations to staging, then production
 7. Confirm Caddy TLS certificate issuance/renewal and do not publish port 3000
-8. Build and smoke-test the Windows installer
-9. Configure/verify protected `main` and required status checks
-10. Configure Windows signing secrets and verify Authenticode signatures
-11. Run [../WINDOWS_PHYSICAL_E2E.md](../WINDOWS_PHYSICAL_E2E.md) on real hardware before
+8. Verify `ODOO_DATABASE_NAME` exactly matches the deployed Odoo database
+9. Build and smoke-test the Windows installer
+10. Configure/verify protected `main` and required status checks
+11. Configure Windows signing secrets and verify Authenticode signatures
+12. Run [../WINDOWS_PHYSICAL_E2E.md](../WINDOWS_PHYSICAL_E2E.md) on real hardware before
     claiming a production-ready release

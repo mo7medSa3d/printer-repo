@@ -18,9 +18,6 @@ import (
 	"github.com/odoo-print-agent/agent/internal/queue"
 )
 
-// Agent-side regression tests for the claim-before-delivery WebSocket
-// protocol and for duplicate/terminal delivery handling (PART 1, steps B & D).
-
 type statusUpdate struct {
 	JobID  string `json:"jobId"`
 	Status string `json:"status"`
@@ -51,13 +48,10 @@ func (g *recordingGateway) Acks() []string {
 	return out
 }
 
-// newRecordingGateway is a minimal stand-in for the gateway: it records agent
-// PATCH status updates, upgrades /api/agent/ws and records job_ack frames.
 func newRecordingGateway(t *testing.T) *recordingGateway {
 	t.Helper()
 	g := &recordingGateway{sendCh: make(chan interface{}, 8)}
 	upgrader := websocket.Upgrader{}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/agent/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -120,7 +114,6 @@ func newRecordingGateway(t *testing.T) *recordingGateway {
 			}
 		}
 	})
-
 	g.server = httptest.NewServer(mux)
 	t.Cleanup(g.server.Close)
 	return g
@@ -132,6 +125,8 @@ func newAgentAgainst(t *testing.T, serverURL, printerID string, p printer.Printe
 	cfg.Agent.ID = "agt_test"
 	cfg.Agent.Secret = "secret"
 	cfg.Server.URL = serverURL
+	no := false
+	cfg.Agent.ReprintAfterCrash = &no
 	ag, err := New(cfg, filepath.Join(t.TempDir(), "config.yaml"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -171,20 +166,14 @@ func claimedEnvelope(jobID, printerID string) map[string]interface{} {
 func TestExtractJobFromWSMessage(t *testing.T) {
 	env := claimedEnvelope("job_a", "p1")
 	job, ok := extractJobFromWSMessage(env)
-	if !ok {
-		t.Fatal("delivery envelope must be understood")
+	if !ok || job["id"] != "job_a" || job["status"] != "claimed" {
+		t.Fatalf("envelope job not extracted correctly: %v %v", job, ok)
 	}
-	if job["id"] != "job_a" || job["status"] != "claimed" {
-		t.Fatalf("envelope job not extracted correctly: %v", job)
-	}
-
-	// Legacy bare job (older gateway build) still works.
 	legacy := map[string]interface{}{"id": "job_b", "printerId": "p1"}
 	job, ok = extractJobFromWSMessage(legacy)
 	if !ok || job["id"] != "job_b" {
 		t.Fatalf("legacy bare job must still be accepted: %v %v", job, ok)
 	}
-
 	if _, ok := extractJobFromWSMessage(map[string]interface{}{"type": "something_else"}); ok {
 		t.Fatal("unknown message types must be ignored")
 	}
@@ -193,27 +182,20 @@ func TestExtractJobFromWSMessage(t *testing.T) {
 	}
 }
 
-// Test 4 (agent side): a duplicate WebSocket delivery is acknowledged but
-// never printed twice.
 func TestDuplicateWSDeliveryPrintsOnceAndAcksBoth(t *testing.T) {
 	gw := newRecordingGateway(t)
 	p := &fakePrinter{}
 	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ag.connectWebSocket(ctx)
-
 	waitFor(t, 5*time.Second, func() bool { return ag.getWSConn() != nil })
-
 	gw.sendCh <- claimedEnvelope("job_dup", "p1")
 	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 1 })
 	ag.waitForJobs()
-
 	gw.sendCh <- claimedEnvelope("job_dup", "p1")
 	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 2 })
 	ag.waitForJobs()
-
 	if p.calls != 1 {
 		t.Fatalf("duplicate delivery must print exactly once, got %d prints", p.calls)
 	}
@@ -221,9 +203,6 @@ func TestDuplicateWSDeliveryPrintsOnceAndAcksBoth(t *testing.T) {
 	if len(acks) != 2 || acks[0] != "job_dup" || acks[1] != "job_dup" {
 		t.Fatalf("both deliveries must be acknowledged, got %v", acks)
 	}
-
-	// The second delivery must still report the existing terminal result, so
-	// the gateway never waits for a status that will not come.
 	var successes int
 	for _, u := range gw.Updates() {
 		if u.JobID == "job_dup" && u.Status == "success" {
@@ -235,14 +214,11 @@ func TestDuplicateWSDeliveryPrintsOnceAndAcksBoth(t *testing.T) {
 	}
 }
 
-// Test 6 (agent side): a job that already reached a terminal state locally is
-// never printed a second time, even when delivered again after a restart.
 func TestTerminalJobIsNotPrintedTwice(t *testing.T) {
 	gw := newRecordingGateway(t)
 	p := &fakePrinter{}
 	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
 	ctx := context.Background()
-
 	job := map[string]interface{}{
 		"id":        "job_terminal",
 		"printerId": "p1",
@@ -251,19 +227,15 @@ func TestTerminalJobIsNotPrintedTwice(t *testing.T) {
 	}
 	ag.processJob(ctx, job)
 	ag.processJob(ctx, job)
-
 	if p.calls != 1 {
 		t.Fatalf("terminal job must be printed exactly once, got %d", p.calls)
 	}
 }
 
-// A payload the printer cannot render must fail with CAPABILITY_MISMATCH and
-// that failure must reach the gateway (never a silent downgrade to RAW).
 func TestCapabilityMismatchIsReportedToGateway(t *testing.T) {
 	gw := newRecordingGateway(t)
-	p := &fakePrinter{} // byte-stream only: no PDF support
+	p := &fakePrinter{}
 	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
-
 	pdf := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4\ntrailer<<>>\n%%EOF\n"))
 	job := map[string]interface{}{
 		"id":        "job_pdf_mismatch",
@@ -272,7 +244,6 @@ func TestCapabilityMismatchIsReportedToGateway(t *testing.T) {
 		"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
 	}
 	ag.processJob(context.Background(), job)
-
 	if p.calls != 0 {
 		t.Fatalf("incompatible payload must never be written to the printer, got %d prints", p.calls)
 	}
@@ -281,11 +252,8 @@ func TestCapabilityMismatchIsReportedToGateway(t *testing.T) {
 		t.Fatal("agent must report the capability failure to the gateway")
 	}
 	last := updates[len(updates)-1]
-	if last.Status != "failed" {
-		t.Fatalf("expected failed status, got %q", last.Status)
-	}
-	if !strings.Contains(last.Error, "CAPABILITY_MISMATCH") {
-		t.Fatalf("failure reason must carry CAPABILITY_MISMATCH, got %q", last.Error)
+	if last.Status != "failed" || !strings.Contains(last.Error, "CAPABILITY_MISMATCH") {
+		t.Fatalf("expected capability failure, got %#v", last)
 	}
 }
 
@@ -301,27 +269,19 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("condition not met within timeout")
 }
 
-// --- crash recovery (at-least-once made visible, NOT exactly-once) --------
-
-// A job that was still printing when the agent stopped must be reported to the
-// gateway as an explicit, marked failure when reprint_after_crash is disabled.
 func TestInterruptedJobIsReportedAtStartup(t *testing.T) {
 	gw := newRecordingGateway(t)
 	p := &fakePrinter{}
 	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
 	no := false
 	ag.cfg.Agent.ReprintAfterCrash = &no
-
-	// Simulate the previous process dying mid-print.
 	if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 	if err := ag.queue.UpdateStatus("job_crashed", "printing"); err != nil {
 		t.Fatalf("UpdateStatus: %v", err)
 	}
-
 	ag.recoverInterruptedJobs()
-
 	updates := gw.Updates()
 	if len(updates) != 1 {
 		t.Fatalf("expected exactly one status report, got %#v", updates)
@@ -337,9 +297,6 @@ func TestInterruptedJobIsReportedAtStartup(t *testing.T) {
 	}
 }
 
-// With reprint_after_crash disabled the agent refuses to print an interrupted
-// job again and re-reports the interruption; the default keeps the historical
-// at-least-once behaviour (the job is printed again).
 func TestReprintAfterCrashPolicy(t *testing.T) {
 	job := map[string]interface{}{
 		"id":        "job_crashed",
@@ -354,7 +311,6 @@ func TestReprintAfterCrashPolicy(t *testing.T) {
 		ag := newAgentAgainst(t, gw.server.URL, "p1", p)
 		no := false
 		ag.cfg.Agent.ReprintAfterCrash = &no
-
 		if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
 			t.Fatalf("Push: %v", err)
 		}
@@ -362,9 +318,7 @@ func TestReprintAfterCrashPolicy(t *testing.T) {
 			t.Fatalf("UpdateStatus: %v", err)
 		}
 		ag.recoverInterruptedJobs()
-
 		ag.processJob(context.Background(), job)
-
 		if p.calls != 0 {
 			t.Fatalf("interrupted job must not be reprinted when the policy forbids it, got %d prints", p.calls)
 		}
@@ -375,14 +329,16 @@ func TestReprintAfterCrashPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("default: reprints (at-least-once, may duplicate paper)", func(t *testing.T) {
+	t.Run("explicit opt-in: reprints once and exposes at-least-once semantics", func(t *testing.T) {
 		gw := newRecordingGateway(t)
 		p := &fakePrinter{}
 		ag := newAgentAgainst(t, gw.server.URL, "p1", p)
-		if !ag.cfg.ReprintAfterCrashEnabled() {
-			t.Fatal("reprint_after_crash must default to true")
-		}
+		yes := true
+		ag.cfg.Agent.ReprintAfterCrash = &yes
 
+		if !ag.cfg.ReprintAfterCrashEnabled() {
+			t.Fatal("explicit true must enable at-least-once crash reprinting")
+		}
 		if err := ag.queue.Push("job_crashed", "p1", []byte("bytes")); err != nil {
 			t.Fatalf("Push: %v", err)
 		}
@@ -390,15 +346,23 @@ func TestReprintAfterCrashPolicy(t *testing.T) {
 			t.Fatalf("UpdateStatus: %v", err)
 		}
 		ag.recoverInterruptedJobs()
-
 		ag.processJob(context.Background(), job)
-
 		if p.calls != 1 {
-			t.Fatalf("default policy must retry the interrupted job exactly once here, got %d prints", p.calls)
+			t.Fatalf("explicit crash-reprint opt-in should retry once in this test, got %d prints", p.calls)
 		}
 		last := gw.Updates()[len(gw.Updates())-1]
 		if last.Status != "success" {
-			t.Fatalf("expected the retry to succeed, got %#v", last)
+			t.Fatalf("expected the explicit opt-in retry to succeed, got %#v", last)
+		}
+	})
+
+	t.Run("zero-value config: safe no-reprint default", func(t *testing.T) {
+		gw := newRecordingGateway(t)
+		p := &fakePrinter{}
+		ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+		ag.cfg.Agent.ReprintAfterCrash = nil
+		if ag.cfg.ReprintAfterCrashEnabled() {
+			t.Fatal("nil crash-reprint policy must default to false")
 		}
 	})
 }
