@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
+import { runtimeSecret } from "../lib/runtime-secret";
 
 function configuredProxySecret(): string | null {
-  const value = process.env.TRUST_PROXY_SECRET?.trim();
+  const value = runtimeSecret("TRUST_PROXY_SECRET")?.trim();
   return value && value.length >= 32 ? value : null;
 }
 
