@@ -10,7 +10,7 @@ import {
   pool,
   type Fixture,
 } from "./helpers/pg";
-import { getWorkerSchema, schemaSearchPath } from "../src/lib/worker-schema";
+import { getWorkerSchema } from "../src/lib/worker-schema";
 
 const run = describe.skipIf(!hasTestDatabase || process.env.RUN_MULTI_INSTANCE_TEST !== "1");
 
@@ -32,13 +32,14 @@ function startGateway(port: number, databaseName: string, workerSchema: string |
   };
 
   // A spawned production-like Gateway must not inherit Vitest's worker
-  // isolation variables. It must connect to the exact same test schema as
-  // this parent process so both Gateway instances share the same fixtures.
+  // isolation variables. Pass the exact parent worker schema explicitly so
+  // both Gateway instances use the same PostgreSQL test data as this process.
   delete env.VITEST;
   delete env.VITEST_WORKER_ID;
   delete env.VITEST_POOL_ID;
-  if (workerSchema) env.PGOPTIONS = `-c search_path=${schemaSearchPath(workerSchema)}`;
-  else delete env.PGOPTIONS;
+
+  if (workerSchema) env.TEST_WORKER_SCHEMA = workerSchema;
+  else delete env.TEST_WORKER_SCHEMA;
 
   return spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "server.ts"], {
     cwd: process.cwd(),
@@ -92,8 +93,8 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     gatewayA = startGateway(portA, databaseName, workerSchema);
     gatewayB = startGateway(portB, databaseName, workerSchema);
     await Promise.all([waitForHealth(portA, gatewayA), waitForHealth(portB, gatewayB)]);
-    // attachAgentWSS starts LISTEN asynchronously; allow both listeners to
-    // finish establishing before the first notification-driven assertion.
+    // The WS module establishes PostgreSQL LISTEN asynchronously. This is a
+    // small stabilization delay, not a substitute for sharing the DB schema.
     await sleep(500);
   });
 
@@ -116,7 +117,13 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
         clearTimeout(timer);
         resolve(JSON.parse(String(data)) as Record<string, unknown>);
       });
-      ws.on("error", reject);
+      ws.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      ws.on("close", () => {
+        clearTimeout(timer);
+      });
     });
     await once(ws, "open");
     await sleep(200);
@@ -163,8 +170,11 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     const messagesB: Record<string, unknown>[] = [];
     const wsA = new WebSocket(`ws://127.0.0.1:${portA}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
     const wsB = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
-    wsA.on("message", (data) => messagesA.push(JSON.parse(String(data)) as Record<string, unknown>));
-    wsB.on("message", (data) => messagesB.push(JSON.parse(String(data)) as Record<string, unknown>));
+    const collectMessage = (target: Record<string, unknown>[]) => (data: WebSocket.RawData) => {
+      target.push(JSON.parse(String(data)) as Record<string, unknown>);
+    };
+    wsA.on("message", collectMessage(messagesA));
+    wsB.on("message", collectMessage(messagesB));
 
     await Promise.all([once(wsA, "open"), once(wsB, "open")]);
     await sleep(200);
