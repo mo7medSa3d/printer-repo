@@ -256,11 +256,7 @@ class TestGatewayPullSyncStatus(PrintGatewaySecurityCase):
 
 
 class TestGatewayApiKeyReadProtection(PrintGatewaySecurityCase):
-    """Audit #6: gateway_api_key must never reach a non-admin read payload.
-
-    ``groups='base.group_system'`` on the field only hides it from the web
-    UI; a direct RPC read must be rejected on the server side as well.
-    """
+    """The Gateway credential must be protected by Odoo's field security."""
 
     def setUp(self):
         super().setUp()
@@ -276,10 +272,15 @@ class TestGatewayApiKeyReadProtection(PrintGatewaySecurityCase):
         self.branch = self._branch(self.company, 'Key Branch')
 
     def test_regular_user_cannot_read_key_via_rpc(self):
-        # The audit acceptance test: group_user reading the branch's
-        # credential through the read RPC must be blocked.
         with self.assertRaises(AccessError):
             self.branch.with_user(self.user).read(['gateway_api_key'])
+
+    def test_regular_user_cannot_retrieve_key_via_search_read(self):
+        with self.assertRaises(AccessError):
+            self.env['print_gateway.branch'].with_user(self.user).search_read(
+                [('id', '=', self.branch.id)],
+                ['gateway_api_key'],
+            )
 
     def test_regular_user_can_read_non_secret_fields(self):
         values = self.branch.with_user(self.user).read(['name', 'gateway_url'])
@@ -293,6 +294,11 @@ class TestGatewayApiKeyReadProtection(PrintGatewaySecurityCase):
     def test_system_admin_can_read_key(self):
         values = self.branch.with_user(self.admin).read(['gateway_api_key'])
         self.assertEqual(values[0]['gateway_api_key'], 'test-key')
+
+    def test_system_admin_can_manage_key(self):
+        self.branch.with_user(self.admin).write({'gateway_api_key': 'rotated-key'})
+        values = self.branch.with_user(self.admin).read(['gateway_api_key'])
+        self.assertEqual(values[0]['gateway_api_key'], 'rotated-key')
 
     def test_sync_actions_require_admin(self):
         for action in ('action_test_connection', 'action_sync_from_gateway', 'action_sync_to_gateway'):
