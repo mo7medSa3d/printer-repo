@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
+// Normalize CRLF -> LF: the Windows CI runner checks out with CRLF line
+// endings (autocrlf), which would break multi-line string assertions.
+const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8").replace(/\r\n/g, "\n");
 
 // Static contracts for the 2026-09 production-readiness fixes. These pin the
 // behavioral gates that are expensive to exercise end-to-end (they require a
