@@ -2,7 +2,7 @@
 """Canonical identity contract for Odoo-owned branches."""
 
 from odoo import api, fields, models, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
 
 
 class PrintGatewayBranchContract(models.Model):
@@ -48,7 +48,7 @@ class PrintGatewayBranchContract(models.Model):
         if "company_id" in vals:
             for rec in self:
                 if vals["company_id"] != rec.company_id.id:
-                    raise ValidationError(
+                    raise AccessError(
                         _("The Odoo company of a print gateway branch cannot be changed.")
                     )
         if "gateway_branch_id" in vals:
