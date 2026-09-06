@@ -171,7 +171,10 @@ export type Fixture = {
 
 export async function seedFixture(opts?: { branchId?: string; printerCapabilities?: unknown }): Promise<Fixture> {
   const suffix = randomBytes(8).toString("hex");
-  const branchId = opts?.branchId ?? `branch_${suffix}`;
+  // Keep integration fixtures compatible with the production Odoo ownership
+  // contract: Gateway branch identities must be native Odoo company IDs.
+  const nativeBranchNumber = BigInt(`0x${suffix}`).toString(10);
+  const branchId = opts?.branchId ?? `odoo_company_${nativeBranchNumber}`;
   const agentId = `agt_${suffix}`;
   const agentSecret = randomBytes(16).toString("base64url");
   const printerId = `printer_${suffix}`;
