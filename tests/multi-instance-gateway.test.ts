@@ -14,6 +14,10 @@ import { getWorkerSchema, schemaSearchPath } from "../src/lib/worker-schema";
 
 const run = describe.skipIf(!hasTestDatabase || process.env.RUN_MULTI_INSTANCE_TEST !== "1");
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function startGateway(port: number, databaseName: string, workerSchema: string | null): ChildProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -25,14 +29,16 @@ function startGateway(port: number, databaseName: string, workerSchema: string |
     GATEWAY_JWT_SECRET: "test-secret-that-is-at-least-32-characters-long",
     MANAGER_USERNAME: "test-manager",
     MANAGER_PASSWORD_HASH: "",
-    // Vitest worker isolation is for the parent test process. The spawned
-    // production-like Gateway children must use the exact same schema as the
-    // parent or they will boot against separate empty schemas.
-    VITEST: "false",
-    VITEST_WORKER_ID: "",
-    VITEST_POOL_ID: "",
   };
+
+  // A spawned production-like Gateway must not inherit Vitest's worker
+  // isolation variables. It must connect to the exact same test schema as
+  // this parent process so both Gateway instances share the same fixtures.
+  delete env.VITEST;
+  delete env.VITEST_WORKER_ID;
+  delete env.VITEST_POOL_ID;
   if (workerSchema) env.PGOPTIONS = `-c search_path=${schemaSearchPath(workerSchema)}`;
+  else delete env.PGOPTIONS;
 
   return spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "server.ts"], {
     cwd: process.cwd(),
@@ -54,7 +60,7 @@ async function waitForHealth(port: number, child: ChildProcess): Promise<void> {
     } catch {
       // server still starting
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleep(100);
   }
   throw new Error(`gateway ${port} did not become healthy: ${output}`);
 }
@@ -86,6 +92,9 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     gatewayA = startGateway(portA, databaseName, workerSchema);
     gatewayB = startGateway(portB, databaseName, workerSchema);
     await Promise.all([waitForHealth(portA, gatewayA), waitForHealth(portB, gatewayB)]);
+    // attachAgentWSS starts LISTEN asynchronously; allow both listeners to
+    // finish establishing before the first notification-driven assertion.
+    await sleep(500);
   });
 
   beforeEach(async () => {
@@ -110,32 +119,36 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
       ws.on("error", reject);
     });
     await once(ws, "open");
+    await sleep(200);
 
-    const response = await fetch(`http://127.0.0.1:${portA}/api/print/jobs`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${fixture.odooKey}`,
-        "X-Odoo-Database": databaseName,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        branchId: fixture.branchId,
-        destinationId: fixture.destinationId,
-        documentType: "receipt",
-        payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
-      }),
-    });
-    expect(response.status).toBe(201);
-    const created = await response.json() as { id: string };
+    try {
+      const response = await fetch(`http://127.0.0.1:${portA}/api/print/jobs`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${fixture.odooKey}`,
+          "X-Odoo-Database": databaseName,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          branchId: fixture.branchId,
+          destinationId: fixture.destinationId,
+          documentType: "receipt",
+          payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+        }),
+      });
+      expect(response.status).toBe(201);
+      const created = await response.json() as { id: string };
 
-    const message = await messagePromise;
-    expect(message.type).toBe("print_job");
-    expect((message.job as { id: string }).id).toBe(created.id);
+      const message = await messagePromise;
+      expect(message.type).toBe("print_job");
+      expect((message.job as { id: string }).id).toBe(created.id);
 
-    const row = await pool().query("SELECT status, agent_id FROM print_jobs WHERE id = $1", [created.id]);
-    expect(row.rows[0].status).toBe("claimed");
-    expect(row.rows[0].agent_id).toBe(fixture.agentId);
-    ws.close();
+      const row = await pool().query("SELECT status, agent_id FROM print_jobs WHERE id = $1", [created.id]);
+      expect(row.rows[0].status).toBe("claimed");
+      expect(row.rows[0].agent_id).toBe(fixture.agentId);
+    } finally {
+      ws.close();
+    }
   });
 
   it("keeps the same job identity when both instances attempt the claim", async () => {
@@ -146,17 +159,45 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
       ["multi-claim", fixture.branchId, fixture.destinationId, fixture.agentId, fixture.printerId, expires],
     );
 
+    const messagesA: Record<string, unknown>[] = [];
+    const messagesB: Record<string, unknown>[] = [];
     const wsA = new WebSocket(`ws://127.0.0.1:${portA}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
     const wsB = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
+    wsA.on("message", (data) => messagesA.push(JSON.parse(String(data)) as Record<string, unknown>));
+    wsB.on("message", (data) => messagesB.push(JSON.parse(String(data)) as Record<string, unknown>));
+
     await Promise.all([once(wsA, "open"), once(wsB, "open")]);
-    await Promise.all([
-      fetch(`http://127.0.0.1:${portA}/api/print/jobs`, { headers: { Authorization: `Bearer ${fixture.odooKey}`, "X-Odoo-Database": databaseName } }),
-      fetch(`http://127.0.0.1:${portB}/api/print/jobs`, { headers: { Authorization: `Bearer ${fixture.odooKey}`, "X-Odoo-Database": databaseName } }),
-    ]);
-    const row = await pool().query("SELECT COUNT(*)::int AS count, COUNT(DISTINCT id)::int AS ids FROM print_jobs WHERE id = $1", ["multi-claim"]);
-    expect(row.rows[0].count).toBe(1);
-    expect(row.rows[0].ids).toBe(1);
-    wsA.close();
-    wsB.close();
+    await sleep(200);
+
+    try {
+      // Exercise the actual PostgreSQL LISTEN/NOTIFY cross-instance path.
+      await pool().query("SELECT pg_notify('print_gateway_agent_jobs', $1)", [
+        JSON.stringify({ jobId: "multi-claim", agentId: fixture.agentId }),
+      ]);
+
+      const deadline = Date.now() + 5_000;
+      let delivered: Record<string, unknown>[] = [];
+      while (Date.now() < deadline) {
+        delivered = [...messagesA, ...messagesB].filter((message) =>
+          message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim"
+        );
+        if (delivered.length === 1) break;
+        await sleep(50);
+      }
+
+      expect(delivered).toHaveLength(1);
+      const row = await pool().query(
+        "SELECT COUNT(*)::int AS count, COUNT(DISTINCT id)::int AS ids, status, agent_id FROM print_jobs WHERE id = $1 GROUP BY status, agent_id",
+        ["multi-claim"],
+      );
+      expect(row.rows).toHaveLength(1);
+      expect(row.rows[0].count).toBe(1);
+      expect(row.rows[0].ids).toBe(1);
+      expect(row.rows[0].status).toBe("claimed");
+      expect(row.rows[0].agent_id).toBe(fixture.agentId);
+    } finally {
+      wsA.close();
+      wsB.close();
+    }
   });
 });
