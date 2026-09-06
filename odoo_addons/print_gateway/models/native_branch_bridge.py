@@ -117,6 +117,7 @@ class PrintGatewayNativeBranchBridge(models.Model):
         """
         Company = self.env['res.company'].sudo()
         normalized = []
+        seen_company_ids = set()
         for incoming in vals_list:
             vals = dict(incoming)
             company_id = vals.get('company_id') or self.env.company.id
@@ -124,6 +125,18 @@ class PrintGatewayNativeBranchBridge(models.Model):
             if not company:
                 raise ValidationError(_('The selected Odoo company/branch does not exist.'))
             company.ensure_one()
+
+            # A Gateway configuration is strictly one-to-one with an existing
+            # Odoo company/branch. Fail before INSERT so callers receive a
+            # deterministic validation error instead of a raw DB constraint
+            # error. The database constraint remains the final race-condition
+            # guard for concurrent requests.
+            if company.id in seen_company_ids or self.search_count([('company_id', '=', company.id)]):
+                raise ValidationError(_(
+                    'Odoo company/branch %s already has a Print Gateway configuration.'
+                ) % company.display_name)
+            seen_company_ids.add(company.id)
+
             vals.update({
                 'company_id': company.id,
                 'name': company.name,
@@ -133,11 +146,11 @@ class PrintGatewayNativeBranchBridge(models.Model):
                 vals['enabled'] = False
             normalized.append(vals)
 
-        # The native bridge has already reduced the operation to an existing
-        # Odoo company/branch identity. Run the base model's creation guard in
-        # an explicit internal context so system-level discovery and controlled
-        # administrator creation can mirror any existing Odoo company without
-        # granting regular users cross-company creation privileges.
+        # The native bridge has already reduced the operation to existing
+        # Odoo company/branch identities. Run the base model's creation guard
+        # in an explicit internal context so discovery and controlled admin
+        # creation can mirror any existing Odoo company without granting
+        # regular users cross-company creation privileges through the base ORM.
         self = self.with_context(_print_gateway_native_sync=True)
         return super().create(normalized)
 
