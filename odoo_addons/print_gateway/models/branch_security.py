@@ -30,14 +30,21 @@ class PrintGatewayBranchSecurity(models.Model):
         return headers
 
     @api.constrains('gateway_url')
-    def _check_gateway_url_https(self):
+    def _check_gateway_url_transport(self):
+        """Accept Gateway base URLs over HTTP or HTTPS.
+
+        HTTPS remains the recommended production transport. HTTP is accepted
+        for local/LAN and bootstrap deployments where TLS/DNS is not yet
+        available; callers must understand that the branch API key is sent
+        over the configured transport.
+        """
         for rec in self:
             if not rec.gateway_url:
                 continue
             parsed = urlparse(rec.gateway_url.strip())
-            if parsed.scheme.lower() != 'https' or not parsed.netloc:
+            if parsed.scheme.lower() not in ('http', 'https') or not parsed.netloc:
                 raise ValidationError(_(
-                    'Gateway URL must use HTTPS and include a valid host for branch %s.'
+                    'Gateway URL must use http:// or https:// and include a valid host for branch %s.'
                 ) % rec.name)
 
     def _check_gateway_configuration_access(self):
