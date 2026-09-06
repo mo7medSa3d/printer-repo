@@ -66,7 +66,11 @@ export function isOdooKeyAllowedForDocumentType(
     .some((entry) => normalizeDocumentType(entry) === requested);
 }
 
-export async function validateOdooKey(req: Request, expectedBranchId?: string | null) {
+export async function validateOdooKey(
+  req: Request,
+  expectedBranchId?: string | null,
+  operation: "read" | "write" = "read"
+) {
   const auth = req.headers.get("authorization") ?? req.headers.get("x-api-key") ?? "";
   let raw = "";
   if (auth.startsWith("Bearer ")) raw = auth.slice(7).trim();
@@ -80,7 +84,7 @@ export async function validateOdooKey(req: Request, expectedBranchId?: string | 
   const row = await db.query.apiKeys.findFirst({ where: eq(apiKeys.hashedKey, hashed) });
   if (!row || row.revokedAt) return null;
   if (!isBranchScopedKeyAllowed(row.branchId, expectedBranchId)) return null;
-  if (!isOdooKeyAllowedForDocumentType(row, undefined, "read")) return null;
+  if (!isOdooKeyAllowedForDocumentType(row, undefined, operation)) return null;
   if (!timingSafeEqualStr(row.hashedKey, hashed)) return null;
   db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.id)).then(() => {}).catch(() => {});
   return row;
