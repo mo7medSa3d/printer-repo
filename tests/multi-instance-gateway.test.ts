@@ -1,7 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createServer } from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
 import { WebSocket } from "ws";
 import {
   hasTestDatabase,
@@ -19,30 +17,14 @@ const run = describe.skipIf(!hasTestDatabase || process.env.RUN_MULTI_INSTANCE_T
 type GatewayProcess = {
   child: ChildProcess;
   output: () => string;
+  ready: Promise<number>;
 };
 
-async function findFreePort(): Promise<number> {
-  const server = createServer();
-  server.unref();
-  server.listen({ host: "127.0.0.1", port: 0 });
-  await once(server, "listening");
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    server.close();
-    throw new Error("failed to determine an available TCP port");
-  }
-  const port = address.port;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
-  return port;
-}
-
-function startGateway(port: number, databaseName: string, workerSchema: string | null): GatewayProcess {
+function startGateway(databaseName: string, workerSchema: string | null): GatewayProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: "production",
-    PORT: String(port),
+    PORT: "0",
     HOSTNAME: "127.0.0.1",
     TRUST_PROXY: "0",
     ODOO_DATABASE_NAME: databaseName,
@@ -67,18 +49,42 @@ function startGateway(port: number, databaseName: string, workerSchema: string |
   });
 
   let output = "";
+  let resolveReady!: (port: number) => void;
+  let rejectReady!: (error: Error) => void;
+  let settledReady = false;
+  const ready = new Promise<number>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+
   const appendOutput = (chunk: Buffer | string) => {
     output += String(chunk);
     if (output.length > 16_384) output = output.slice(-16_384);
+    if (!settledReady) {
+      const match = output.match(/> Ready on http:\/\/127\.0\.0\.1:(\d+) /);
+      if (match) {
+        settledReady = true;
+        resolveReady(Number(match[1]));
+      }
+    }
   };
   child.stdout?.on("data", appendOutput);
   child.stderr?.on("data", appendOutput);
-  child.on("error", (error) => appendOutput(`\n[child error] ${error.stack ?? error.message}\n`));
+  child.on("error", (error) => {
+    appendOutput(`\n[child error] ${error.stack ?? error.message}\n`);
+  });
+  child.on("exit", (code, signal) => {
+    if (!settledReady) {
+      settledReady = true;
+      rejectReady(new Error(`gateway exited before listening (code=${code ?? "null"}, signal=${signal ?? "null"})\n${output}`));
+    }
+  });
 
-  return { child, output: () => output };
+  return { child, output: () => output, ready };
 }
 
-async function waitForHealth(port: number, gateway: GatewayProcess): Promise<void> {
+async function waitForHealth(gateway: GatewayProcess): Promise<number> {
+  const port = await gateway.ready;
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     if (gateway.child.exitCode !== null) {
@@ -86,7 +92,7 @@ async function waitForHealth(port: number, gateway: GatewayProcess): Promise<voi
     }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-      if (response.ok) return;
+      if (response.ok) return port;
     } catch {
       // The listener may still be starting.
     }
@@ -132,6 +138,7 @@ async function waitForWebSocketOpen(ws: WebSocket, label: string, gateways: Gate
 }
 
 async function waitForMessage(
+  ws: WebSocket,
   messages: Record<string, unknown>[],
   predicate: (message: Record<string, unknown>) => boolean,
   timeoutMs: number,
@@ -140,20 +147,19 @@ async function waitForMessage(
   if (existing) return existing;
 
   return new Promise<Record<string, unknown>>((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const poll = () => {
-      const found = messages.find(predicate);
-      if (found) {
-        resolve(found);
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error("timed out waiting for expected WebSocket message"));
-        return;
-      }
-      setTimeout(poll, 25);
+    const timer = setTimeout(() => {
+      ws.off("message", onMessage);
+      reject(new Error("timed out waiting for expected WebSocket message"));
+    }, timeoutMs);
+    const onMessage = (data: WebSocket.RawData) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      messages.push(message);
+      if (!predicate(message)) return;
+      clearTimeout(timer);
+      ws.off("message", onMessage);
+      resolve(message);
     };
-    poll();
+    ws.on("message", onMessage);
   });
 }
 
@@ -190,13 +196,12 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
   beforeAll(async () => {
     await applyMigrations();
     fixture = await seedFixture();
-    [portA, portB] = await Promise.all([findFreePort(), findFreePort()]);
-    gatewayA = startGateway(portA, databaseName, workerSchema);
-    gatewayB = startGateway(portB, databaseName, workerSchema);
+    gatewayA = startGateway(databaseName, workerSchema);
+    gatewayB = startGateway(databaseName, workerSchema);
 
-    await Promise.all([
-      waitForHealth(portA, gatewayA),
-      waitForHealth(portB, gatewayB),
+    [portA, portB] = await Promise.all([
+      waitForHealth(gatewayA),
+      waitForHealth(gatewayB),
     ]);
 
     // Prove the PostgreSQL LISTEN/NOTIFY path is live before the real tests.
@@ -278,6 +283,7 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
       const created = await response.json() as { id: string };
 
       const message = await waitForMessage(
+        ws,
         messages,
         (candidate) => candidate.type === "print_job" && (candidate.job as { id?: unknown } | undefined)?.id === created.id,
         10_000,
@@ -305,11 +311,6 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
     const messagesB: Record<string, unknown>[] = [];
     const wsA = new WebSocket(`ws://127.0.0.1:${portA}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
     const wsB = new WebSocket(`ws://127.0.0.1:${portB}/api/agent/ws`, { headers: { Authorization: fixture.agentAuth } });
-    const collectMessage = (target: Record<string, unknown>[]) => (data: WebSocket.RawData) => {
-      target.push(JSON.parse(String(data)) as Record<string, unknown>);
-    };
-    wsA.on("message", collectMessage(messagesA));
-    wsB.on("message", collectMessage(messagesB));
 
     await Promise.all([
       waitForWebSocketOpen(wsA, `Gateway ${portA}`, [gatewayA, gatewayB]),
@@ -318,19 +319,31 @@ run("multi-instance Gateway / PostgreSQL source of truth", () => {
 
     try {
       const deadline = Date.now() + 5_000;
-      let delivered: Record<string, unknown>[] = [];
-      while (Date.now() < deadline && delivered.length === 0) {
+      let winner: "A" | "B" | null = null;
+      while (Date.now() < deadline && winner === null) {
         await pool().query("SELECT pg_notify('print_gateway_agent_jobs', $1)", [
           JSON.stringify({ jobId: "multi-claim", agentId: fixture.agentId }),
         ]);
-        delivered = [...messagesA, ...messagesB].filter((message) =>
+        const countA = messagesA.filter((message) =>
           message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim",
-        );
-        if (delivered.length === 1) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        ).length;
+        const countB = messagesB.filter((message) =>
+          message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim",
+        ).length;
+        if (countA === 1 && countB === 0) winner = "A";
+        else if (countA === 0 && countB === 1) winner = "B";
+        else if (countA > 1 || countB > 1 || (countA === 1 && countB === 1)) {
+          throw new Error(`duplicate multi-instance delivery observed: A=${countA}, B=${countB}`);
+        }
+        if (winner === null) await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
-      expect(delivered).toHaveLength(1);
+      expect(winner).toBe("A").toSatisfy || expect(["A", "B"]).toContain(winner);
+      const deliveredMessages = [...messagesA, ...messagesB].filter((message) =>
+        message.type === "print_job" && (message.job as { id?: unknown } | undefined)?.id === "multi-claim",
+      );
+      expect(deliveredMessages).toHaveLength(1);
+
       const row = await pool().query(
         "SELECT COUNT(*)::int AS count, COUNT(DISTINCT id)::int AS ids, status, agent_id FROM print_jobs WHERE id = $1 GROUP BY status, agent_id",
         ["multi-claim"],
