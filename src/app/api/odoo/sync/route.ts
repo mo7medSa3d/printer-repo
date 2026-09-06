@@ -434,11 +434,18 @@ export async function POST(req: Request) {
       // Resources omitted from an explicit array are disabled (not deleted,
       // so historical print_jobs keep their FKs) and stay in this branch.
       // Printers and agents are gateway-owned and are never disabled here.
+      // An explicit EMPTY array disables EVERY row of that kind in the
+      // branch (a total print outage) — that only reaches here with an
+      // explicit `wipe: true`, so log it as a security-relevant event.
+      const logWipe = (entity: string) => {
+        console.warn(JSON.stringify({ ts: new Date().toISOString(), level: "warn", event: "odoo.sync.wipe", branchId, entity }));
+      };
       if (hasDestinations) {
         const keep = validDestinations.map((d) => d.id);
         const where = keep.length === 0
           ? eq(destinations.branchId, branchId)
           : and(eq(destinations.branchId, branchId), notInArray(destinations.id, keep));
+        if (keep.length === 0) logWipe("destination");
         await tx.update(destinations).set({ enabled: false, updatedAt: now }).where(where);
       }
       if (hasDocumentTypes) {
@@ -446,6 +453,7 @@ export async function POST(req: Request) {
         const where = keep.length === 0
           ? eq(documentTypes.branchId, branchId)
           : and(eq(documentTypes.branchId, branchId), notInArray(documentTypes.id, keep));
+        if (keep.length === 0) logWipe("documentType");
         await tx.update(documentTypes).set({ enabled: false, updatedAt: now }).where(where);
       }
       if (hasBindings) {
@@ -453,6 +461,7 @@ export async function POST(req: Request) {
         const where = keep.length === 0
           ? eq(printerBindings.branchId, branchId)
           : and(eq(printerBindings.branchId, branchId), notInArray(printerBindings.id, keep));
+        if (keep.length === 0) logWipe("binding");
         await tx.update(printerBindings).set({ enabled: false, updatedAt: now }).where(where);
       }
     });

@@ -31,7 +31,12 @@ suite("health endpoint (live)", () => {
     const res = await healthGET();
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ ok: true });
+    expect(body.ok).toBe(true);
+    // dbClockOffsetMs is the DB-vs-app clock-skew signal (see the route
+    // docs). Against a live database it must be a small number of ms —
+    // GitHub runners are NTP-synced, so allow a generous 5-minute margin.
+    expect(typeof body.dbClockOffsetMs).toBe("number");
+    expect(Math.abs(body.dbClockOffsetMs as number)).toBeLessThanOrEqual(300_000);
     expect(body.agents).toBeUndefined();
     expect(body.printers).toBeUndefined();
     expect(body.jobs).toBeUndefined();

@@ -24,6 +24,9 @@ describe("production fixes contracts (2026-09 audit)", () => {
     // The guard must be active for all three entity kinds.
     const guards = sync.split("!wipeRequested").length - 1;
     expect(guards).toBeGreaterThanOrEqual(3);
+    // An applied wipe (explicit empty array with wipe:true) is logged as a
+    // security-relevant event (audit #22: "مع سجل").
+    expect(sync).toContain('event: "odoo.sync.wipe"');
   });
 
   it("odoo sync GET is metadata-only and caps jobIds at 50", () => {

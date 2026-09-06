@@ -174,6 +174,11 @@ suite("Odoo → Gateway sync (dependency-safe, transactional)", () => {
   it("Test 20: a binding referencing a destination from another branch is rejected", async () => {
     const other = await seedFixture();
     const payload = validPayload({
+      // Empty list = "disable all existing destinations"; the wipe guard
+      // (audit #22) requires an explicit wipe flag for that, so declare it
+      // here to keep the test focused on the cross-branch binding check.
+      // Validation still fails (400), so nothing is written.
+      wipe: true,
       destinations: [],
       bindings: [
         { id: "binding_y", branchId: f.branchId, destinationId: other.destinationId, printerId: f.printerId, priority: 1 },
@@ -185,6 +190,29 @@ suite("Odoo → Gateway sync (dependency-safe, transactional)", () => {
     expect(body.error).toBe("SYNC_VALIDATION_FAILED");
     expect(body.details[0].destinationId).toBe(other.destinationId);
     expect(await count("printer_bindings", "TRUE")).toBe(0);
+  });
+
+  it("Test 22a: an empty destinations list without wipe: true is rejected and changes nothing", async () => {
+    const payload = validPayload({ destinations: [] });
+    const res = await syncPOST(syncRequest(f.odooKey, payload));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("SYNC_VALIDATION_FAILED");
+    expect(body.details[0].reason).toContain('re-run the sync with "wipe": true');
+    // The guard must not have disabled anything (no partial write).
+    expect(await count("destinations", "id = 'dest_kitchen' AND enabled = TRUE")).toBe(1);
+    expect(await count("printer_bindings", "id = 'binding_1' AND enabled = TRUE")).toBe(1);
+  });
+
+  it("Test 22b: an explicit wipe: true applies the empty-list disable", async () => {
+    const payload = validPayload({ wipe: true, destinations: [] });
+    const res = await syncPOST(syncRequest(f.odooKey, payload));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(await count("destinations", "id = 'dest_kitchen' AND enabled = TRUE")).toBe(0);
+    // Bindings were not part of the wipe (non-empty list in the payload).
+    expect(await count("printer_bindings", "id = 'binding_1' AND enabled = TRUE")).toBe(1);
   });
 
   it("Test 20b: a payload mixing two branches is rejected as a whole", async () => {
