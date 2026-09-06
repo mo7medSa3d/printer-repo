@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { apiKeys } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
-import { generateOdooApiKey } from "../../../../lib/odoo-auth";
-import { eq, desc, isNull } from "drizzle-orm";
+import { generateOdooApiKey, ODOO_API_KEY_SCOPES } from "../../../../lib/odoo-auth";
+import { eq, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -30,9 +30,16 @@ export async function POST(req: Request) {
   try { body = await req.json(); } catch { body = {}; }
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Odoo";
   const branchId = typeof body.branchId === "string" && body.branchId.trim() ? body.branchId.trim() : null;
-  const scope = typeof body.scope === "string" && body.scope.trim() ? body.scope.trim() : "standard";
+  const scope = typeof body.scope === "string" ? body.scope.trim() : "standard";
+  if (!ODOO_API_KEY_SCOPES.includes(scope as (typeof ODOO_API_KEY_SCOPES)[number])) {
+    return NextResponse.json({ error: "scope must be standard or read_only" }, { status: 400 });
+  }
   const allowedDocumentTypes = Array.isArray(body.allowedDocumentTypes)
-    ? body.allowedDocumentTypes.filter((value): value is string => typeof value === "string")
+    ? body.allowedDocumentTypes
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 100)
     : null;
   const { raw, hashed, id } = generateOdooApiKey();
   await db.insert(apiKeys).values({
@@ -40,9 +47,9 @@ export async function POST(req: Request) {
     name,
     branchId,
     scope,
-    description: typeof body.description === "string" ? body.description : null,
+    description: typeof body.description === "string" ? body.description.slice(0, 500) : null,
     hashedKey: hashed,
-    allowedDocumentTypes: allowedDocumentTypes && allowedDocumentTypes.length > 0 ? allowedDocumentTypes : null,
+    allowedDocumentTypes: allowedDocumentTypes && allowedDocumentTypes.length > 0 ? [...new Set(allowedDocumentTypes)] : null,
   });
   return NextResponse.json({ id, name, branchId, scope, allowedDocumentTypes, apiKey: raw, note: "Store this key securely — it will not be shown again" }, { status: 201 });
 }

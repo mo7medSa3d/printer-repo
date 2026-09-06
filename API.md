@@ -13,7 +13,8 @@ endpoint shares the HTTP port (default `3000`).
 | **Odoo** | `Authorization: Bearer odoo_<key>` or `X-Api-Key: odoo_<key>` (SHA-256 in `api_keys.hashed_key`, optionally branch-scoped, optional `allowedDocumentTypes`) | Odoo addon | `src/lib/odoo-auth.ts` |
 
 Manager sessions are global (not branch-scoped). Odoo keys are usually branch-scoped.
-Agents are scoped to their own id and, when set, their branch.
+Odoo key scopes are strictly `standard` or `read_only`; `read_only` cannot create print jobs.
+Agents are scoped to their own id and branch.
 
 ---
 
@@ -36,7 +37,8 @@ Auth: Odoo key. Two request shapes are accepted.
 }
 ```
 
-`expiresAt` and `idempotencyKey` are optional. `documentType` is matched
+`expiresAt` and `idempotencyKey` are optional. Without `expiresAt` the default job TTL is 1 hour;
+explicit `expiresAt` values may be at most 24 hours in the future. `documentType` is matched
 case-insensitively against bindings **and** against the key's `allowedDocumentTypes`.
 
 **Legacy body (explicit printer, kept for migration):**
@@ -70,17 +72,23 @@ idempotency lookup → routing → insert `queued` → claim-and-deliver.
 when a fallback binding was used. The legacy body returns
 `{jobId, status, printerId, agentId}`.
 
-**200 OK** — idempotency hit: the existing job is returned unchanged (same `jobId`).
+**200 OK** — idempotency hit: the existing job is returned unchanged (same `jobId`) only when
+its branch-routed destination/document type and payload, or its legacy printer and payload,
+match the original request.
+
+**409 Conflict** — `IDEMPOTENCY_CONFLICT`: the same branch-scoped idempotency key was already
+used for a different logical print request. The caller must generate a new idempotency key for
+a new print operation; this response is not retryable with the same key.
 
 **Errors**
 
 | Status | Body | Cause |
 |---|---|---|
-| 400 | `{"error":"…"}` | invalid JSON/body, invalid payload, `expiresAt` not ISO-8601 or not in the future, `INVALID_BRANCH`, `INVALID_DESTINATION` |
+| 400 | `{"error":"…"}` | invalid JSON/body, invalid payload, `expiresAt` not ISO-8601/not in the future/exceeds the 24 h maximum, `INVALID_BRANCH`, `INVALID_DESTINATION` |
 | 401 | `{"error":"Unauthorized (invalid branch-scoped Odoo API key)"}` | unknown/revoked key or wrong branch |
 | 403 | `{"error":"API key is not allowed to create this document type"}` | `allowedDocumentTypes` / `read_only` scope; legacy path also 403 on cross-branch printer |
 | 404 | `{"error":"NO_ROUTE: …"}` / `NO_PRINTER_FOUND` | no matching binding / no printer row |
-| 409 | `{"error":"PRINTER_DISABLED: …","code":"PRINTER_DISABLED"}` | every candidate printer is administratively disabled |
+| 409 | `{"error":"IDEMPOTENCY_CONFLICT","code":"IDEMPOTENCY_CONFLICT","retryable":false}` | same idempotency key reused with different request; or administratively invalid printer state |
 | 422 | `{"error":"CAPABILITY_MISMATCH: …","code":"CAPABILITY_MISMATCH"}` | payload type cannot be rendered by the routed printer |
 | 503 | `{"error":"PRINTER_OFFLINE: …","code":"PRINTER_OFFLINE"}` | candidates are offline/error |
 | 500 | `{"error":"INTERNAL_ERROR: …"}` | routing/database failure (never disguised as 404) |
@@ -218,6 +226,13 @@ branch is always derived from the calling Agent's authoritative branch.
 Auth: agent. In one request the gateway:
 
 1. expires this agent's non-terminal jobs whose `expires_at` has passed;
+2. recovers stale claims within the retry budget;
+3. claims a bounded batch under the per-Agent in-flight limit;
+4. returns only jobs belonging to this authenticated Agent/branch.
+
+The Gateway also uses the same claim service when PostgreSQL notifications trigger WebSocket
+push delivery.
+
 2. fails stale `claimed`/`printing` jobs with `retries >= 5`;
 3. claims, with `FOR UPDATE SKIP LOCKED` + `UPDATE … RETURNING`, up to 20 jobs that are
    `queued` **or** stale `claimed`/`printing` (silent > 90 s, `retries < 5`, `retries + 1`),
@@ -276,7 +291,7 @@ All require a manager session unless stated otherwise.
 | `POST /api/printers/:id/test-print` | **Real job.** Accepts a manager session *or* a branch-scoped Odoo key (used by the addon's Test Print button). Builds an ESC/POS test payload and runs the normal pipeline → 201 `{ok:true,jobId,printerId}`. 404 unknown printer, 409 disabled printer |
 | `GET /api/jobs?status=&printerId=&agentId=&limit=` | Job list for the manager UI; filters are applied in SQL before `LIMIT` (max 200). 400 on an unknown status |
 | `GET /api/jobs/:id` | Single job row, 404 unknown |
-| `GET /api/odoo/keys` · `POST /api/odoo/keys` | List key metadata / create a key (`{name,branchId,scope,allowedDocumentTypes,description}`). 201 returns the plaintext `apiKey` **once** |
+| `GET /api/odoo/keys` · `POST /api/odoo/keys` | List key metadata / create a key (`{name,branchId,scope,allowedDocumentTypes,description}`). Allowed scopes are `standard` and `read_only`. 201 returns the plaintext `apiKey` **once** |
 
 ---
 
@@ -306,16 +321,16 @@ per-backend matrix: [PRINTERS.md](PRINTERS.md).
 `queued → claimed → printing → success | failed`, plus `expired` for any non-terminal job
 past its TTL. The full state machine, the claim/delivery fields and the recovery rules are
 documented in [docs/JOB_LIFECYCLE.md](docs/JOB_LIFECYCLE.md).
+
 ## Production Engineering Semantics
 
 - **Odoo print outbox:** report actions persist the logical operation and idempotency key inside the Odoo transaction. Gateway submission is registered as a post-commit job; a process crash before submission leaves the durable queued operation for the retry cron.
 - **Metrics:** manager-authenticated `GET /api/metrics` exposes process-local Prometheus counters; logs remain the authoritative event stream and never contain payload bytes or credentials.
-
-- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
+- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once. Reusing a branch-scoped key with materially different routing inputs or payload returns `IDEMPOTENCY_CONFLICT`.
+- **Job TTL:** default `expiresAt` is 1 hour; an explicit expiration cannot exceed 24 hours.
 - **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
 - **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
 - **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
 - **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
 - **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
 - **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
-

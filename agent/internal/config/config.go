@@ -107,19 +107,23 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
 
 	cfg := defaultConfig()
-	err = yaml.NewDecoder(f).Decode(cfg)
-	if err != nil {
-		return nil, err
+	decodeErr := yaml.NewDecoder(f).Decode(cfg)
+	closeErr := f.Close()
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close config %s: %w", path, closeErr)
 	}
 	if cfg.Agent.ReprintAfterCrash == nil {
 		cfg.Agent.ReprintAfterCrash = boolPtr(false)
 	}
 
 	// Restore the sealed gateway credential, and migrate legacy plaintext
-	// secrets (written by older versions) into the store best-effort.
+	// secrets (written by older versions) into the store. A successful migration
+	// is required before returning so a plaintext credential is never left on disk.
 	dir := filepath.Dir(path)
 	if dir == "" || dir == "." {
 		if d, err := ExecutableDir(); err == nil {
@@ -130,10 +134,14 @@ func Load(path string) (*Config, error) {
 	if sealed, serr := store.GetSecret(secretStoreKey); serr == nil && sealed != "" {
 		cfg.Agent.Secret = sealed
 	} else if cfg.Agent.Secret != "" {
-		if merr := store.SaveSecret(secretStoreKey, cfg.Agent.Secret); merr == nil {
-			stripped := *cfg
-			stripped.Agent.Secret = ""
-			_ = stripped.Save(path)
+		legacySecret := cfg.Agent.Secret
+		if merr := store.SaveSecret(secretStoreKey, legacySecret); merr != nil {
+			return nil, fmt.Errorf("migrate legacy agent secret to secure storage: %w", merr)
+		}
+		stripped := *cfg
+		stripped.Agent.Secret = ""
+		if serr := stripped.Save(path); serr != nil {
+			return nil, fmt.Errorf("remove legacy plaintext agent secret from config: %w", serr)
 		}
 	}
 	return cfg, nil
@@ -218,7 +226,8 @@ func (c *Config) Save(path string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close temp config %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := replaceFile(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("commit config %s: %w", path, err)
 	}
 	_ = os.Chmod(path, 0600)

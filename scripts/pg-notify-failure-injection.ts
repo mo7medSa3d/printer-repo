@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { Pool } from "pg";
 import { attachAgentWSS } from "../src/server/ws";
 
-const CHANNEL = "print_gateway_agent_jobs";
+const CHANNEL_PREFIX = "print_gateway_agent_";
 const WAIT_MS = 500;
 const MAX_WAIT_MS = 15_000;
 
@@ -13,19 +13,20 @@ function sleep(ms: number) {
 async function waitForListener(pool: Pool, previousPid?: number): Promise<number> {
   const started = Date.now();
   while (Date.now() - started < MAX_WAIT_MS) {
-    const result = await pool.query<{ pid: number }>(
-      `SELECT pid
+    const result = await pool.query<{ pid: number; query: string }>(
+      `SELECT pid, query
          FROM pg_stat_activity
-        WHERE query ILIKE $1
+        WHERE query ILIKE 'LISTEN ${CHANNEL_PREFIX}%'
           AND pid <> pg_backend_pid()
         ORDER BY backend_start DESC`,
-      [`LISTEN ${CHANNEL}%`],
     );
-    const pid = result.rows.map((row) => Number(row.pid)).find((candidate) => candidate !== previousPid);
+    const pid = result.rows
+      .map((row) => Number(row.pid))
+      .find((candidate) => candidate !== previousPid);
     if (pid) return pid;
     await sleep(WAIT_MS);
   }
-  throw new Error(`Timed out waiting for PostgreSQL LISTEN ${CHANNEL} connection`);
+  throw new Error("Timed out waiting for PostgreSQL notification listener connection");
 }
 
 async function main() {

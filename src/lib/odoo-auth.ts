@@ -1,7 +1,10 @@
 import { db } from "../db";
 import { apiKeys } from "../db/schema";
-import { eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
+
+export const ODOO_API_KEY_SCOPES = ["standard", "read_only"] as const;
+export type OdooApiKeyScope = (typeof ODOO_API_KEY_SCOPES)[number];
 
 function hashKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
@@ -59,6 +62,7 @@ export function isOdooKeyAllowedForDocumentType(
   documentType?: string | null,
   operation: "read" | "write" = "read"
 ): boolean {
+  if (key.scope !== undefined && key.scope !== null && !ODOO_API_KEY_SCOPES.includes(key.scope as OdooApiKeyScope)) return false;
   if (key.scope === "read_only" && operation === "write") return false;
   if (!key.allowedDocumentTypes || key.allowedDocumentTypes.length === 0) return true;
   if (!documentType) return true;
@@ -83,6 +87,7 @@ export async function validateOdooKey(req: Request, expectedBranchId?: string | 
   const row = await db.query.apiKeys.findFirst({ where: eq(apiKeys.hashedKey, hashed) });
   if (!row || row.revokedAt) return null;
   if (!isBranchScopedKeyAllowed(row.branchId, expectedBranchId)) return null;
+  if (!isOdooKeyAllowedForDocumentType(row, undefined, "read")) return null;
   if (!timingSafeEqualStr(row.hashedKey, hashed)) return null;
   db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.id)).then(() => {}).catch(() => {});
   return row;

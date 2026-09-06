@@ -14,14 +14,18 @@ import { z } from "zod";
 export const dynamic = "force-dynamic";
 
 const MAX_PRINT_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_PRINT_JOB_TTL_MS = 60 * 60 * 1000;
+export const MAX_PRINT_JOB_TTL_MS = 24 * 60 * 60 * 1000;
 const legacyBodySchema = z.object({ printerId: z.string().min(1).max(120), payload: z.unknown(), expiresAt: z.string().optional(), idempotencyKey: z.string().max(200).optional() });
 const branchBodySchema = z.object({ branchId: z.string().min(1).max(120), destinationId: z.string().min(1).max(120), documentType: z.string().min(1).max(120), payload: z.unknown(), expiresAt: z.string().optional(), idempotencyKey: z.string().max(200).optional() });
 
 function parseExpiresAt(str?: string) {
-  if (!str) return new Date(Date.now() + 60 * 60 * 1000);
+  const now = Date.now();
+  if (!str) return new Date(now + DEFAULT_PRINT_JOB_TTL_MS);
   const d = new Date(str);
   if (Number.isNaN(d.getTime())) throw new Error("expiresAt must be ISO8601");
-  if (d.getTime() <= Date.now()) throw new Error("expiresAt must be in the future");
+  if (d.getTime() <= now) throw new Error("expiresAt must be in the future");
+  if (d.getTime() - now > MAX_PRINT_JOB_TTL_MS) throw new Error("expiresAt exceeds the maximum print job TTL of 24 hours");
   return d;
 }
 
@@ -36,6 +40,30 @@ function errorStatus(message: string): number {
 
 function jobResponse(row: typeof printJobs.$inferSelect) {
   return { jobId: row.id, status: row.status, printerId: row.printerId, agentId: row.agentId, branchId: row.branchId, destinationId: row.destinationId, documentType: row.documentType };
+}
+
+function samePayload(existing: unknown, incoming: ReturnType<typeof validatePrintJobPayload>): boolean {
+  if (!existing || typeof existing !== "object") return false;
+  const payload = existing as { type?: unknown; encoding?: unknown; data?: unknown };
+  return payload.type === incoming.type && payload.encoding === incoming.encoding && payload.data === incoming.data;
+}
+
+function sameBranchIdempotencyRequest(
+  existing: typeof printJobs.$inferSelect,
+  incoming: { destinationId: string; documentType: string; payload: ReturnType<typeof validatePrintJobPayload> },
+): boolean {
+  return existing.destinationId === incoming.destinationId && existing.documentType === incoming.documentType && samePayload(existing.payload, incoming.payload);
+}
+
+function sameLegacyIdempotencyRequest(
+  existing: typeof printJobs.$inferSelect,
+  incoming: { printerId: string; payload: ReturnType<typeof validatePrintJobPayload> },
+): boolean {
+  return existing.printerId === incoming.printerId && samePayload(existing.payload, incoming.payload);
+}
+
+function idempotencyConflictResponse() {
+  return NextResponse.json({ error: "IDEMPOTENCY_CONFLICT", code: "IDEMPOTENCY_CONFLICT", retryable: false }, { status: 409 });
 }
 
 function backpressureResponse(e: AgentQueueFullError | AgentQueuedJobsFullError | BranchQueuedJobsFullError) {
@@ -77,7 +105,10 @@ export async function POST(req: Request) {
 
     if (parsed.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-      if (existing) return NextResponse.json(jobResponse(existing), { status: 200 });
+      if (existing) {
+        if (!sameBranchIdempotencyRequest(existing, { destinationId: parsed.destinationId, documentType: parsed.documentType, payload: validatedPayload })) return idempotencyConflictResponse();
+        return NextResponse.json(jobResponse(existing), { status: 200 });
+      }
     }
 
     const resolved = await resolvePrinterForJob({ branchId: parsed.branchId, destinationId: parsed.destinationId, documentType: parsed.documentType, payloadType: validatedPayload.type });
@@ -103,7 +134,10 @@ export async function POST(req: Request) {
       }
       if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
         const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-        if (existing) return NextResponse.json(jobResponse(existing), { status: 200 });
+        if (existing) {
+          if (!sameBranchIdempotencyRequest(existing, { destinationId: parsed.destinationId, documentType: parsed.documentType, payload: validatedPayload })) return idempotencyConflictResponse();
+          return NextResponse.json(jobResponse(existing), { status: 200 });
+        }
       }
       const message = e instanceof Error ? e.message : "print job creation failed";
       console.warn(`[print/jobs] ${requestId}: ${message}`);
@@ -136,7 +170,10 @@ export async function POST(req: Request) {
 
     if (parsed.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, ownerAgent.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-      if (existing) return NextResponse.json(jobResponse(existing), { status: 200 });
+      if (existing) {
+        if (!sameLegacyIdempotencyRequest(existing, { printerId: parsed.printerId, payload: validatedPayload })) return idempotencyConflictResponse();
+        return NextResponse.json(jobResponse(existing), { status: 200 });
+      }
     }
 
     try {
@@ -153,7 +190,10 @@ export async function POST(req: Request) {
       }
       if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
         const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, ownerAgent.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-        if (existing) return NextResponse.json(jobResponse(existing), { status: 200 });
+        if (existing) {
+          if (!sameLegacyIdempotencyRequest(existing, { printerId: parsed.printerId, payload: validatedPayload })) return idempotencyConflictResponse();
+          return NextResponse.json(jobResponse(existing), { status: 200 });
+        }
       }
       const message = e instanceof Error ? e.message : "print job creation failed";
       console.warn(`[print/jobs] ${requestId}: ${message}`);

@@ -27,7 +27,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres -d app_db"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -80,18 +80,16 @@ jobs:
             exit 1
           fi
       - name: Build Next.js
-        # The production HTTP acceptance tests execute against this production build,
-        # covering the custom server layer that in-process route tests bypass.
         run: npm run build
       - name: Run unit tests (no DB)
         run: npm run test:unit
       - name: Wait for PostgreSQL
         run: |
           for i in $(seq 1 30); do
-            pg_isready -h 127.0.0.1 -p 5432 -U postgres && break
+            pg_isready -h 127.0.0.1 -p 5432 -U postgres -d app_db && break
             sleep 1
           done
-          pg_isready -h 127.0.0.1 -p 5432 -U postgres
+          pg_isready -h 127.0.0.1 -p 5432 -U postgres -d app_db
       - name: Run Drizzle migrations
         run: npm run db:migrate
       - name: Verify schema invariants
@@ -125,7 +123,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U odoo -d postgres"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -135,10 +133,10 @@ jobs:
       - name: Wait for PostgreSQL
         run: |
           for i in $(seq 1 30); do
-            pg_isready -h 127.0.0.1 -p 5432 -U odoo && break
+            pg_isready -h 127.0.0.1 -p 5432 -U odoo -d postgres && break
             sleep 1
           done
-          pg_isready -h 127.0.0.1 -p 5432 -U odoo
+          pg_isready -h 127.0.0.1 -p 5432 -U odoo -d postgres
       - name: Create Odoo test database
         env:
           PGPASSWORD: odoo

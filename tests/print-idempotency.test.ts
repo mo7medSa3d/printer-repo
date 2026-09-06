@@ -21,8 +21,8 @@ import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 
-function pdfBase64() {
-  return Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n").toString("base64");
+function pdfBase64(suffix = "") {
+  return Buffer.from(`%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n${suffix}trailer<</Root 1 R>>\n%%EOF\n`).toString("base64");
 }
 
 suite("print idempotency (Odoo → Gateway)", () => {
@@ -92,6 +92,29 @@ suite("print idempotency (Odoo → Gateway)", () => {
     expect(await jobCount(f.branchId)).toBe(1);
   });
 
+  it("same idempotency key with different payload is rejected", async () => {
+    const first = await create(jobBody("op-conflict"));
+    expect(first.status).toBe(201);
+
+    const conflicting = await create({
+      ...jobBody("op-conflict"),
+      payload: { type: "pdf", encoding: "base64", data: pdfBase64("different-document\n") },
+    });
+    expect(conflicting.status).toBe(409);
+    expect(await conflicting.json()).toMatchObject({ code: "IDEMPOTENCY_CONFLICT", retryable: false });
+    expect(await jobCount(f.branchId)).toBe(1);
+  });
+
+  it("same idempotency key with different routing inputs is rejected", async () => {
+    const first = await create(jobBody("op-routing-conflict"));
+    expect(first.status).toBe(201);
+
+    const conflicting = await create(jobBody("op-routing-conflict", { documentType: "receipt" }));
+    expect(conflicting.status).toBe(409);
+    expect(await conflicting.json()).toMatchObject({ code: "IDEMPOTENCY_CONFLICT", retryable: false });
+    expect(await jobCount(f.branchId)).toBe(1);
+  });
+
   it("concurrent retries create exactly one job", async () => {
     const key = "op-concurrent";
     const responses = await Promise.all([
@@ -119,6 +142,23 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const retry = await create(jobBody("op-timeout"));
     expect(retry.status).toBe(200);
     expect((await retry.json()).jobId).toBe(created.jobId);
+    expect(await jobCount(f.branchId)).toBe(1);
+  });
+
+  it("rejects an explicit TTL longer than 24 hours", async () => {
+    const res = await create(jobBody("op-ttl-too-long", {
+      expiresAt: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString(),
+    }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining("maximum print job TTL") });
+    expect(await jobCount(f.branchId)).toBe(0);
+  });
+
+  it("accepts an explicit TTL within the 24-hour bound", async () => {
+    const res = await create(jobBody("op-ttl-valid", {
+      expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000).toISOString(),
+    }));
+    expect(res.status).toBe(201);
     expect(await jobCount(f.branchId)).toBe(1);
   });
 

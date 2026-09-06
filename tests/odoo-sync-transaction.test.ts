@@ -182,8 +182,18 @@ suite("Odoo → Gateway sync (dependency-safe, transactional)", () => {
     const res = await syncPOST(syncRequest(f.odooKey, payload));
     expect(res.status).toBe(400);
     const body = await res.json();
+    expect(body.success).toBe(false);
     expect(body.error).toBe("SYNC_VALIDATION_FAILED");
-    expect(body.details[0].destinationId).toBe(other.destinationId);
+    expect(body.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entity: "binding",
+          bindingId: "binding_y",
+          destinationId: other.destinationId,
+          reason: expect.stringContaining("destination belongs to branch"),
+        }),
+      ]),
+    );
     expect(await count("printer_bindings", "TRUE")).toBe(0);
   });
 

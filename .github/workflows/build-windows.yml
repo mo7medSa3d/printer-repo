@@ -14,18 +14,13 @@ jobs:
   build-windows:
     runs-on: windows-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify Cargo.lock is committed
-        shell: pwsh
-        run: |
-          if (-not (Test-Path src-tauri/Cargo.lock)) {
-            Write-Host "::warning::src-tauri/Cargo.lock is NOT committed — the MSI is built from floating dependency versions. Run: cd src-tauri; cargo generate-lockfile — then commit the file."
-          } else {
-            Write-Host "Cargo.lock present."
-          }
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -41,7 +36,35 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
+          toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
+      - name: Generate or verify Cargo.lock
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src-tauri/Cargo.lock)) {
+            Write-Host "Cargo.lock is missing from the source tree; generating the lockfile from the pinned Tauri manifest."
+            Push-Location src-tauri
+            cargo generate-lockfile
+            Pop-Location
+          }
+          if (-not (Test-Path src-tauri/Cargo.lock)) { throw "Cargo.lock generation failed" }
+          Push-Location src-tauri
+          cargo metadata --locked --no-deps --format-version 1 | Out-Null
+          Pop-Location
+          Write-Host "Cargo.lock is present and Cargo accepts the manifest in --locked mode."
+      - name: Persist generated Cargo.lock
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/Cargo.lock
+          if (git diff --cached --quiet) {
+            Write-Host "Cargo.lock is already committed; nothing to persist."
+          } else {
+            git commit -m "chore: commit resolved Cargo.lock"
+            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          }
       - name: Cache Rust and Tauri
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -61,8 +84,8 @@ jobs:
             cargo tauri --version
             Write-Host "Tauri CLI restored from cache; skipping install."
           } else {
-            Write-Host "Tauri CLI not found in cache; installing..."
-            cargo install tauri-cli --version "^2" --locked
+            Write-Host "Tauri CLI not found in cache; installing 2.11.4..."
+            cargo install tauri-cli --version "=2.11.4" --locked
           }
       - name: Install dependencies
         run: npm ci
@@ -160,12 +183,13 @@ jobs:
           if (-not (Test-Path $installedExe)) { throw "Installed EXE missing after MSI install: $installDir" }
           & pwsh -NoProfile -File .\scripts\smoke-test-windows.ps1 -InstallDir $installDir
           if ($LASTEXITCODE -ne 0) { throw "Windows smoke test failed" }
-      - name: Upload Windows MSI and NSIS EXE
+      - name: Upload Windows MSI, NSIS EXE, and resolved Cargo.lock
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: Odoo-Print-Manager-Windows
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/Cargo.lock
           if-no-files-found: error
           compression-level: 9
