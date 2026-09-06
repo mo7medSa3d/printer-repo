@@ -14,9 +14,6 @@ describe("production hardening contracts", () => {
   });
 
   it("keeps the API body guard stream-safe (declared size via header only, chunked via buffered clone)", () => {
-    // Regression guard for the P0 that 500'd every mutating /api/* request:
-    // the old implementation attached a "data" listener to the ORIGINAL
-    // request and passed that same disturbed stream to Next.js.
     const server = read("server.ts");
     const guard = read("src/server/request-guard.ts");
     expect(server).toContain("guardApiRequest(req, res)");
@@ -29,17 +26,11 @@ describe("production hardening contracts", () => {
   });
 
   it("runs a real-HTTP regression test for the body guard", () => {
-    // The guard must be exercised over real TCP (unit suite), and the built
-    // server must be exercised by the Next.js acceptance test.
     expect(read("tests/request-guard-http.test.ts")).toContain("createServer");
     expect(read("tests/server-http-acceptance.test.ts")).toContain("getRequestHandler");
   });
 
   it("keeps the bundled Caddy sanitizing forwarded-IP headers and capping request bodies", () => {
-    // The gateway's IP-scoped rate limiting (TRUST_PROXY=1) is only safe
-    // when the proxy OVERWRITES X-Forwarded-For with the real client
-    // address — appending (Caddy's default) would let clients spoof their
-    // IP and bypass every IP limit.
     const caddy = read("Caddyfile");
     expect(caddy).toContain("header_up X-Forwarded-For {http.request.remote.host}");
     expect(caddy).toContain("header_up -X-Real-Ip");
@@ -56,9 +47,11 @@ describe("production hardening contracts", () => {
     expect(compose).toContain("service_completed_successfully");
     expect(compose).toContain("condition: service_healthy");
     expect(compose).toContain("PGHOST: postgres");
-    expect(compose).toContain("PGPASSWORD: ${POSTGRES_PASSWORD");
+    expect(compose).toContain("PGPASSWORD_FILE: /run/secrets/postgres_password");
+    expect(compose).not.toContain("PGPASSWORD: ${POSTGRES_PASSWORD");
     expect(compose).not.toContain("DATABASE_URL: postgresql://");
-    expect(read("src/db/index.ts")).toContain("PGPASSWORD");
+    expect(read("src/db/index.ts")).toContain("runtimeSecret(\"PGPASSWORD\")");
+    expect(read("src/lib/runtime-secret.ts")).toContain("${name}_FILE");
     expect(read("scripts/db-migrate.ts")).toContain("hasDatabaseSettings");
   });
 
