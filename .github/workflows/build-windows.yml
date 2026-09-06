@@ -18,6 +18,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -50,7 +53,7 @@ jobs:
           Pop-Location
           Write-Host "Cargo.lock is present and Cargo accepts the manifest in --locked mode."
       - name: Persist generated Cargo.lock
-        if: github.event_name == 'pull_request' && github.head_repository.full_name == github.repository
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha == github.sha
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
@@ -60,7 +63,7 @@ jobs:
             Write-Host "Cargo.lock is already committed; nothing to persist."
           } else {
             git commit -m "chore: commit resolved Cargo.lock"
-            git push origin "HEAD:${{ github.head_ref }}"
+            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
           }
       - name: Cache Rust and Tauri
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
