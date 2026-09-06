@@ -87,12 +87,7 @@ class PrintGatewayPrintJob(models.Model):
             )
             if result.gateway_job_id and result.gateway_job_id != job.gateway_job_id:
                 normalized = self._normalize_gateway_status(result.status)
-                job.write({
-                    'gateway_job_id': result.gateway_job_id,
-                    'status': normalized or job.status,
-                    'last_sync_at': fields.Datetime.now(),
-                    'error': False,
-                })
+                job.write({'gateway_job_id': result.gateway_job_id, 'status': normalized or job.status, 'last_sync_at': fields.Datetime.now(), 'error': False})
         return True
 
     def action_sync_status(self):
@@ -103,12 +98,7 @@ class PrintGatewayPrintJob(models.Model):
                 branch = job.branch_id
                 headers = branch._gateway_headers()
                 base = branch._gateway_base()
-                resp = requests.get(
-                    f"{base}/api/print/jobs",
-                    params={'id': job.gateway_job_id},
-                    headers=headers,
-                    timeout=10,
-                )
+                resp = requests.get(f"{base}/api/print/jobs", params={'id': job.gateway_job_id}, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     data = resp.json()
                     remote_status = data.get('status') or data.get('state')
@@ -117,12 +107,7 @@ class PrintGatewayPrintJob(models.Model):
                     if accepted_status is not None:
                         vals['status'] = accepted_status
                     elif remote_status is not None:
-                        _logger.warning(
-                            "Ignoring invalid or regressive Gateway status for job %s: local=%s remote=%s",
-                            job.gateway_job_id,
-                            job.status,
-                            remote_status,
-                        )
+                        _logger.warning("Ignoring invalid or regressive Gateway status for job %s: local=%s remote=%s", job.gateway_job_id, job.status, remote_status)
                     job.write(vals)
                 else:
                     _logger.warning("Job %s status sync returned %s", job.gateway_job_id, resp.status_code)
@@ -132,25 +117,15 @@ class PrintGatewayPrintJob(models.Model):
 
     @api.model
     def cron_sync_pending_jobs(self):
-        """Bounded, batched Gateway status reconciliation.
-
-        Only a bounded number of local rows are processed per invocation.
-        Jobs are grouped by branch and fetched through the Gateway's batched
-        ``/api/odoo/sync?jobIds=...`` endpoint, avoiding one HTTP request per
-        job. A hard wall-clock budget prevents a degraded Gateway from holding
-        an Odoo cron worker indefinitely.
-        """
+        """Bounded, batched Gateway status reconciliation."""
         max_jobs = 100
         max_branches = 20
         max_runtime_seconds = 30
         request_timeout_seconds = 5
+        batch_size = 50
         started = time.monotonic()
 
-        pending = self.search(
-            [('status', 'in', ['queued', 'claimed', 'printing']), ('gateway_job_id', '!=', False)],
-            order='id asc',
-            limit=max_jobs,
-        )
+        pending = self.search([('status', 'in', ['queued', 'claimed', 'printing']), ('gateway_job_id', '!=', False)], order='id asc', limit=max_jobs)
         if not pending:
             return 0
 
@@ -171,58 +146,40 @@ class PrintGatewayPrintJob(models.Model):
                 base = branch._gateway_base()
                 gateway_branch_id = str(branch.gateway_branch_id or branch.id)
                 job_ids = [job.gateway_job_id for job in jobs if job.gateway_job_id]
-                if not job_ids:
-                    continue
-
-                response = requests.get(
-                    f"{base}/api/odoo/sync",
-                    params={'branchId': gateway_branch_id, 'jobIds': ','.join(job_ids[:50])},
-                    headers=headers,
-                    timeout=request_timeout_seconds,
-                )
-                if response.status_code != 200:
-                    _logger.warning(
-                        "Batched Gateway status sync for branch %s returned HTTP %s",
-                        branch.name,
-                        response.status_code,
+                for offset in range(0, len(job_ids), batch_size):
+                    if (time.monotonic() - started) >= max_runtime_seconds:
+                        break
+                    chunk_ids = job_ids[offset:offset + batch_size]
+                    response = requests.get(
+                        f"{base}/api/odoo/sync",
+                        params={'branchId': gateway_branch_id, 'jobIds': ','.join(chunk_ids)},
+                        headers=headers,
+                        timeout=request_timeout_seconds,
                     )
-                    continue
-
-                data = response.json()
-                rows = data.get('jobs') if isinstance(data, dict) else None
-                if not isinstance(rows, list):
-                    _logger.warning("Gateway batch status response for branch %s has invalid jobs shape", branch.name)
-                    continue
-
-                by_gateway_id = {
-                    row.get('id'): row
-                    for row in rows
-                    if isinstance(row, dict) and isinstance(row.get('id'), str)
-                }
-                for job in jobs:
-                    row = by_gateway_id.get(job.gateway_job_id)
-                    if row is None:
+                    if response.status_code != 200:
+                        _logger.warning("Batched Gateway status sync for branch %s returned HTTP %s", branch.name, response.status_code)
                         continue
-                    remote_status = row.get('status') or row.get('state')
-                    accepted_status = self._should_accept_status_update(job.status, remote_status)
-                    vals = {
-                        'error': row.get('error'),
-                        'last_sync_at': fields.Datetime.now(),
-                    }
-                    if accepted_status is not None:
-                        vals['status'] = accepted_status
-                    elif remote_status is not None:
-                        _logger.warning(
-                            "Ignoring invalid or regressive batched Gateway status for job %s: local=%s remote=%s",
-                            job.gateway_job_id,
-                            job.status,
-                            remote_status,
-                        )
-                    job.write(vals)
-                    synced += 1
+                    data = response.json()
+                    rows = data.get('jobs') if isinstance(data, dict) else None
+                    if not isinstance(rows, list):
+                        _logger.warning("Gateway batch status response for branch %s has invalid jobs shape", branch.name)
+                        continue
+                    by_gateway_id = {row.get('id'): row for row in rows if isinstance(row, dict) and isinstance(row.get('id'), str)}
+                    for job in jobs.filtered(lambda j: j.gateway_job_id in chunk_ids):
+                        row = by_gateway_id.get(job.gateway_job_id)
+                        if row is None:
+                            continue
+                        remote_status = row.get('status') or row.get('state')
+                        accepted_status = self._should_accept_status_update(job.status, remote_status)
+                        vals = {'error': row.get('error'), 'last_sync_at': fields.Datetime.now()}
+                        if accepted_status is not None:
+                            vals['status'] = accepted_status
+                        elif remote_status is not None:
+                            _logger.warning("Ignoring invalid/regressive batched status for job %s: local=%s remote=%s", job.gateway_job_id, job.status, remote_status)
+                        job.write(vals)
+                        synced += 1
             except (requests.RequestException, ValueError, TypeError) as exc:
                 _logger.warning("Batched Gateway status sync failed for branch %s: %s", branch.name, str(exc))
             except Exception as exc:
                 _logger.warning("Unexpected batched Gateway status sync failure for branch %s: %s", branch.name, str(exc))
-
         return synced
