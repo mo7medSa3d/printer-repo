@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Discover the client's existing Odoo companies/branches. This creates
+         Print Gateway configuration mirrors only; it never creates branches. -->
+    <record id="cron_discover_native_odoo_branches" model="ir.cron">
+        <field name="name">Print Gateway: Discover Odoo Branches</field>
+        <field name="model_id" ref="model_print_gateway_branch"/>
+        <field name="state">code</field>
+        <field name="code">model._sync_native_companies()</field>
+        <field name="interval_number">5</field>
+        <field name="interval_type">minutes</field>
+        <field name="active">True</field>
+    </record>
+
     <!-- Cron to sync pending print job statuses from Gateway -->
     <record id="cron_sync_print_jobs" model="ir.cron">
         <field name="name">Print Gateway: Sync Job Statuses</field>
@@ -13,7 +25,7 @@
 
     <!-- Cron to sync printer/agent status from Gateway (Gateway -> Odoo) -->
     <record id="cron_sync_branch_status" model="ir.cron">
-        <field name="name">Print Gateway: Sync Branch Status</field>
+        <field name="name">Print Gateway: Sync Branch Runtime Status</field>
         <field name="model_id" ref="model_print_gateway_branch"/>
         <field name="state">code</field>
         <field name="code">model.search([('enabled','=',True)]).action_sync_from_gateway()</field>
@@ -22,9 +34,9 @@
         <field name="active">True</field>
     </record>
 
-    <!-- Cron to push branch/destination/binding config to Gateway (Odoo -> Gateway) idempotent -->
+    <!-- Cron to push branch/destination/document-type/binding config to Gateway -->
     <record id="cron_push_branch_config" model="ir.cron">
-        <field name="name">Print Gateway: Push Config to Gateway</field>
+        <field name="name">Print Gateway: Push Odoo Print Config</field>
         <field name="model_id" ref="model_print_gateway_branch"/>
         <field name="state">code</field>
         <field name="code">model.search([('enabled','=',True)]).action_sync_to_gateway()</field>
