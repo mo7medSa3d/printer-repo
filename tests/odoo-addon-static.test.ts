@@ -12,22 +12,33 @@ describe("Odoo addon static contracts", () => {
     expect(testsInit).toMatch(/from\s+\.\s+import\s+\w+/);
   });
 
-  it("never routes a single-record report with a null branch", () => {
+  it("never routes a single-record report without an explicit destination", () => {
     const src = readFileSync(path.join(ADDON, "models/ir_actions_report.py"), "utf8");
-    expect(src).toContain("Unable to determine a print destination");
-    expect(src).toContain("Resolve routing for EVERY record");
+    expect(src).toContain("No print destination is configured");
+    expect(src).toContain("for record in records:");
+    expect(src).toContain("self._determine_destination");
   });
 
   it("persists the operation id before the Gateway HTTP call", () => {
     const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
-    expect(src).toContain("idempotency_key");
-    expect(src).toContain("persist the operation ID BEFORE");
     const createFn = src.indexOf("def create_print_job");
     expect(createFn).toBeGreaterThan(-1);
-    expect(src.indexOf("Job.create", createFn)).toBeLessThan(src.indexOf("requests.post", createFn));
+
+    const createSection = src.slice(createFn);
+    const persistenceMatches = ["Job.create", "existing = Job.create"]
+      .map((needle) => createSection.indexOf(needle))
+      .filter((index) => index >= 0);
+    expect(persistenceMatches.length).toBeGreaterThan(0);
+    const persistenceIndex = Math.min(...persistenceMatches);
+    const httpIndex = createSection.indexOf("requests.post");
+
+    expect(httpIndex).toBeGreaterThan(-1);
+    expect(persistenceIndex).toBeLessThan(httpIndex);
+    expect(src).toContain("idempotency_key");
     expect(src).toContain("for attempt in (1, 2)");
     expect(src).toContain("idempotency_key = uuid.uuid4().hex");
     expect(src).toContain("with self.env.cr.savepoint()");
+
     const jobModel = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(jobModel).toContain("models.Constraint");
     expect(jobModel).toContain("UNIQUE(branch_id, idempotency_key)");
@@ -37,8 +48,9 @@ describe("Odoo addon static contracts", () => {
     const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
     expect(src).toContain("last_sync_status");
     expect(src).toContain("last_sync_error");
-    expect(src).toContain("There is no distributed transaction");
+    expect(src).toMatch(/errors\.append\([^\n]*branch\.name/);
     expect(src).toContain("Sync partially failed");
+    expect(src).toMatch(/last_sync_status['\"]\s*:\s*['\"]failed['\"]/);
   });
 
   it("requires an affirmative JSON success response for gateway push sync", () => {
@@ -56,14 +68,10 @@ describe("Odoo addon static contracts", () => {
   });
 
   it("persists logical-operation identity and retries it after restart", () => {
-    // The live report path is the async one (audit #18 removed the dead
-    // synchronous override, which had its own divergent copy of this
-    // contract). The idempotency key is generated in async_report.py and
-    // reused verbatim by the pending-job retry in print_job.py.
     const report = readFileSync(path.join(ADDON, "models/async_report.py"), "utf8");
     const job = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(report).not.toContain("current_minute");
-    expect(report).toContain("idempotency_key = uuid.uuid4().hex");
+    expect(report).toMatch(/['\"]idempotency_key['\"]\s*:\s*uuid\.uuid4\(\)\.hex/);
     expect(job).toContain("def action_submit_pending");
     expect(job).toContain("idempotency_key=job.idempotency_key");
     expect(job).toContain("json.loads(payload_raw)");
@@ -77,5 +85,13 @@ describe("Odoo addon static contracts", () => {
     expect(branch).toContain("'payloadHint': dt.payload_hint or False");
     expect(documentType).not.toContain("('pcl', 'PCL')");
     expect(printer).not.toContain("('pcl', 'PCL')");
+  });
+
+  it("keeps Odoo-native contextual routing scopes explicit", () => {
+    const mapping = readFileSync(path.join(ADDON, "models/report_mapping.py"), "utf8");
+    expect(mapping).toContain("pos_config_id");
+    expect(mapping).toContain("picking_type_id");
+    expect(mapping).toContain("UNIQUE(report_id, priority, branch_id, pos_config_id, picking_type_id)");
+    expect(mapping).toContain("0 if (mapping.pos_config_id or mapping.picking_type_id) else 1");
   });
 });

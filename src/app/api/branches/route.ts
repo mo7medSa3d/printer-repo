@@ -3,10 +3,10 @@ import { db } from "../../../db";
 import { branches } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
 import { desc } from "drizzle-orm";
-import { nanoid } from "nanoid";
 
 export const dynamic = "force-dynamic";
 
+/** Gateway branch records are Odoo-owned mirrors. */
 export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -15,24 +15,19 @@ export async function GET(req: Request) {
   return NextResponse.json(rows);
 }
 
+/**
+ * Branch creation is intentionally unavailable in Gateway.
+ * Create the company/branch in Odoo, then let POST /api/odoo/sync import it.
+ */
 export async function POST(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { name?: unknown; description?: unknown; location?: unknown; timezone?: unknown; enabled?: unknown };
-  try { body = await req.json(); } catch { body = {}; }
-
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  if (!name || name.length > 120) return NextResponse.json({ error: "name is required and must be <= 120 characters" }, { status: 400 });
-  const id = `branch_${nanoid(8)}`;
-  await db.insert(branches).values({
-    id,
-    name,
-    description: typeof body.description === "string" ? body.description : null,
-    location: typeof body.location === "string" ? body.location : null,
-    timezone: typeof body.timezone === "string" ? body.timezone : null,
-    enabled: typeof body.enabled === "boolean" ? body.enabled : true,
-  });
-
-  return NextResponse.json({ id, name }, { status: 201 });
+  return NextResponse.json(
+    {
+      error: "BRANCH_ODOO_OWNED",
+      message: "Branches are owned by Odoo. Create the branch in Odoo first and synchronize it to the Gateway.",
+    },
+    { status: 405, headers: { Allow: "GET" } },
+  );
 }

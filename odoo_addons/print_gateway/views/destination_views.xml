@@ -6,22 +6,32 @@
         <field name="arch" type="xml">
             <form string="Destination" class="o_pg_view o_pg_form">
                 <sheet>
-                    <group string="Identity">
-                        <field name="name" placeholder="e.g., POS Receipt"/>
-                        <field name="zone" placeholder="e.g., Counter 1"/>
-                        <field name="branch_id"/>
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-map-marker" role="img" aria-label="Destination"/></div>
+                        <div>
+                            <h1><field name="name"/></h1>
+                            <div class="text-muted">Business print destination</div>
+                        </div>
+                        <div class="ms-auto"><field name="enabled" widget="boolean_toggle"/></div>
+                    </div>
+                    <group string="Configuration">
+                        <field name="branch_id" options="{'no_create': True}"/>
                         <field name="destination_type"/>
-                        <field name="enabled" widget="boolean_toggle"/>
+                        <field name="zone" placeholder="Optional location label"/>
                     </group>
-                    <group string="Gateway">
-                        <field name="gateway_destination_id" help="Destination identifier as known to the Gateway, e.g. dest_pos_cairo."/>
+                    <group string="Notes">
+                        <field name="description" placeholder="Optional notes for operators"/>
                     </group>
-                    <group>
-                        <field name="description"/>
-                    </group>
-                    <group string="Printer Bindings">
-                        <field name="binding_ids"/>
-                    </group>
+                    <notebook>
+                        <page string="Printer Bindings"><field name="binding_ids"/></page>
+                        <page string="Technical" name="technical">
+                            <group><field name="gateway_destination_id" readonly="1" class="o_pg_mono"/></group>
+                        </page>
+                    </notebook>
+                    <div class="alert alert-info" role="alert">
+                        A destination is a business-facing routing point such as POS, reception, warehouse, or office.
+                        Physical printer and agent details are selected when you configure a binding.
+                    </div>
                 </sheet>
             </form>
         </field>

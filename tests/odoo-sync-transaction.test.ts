@@ -330,17 +330,30 @@ suite("Odoo → Gateway sync (dependency-safe, transactional)", () => {
     expect(row.rows[0].name).toBe("Stay");
   });
 
-  it("normalizes integer Odoo ids to strings on both sides of every comparison", async () => {
-    // Odoo sends record ids as integers; the gateway stores text ids.
-    const numericBranch = await seedFixture({ branchId: "4242" });
+  it("rejects bare numeric Odoo company ids under the canonical branch-id contract", async () => {
+    const numericBranch = await seedFixture({ branchId: "odoo_company_4242" });
     const payload = {
       branches: [{ id: 4242, name: "Numeric Branch" }],
       destinations: [{ id: 77, branchId: 4242, name: "POS", type: "pos" }],
       bindings: [{ id: 9, branchId: 4242, destinationId: 77, printerId: numericBranch.printerId, priority: 1 }],
     };
     const res = await syncPOST(syncRequest(numericBranch.odooKey, payload));
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("UNAUTHORIZED");
+    expect(await count("destinations", "id = '77' AND branch_id = 'odoo_company_4242'")).toBe(0);
+    expect(await count("printer_bindings", "id = '9' AND destination_id = '77'")).toBe(0);
+  });
+
+  it("accepts the canonical Odoo company branch id and normalizes child integer ids", async () => {
+    const canonicalBranch = await seedFixture({ branchId: "odoo_company_4242" });
+    const payload = {
+      branches: [{ id: "odoo_company_4242", name: "Canonical Branch" }],
+      destinations: [{ id: 77, branchId: "odoo_company_4242", name: "POS", type: "pos" }],
+      bindings: [{ id: 9, branchId: "odoo_company_4242", destinationId: 77, printerId: canonicalBranch.printerId, priority: 1 }],
+    };
+    const res = await syncPOST(syncRequest(canonicalBranch.odooKey, payload));
     expect(res.status).toBe(200);
-    expect(await count("destinations", "id = '77' AND branch_id = '4242'")).toBe(1);
+    expect(await count("destinations", "id = '77' AND branch_id = 'odoo_company_4242'")).toBe(1);
     expect(await count("printer_bindings", "id = '9' AND destination_id = '77'")).toBe(1);
   });
 });

@@ -11,6 +11,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+const MANAGER_TOKEN_KEY = "odoo-print-manager-session";
+const MANAGER_AUTH_EVENT = "odoo-print-manager-auth-changed";
+const REQUEST_TIMEOUT_MS = 10_000;
+
 export interface AgentStatus {
   running: boolean;
   service: string;
@@ -48,6 +52,128 @@ export function normalizeGatewayUrl(raw: string): string {
   } catch {
     throw new Error("Gateway URL is invalid");
   }
+}
+
+function getManagerToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const token = window.sessionStorage.getItem(MANAGER_TOKEN_KEY);
+    return token && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function setManagerToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(MANAGER_TOKEN_KEY, token);
+    window.dispatchEvent(new Event(MANAGER_AUTH_EVENT));
+  } catch {
+    throw new Error("Unable to store the manager session in this application session");
+  }
+}
+
+export function clearManagerToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(MANAGER_TOKEN_KEY);
+    window.dispatchEvent(new Event(MANAGER_AUTH_EVENT));
+  } catch {
+    // Best effort during logout / expiry recovery.
+  }
+}
+
+export interface ManagerSessionStatus {
+  authenticated: boolean;
+  expiresAt?: string;
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function loginManager(
+  gatewayUrl: string,
+  username: string,
+  password: string,
+): Promise<ManagerSessionStatus> {
+  const base = normalizeGatewayUrl(gatewayUrl);
+  if (!username.trim() || !password) throw new Error("Username and password are required");
+
+  const res = await fetchWithTimeout(`${base}/api/auth/manager/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Odoo-Print-Desktop": "1",
+    },
+    body: JSON.stringify({ username: username.trim(), password }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    expiresAt?: string;
+    accessToken?: string;
+    error?: string;
+  };
+  if (!res.ok || !data.ok || !data.accessToken) {
+    const err: Error & { status?: number } = new Error(data.error || `Manager login failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  setManagerToken(data.accessToken);
+  return { authenticated: true, expiresAt: data.expiresAt };
+}
+
+export async function getManagerSession(gatewayUrl: string): Promise<ManagerSessionStatus> {
+  const base = normalizeGatewayUrl(gatewayUrl);
+  const token = getManagerToken();
+  if (!token) return { authenticated: false };
+
+  const res = await fetchWithTimeout(`${base}/api/auth/manager/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401 || res.status === 403) {
+    clearManagerToken();
+    return { authenticated: false };
+  }
+  if (!res.ok) throw new Error(`Manager session check failed (${res.status})`);
+  const data = (await res.json()) as { authenticated?: boolean; exp?: number };
+  if (!data.authenticated || typeof data.exp !== "number") {
+    clearManagerToken();
+    return { authenticated: false };
+  }
+  return { authenticated: true, expiresAt: new Date(data.exp * 1000).toISOString() };
+}
+
+export async function logoutManager(gatewayUrl: string): Promise<void> {
+  const base = normalizeGatewayUrl(gatewayUrl);
+  const token = getManagerToken();
+  try {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    await fetchWithTimeout(`${base}/api/auth/manager/logout`, {
+      method: "POST",
+      headers,
+    });
+  } finally {
+    clearManagerToken();
+  }
+}
+
+export function isManagerAuthenticated(): boolean {
+  return !!getManagerToken();
+}
+
+export function onManagerAuthChanged(handler: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(MANAGER_AUTH_EVENT, handler);
+  return () => window.removeEventListener(MANAGER_AUTH_EVENT, handler);
 }
 
 export function getAgentStatus(): Promise<AgentStatus> {
@@ -164,21 +290,22 @@ export function setAutostart(enabled: boolean): Promise<string> {
   return invoke<string>("set_autostart", { enabled });
 }
 
-export interface GatewayHealth {
-  ok?: boolean;
-  agents?: { total?: number; online?: number };
-  printers?: { total?: number; online?: number };
-  jobs?: { queued?: number; failed?: number };
-  error?: string;
-}
-
 export async function fetchGatewayJobs(
   gatewayUrl: string
 ): Promise<Record<string, unknown>[]> {
   const base = normalizeGatewayUrl(gatewayUrl);
-  const res = await fetch(`${base}/api/jobs?limit=50`, {
-    credentials: "include",
+  const token = getManagerToken();
+  if (!token) {
+    const err: Error & { status?: number } = new Error("Manager authentication required");
+    err.status = 401;
+    throw err;
+  }
+  const res = await fetchWithTimeout(`${base}/api/jobs?limit=50`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
+  if (res.status === 401 || res.status === 403) {
+    clearManagerToken();
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     const err: Error & { status?: number } = new Error(

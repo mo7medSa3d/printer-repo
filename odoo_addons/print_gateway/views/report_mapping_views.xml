@@ -4,75 +4,84 @@
         <field name="name">print_gateway.report_mapping.form</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <form string="Report Mapping" class="o_pg_view o_pg_form">
+            <form string="Print Rule" class="o_pg_view o_pg_form">
                 <sheet>
-                    <group string="Mapping">
-                        <field name="name" readonly="1"/>
-                        <field name="active" widget="boolean_toggle"/>
-                        <field name="gateway_enabled" widget="boolean_toggle"/>
-                        <field name="priority" help="Lower number = higher priority. When multiple mappings match a report, the lowest priority wins."/>
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-file-text" role="img" aria-label="Print Rule"/></div>
+                        <div>
+                            <h1>Print Rule</h1>
+                            <div class="text-muted">Tell Odoo where a report should print. The rule is applied automatically when the document is printed.</div>
+                        </div>
+                        <div class="ms-auto"><field name="gateway_enabled" widget="boolean_toggle"/></div>
+                    </div>
+                    <group string="What is being printed">
+                        <field name="report_id" options="{'no_create': True}" placeholder="Select an Odoo report"/>
+                        <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="Select a document type"/>
                     </group>
-                    <group string="Report Identification (priority: report &gt; xml_id &gt; report_name &gt; model)">
-                        <field name="report_id" options="{'no_create': True}" placeholder="Select exact report action"/>
-                        <field name="report_xml_id" placeholder="e.g., sale.action_report_saleorder"/>
-                        <field name="report_name" placeholder="e.g., sale.report_saleorder_document"/>
-                        <field name="model_name" placeholder="e.g., sale.order"/>
-                    </group>
-                    <group string="Routing">
-                        <field name="document_type_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]" placeholder="e.g., Receipt, Invoice"/>
-                        <field name="document_type_name" placeholder="Fallback string: order, invoice, delivery..."/>
+                    <group string="Where it applies">
                         <field name="branch_id" options="{'no_create': True}"/>
-                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id)]"/>
+                        <field name="pos_config_id" options="{'no_create': True}" domain="[('company_id','=',branch_id.company_id)]" placeholder="Optional: only this POS"/>
+                        <field name="picking_type_id" options="{'no_create': True}" domain="[('company_id','=',branch_id.company_id)]" placeholder="Optional: only this operation type"/>
                     </group>
+                    <group string="Print destination">
+                        <field name="destination_id" options="{'no_create': True}" domain="[('branch_id','=',branch_id),('enabled','=',True)]" placeholder="Select a destination"/>
+                    </group>
+                    <notebook>
+                        <page string="Advanced" name="advanced">
+                            <group string="Matching">
+                                <field name="priority" help="Lower number is preferred. Context-specific rules take precedence over a branch-wide rule at the same priority."/>
+                                <field name="active" widget="boolean_toggle"/>
+                            </group>
+                            <group string="Technical fallback">
+                                <field name="report_xml_id" class="o_pg_mono"/>
+                                <field name="report_name" class="o_pg_mono"/>
+                                <field name="model_name" class="o_pg_mono"/>
+                                <field name="document_type_name"/>
+                                <field name="payload_type" readonly="1"/>
+                            </group>
+                        </page>
+                    </notebook>
                     <div class="alert alert-info" role="alert">
-                        <b>Queue semantics:</b> Gateway-enabled Odoo reports are persisted as durable print operations first.
-                        PDF rendering and Gateway submission happen in the background. A transport/render failure stays queued for retry;
-                        it does not silently fall back to a different print path after the user request has completed.
+                        <b>Automatic routing:</b> Odoo identifies the report and its native business context first.
+                        A POS-specific or warehouse-operation rule is preferred when present; otherwise the branch-wide rule is used.
+                        No destination is typed during printing.
                     </div>
                 </sheet>
             </form>
         </field>
     </record>
-
     <record id="view_print_gateway_report_mapping_tree" model="ir.ui.view">
         <field name="name">print_gateway.report_mapping.list</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
-            <list string="Report Mappings" class="o_pg_view o_pg_list" decoration-bf="priority == 1" decoration-success="gateway_enabled" decoration-muted="not gateway_enabled">
-                <field name="name"/>
+            <list string="Print Rules" class="o_pg_view o_pg_list"
+                  decoration-success="gateway_enabled and active"
+                  decoration-muted="not gateway_enabled or not active">
                 <field name="report_id"/>
-                <field name="report_xml_id"/>
-                <field name="report_name"/>
-                <field name="model_name"/>
-                <field name="document_type_id"/>
-                <field name="document_type_name"/>
                 <field name="branch_id"/>
+                <field name="pos_config_id" optional="show"/>
+                <field name="picking_type_id" optional="show"/>
+                <field name="document_type_id"/>
                 <field name="destination_id"/>
                 <field name="gateway_enabled" widget="boolean_toggle"/>
-                <field name="priority"/>
-                <field name="active" widget="boolean_toggle"/>
+                <field name="active" widget="boolean_toggle" optional="show"/>
             </list>
         </field>
     </record>
-
     <record id="view_print_gateway_report_mapping_search" model="ir.ui.view">
         <field name="name">print_gateway.report_mapping.search</field>
         <field name="model">print_gateway.report_mapping</field>
         <field name="arch" type="xml">
             <search>
                 <field name="name"/>
-                <field name="report_xml_id"/>
-                <field name="model_name"/>
-                <field name="report_name"/>
+                <field name="report_id"/>
                 <field name="branch_id"/>
                 <field name="document_type_id"/>
+                <field name="destination_id"/>
+                <field name="pos_config_id"/>
+                <field name="picking_type_id"/>
                 <filter string="Active" name="active" domain="[('active','=',True)]"/>
                 <filter string="Gateway Enabled" name="gateway_enabled" domain="[('gateway_enabled','=',True)]"/>
-                <separator/>
-                <filter string="Sale Order" name="sale_order" domain="[('model_name','=','sale.order')]"/>
-                <filter string="Invoice" name="invoice" domain="[('model_name','=','account.move')]"/>
-                <filter string="Delivery" name="delivery" domain="[('model_name','=','stock.picking')]"/>
-                <separator/>
                 <group>
                     <filter string="Branch" name="branch" context="{'group_by': 'branch_id'}"/>
                     <filter string="Document Type" name="document_type" context="{'group_by': 'document_type_id'}"/>
@@ -80,20 +89,13 @@
             </search>
         </field>
     </record>
-
     <record id="action_print_gateway_report_mapping" model="ir.actions.act_window">
-        <field name="name">Report Mappings</field>
+        <field name="name">Print Rules</field>
         <field name="res_model">print_gateway.report_mapping</field>
         <field name="view_mode">list,form</field>
         <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">
-                Create your first report mapping!
-            </p>
-            <p>
-                Map Odoo QWeb PDF reports to Print Gateway document types.
-                Priority: Report &gt; XML ID &gt; Report Name &gt; Model.
-                Report mappings intentionally produce PDF payloads only; RAW/ESC-POS jobs use the direct print-job APIs instead.
-            </p>
+            <p class="o_view_nocontent_smiling_face">No print rules configured yet.</p>
+            <p>Choose the Odoo report, branch, and destination once. Add a POS or warehouse operation when that report needs a different destination.</p>
         </field>
     </record>
 </odoo>

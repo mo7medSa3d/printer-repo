@@ -79,7 +79,17 @@ export async function POST(req: Request) {
   }
 
   logInfo("auth.login.success", { requestId, ip });
-  const res = NextResponse.json({ ok: true, expiresAt: sess.exp.toISOString() });
+  const desktopClient = req.headers.get("x-odoo-print-desktop") === "1";
+  const bodyOut: { ok: true; expiresAt: string; accessToken?: string } = {
+    ok: true,
+    expiresAt: sess.exp.toISOString(),
+  };
+  // The desktop shell cannot rely on cross-site HttpOnly cookies. Give only
+  // the explicitly identified desktop client the short-lived bearer token;
+  // browser login remains cookie-only and the cookie is still HttpOnly.
+  if (desktopClient) bodyOut.accessToken = sess.token;
+
+  const res = NextResponse.json(bodyOut);
   res.headers.set("Set-Cookie", managerCookieHeader(sess.token, sess.exp));
   res.headers.set("X-Request-Id", requestId);
   return res;

@@ -36,11 +36,9 @@ describe("regression: collision-safe job IDs removed from route layer", () => {
     expect(branch).toContain("requests.post");
     expect(branch).toContain("for attempt in (1, 2)");
 
-    // The idempotency key for the report path is generated in the live async
-    // path (audit #18 removed the dead synchronous override).
     const report = readFileSync("odoo_addons/print_gateway/models/async_report.py", "utf8");
-    expect(report).toContain("idempotency_key = uuid.uuid4().hex");
-    expect(report).toContain("'idempotency_key': idempotency_key");
+    expect(report).toMatch(/['\"]idempotency_key['\"]\s*:\s*uuid\.uuid4\(\)\.hex/);
+    expect(report).toContain("idempotency_key=job.idempotency_key");
   });
 });
 
@@ -83,18 +81,19 @@ describe("regression: no mutex held during network (agent)", () => {
   });
 });
 
-describe("regression: Odoo payload_type dead UI fixed", () => {
-  it("ir_actions_report consumes payload_type", () => {
+describe("regression: Odoo payload_type contract", () => {
+  it("ir_actions_report always emits QWeb reports as honest PDF payloads", () => {
     const src = readFileSync("odoo_addons/print_gateway/models/ir_actions_report.py", "utf8");
     expect(src).toContain("payload_type");
     expect(src).toContain("desired_type");
-    expect(src).toContain("type': payload_type");
+    expect(src).toContain("'type': 'pdf'");
+    expect(src).toContain("no PDF-to-ESC/POS conversion is configured");
   });
   it("report_mapping help is honest", () => {
     const src = readFileSync("odoo_addons/print_gateway/models/report_mapping.py", "utf8");
     expect(src).not.toContain("will try to convert");
-    expect(src).toContain("PDF reports remain application/pdf");
-    expect(src).toContain("PDF is never relabeled as raw");
+    expect(src).toContain("QWeb reports remain PDF payloads");
+    expect(src).toContain("RAW/ESC/POS jobs use the direct print-job API");
   });
 });
 

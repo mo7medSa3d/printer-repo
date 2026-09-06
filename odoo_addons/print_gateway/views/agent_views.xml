@@ -4,30 +4,41 @@
         <field name="name">print_gateway.agent.form</field>
         <field name="model">print_gateway.agent</field>
         <field name="arch" type="xml">
-            <form string="Agent" class="o_pg_view o_pg_form">
+            <form string="Agent" class="o_pg_view o_pg_form" create="0" delete="0">
                 <header>
                     <button name="action_sync_status" type="object" string="Sync Status" class="oe_highlight"/>
                 </header>
                 <sheet>
-                    <group string="Identity">
-                        <field name="name"/>
-                        <field name="hostname" placeholder="e.g., WKS-CAIRO-01"/>
-                        <field name="os" placeholder="e.g., windows"/>
-                        <field name="branch_id"/>
-                    </group>
-                    <group string="Gateway">
-                        <field name="gateway_agent_id"/>
-                        <field name="status" readonly="1" widget="badge"/>
+                    <div class="o_pg_record_header">
+                        <div class="o_pg_record_icon"><i class="fa fa-server" role="img" aria-label="Agent"/></div>
+                        <div>
+                            <h1><field name="name" readonly="1"/></h1>
+                            <div class="text-muted">Gateway-managed agent</div>
+                        </div>
+                        <div class="ms-auto">
+                            <field name="status" readonly="1" widget="badge"/>
+                        </div>
+                    </div>
+                    <group string="Assignment">
+                        <field name="branch_id" readonly="1" options="{'no_create': True}"/>
                         <field name="last_seen_at" readonly="1"/>
+                        <field name="lifecycle" readonly="1" widget="badge"/>
                     </group>
                     <notebook>
                         <page string="Printers">
                             <field name="printer_ids" readonly="1"/>
                         </page>
+                        <page string="Technical" name="technical">
+                            <group>
+                                <field name="hostname" readonly="1"/>
+                                <field name="os" readonly="1"/>
+                                <field name="gateway_agent_id" readonly="1" class="o_pg_mono"/>
+                            </group>
+                        </page>
                     </notebook>
                     <div class="alert alert-info" role="alert">
-                        Agent details and status are synced from the Gateway. Use <b>Sync Status</b> to refresh this record;
-                        the local agent maintains its own registration and heartbeat over the gateway protocol.
+                        This agent is imported from the Print Gateway. Identity, branch assignment, and connection details
+                        are maintained by the Gateway and are not entered manually in Odoo.
                     </div>
                 </sheet>
             </form>
@@ -37,12 +48,12 @@
         <field name="name">print_gateway.agent.list</field>
         <field name="model">print_gateway.agent</field>
         <field name="arch" type="xml">
-            <list string="Agents" class="o_pg_view o_pg_list" decoration-success="status=='online'" decoration-danger="status=='offline'" decoration-muted="status=='unknown'">
+            <list string="Agents" class="o_pg_view o_pg_list" create="0" delete="0"
+                  decoration-success="status=='online'" decoration-danger="status=='offline'" decoration-muted="status=='unknown'">
                 <field name="name"/>
                 <field name="branch_id"/>
                 <field name="status" widget="badge"/>
-                <field name="hostname" optional="show"/>
-                <field name="os" optional="show"/>
+                <field name="lifecycle" widget="badge" optional="show"/>
                 <field name="last_seen_at"/>
             </list>
         </field>
@@ -51,33 +62,24 @@
         <field name="name">print_gateway.agent.kanban</field>
         <field name="model">print_gateway.agent</field>
         <field name="arch" type="xml">
-            <!-- Fleet view of agents, styled with the shared brand tokens. -->
-            <kanban class="o_pg_view o_pg_kanban" sample="1">
+            <kanban class="o_pg_view o_pg_kanban" sample="1" create="0" delete="0">
                 <field name="status"/>
+                <field name="lifecycle"/>
                 <templates>
                     <t t-name="kanban-box">
                         <div class="oe_kanban_global_click p-3">
                             <div class="d-flex align-items-start gap-2">
-                                <span class="o_pg_card_icon me-2">
-                                    <i class="fa fa-server" role="img" aria-label="Agent"/>
-                                </span>
+                                <span class="o_pg_card_icon me-2"><i class="fa fa-server" role="img" aria-label="Agent"/></span>
                                 <div class="flex-grow-1 overflow-hidden">
-                                    <div class="o_pg_card_title text-truncate">
-                                        <field name="name"/>
-                                    </div>
-                                    <div class="o_pg_card_meta text-truncate">
-                                        <field name="branch_id"/>
-                                    </div>
+                                    <div class="o_pg_card_title text-truncate"><field name="name"/></div>
+                                    <div class="o_pg_card_meta text-truncate"><field name="branch_id"/></div>
                                 </div>
                                 <span t-attf-class="o_pg_pill #{record.status.raw_value == 'online' ? 'o_pg_pill_ok' : record.status.raw_value == 'offline' ? 'o_pg_pill_bad' : ''}">
                                     <field name="status"/>
                                 </span>
                             </div>
-                            <div class="o_pg_card_meta mt-2 text-truncate">
-                                <field name="hostname"/> · <field name="os"/>
-                            </div>
-                            <div class="o_pg_card_mono mt-1 text-truncate">
-                                <field name="gateway_agent_id"/>
+                            <div class="o_pg_card_meta mt-2">
+                                <span>Last seen: </span><field name="last_seen_at"/>
                             </div>
                         </div>
                     </t>
@@ -89,14 +91,10 @@
         <field name="name">Agents</field>
         <field name="res_model">print_gateway.agent</field>
         <field name="view_mode">list,kanban,form</field>
+        <field name="context">{'create': False, 'delete': False}</field>
         <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">
-                No agents yet — agents register themselves from the Gateway.
-            </p>
-            <p>
-                Agents appear here after the first successful sync from the Gateway. A green row means the agent
-                heartbeat is recent; red means it has not reported since the configured timeout.
-            </p>
+            <p class="o_view_nocontent_smiling_face">No agents have been synchronized yet.</p>
+            <p>Agents register with the Gateway and appear here automatically. Use <b>Sync Status</b> to refresh the runtime state.</p>
         </field>
     </record>
 </odoo>
