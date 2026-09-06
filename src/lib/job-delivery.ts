@@ -48,6 +48,9 @@ const CLAIM_RETURNING = sql`
  * Returns null when the job is not eligible. Eligibility is checked again at
  * the actual delivery boundary: branch enabled, agent active+online and
  * printer active+online must all hold while the owner rows are locked.
+ * PostgreSQL's `FOR UPDATE SKIP LOCKED` queue pattern is used here; because
+ * the query also locks the ownership rows explicitly, the concrete clause is
+ * `FOR UPDATE OF p, b, a, pr SKIP LOCKED`.
  */
 export async function claimJobForDelivery(jobId: string, agentId: string): Promise<ClaimedJobRow | null> {
   return db.transaction(async (tx) => {
