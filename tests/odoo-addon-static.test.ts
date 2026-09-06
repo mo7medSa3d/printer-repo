@@ -12,10 +12,11 @@ describe("Odoo addon static contracts", () => {
     expect(testsInit).toMatch(/from\s+\.\s+import\s+\w+/);
   });
 
-  it("never routes a single-record report with a null branch", () => {
+  it("never routes a single-record report without an explicit destination", () => {
     const src = readFileSync(path.join(ADDON, "models/ir_actions_report.py"), "utf8");
-    expect(src).toContain("Unable to determine a print destination");
-    expect(src).toContain("Resolve routing for EVERY record");
+    expect(src).toContain("No print destination is configured");
+    expect(src).toContain("for record in records:");
+    expect(src).toContain("self._determine_destination");
   });
 
   it("persists the operation id before the Gateway HTTP call", () => {
@@ -56,10 +57,6 @@ describe("Odoo addon static contracts", () => {
   });
 
   it("persists logical-operation identity and retries it after restart", () => {
-    // The live report path is the async one (audit #18 removed the dead
-    // synchronous override, which had its own divergent copy of this
-    // contract). The idempotency key is generated in async_report.py and
-    // reused verbatim by the pending-job retry in print_job.py.
     const report = readFileSync(path.join(ADDON, "models/async_report.py"), "utf8");
     const job = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
     expect(report).not.toContain("current_minute");
@@ -77,5 +74,13 @@ describe("Odoo addon static contracts", () => {
     expect(branch).toContain("'payloadHint': dt.payload_hint or False");
     expect(documentType).not.toContain("('pcl', 'PCL')");
     expect(printer).not.toContain("('pcl', 'PCL')");
+  });
+
+  it("keeps Odoo-native contextual routing scopes explicit", () => {
+    const mapping = readFileSync(path.join(ADDON, "models/report_mapping.py"), "utf8");
+    expect(mapping).toContain("pos_config_id");
+    expect(mapping).toContain("picking_type_id");
+    expect(mapping).toContain("UNIQUE(report_id, priority, branch_id, pos_config_id, picking_type_id)");
+    expect(mapping).toContain("0 if (mapping.pos_config_id or mapping.picking_type_id) else 1");
   });
 });
