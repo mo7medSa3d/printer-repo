@@ -19,6 +19,9 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          MANAGER_PASSWORD_HASH: ci-salt:0123456789012345678901234567890123456789012345678901234567890123
+          TRUST_PROXY_SECRET: ci-only-proxy-secret-012345678901234567890123456789
+          ODOO_DATABASE_NAME: app_db
           GATEWAY_DOMAIN: print.example.com
 
       - name: Start stack
@@ -26,6 +29,9 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          MANAGER_PASSWORD_HASH: ci-salt:0123456789012345678901234567890123456789012345678901234567890123
+          TRUST_PROXY_SECRET: ci-only-proxy-secret-012345678901234567890123456789
+          ODOO_DATABASE_NAME: app_db
           GATEWAY_DOMAIN: print.example.com
 
       - name: Verify migration and gateway health
@@ -33,6 +39,9 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          MANAGER_PASSWORD_HASH: ci-salt:0123456789012345678901234567890123456789012345678901234567890123
+          TRUST_PROXY_SECRET: ci-only-proxy-secret-012345678901234567890123456789
+          ODOO_DATABASE_NAME: app_db
           GATEWAY_DOMAIN: print.example.com
         run: |
           set -euo pipefail
@@ -74,6 +83,9 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          MANAGER_PASSWORD_HASH: ci-salt:0123456789012345678901234567890123456789012345678901234567890123
+          TRUST_PROXY_SECRET: ci-only-proxy-secret-012345678901234567890123456789
+          ODOO_DATABASE_NAME: app_db
           GATEWAY_DOMAIN: print.example.com
 
       - name: Tear down
@@ -82,4 +94,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-only-password
           GATEWAY_JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+          MANAGER_PASSWORD_HASH: ci-salt:0123456789012345678901234567890123456789012345678901234567890123
+          TRUST_PROXY_SECRET: ci-only-proxy-secret-012345678901234567890123456789
+          ODOO_DATABASE_NAME: app_db
           GATEWAY_DOMAIN: print.example.com
