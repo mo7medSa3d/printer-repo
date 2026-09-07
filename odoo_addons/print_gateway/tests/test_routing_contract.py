@@ -30,15 +30,18 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         return self.config
 
     def _job(self, key):
-        return self.env['print_gateway.print_job'].create_operation(
-            company=self.company,
-            gateway_config=self.config,
-            printer_id='printer_runtime_1',
-            destination='Sales',
-            document_type='order',
-            payload={'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
-            idempotency_key=key,
-        )
+        router = self.env['print_gateway.print_router']
+        job = router._persist_durable_job({
+            'company': self.company,
+            'gateway_config': self.config,
+            'printer_id': 'printer_runtime_1',
+            'destination': 'Sales',
+            'document_type': 'order',
+            'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
+            'idempotency_key': key,
+        })
+        self.env.invalidate_all()
+        return self.env['print_gateway.print_job'].browse(job.id)
 
     def test_binding_requires_deterministic_native_destination(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
