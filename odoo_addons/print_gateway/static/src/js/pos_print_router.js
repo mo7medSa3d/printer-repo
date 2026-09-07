@@ -47,7 +47,7 @@ patch(PosStore.prototype, {
                     "pos.order",
                     "action_print_gateway_receipt",
                     [[orderId]],
-                    { image, print_bill_action_triggered: Boolean(printBillActionTriggered) },
+                    { image },
                     true
                 );
                 this.notification.add(result?.message || "Print job accepted.", { type: "success" });
@@ -69,9 +69,19 @@ patch(PosStore.prototype, {
         return { ...data, __gateway_order_id: order.id, __gateway_reprint: Boolean(reprint) };
     },
 
+    generateOrderChange(order, orderChange, categories, reprint = false) {
+        if (!orderChange.__gateway_print_id) {
+            orderChange.__gateway_print_id = crypto.randomUUID();
+        }
+        const result = super.generateOrderChange(order, orderChange, categories, reprint);
+        result.orderData.__gateway_print_id = orderChange.__gateway_print_id;
+        return result;
+    },
+
     async printOrderChanges(data, printer) {
         const orderId = data?.orderData?.__gateway_order_id;
         const reprint = Boolean(data?.orderData?.__gateway_reprint);
+        const operationId = data?.orderData?.__gateway_print_id;
         if (!orderId) {
             return super.printOrderChanges(data, printer);
         }
@@ -86,7 +96,7 @@ patch(PosStore.prototype, {
                 "pos.order",
                 "action_print_gateway_kitchen",
                 [[orderId]],
-                { printer_id: printer.config.id, image, reprint },
+                { printer_id: printer.config.id, image, reprint, operation_id: operationId },
                 true
             );
             return {
