@@ -1,0 +1,96 @@
+import { NextResponse } from "next/server";
+import { db } from "../../../db";
+import { agents } from "../../../db/schema";
+import { and, eq, gt } from "drizzle-orm";
+import { generateSecret, hashSecret, isValidPairingCode } from "../../../lib/agent-auth";
+import {
+  clientIpFrom,
+  inspectPairingRateLimit,
+  recordPairingFailure,
+  recordPairingSuccess,
+} from "../../../lib/auth-rate-limit";
+import { hasBodyOverLimit } from "../../../lib/request-limits";
+import { z } from "zod";
+
+export const dynamic = "force-dynamic";
+
+const MAX_PAIRING_BODY_BYTES = 64 * 1024;
+
+const pairingSchema = z.object({
+  pairingCode: z.string().trim().min(6).max(6).refine(isValidPairingCode, "pairingCode must be exactly 6 characters from the approved alphabet"),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  agentId: z.string().trim().min(1).max(120).optional(),
+}).strict();
+
+export async function POST(req: Request) {
+  try {
+    if (hasBodyOverLimit(req, MAX_PAIRING_BODY_BYTES)) {
+      return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+    }
+
+    const body = await req.json();
+    if (body?.metadata && JSON.stringify(body.metadata).length > 32_768) {
+      return NextResponse.json({ error: "metadata exceeds 32KB" }, { status: 400 });
+    }
+
+    const parsed = pairingSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "pairingCode must be exactly 6 characters from the approved alphabet" }, { status: 400 });
+    }
+
+    const normalizedCode = parsed.data.pairingCode.trim().toUpperCase();
+    const ip = clientIpFrom(req);
+
+    try {
+      const decision = await inspectPairingRateLimit(ip);
+      if (!decision.allowed) {
+        const response = NextResponse.json({ error: "Too many pairing attempts. Try again later." }, { status: 429 });
+        response.headers.set("Retry-After", String(decision.retryAfterSec));
+        return response;
+      }
+    } catch {
+      return NextResponse.json({ error: "Pairing temporarily unavailable" }, { status: 503 });
+    }
+
+    const conditions = [
+      eq(agents.pairingCode, normalizedCode),
+      gt(agents.pairingCodeExpiresAt, new Date()),
+      eq(agents.lifecycle, "active"),
+    ];
+    if (parsed.data.agentId) conditions.push(eq(agents.id, parsed.data.agentId));
+
+    const agent = await db.query.agents.findFirst({ where: and(...conditions) });
+    if (!agent) {
+      try { await recordPairingFailure(ip); } catch {}
+      return NextResponse.json({ error: "Unknown, disabled, retired, or expired agent registration" }, { status: 400 });
+    }
+
+    const secret = generateSecret();
+    const now = new Date();
+    const updated = await db.update(agents).set({
+      pairingCode: null,
+      pairingCodeExpiresAt: null,
+      secret: hashSecret(secret),
+      status: "online",
+      metadata: parsed.data.metadata ?? {},
+      lastSeenAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(agents.id, agent.id),
+      eq(agents.pairingCode, normalizedCode),
+      eq(agents.lifecycle, "active"),
+      gt(agents.pairingCodeExpiresAt, now),
+    )).returning({ id: agents.id });
+
+    if (!updated.length) {
+      try { await recordPairingFailure(ip); } catch {}
+      return NextResponse.json({ error: "Pairing code was consumed or expired; retry with a fresh code" }, { status: 409 });
+    }
+
+    try { await recordPairingSuccess(ip); } catch {}
+    return NextResponse.json({ agentId: agent.id, secret }, { status: 200 });
+  } catch (error) {
+    console.error("[api/pair] pairing failed", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}

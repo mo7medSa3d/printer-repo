@@ -38,7 +38,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const reenable = agent.lifecycle === "disabled" && next === "active";
   const pairingCode = reenable ? generatePairingCode() : null;
   await db.transaction(async (tx) => {
-    await tx.update(agents).set({ lifecycle: next, secret: null, pairingCode, pairingCodeExpiresAt: pairingCode ? new Date(now.getTime() + 30 * 60 * 1000) : null, status: "offline", updatedAt: now }).where(eq(agents.id, id));
+    await tx.update(agents).set({ lifecycle: next, secret: null, pairingCode, pairingCodeExpiresAt: pairingCode ? new Date(now.getTime() + 10 * 60 * 1000) : null, status: "offline", updatedAt: now }).where(eq(agents.id, id));
     if (next !== "active") {
       await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(eq(printers.agentId, id));
     }
