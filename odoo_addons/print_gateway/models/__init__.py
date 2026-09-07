@@ -5,3 +5,4 @@ from . import print_job
 from . import print_router
 from . import ir_actions_report
 from . import pos_order
+from . import pos_session
