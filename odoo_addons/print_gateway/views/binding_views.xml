@@ -24,7 +24,7 @@
             <form string="Print Gateway Binding">
                 <sheet>
                     <group string="Business Context">
-                        <field name="company_id" string="Odoo Company"/>
+                        <field name="company_id" string="Odoo Company" domain="[('parent_id', '=', False)]"/>
                         <field name="branch_id" string="Odoo Branch" domain="[('parent_id', '=', company_id)]"
                                invisible="not company_id" required="1"/>
                         <field name="destination_type" string="Odoo Destination Type"/>
