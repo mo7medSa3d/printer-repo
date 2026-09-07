@@ -1,17 +1,6 @@
 # Installation
 
-Three parts, installed independently: the **Gateway** (server), the **Agent + Desktop Manager** (each Windows PC that has printers), and the **Odoo addon**.
-
-## Prerequisites
-
-| Component | Requirements |
-|---|---|
-| Gateway | Node ≥ 24.20.0, PostgreSQL, and a TLS-terminating reverse proxy for production |
-| Agent PC | Windows 10 1809+ / 11 / Server 2019+, administrator rights for the service and `C:\ProgramData` ACLs, outbound HTTPS/WSS to the gateway (no inbound ports) |
-| Odoo | Odoo 19 Community/compatible deployment with `base` and the business modules required by the customer's reports/workflow |
-| Build host (installer) | Windows + Node ≥ 24.20.0 + Go 1.27.1 + Rust + the repository's Tauri CLI workflow |
-
----
+The system has three runtime components: Gateway, Windows Agent/Desktop Manager, and the Odoo integration addon.
 
 ## 1. Gateway
 
@@ -19,139 +8,75 @@ Three parts, installed independently: the **Gateway** (server), the **Agent + De
 git clone https://github.com/mo7medSa3d/printer-repo.git
 cd printer-repo
 npm ci
-cp .env.example .env      # then edit
-```
-
-Minimum environment (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)):
-
-```bash
-DATABASE_URL=postgresql://user:pass@host:5432/print_gateway
-GATEWAY_JWT_SECRET=$(openssl rand -hex 32)
-MANAGER_USERNAME=admin
-MANAGER_PASSWORD_HASH=<salt:derived-hex>
-PORT=3000
-```
-
-For development, apply migrations with:
-
-```bash
+cp .env.example .env
 npm run db:migrate
-```
-
-For Docker production/staging deployments, use the dedicated `migrate` Compose service. Do not manually replay the historical migration list from this document.
-
-Build and run — `server.ts` serves Next.js **and** the agent WebSocket on the same port:
-
-```bash
 npm run build
 npm start
 ```
 
-`next build` tolerates a missing `DATABASE_URL`; the runtime does not.
+Configure PostgreSQL, manager authentication, and the production TLS reverse proxy according to deployment policy.
 
-Verify: `curl -s http://localhost:3000/api/health` → `{"ok":true}`, then sign in at
-`/login` with the manager credentials.
-
-## 2. Windows Agent + Desktop Manager
-
-Install the bundle produced by the `Build Windows Installer` workflow (MSI or NSIS EXE), or
-build it yourself using the repository build script on Windows:
-
-```powershell
-pwsh -File scripts/build-windows-installer.ps1
-```
-
-The installer is per-machine and bundles `resources\OdooPrintAgent.exe` and
-`resources\odoo-agent-cli.exe`; WebView2 is fetched by the bootstrapper if missing.
-
-On first launch **Odoo Print Manager**:
-
-1. creates `C:\ProgramData\OdooPrintAgent\` (falling back to
-   `%LOCALAPPDATA%\OdooPrintAgent\` when ProgramData is not writable);
-2. starts the bundled agent — as the `OdooPrintAgent` Windows service when it is installed,
-   otherwise as a detached background process.
-
-Optional explicit service installation (survives reboot, runs as LocalSystem):
-
-```powershell
-& "C:\Program Files\Odoo Print Manager\resources\OdooPrintAgent.exe" -service install
-& "C:\Program Files\Odoo Print Manager\resources\OdooPrintAgent.exe" -service start
-sc query OdooPrintAgent
-```
-
-Runtime files:
+Verify:
 
 ```text
-C:\ProgramData\OdooPrintAgent\config.yaml     server URL, agent id/secret, options
-C:\ProgramData\OdooPrintAgent\printers.json   discovered/manual printers (stable ids)
-C:\ProgramData\OdooPrintAgent\agent.db        local SQLite queue (WAL)
-C:\ProgramData\OdooPrintAgent\logs\agent.log  rotated at 5 MiB, 3 old files
-C:\ProgramData\OdooPrintManager\settings.json desktop settings (gateway URL)
+GET /api/health -> {"ok":true}
 ```
 
-Nothing is ever written into `C:\Program Files\Odoo Print Manager\`.
+## 2. Windows Agent
 
-### Pairing
+Install the Windows Agent/Desktop Manager bundle. Pair the Agent with the Gateway using the pairing flow exposed by the Gateway manager. The Agent owns local printer discovery, heartbeat, queueing and physical execution.
 
-1. Gateway dashboard → create an agent for the branch → copy the 6-character code
-   (uppercase, 30 minutes, single use).
-2. Either the desktop app (**Settings → Pair**) or the CLI:
+The Gateway manager can inspect runtime agents/printers and their health. Odoo does not create or synchronize these resources.
 
-```powershell
-& "C:\Program Files\Odoo Print Manager\resources\odoo-agent-cli.exe" -pair AB12CD -server https://gateway.example.com
-```
+## 3. Gateway API key
 
-The secret is written to `config.yaml` (DPAPI-sealed) and never shown again.
-Verify with `GET /api/agents` (manager auth): the agent is `online` with a fresh
-`lastSeenAt`.
+In the Gateway manager:
 
-### Printers
+1. Open **API Keys**.
+2. Select **Generate API Key**.
+3. Copy the raw key immediately.
+4. Store it in the Odoo Gateway Configuration screen.
+5. Revoke the key from the same Gateway screen when it is no longer trusted.
 
-```powershell
-odoo-agent-cli.exe printers discover
-odoo-agent-cli.exe printers list
-odoo-agent-cli.exe printers test <printer-id>
-```
+The raw key is shown only once.
 
-Discovery candidates are observations. A Manager must approve a candidate before the Gateway provisions it. Discovery origin alone never becomes a print transport: the candidate must report an explicit executable protocol such as IPP/IPPS, RAW, LPR, ESC/POS, or Windows spooler.
+## 4. Odoo addon
 
-Manual registration when discovery is not enough — see [PRINTERS.md](PRINTERS.md) §7.
-For PDF printing the printer must be a **Windows spooler queue** (or IPP); install USB
-printers as Windows printers and register them with `--type spooler --spooler-name "…"`.
-
-### Verify
-
-* Connection (no job): `POST /api/printers/:id/test-connection`
-* Real job: `POST /api/printers/:id/test-print` → poll `GET /api/jobs/:id` until
-  `success`. Success means the transport accepted the document, not that paper came out —
-  the physical check is [WINDOWS_PHYSICAL_E2E.md](WINDOWS_PHYSICAL_E2E.md).
-
-## 3. Odoo addon
+Install/upgrade the addon:
 
 ```bash
 cp -r odoo_addons/print_gateway /path/to/odoo/addons/
 odoo-bin -c /etc/odoo.conf -d <db> -i print_gateway --stop-after-init
-# upgrade later with -u print_gateway
+# later upgrades: -u print_gateway
 ```
 
-Then, in **Print Gateway** (see [docs/ODOO.md](docs/ODOO.md) for detail):
+Open **Print Gateway → Gateway Configuration** and enter only:
 
-1. **Branches** — `gateway_url` + a branch-scoped API key (`POST /api/odoo/keys`), press *Test Connection*.
-2. **Destinations** and **Document Types** for the branch.
-3. *Sync From Gateway* to import agents/printers.
-4. **Printer Bindings** — destination + document type → printer (with `priority`).
-5. **Report Mappings** — which reports print through the gateway and as which payload type (`pdf` is the default for QWeb reports).
-6. *Sync To Gateway* — must return success; `SYNC_DEPENDENCY_MISSING` means a referenced printer has not been registered by an agent yet.
+- Gateway URL
+- API Key
+- Test Connection
+- Gateway Printing Enabled
 
-Printing then uses the **standard Odoo Print button**; no custom button is required.
+Then create **Print Bindings**:
 
-## 4. Upgrading
+`Destination + Document Type -> Printer`
 
-* Gateway: pull, `npm ci`, run `npm run db:migrate` (or the production migration deployment), rebuild, and restart.
-* Agent: install the new MSI/EXE (stop the service first); `config.yaml`, `printers.json`
-  and `agent.db` are preserved.
-* Odoo: `-u print_gateway`.
+The destination is an existing Odoo object such as POS configuration, warehouse operation type, report action, or company context. The printer is a Gateway runtime printer id.
 
-## 5. Troubleshooting
+No Gateway branch identifier, Gateway destination object, Gateway document catalog, Agent record, or Gateway Printer record is configured in Odoo.
 
-Common cases are collected in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+## 5. Printing
+
+Use the normal Odoo Print action for supported backend reports.
+
+For POS, use the normal POS receipt/reprint/Print Bill controls. When Gateway printing is enabled, the addon intercepts the Odoo 19 POS print service and queues the operation through the central router without browser printing.
+
+## 6. Upgrade
+
+Gateway: install dependencies, apply the repository migrations, rebuild and restart.
+Agent: install the new signed/approved Windows build according to deployment policy.
+Odoo: run `-u print_gateway`.
+
+## 7. Release validation
+
+A production release is not complete until CI, Odoo 19 installation/upgrade, Gateway/Agent integration, and physical-printer staging tests are green. The repository does not claim physical E2E from source inspection alone.
