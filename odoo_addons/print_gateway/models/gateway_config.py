@@ -26,6 +26,11 @@ class PrintGatewayConfig(models.Model):
     gateway_api_key = fields.Char(
         string="API Key", copy=False, groups="base.group_system",
     )
+    runtime_agent_id = fields.Char(
+        string="Runtime Agent",
+        copy=False,
+        help="Opaque Gateway runtime-agent ID assigned to this Odoo company/branch. The agent remains owned by the Gateway.",
+    )
     last_test_at = fields.Datetime(readonly=True)
     last_test_status = fields.Selection([("success", "Success"), ("failed", "Failed")], readonly=True)
     last_test_error = fields.Text(readonly=True)
@@ -84,6 +89,12 @@ class PrintGatewayConfig(models.Model):
         for record in self:
             self._validate_gateway_url(record.gateway_url)
 
+    @api.constrains("runtime_agent_id")
+    def _check_runtime_agent_id(self):
+        for record in self:
+            if record.runtime_agent_id and (not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip()):
+                raise ValidationError(_("Runtime Agent must be a non-empty Gateway agent ID."))
+
     def _gateway_base(self, *, for_request=False):
         self.ensure_one()
         return self._validate_gateway_url(self.gateway_url, resolve_host=for_request)
@@ -104,7 +115,7 @@ class PrintGatewayConfig(models.Model):
             raise AccessError(_("Only Odoo system administrators can change Gateway configuration."))
 
     def write(self, vals):
-        if set(vals).intersection({"gateway_url", "gateway_api_key", "enabled", "company_id"}):
+        if set(vals).intersection({"gateway_url", "gateway_api_key", "enabled", "company_id", "runtime_agent_id"}):
             self._check_admin()
         return super().write(vals)
 
