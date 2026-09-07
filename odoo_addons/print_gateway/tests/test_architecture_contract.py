@@ -6,6 +6,7 @@ from odoo.tests.common import TransactionCase
 ADDON = Path(__file__).resolve().parents[1]
 MODELS = ADDON / "models"
 VIEWS = ADDON / "views"
+CONTROLLERS = ADDON / "controllers"
 
 
 class TestPrintGatewayArchitectureContract(TransactionCase):
@@ -53,6 +54,11 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         }
         self.assertTrue(forbidden.isdisjoint({path.name for path in VIEWS.glob("*.xml")}))
 
+    def test_legacy_pos_controller_override_is_gone_and_runtime_printer_controller_is_loaded(self):
+        self.assertFalse((CONTROLLERS / "pos.py").exists())
+        init_source = (CONTROLLERS / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn("from . import runtime_printers", init_source)
+
     def test_manifest_contains_only_final_integration_entrypoints(self):
         manifest = (ADDON / "__manifest__.py").read_text(encoding="utf-8")
         for forbidden in (
@@ -70,11 +76,13 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
 
     def test_pos_router_never_calls_native_print_when_gateway_is_enabled(self):
         source = (ADDON / "static" / "src" / "js" / "pos_print_router.js").read_text(encoding="utf-8")
+        self.assertIn('"pos.session", "is_gateway_printing_enabled"', source)
         gateway_only = source.split("if (gatewayEnabled !== true)", 1)[1].split("getOrderData", 1)[0]
         gateway_branch = gateway_only.split("return super.printReceipt", 1)[0]
         self.assertNotIn("super.printReceipt", gateway_branch)
         self.assertIn("action_print_gateway_receipt", gateway_branch)
         self.assertIn("basic_receipt", gateway_branch)
+        self.assertIn("POS order has no server identifier", gateway_branch)
 
     def test_kitchen_router_uses_stable_per_receipt_operation_identity(self):
         source = (ADDON / "static" / "src" / "js" / "pos_print_router.js").read_text(encoding="utf-8")
@@ -82,6 +90,7 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("generateReceiptsDataToPrint(orderData, changes, orderChange)", source)
         self.assertIn('`${operationId}:${index}`', source)
         self.assertIn("action_print_gateway_kitchen", source)
+        self.assertIn('"pos.session", "is_gateway_printing_enabled"', source)
 
     def test_sale_details_router_intercepts_client_hardware_print_path(self):
         source = (ADDON / "static" / "src" / "js" / "pos_sale_details_router.js").read_text(encoding="utf-8")
