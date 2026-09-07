@@ -588,7 +588,8 @@ pub async fn test_printer(printer_id: String, app: tauri::AppHandle) -> Result<S
 #[derive(Deserialize, Debug)]
 pub struct RegisterPrinterRequest {
     pub name: String,
-    pub connectionType: String,
+    #[serde(rename = "connectionType")]
+    pub connection_type: String,
     #[serde(rename = "connection_type")]
     pub connection_type_alt: Option<String>,
     pub endpoint: Option<String>,
@@ -611,7 +612,7 @@ pub async fn register_printer(request: RegisterPrinterRequest, app: tauri::AppHa
     if name.is_empty() {
         return Err("printer name is required".into());
     }
-    let conn = request.connection_type_alt.clone().unwrap_or(request.connectionType.clone());
+    let conn = request.connection_type_alt.clone().unwrap_or(request.connection_type.clone());
     let conn_lower = conn.trim().to_lowercase();
     let valid_conns = ["spooler", "network", "tcp", "usb", "ipp", "ipps"];
     if !valid_conns.contains(&conn_lower.as_str()) {

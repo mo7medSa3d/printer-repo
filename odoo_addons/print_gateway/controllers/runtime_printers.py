@@ -64,7 +64,7 @@ class PrintGatewayRuntimePrinterController(http.Controller):
                 'name': agent.get('name') if isinstance(agent.get('name'), str) else agent_id,
                 'status': agent.get('status') if isinstance(agent.get('status'), str) else 'offline',
             })
-        assignment = request.env['print_gateway.runtime_agent_assignment'].search([
+        assignment = request.env['print_gateway.runtime_agent_assignment'].sudo().search([
             ('company_id', '=', root_company.id), ('branch_id', '=', branch.id), ('enabled', '=', True),
         ], limit=1)
         return {'enabled': True, 'selectedAgentId': assignment.runtime_agent_id if assignment else False, 'agents': sanitized}

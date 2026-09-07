@@ -317,7 +317,7 @@ class PrintGatewayBinding(models.Model):
         if binding or not branch:
             return binding
         return self.search([
-            ("company_id", "=", branch.id), ("branch_id", "=", False), ("enabled", "=", True),
+            ("company_id", "=", company.id), ("branch_id", "=", False), ("enabled", "=", True),
             ("destination_ref", "=", "%s,%s" % (destination._name, destination.id)),
             ("document_type", "=", normalized),
         ], order="priority asc, id asc", limit=1)

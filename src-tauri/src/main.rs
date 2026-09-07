@@ -2,7 +2,6 @@
 
 mod agent;
 mod cleanup;
-#[allow(non_snake_case, unused_variables)]
 mod commands;
 mod logging;
 mod paths;
