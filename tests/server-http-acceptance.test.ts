@@ -24,11 +24,7 @@ function isNextInternalErrorPage(res: Response): boolean {
 suite("production server HTTP acceptance (real Next.js + guard)", () => {
   let server: Server | null = null;
 
-  // Hooks live INSIDE the skipped suite so a missing production build
-  // (describe.skipIf) does not attempt to prepare the Next app.
   beforeAll(async () => {
-    // Dynamically import so the suite can skip without paying the cost of
-    // preparing the Next app.
     const { default: next } = await import("next");
     const { guardApiRequest } = await import("../src/server/request-guard");
     const app = next({ dev: false, hostname: "0.0.0.0", port: PORT });
@@ -59,16 +55,16 @@ suite("production server HTTP acceptance (real Next.js + guard)", () => {
   });
 
   describe("mutating API requests reach the route handlers", () => {
-    it("POST /api/print/jobs with an invalid body returns the handler's 400 JSON (not a 500 ISE page)", async () => {
+    it("POST /api/print/jobs rejects unauthenticated malformed input with protected JSON (not a 500 ISE page)", async () => {
       const res = await fetch(`http://127.0.0.1:${PORT}/api/print/jobs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ branchId: "x" }),
       });
       expect(isNextInternalErrorPage(res)).toBe(false);
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(401);
       const data = (await res.json()) as { error: string };
-      expect(data.error).toBeTruthy();
+      expect(data.error).toBe("Unauthorized");
     });
 
     it("POST /api/auth/manager/login returns the handler's JSON response (not a 500 ISE page)", async () => {
@@ -94,9 +90,6 @@ suite("production server HTTP acceptance (real Next.js + guard)", () => {
     });
 
     it("PATCH /api/agent/jobs (chunked, no content-length) is answered by the handler, not the framework", async () => {
-      // A PATCH with a stream body exercises the chunked buffering path
-      // end-to-end through Next.js. undici requires `duplex` for stream
-      // bodies; the DOM RequestInit type does not declare it, hence the cast.
       const res = await fetch(
         `http://127.0.0.1:${PORT}/api/agent/jobs`,
         {
@@ -119,9 +112,6 @@ suite("production server HTTP acceptance (real Next.js + guard)", () => {
 
   describe("body ceiling", () => {
     it("rejects a declared 8MB+ body with 413 before the handler", async () => {
-      // Wire-level: a client that declares an oversized Content-Length.
-      // (undici refuses to send a lying content-length, so a raw socket is
-      // the only faithful way to test the guard's declared-size path.)
       const { connect } = await import("net");
       const { status, body } = await new Promise<{ status: number; body: string }>((resolve) => {
         const socket = connect(PORT, "127.0.0.1", () => {
