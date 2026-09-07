@@ -10,15 +10,6 @@ import {
 } from "./helpers/pg";
 import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
 
-/**
- * P0 — print idempotency.
- *
- * A retry of ONE logical print operation (same operation / idempotency key)
- * must collapse to a single Gateway job. Two intentional print actions
- * (two keys) must create two jobs. Identity is the caller-supplied
- * operation id, never (model + record_ids + report_id + current_minute).
- */
-
 const suite = describe.skipIf(!hasTestDatabase);
 
 function pdfBase64(suffix = "") {
@@ -39,11 +30,6 @@ suite("print idempotency (Odoo → Gateway)", () => {
   beforeEach(async () => {
     await truncateAll();
     f = await seedFixture();
-    await pool().query(
-      `INSERT INTO printer_bindings (id, branch_id, destination_id, document_type, printer_id, priority, enabled)
-       VALUES ($1, $2, $3, 'invoice', $4, 1, true)`,
-      [`binding_${f.printerId}`, f.branchId, f.destinationId, f.printerId]
-    );
   });
 
   function create(body: unknown, key = f.odooKey) {
@@ -56,8 +42,8 @@ suite("print idempotency (Odoo → Gateway)", () => {
 
   function jobBody(idempotencyKey: string, extra: Record<string, unknown> = {}) {
     return {
-      branchId: f.branchId,
-      destinationId: f.destinationId,
+      printerId: f.printerId,
+      destination: "POS",
       documentType: "invoice",
       payload: { type: "pdf", encoding: "base64", data: pdfBase64() },
       idempotencyKey,
@@ -65,19 +51,17 @@ suite("print idempotency (Odoo → Gateway)", () => {
     };
   }
 
-  async function jobCount(branchId?: string): Promise<number> {
-    const res = branchId
-      ? await pool().query(`SELECT count(*)::int AS n FROM print_jobs WHERE branch_id = $1`, [branchId])
-      : await pool().query(`SELECT count(*)::int AS n FROM print_jobs`);
+  async function jobCount(): Promise<number> {
+    const res = await pool().query(`SELECT count(*)::int AS n FROM print_jobs`);
     return res.rows[0].n;
   }
 
-  it("first request creates one job", async () => {
+  it("first request creates one durable job", async () => {
     const res = await create(jobBody("op-first"));
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.jobId).toMatch(/^job_/);
-    expect(await jobCount(f.branchId)).toBe(1);
+    expect(await jobCount()).toBe(1);
   });
 
   it("retry returns the existing job", async () => {
@@ -89,10 +73,10 @@ suite("print idempotency (Odoo → Gateway)", () => {
     expect(retry.status).toBe(200);
     const again = await retry.json();
     expect(again.jobId).toBe(created.jobId);
-    expect(await jobCount(f.branchId)).toBe(1);
+    expect(await jobCount()).toBe(1);
   });
 
-  it("same idempotency key with different payload is rejected", async () => {
+  it("same idempotency key with a different payload is rejected", async () => {
     const first = await create(jobBody("op-conflict"));
     expect(first.status).toBe(201);
 
@@ -102,17 +86,34 @@ suite("print idempotency (Odoo → Gateway)", () => {
     });
     expect(conflicting.status).toBe(409);
     expect(await conflicting.json()).toMatchObject({ code: "IDEMPOTENCY_CONFLICT", retryable: false });
-    expect(await jobCount(f.branchId)).toBe(1);
+    expect(await jobCount()).toBe(1);
   });
 
   it("same idempotency key with different routing inputs is rejected", async () => {
     const first = await create(jobBody("op-routing-conflict"));
     expect(first.status).toBe(201);
 
-    const conflicting = await create(jobBody("op-routing-conflict", { documentType: "receipt" }));
+    const conflicting = await create(jobBody("op-routing-conflict", { destination: "Warehouse" }));
     expect(conflicting.status).toBe(409);
     expect(await conflicting.json()).toMatchObject({ code: "IDEMPOTENCY_CONFLICT", retryable: false });
-    expect(await jobCount(f.branchId)).toBe(1);
+    expect(await jobCount()).toBe(1);
+  });
+
+  it("same idempotency key with a different printer is rejected", async () => {
+    const suffix = "printer_second";
+    await pool().query(
+      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+       VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
+      [suffix, f.agentId, "Second Printer", JSON.stringify({ supported_protocols: ["pdf"] })],
+    );
+
+    const first = await create(jobBody("op-printer-conflict"));
+    expect(first.status).toBe(201);
+
+    const conflicting = await create(jobBody("op-printer-conflict", { printerId: suffix }));
+    expect(conflicting.status).toBe(409);
+    expect(await conflicting.json()).toMatchObject({ code: "IDEMPOTENCY_CONFLICT", retryable: false });
+    expect(await jobCount()).toBe(1);
   });
 
   it("concurrent retries create exactly one job", async () => {
@@ -126,23 +127,10 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const bodies = await Promise.all(responses.map((r) => r.json()));
     const ids = new Set(bodies.map((b) => b.jobId));
     expect(ids.size).toBe(1);
-    expect(await jobCount(f.branchId)).toBe(1);
+    expect(await jobCount()).toBe(1);
     for (const res of responses) {
       expect([200, 201]).toContain(res.status);
     }
-  });
-
-  it("timeout after Gateway acceptance + retry does not duplicate", async () => {
-    // Simulate: the first POST was accepted (row exists) and the caller never
-    // saw the 201. The retry uses the same operation id.
-    const first = await create(jobBody("op-timeout"));
-    expect(first.status).toBe(201);
-    const created = await first.json();
-
-    const retry = await create(jobBody("op-timeout"));
-    expect(retry.status).toBe(200);
-    expect((await retry.json()).jobId).toBe(created.jobId);
-    expect(await jobCount(f.branchId)).toBe(1);
   });
 
   it("rejects an explicit TTL longer than 24 hours", async () => {
@@ -150,8 +138,8 @@ suite("print idempotency (Odoo → Gateway)", () => {
       expiresAt: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString(),
     }));
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: expect.stringContaining("maximum print job TTL") });
-    expect(await jobCount(f.branchId)).toBe(0);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining("24 hour maximum") });
+    expect(await jobCount()).toBe(0);
   });
 
   it("accepts an explicit TTL within the 24-hour bound", async () => {
@@ -159,10 +147,20 @@ suite("print idempotency (Odoo → Gateway)", () => {
       expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000).toISOString(),
     }));
     expect(res.status).toBe(201);
-    expect(await jobCount(f.branchId)).toBe(1);
+    expect(await jobCount()).toBe(1);
   });
 
-  it("two intentional prints create two jobs", async () => {
+  it("rejects the legacy branch/destination identifiers at the new API boundary", async () => {
+    const res = await create({
+      ...jobBody("op-legacy-fields"),
+      branchId: f.branchId,
+      destinationId: f.destinationId,
+    });
+    expect(res.status).toBe(400);
+    expect(await jobCount()).toBe(0);
+  });
+
+  it("allows two intentional prints with different operation keys", async () => {
     const a = await create(jobBody("op-intent-1"));
     const b = await create(jobBody("op-intent-2"));
     expect(a.status).toBe(201);
@@ -170,29 +168,6 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const idA = (await a.json()).jobId;
     const idB = (await b.json()).jobId;
     expect(idA).not.toBe(idB);
-    expect(await jobCount(f.branchId)).toBe(2);
-  });
-
-  it("different reports do not collide", async () => {
-    const a = await create(jobBody("op-report-invoice"));
-    const b = await create(jobBody("op-report-receipt"));
-    expect((await a.json()).jobId).not.toBe((await b.json()).jobId);
-    expect(await jobCount(f.branchId)).toBe(2);
-  });
-
-  it("different records do not collide", async () => {
-    const a = await create(jobBody("op-record-101"));
-    const b = await create(jobBody("op-record-202"));
-    expect((await a.json()).jobId).not.toBe((await b.json()).jobId);
-    expect(await jobCount(f.branchId)).toBe(2);
-  });
-
-  it("same record intentionally printed twice does not collide", async () => {
-    const a = await create(jobBody("op-sale-order-42-click-1"));
-    const b = await create(jobBody("op-sale-order-42-click-2"));
-    expect(a.status).toBe(201);
-    expect(b.status).toBe(201);
-    expect((await a.json()).jobId).not.toBe((await b.json()).jobId);
-    expect(await jobCount(f.branchId)).toBe(2);
+    expect(await jobCount()).toBe(2);
   });
 });
