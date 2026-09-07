@@ -12,7 +12,7 @@ import {
   RefreshCw,
   Server,
 } from "lucide-react";
-import { Button, Card, CardHeader, Field, Input, Select, StatusBadge } from "../../components/ui";
+import { Button, Card, CardHeader, Field, Input, StatusBadge, agentTone, jobTone, printerTone } from "../../components/ui";
 
 type Agent = {
   id: string;
@@ -110,7 +110,7 @@ export default function DashboardClient({
                     <div className="truncate font-semibold text-ink">{agent.name}</div>
                     <div className="mt-1 text-xs text-ink-3">{agent.printerCount} runtime printer{agent.printerCount === 1 ? "" : "s"}</div>
                   </div>
-                  <StatusBadge label={agent.status} tone={agent.status === "online" ? "ok" : "neutral"} />
+                  <StatusBadge label={agent.status} tone={agentTone(agent.status)} />
                 </div>
                 <div className="mt-3 flex gap-2">
                   {agent.lifecycle === "active" ? (
@@ -146,7 +146,7 @@ export default function DashboardClient({
                   <div className="truncate font-semibold text-ink">{printer.name}</div>
                   <div className="mt-1 text-xs text-ink-3">{printer.printerType} · {printer.connectionType}</div>
                 </div>
-                <StatusBadge label={printer.status} tone={printer.status === "online" ? "ok" : printer.status === "error" ? "danger" : "neutral"} />
+                <StatusBadge label={printer.status} tone={printerTone(printer.status)} />
               </div>
               <div className="mt-3 flex gap-2">
                 <Button size="sm" variant="secondary" onClick={() => void run(() => createTestPrintJob(printer.id), "Test print queued.")} disabled={busy || printer.lifecycle !== "active"} icon={<CheckCircle2 className="h-4 w-4" />}>
@@ -180,7 +180,7 @@ export default function DashboardClient({
                     <div className="truncate font-medium text-ink">{job.status}</div>
                     <div className="truncate text-xs text-ink-3">Printer runtime: {job.printerId}</div>
                   </div>
-                  <StatusBadge label={job.status} tone={job.status === "success" ? "ok" : job.status === "failed" ? "danger" : "warn"} />
+                  <StatusBadge label={job.status} tone={jobTone(job.status)} />
                 </div>
               ))}
             </div>
