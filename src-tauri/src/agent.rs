@@ -1,6 +1,4 @@
 use std::path::PathBuf;
-#[cfg(debug_assertions)]
-use std::path::Path;
 use std::process::{Command, Stdio};
 
 use tauri::Manager;
@@ -39,7 +37,7 @@ fn resolve_executable(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, Str
     }
     #[cfg(debug_assertions)]
     {
-        let dev_base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("agent");
+        let dev_base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("agent");
         candidates.push(dev_base.join(name));
     }
 
