@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import requests
 
+from odoo import api
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
@@ -14,16 +15,34 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         super().setUpClass()
         cls.company = cls.env.company
         cls.other_company = cls.env['res.company'].create({'name': 'Gateway Contract Other Company'})
-        cls.config = cls.env['print_gateway.gateway_config'].create({
-            'company_id': cls.company.id,
-            'gateway_url': 'https://gateway.example.com',
-            'gateway_api_key': 'odoo_test_key',
-            'enabled': True,
-        })
+
         # The production durable-job path intentionally uses a new database cursor.
-        # Commit shared class fixtures so that cursor can observe the same gateway config.
-        cls.env.flush_all()
-        cls.env.cr.commit()
+        # Persist only the shared Gateway fixture through a dedicated cursor so the
+        # test suite itself keeps Odoo's TransactionCase transaction semantics intact.
+        with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
+            with cls.env.registry.cursor() as cr:
+                env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+                config = env['print_gateway.gateway_config'].create({
+                    'company_id': cls.company.id,
+                    'gateway_url': 'https://gateway.example.com',
+                    'gateway_api_key': 'odoo_test_key',
+                    'enabled': True,
+                })
+                config_id = config.id
+                cr.commit()
+        cls.config = cls.env['print_gateway.gateway_config'].browse(config_id)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Remove the externally committed class fixture explicitly; the current
+        # TransactionCase cursor cannot roll it back because it belongs to another
+        # cursor/transaction.
+        config_id = getattr(cls, 'config', cls.env['print_gateway.gateway_config']).id
+        with cls.env.registry.cursor() as cr:
+            env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+            env['print_gateway.gateway_config'].browse(config_id).unlink()
+            cr.commit()
+        super().tearDownClass()
 
     def _make_config(self, enabled=True):
         config = self.env['print_gateway.gateway_config'].search([('company_id', '=', self.company.id)], limit=1)
