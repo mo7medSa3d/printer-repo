@@ -27,9 +27,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const row = await db.query.printers.findFirst({ where: eq(printers.id, id) });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, row.agentId) });
-  if (!agent) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
-  return NextResponse.json({ ...row, branchId: agent.branchId });
+  return NextResponse.json(row);
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -38,9 +36,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const { id } = await params;
   const existing = await db.query.printers.findFirst({ where: eq(printers.id, id) });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  let body: unknown; try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
-  if (body && typeof body === "object" && ("branchId" in body || "enabled" in body || "type" in body || ("config" in body && typeof (body as Record<string, unknown>).config === "object" && (body as Record<string, unknown>).config && "protocol" in ((body as Record<string, unknown>).config as Record<string, unknown>)))) {
-    // Legacy aliases can be normalized by create/import boundaries, but mutation of ownership or compatibility state is forbidden.
+  let body: unknown;
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+  if (body && typeof body === "object" && ("branchId" in body || "branch_id" in body || "enabled" in body || "type" in body)) {
     return NextResponse.json({ error: "Unsupported legacy/ownership field" }, { status: 400 });
   }
   const parsed = patchSchema.safeParse(body);
@@ -63,10 +61,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const err = connectionType === "network" && (!cfg.ip || !cfg.port) ? "network printer requires config.ip and config.port" : connectionType === "spooler" && !(cfg.spooler_name || cfg.address) ? "spooler printer requires config.spooler_name or config.address" : null;
     if (err) return NextResponse.json({ error: err }, { status: 400 });
   }
-  if (parsed.data.lifecycle && parsed.data.lifecycle !== "active") {
-    update.status = existing.status;
-  }
   const [row] = await db.update(printers).set(update as never).where(eq(printers.id, id)).returning();
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, row.agentId) });
-  return NextResponse.json({ ...row, branchId: agent?.branchId ?? null });
+  return NextResponse.json(row);
 }
