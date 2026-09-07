@@ -100,17 +100,17 @@ suite("print idempotency (Odoo → Gateway)", () => {
   });
 
   it("same idempotency key with a different printer is rejected", async () => {
-    const suffix = "printer_second";
+    const secondPrinter = "printer_second";
     await pool().query(
       `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
        VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
-      [suffix, f.agentId, "Second Printer", JSON.stringify({ supported_protocols: ["pdf"] })],
+      [secondPrinter, f.agentId, "Second Printer", JSON.stringify({ supported_protocols: ["pdf"] })],
     );
 
     const first = await create(jobBody("op-printer-conflict"));
     expect(first.status).toBe(201);
 
-    const conflicting = await create(jobBody("op-printer-conflict", { printerId: suffix }));
+    const conflicting = await create(jobBody("op-printer-conflict", { printerId: secondPrinter }));
     expect(conflicting.status).toBe(409);
     expect(await conflicting.json()).toMatchObject({ code: "IDEMPOTENCY_CONFLICT", retryable: false });
     expect(await jobCount()).toBe(1);
@@ -150,11 +150,11 @@ suite("print idempotency (Odoo → Gateway)", () => {
     expect(await jobCount()).toBe(1);
   });
 
-  it("rejects the legacy branch/destination identifiers at the new API boundary", async () => {
+  it("rejects legacy branch and destination identifiers at the new API boundary", async () => {
     const res = await create({
       ...jobBody("op-legacy-fields"),
-      branchId: f.branchId,
-      destinationId: f.destinationId,
+      branchId: "legacy-branch",
+      destinationId: "legacy-destination",
     });
     expect(res.status).toBe(400);
     expect(await jobCount()).toBe(0);
