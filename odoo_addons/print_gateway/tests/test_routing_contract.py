@@ -31,8 +31,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 )
 
         # Any fixture created through res.company mutates shared multi-company
-        # user/group state. Create it on the same independent cursor used for
-        # the durable fixtures, then refresh the TransactionCase snapshot.
+        # user/group state. Create it on one independent cursor so both durable
+        # fixtures share the same transaction and cannot contend with each other.
         durable_company_name = "Gateway Durable Test %s" % uuid.uuid4().hex
         other_company_name = "Gateway Contract Other Company %s" % uuid.uuid4().hex
         with self.env.registry.cursor() as cr:
@@ -51,12 +51,9 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.other_company_id = other_company.id
             cr.commit()
 
-        # The independent transaction committed rows that are intentionally not
-        # part of the TransactionCase transaction. Start a fresh snapshot before
-        # browsing them; do not create/commit/rollback test data on self.env.cr.
-        self.env.cr.rollback()
-        self.env.invalidate_all()
-        self.config = self.env["print_gateway.gateway_config"].browse(self.config.id).exists()
+        # Do not commit, rollback, or close the TransactionCase cursor. Odoo 19
+        # owns this cursor for the duration of the test. Fresh cursors are used
+        # below whenever a durable transaction needs to be observed.
         self.other_company = self.env["res.company"].browse(self.other_company_id).exists()
 
     def _make_config(self, enabled=True):
