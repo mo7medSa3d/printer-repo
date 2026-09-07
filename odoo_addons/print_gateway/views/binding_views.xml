@@ -8,7 +8,7 @@
                 <field name="company_id" string="Odoo Company"/>
                 <field name="branch_id" string="Odoo Branch"/>
                 <field name="runtime_agent_id" string="Gateway Runtime Agent"/>
-                <field name="printer_id" string="Gateway Runtime Printer" widget="gateway_runtime_printer"/>
+                <field name="printer_id" string="Gateway Runtime Printer"/>
                 <field name="destination_ref" string="Odoo Destination"/>
                 <field name="document_type" string="Document Type"/>
                 <field name="enabled" widget="boolean_toggle"/>
@@ -41,10 +41,8 @@
                         <field name="document_type" string="Document Type" readonly="1"/>
                     </group>
                     <group string="Runtime Target">
-                        <field name="runtime_agent_id" string="Gateway Runtime Agent"
-                               widget="gateway_runtime_agent"/>
-                        <field name="printer_id" string="Gateway Runtime Printer"
-                               widget="gateway_runtime_printer"/>
+                        <field name="runtime_agent_id" string="Gateway Runtime Agent" widget="gateway_runtime_agent"/>
+                        <field name="printer_id" string="Gateway Runtime Printer" widget="gateway_runtime_printer"/>
                     </group>
                     <group string="Routing">
                         <field name="enabled" widget="boolean_toggle"/>
