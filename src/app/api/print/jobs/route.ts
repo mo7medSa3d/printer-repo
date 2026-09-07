@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { printJobs } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
-import { validatePrintJobPayload } from "../../../../lib/payload";
+import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
 import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { eq } from "drizzle-orm";
@@ -44,7 +44,7 @@ function idempotencyMatches(row: typeof printJobs.$inferSelect, request: {
   printerId: string;
   documentType: string;
   destination?: string;
-  payload: ReturnType<typeof validatePrintJobPayload>;
+  payload: PrintJobPayload;
 }) {
   return row.printerId === request.printerId
     && (row.destination ?? null) === (request.destination ?? null)
@@ -66,9 +66,14 @@ export async function POST(req: Request) {
   const parsed = bodySchema.safeParse(raw);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
 
-  let payload: ReturnType<typeof validatePrintJobPayload>;
+  let payload: PrintJobPayload;
   try { payload = validatePrintJobPayload(parsed.data.payload); }
   catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid payload" }, { status: 400 }); }
+
+  const request = {
+    ...parsed.data,
+    payload,
+  };
 
   let expiresAt: Date;
   try { expiresAt = parseExpiresAt(parsed.data.expiresAt); }
@@ -77,7 +82,7 @@ export async function POST(req: Request) {
   if (parsed.data.idempotencyKey) {
     const existing = await db.query.printJobs.findFirst({ where: eq(printJobs.idempotencyKey, parsed.data.idempotencyKey) });
     if (existing) {
-      if (idempotencyMatches(existing, parsed.data)) return NextResponse.json(responseForRow(existing), { status: 200 });
+      if (idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
       return idempotencyConflict();
     }
   }
@@ -111,7 +116,7 @@ export async function POST(req: Request) {
     }
     if (error instanceof Error && (error as Error & { code?: string }).code === "DUPLICATE_JOB" && parsed.data.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({ where: eq(printJobs.idempotencyKey, parsed.data.idempotencyKey) });
-      if (existing && idempotencyMatches(existing, parsed.data)) return NextResponse.json(responseForRow(existing), { status: 200 });
+      if (existing && idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
       return idempotencyConflict();
     }
     const message = error instanceof Error ? error.message : "print job creation failed";
