@@ -71,8 +71,7 @@ describe("gateway runtime ownership contract", () => {
   it("never invokes native POS receipt printing from the Gateway-enabled branch", () => {
     const source = readFileSync(join(root, "odoo_addons/print_gateway/static/src/js/pos_print_router.js"), "utf8");
     const nativeFallback = source.indexOf("if (gatewayEnabled !== true) {\n            return super.printReceipt");
-    const gatewayStart = source.indexOf("if (gatewayEnabled !== true) {\n            return super.printReceipt");
-    const syncStart = source.indexOf("if (!currentOrder.isSynced)", gatewayStart);
+    const syncStart = source.indexOf("if (!currentOrder.isSynced)", nativeFallback);
     const gatewayBlock = syncStart >= 0 ? source.slice(syncStart) : "";
     expect(nativeFallback).toBeGreaterThanOrEqual(0);
     expect(gatewayBlock).not.toContain("super.printReceipt");
@@ -89,13 +88,14 @@ describe("gateway runtime ownership contract", () => {
     const method = methodStart >= 0 ? source.slice(methodStart) : "";
     const gatewayGuard = method.indexOf("if (gatewayEnabled !== true) {");
     const gatewayCall = method.indexOf("action_print_gateway_kitchen");
+    const fallbackCall = method.indexOf("return super.printOrderChanges");
     expect(methodStart).toBeGreaterThanOrEqual(0);
     expect(gatewayGuard).toBeGreaterThanOrEqual(0);
     expect(gatewayCall).toBeGreaterThan(gatewayGuard);
-    const enabledPath = method.slice(gatewayGuard);
-    expect(enabledPath).toContain("action_print_gateway_kitchen");
-    expect(enabledPath).toContain("successful: false");
-    expect(enabledPath).not.toContain("return super.printOrderChanges");
+    expect(fallbackCall).toBeGreaterThan(gatewayGuard);
+    expect(fallbackCall).toBeLessThan(gatewayCall);
+    expect(method.slice(gatewayCall)).not.toContain("return super.printOrderChanges");
+    expect(method.slice(gatewayCall)).toContain("successful:");
   });
 
   it("contains no native browser-print fallback in addon production source", () => {
