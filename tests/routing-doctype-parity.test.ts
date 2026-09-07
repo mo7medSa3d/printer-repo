@@ -12,12 +12,15 @@ describe("document-type routing contract", () => {
     expect(src).toContain('"pos.order": "receipt"');
   });
 
-  it("has specialized entry points converge on the same submit route", () => {
+  it("has specialized entry points converge on the same durable submit implementation", () => {
     const src = readFileSync("odoo_addons/print_gateway/models/print_router.py", "utf8");
+    expect(src).toContain("def _submit_route(");
     expect(src).toContain("def route_report(");
     expect(src).toContain("def route_pos_receipt(");
     expect(src).toContain("def route_kitchen_print(");
     expect(src).toContain("def route_pos_sale_details(");
-    expect(src).toContain("_submit_route(route=route");
+    expect(src).toContain("self._submit_route(");
+    expect(src).toContain("_persist_durable_job");
+    expect(src).toContain("job.action_submit(raise_on_failure=True)");
   });
 });
