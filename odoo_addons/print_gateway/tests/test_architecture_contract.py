@@ -88,11 +88,12 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("basic_receipt: Boolean(basic)", source)
         gateway_call = source.index("action_print_gateway_receipt")
         native_call = source.index("return super.printReceipt")
+        sync_call = source.index("this.syncAllOrders")
         self.assertLess(native_call, gateway_call)
+        self.assertLess(sync_call, gateway_call)
         gateway_suffix = source[gateway_call:]
         self.assertNotIn("return super.printReceipt", gateway_suffix)
         self.assertNotIn("window.print", gateway_suffix)
-        self.assertIn("syncAllOrders", gateway_suffix)
 
     def test_kitchen_router_uses_stable_per_receipt_operation_identity(self):
         source = (ADDON / "static" / "src" / "js" / "pos_print_router.js").read_text(encoding="utf-8")
@@ -114,7 +115,8 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         source = (MODELS / "ir_actions_report.py").read_text(encoding="utf-8")
         self.assertIn('router = self.env["print_gateway.print_router"]', source)
         self.assertIn("route = router.route_report(self, records, data=data)", source)
-        self.assertIn('if route.get("native"):', source)
+        self.assertIn('if not route.get("native"):', source)
+        self.assertIn("return super().report_action(docids, data=data, config=config)", source)
         self.assertNotIn("async_report", source)
 
     def test_router_has_no_gateway_branch_identifier_contract(self):
