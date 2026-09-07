@@ -84,7 +84,7 @@ jobs:
           $total = [int]$json.numTotalTests
           Write-Host "Vitest: $skipped of $total tests SKIPPED (DB-gated suites; no Postgres on this runner)."
           if ($skipped -gt 0) {
-            Write-Host "::notice::No Postgres service on this runner — $skipped integration test(s) were skipped in the Windows build. Full integration coverage runs in the CI workflow (.github/workflows/ci.yml)."
+            Write-Host "No Postgres service on this runner — $skipped integration test(s) were skipped in the Windows build. Full integration coverage runs in the CI workflow (.github/workflows/ci.yml)."
           }
       - name: Go vet
         working-directory: agent
