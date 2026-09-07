@@ -54,7 +54,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_binding_rejects_manual_unsupported_destination_reference(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
-        with self.assertRaises((ValueError, ValidationError)):
+        with self.assertRaises(ValidationError):
             self.env['print_gateway.binding'].create({
                 'company_id': self.company.id,
                 'destination_type': 'report',
@@ -123,15 +123,16 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.assertEqual(mocked.call_args.kwargs['allow_redirects'], False)
 
     def test_gateway_timeout_persists_unknown_outcome(self):
-        job = self.env['print_gateway.print_job'].create_operation(
-            company=self.company,
-            gateway_config=self.config,
-            printer_id='printer_runtime_1',
-            destination='Sales',
-            document_type='order',
-            payload={'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
-            idempotency_key='timeout-contract-key',
-        )
+        router = self.env['print_gateway.print_router']
+        job = router._persist_durable_job({
+            'company': self.company,
+            'gateway_config': self.config,
+            'printer_id': 'printer_runtime_1',
+            'destination': 'Sales',
+            'document_type': 'order',
+            'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
+            'idempotency_key': 'timeout-contract-key',
+        })
         with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
             'odoo.addons.print_gateway.models.print_job.requests.post',
             side_effect=requests.exceptions.Timeout('simulated'),
