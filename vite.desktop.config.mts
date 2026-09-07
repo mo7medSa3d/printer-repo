@@ -24,7 +24,7 @@ const previewHarness = {
     handler(_html: string, ctx: { path: string }) {
       if (process.env.PREVIEW_HARNESS !== "1") return _html;
       if (ctx.path !== "/" && !ctx.path.endsWith("/index.html")) return _html;
-      return readFileSync(path.resolve(__dirname, "src/desktop/preview.html"), "utf8");
+      return readFileSync(path.resolve(import.meta.dirname, "src/desktop/preview.html"), "utf8");
     },
   },
 };
@@ -33,13 +33,13 @@ export default defineConfig({
   root: "src/desktop",
   plugins: [react(), previewHarness],
   base: "./",
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
   // Pin the production entry: `preview.html` is a browser-only harness and
   // must never end up inside the Windows installer.
   build: {
     outDir: "../../dist-desktop",
     emptyOutDir: true,
-    rollupOptions: { input: path.resolve(__dirname, "src/desktop/index.html") },
+    rollupOptions: { input: path.resolve(import.meta.dirname, "src/desktop/index.html") },
   },
   clearScreen: false,
   server: {

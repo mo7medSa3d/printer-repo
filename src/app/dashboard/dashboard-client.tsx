@@ -316,10 +316,10 @@ export default function DashboardClient({
   // Helper for printer connection icon
   const getConnectionIcon = (connectionType: string) => {
     const c = connectionType.toLowerCase();
-    if (c === "usb") return <Usb className="h-4 w-4 text-ink-3" title="USB Connection" />;
+    if (c === "usb") return <span title="USB Connection"><Usb className="h-4 w-4 text-ink-3" /></span>;
     if (c === "network" || c === "tcp")
-      return <Wifi className="h-4 w-4 text-ink-3" title="Network Connection" />;
-    return <Layers className="h-4 w-4 text-ink-3" title="Spooler / System" />;
+      return <span title="Network Connection"><Wifi className="h-4 w-4 text-ink-3" /></span>;
+    return <span title="Spooler / System"><Layers className="h-4 w-4 text-ink-3" /></span>;
   };
 
   return (

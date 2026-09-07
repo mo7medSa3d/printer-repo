@@ -28,3 +28,14 @@ printers:
     type: "network"
     endpoint: "192.168.1.51:9100"
     protocol: "raw"
+
+  # Windows OS spooler printer example (A4 reports, laser, USB thermal via driver):
+  # - id: "printer_office_a4"
+  #   name: "Office Laser Printer"
+  #   type: "spooler"
+  #   connection_type: "spooler"
+  #   printer_type: "laser"
+  #   spooler_name: "HP LaserJet Pro MFP"
+  #   protocol: "windows_spooler"
+  #   enabled: true
+

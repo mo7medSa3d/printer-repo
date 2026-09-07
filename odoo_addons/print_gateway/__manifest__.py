@@ -17,7 +17,8 @@ Odoo printing occurs only when Gateway printing is explicitly disabled.
     'author': 'Odoo Print Gateway',
     'website': 'https://github.com/mo7medSa3d/printer-repo',
     'category': 'Tools',
-    'depends': ['base', 'sale', 'account', 'stock', 'purchase', 'point_of_sale'],
+    'depends': ['base', 'web', 'sale', 'account', 'stock', 'purchase', 'point_of_sale'],
+    'external_dependencies': {'python': ['requests']},
     'data': [
         'security/ir.model.access.csv',
         'security/security.xml',

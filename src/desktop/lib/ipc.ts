@@ -222,6 +222,8 @@ export interface PrinterInfo {
   displayName?: string;
   printer_type?: string;
   printerType?: string;
+  device_class?: string;
+  deviceClass?: string;
   connection_type?: string;
   connectionType?: string;
   protocol?: string;
