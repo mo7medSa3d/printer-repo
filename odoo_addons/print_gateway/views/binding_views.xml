@@ -8,7 +8,7 @@
                 <field name="company_id" string="Company / Branch"/>
                 <field name="destination_ref" string="Destination"/>
                 <field name="document_type" string="Document Type"/>
-                <field name="printer_id" string="Printer"/>
+                <field name="printer_id" string="Printer" widget="gateway_runtime_printer"/>
                 <field name="enabled" widget="boolean_toggle"/>
                 <field name="priority" optional="show"/>
             </list>
@@ -28,27 +28,33 @@
                                string="POS Configuration"
                                invisible="destination_type != 'pos'"
                                required="destination_type == 'pos'"/>
+                        <field name="destination_pos_printer_id"
+                               string="POS / Kitchen Printer"
+                               invisible="destination_type != 'pos_printer'"
+                               required="destination_type == 'pos_printer'"/>
                         <field name="destination_picking_type_id"
                                string="Operation Type"
                                invisible="destination_type != 'picking_type'"
                                required="destination_type == 'picking_type'"/>
                         <field name="destination_report_id"
-                               string="Destination Report"
+                               string="Report Destination"
                                invisible="destination_type != 'report'"
                                required="destination_type == 'report'"/>
                     </group>
                     <group string="What">
-                        <field name="report_id" string="Document Type / Report"/>
-                        <field name="document_type" readonly="1"/>
+                        <field name="report_id" string="Document / Report"
+                               invisible="destination_type == 'pos_printer'"
+                               required="destination_type != 'pos_printer'"/>
+                        <field name="document_type" string="Document Type" readonly="1"/>
                     </group>
                     <group string="Where to Print">
-                        <field name="printer_id" string="Printer"/>
+                        <field name="printer_id" string="Printer" widget="gateway_runtime_printer"/>
                         <field name="enabled" widget="boolean_toggle"/>
                         <field name="priority"/>
                     </group>
                     <field name="destination_ref" invisible="1"/>
                     <div class="alert alert-info" role="alert">
-                        Companies/branches, destinations, and reports are existing Odoo records. The Gateway only supplies runtime printers; this binding stores the routing rule.
+                        Odoo owns companies, destinations, and reports. Gateway supplies the runtime printer list; this rule only connects existing Odoo print context to an execution target.
                     </div>
                 </sheet>
             </form>
