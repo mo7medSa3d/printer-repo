@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, bigint, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const agents = pgTable("agents", {
@@ -157,6 +157,19 @@ export const printJobs = pgTable("print_jobs", {
   statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
   retriesCheck: check("print_jobs_retries_check", sql`${table.retries} >= 0`),
   deliveryAttemptsCheck: check("print_jobs_delivery_attempts_check", sql`${table.deliveryAttempts} >= 0`),
+}));
+
+// Operational Prometheus counter store. Created by migration 0015 and written
+// exclusively via raw SQL in `src/lib/metrics.ts` (metrics must never break a
+// print/auth request, so the write path intentionally bypasses the ORM). It is
+// declared here so the Drizzle schema is the complete source of truth for every
+// table that exists in the database.
+export const gatewayMetrics = pgTable("gateway_metrics", {
+  name: text("name").primaryKey(),
+  value: bigint("value", { mode: "number" }).notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  valueCheck: check("gateway_metrics_value_check", sql`${table.value} >= 0`),
 }));
 
 export const printJobRateLimits = pgTable("print_job_rate_limits", {

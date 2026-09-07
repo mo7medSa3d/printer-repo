@@ -84,11 +84,10 @@ printers:
 
 `internal/agent/pairing.go`: the agent (or desktop app) POSTs the 6-character pairing code
 to `POST /api/agent/register` together with host metadata. The Gateway resolves the pairing
-code to the pre-provisioned agent and derives the branch server-side; the client does not supply
-branch ownership. An optional `agentId` compatibility hint may be sent and, when present, must
-match the agent bound to the code. The response contains `{agentId, branchId, secret}` once;
-the secret is persisted locally in the secure store. Subsequent requests use
-`Authorization: Bearer <agentId>:<secret>`.
+code to the pre-provisioned agent; the client supplies no business ownership. An optional
+`agentId` compatibility hint may be sent and, when present, must match the agent bound to the
+code. The response contains `{agentId, secret}` once; the secret is persisted locally in the
+secure store. Subsequent requests use `Authorization: Bearer <agentId>:<secret>`.
 
 Pairing attempts are database-rate-limited per source address and pairing identity. Invalid
 codes are intentionally reported with the same generic failure shape; a limiter outage fails

@@ -60,11 +60,12 @@ describe("production fixes contracts (2026-09)", () => {
     expect(agent).toContain("WasInterrupted");
   });
 
-  it("job-maintenance: stale PRINTING jobs are requeued until retry budget is exhausted", () => {
+  it("job-maintenance: stale PRINTING jobs fail with an unknown physical outcome and are never requeued", () => {
     const jm = read("src/lib/job-maintenance.ts");
     expect(jm).toContain("AGENT_EXECUTION_TIMEOUT");
-    expect(jm).toContain("requeuedPrinting");
+    expect(jm).toContain("physical output is unknown");
     expect(jm).toContain("MAX_RETRIES");
+    expect(jm).not.toContain("requeuedPrinting");
   });
 
   it("Odoo cron reconciliation is bounded and uses the current runtime job API", () => {

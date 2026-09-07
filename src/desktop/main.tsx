@@ -63,6 +63,7 @@ import {
   humanConnection,
   humanType,
   isProductionPrinter,
+  jobDestination,
   jobDocType,
   jobId,
   jobPrinterId,
@@ -757,8 +758,8 @@ export default function App() {
                   )}
                 </span>
               </MetaRow>
-              <MetaRow label="Branch">
-                <span className="block truncate">{String(selectedJob.branchId || "—")}</span>
+              <MetaRow label="Destination">
+                <span className="block truncate">{jobDestination(selectedJob) || "—"}</span>
               </MetaRow>
               <MetaRow label="Retries">{String(selectedJob.retries ?? 0)}</MetaRow>
               <MetaRow label="Created">

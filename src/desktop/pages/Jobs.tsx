@@ -34,6 +34,7 @@ import {
 } from "../lib/ipc";
 import { friendlyPrinterError } from "../lib/printers";
 import {
+  jobDestination,
   jobDocType,
   jobId,
   jobPrinterId,
@@ -334,8 +335,8 @@ export function JobsPage({ s }: { s: DesktopState }) {
                   <tr key={jobId(j)} className="border-b border-edge last:border-0 row-hover">
                     <td className="px-6 py-4">
                       <div className="text-[14px] font-semibold text-ink">{jobDocType(j)}</div>
-                      {j.branchId ? (
-                        <div className="text-[12px] text-ink-3">Branch {String(j.branchId)}</div>
+                      {jobDestination(j) ? (
+                        <div className="text-[12px] text-ink-3">{jobDestination(j)}</div>
                       ) : null}
                     </td>
                     <td className="px-4 py-4"><Mono>{jobId(j)}</Mono></td>

@@ -33,7 +33,7 @@ printing.
 ## Delivery lifecycle
 
 1. Print creation persists one durable `queued` row with a stable idempotency key when supplied.
-2. The Gateway claims a queued row transactionally only while branch, agent, and printer remain
+2. The Gateway claims a queued row transactionally only while the owning agent and printer remain
    eligible.
 3. The WebSocket fast path sends the claimed job to one open socket. A failed socket write is
    released back to `queued` while no physical operation has started.
@@ -46,7 +46,6 @@ printing.
 Both WebSocket and polling claims revalidate inside PostgreSQL transactions:
 
 ```text
-branch.enabled = true
 agent.lifecycle = active
 agent.status = online
 printer.lifecycle = active
@@ -96,8 +95,9 @@ maintenance loop does not silently enable this policy.
 
 ## Idempotency and multi-instance operation
 
-Duplicate logical requests with the same branch-scoped idempotency key resolve to the same durable
-job, with the database uniqueness constraint as the concurrency backstop.
+Duplicate logical requests from the same Odoo installation with the same idempotency key resolve
+to the same durable job (the unique index is scoped by `api_key_id`), with the database uniqueness
+constraint as the concurrency backstop.
 
 Each Gateway process keeps WebSocket sockets in memory, but PostgreSQL is the durable source of
 truth. `LISTEN/NOTIFY` is a wake-up hint only; polling and transactional claims are the recovery

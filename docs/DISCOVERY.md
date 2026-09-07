@@ -1,10 +1,10 @@
 # Network Printer Discovery
 
-Agent-side discovery that respects `Branch → Agent → Printer` ownership.
+Agent-side discovery that respects `Agent → Printer` runtime ownership (business ownership is Odoo-side).
 
 ## Architecture
 ```text
-Manager → POST /api/agents/:id/discovery → discovery_sessions (branch via agent)
+Manager → POST /api/agents/:id/discovery → discovery_sessions (scoped by agentId)
 Agent poll → GET /api/agent/discovery → Discover (spooler, network, IPP, mDNS, SNMP, LPR, WSD, USB)
 Agent report → POST /api/agent/discovery {discoveryId, devices[]}
 Manager list → GET /api/agents/:id/discovery/:discoveryId
@@ -12,7 +12,8 @@ Manager approve → POST /api/agents/:id/discovered-printers/:deviceId/verify
 Manager provision → POST /api/agents/:id/discovered-printers/:deviceId/provision → printers (via agentId)
 ```
 
-Ownership never bypasses Agent; `discovered_devices.branch_id` is derived from `agents.branch_id`.
+Ownership never bypasses Agent; every `discovered_devices` row is scoped by the `agent_id` that
+reported it. The Gateway holds no branch model: business ownership of a device is Odoo-side.
 
 ## Trust boundary
 

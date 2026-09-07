@@ -6,7 +6,7 @@ export const STALE_CLAIM_SECONDS = 90;
 export const STALE_PRINTING_SECONDS = 10 * 60;
 export const MAX_RETRIES = 5;
 
-export async function sweepPrintJobs(scope: { agentId?: string } = {}): Promise<{ expired: number; requeuedClaims: number; requeuedPrinting: number; stalePrinting: number; exhaustedClaims: number }> {
+export async function sweepPrintJobs(scope: { agentId?: string } = {}): Promise<{ expired: number; requeuedClaims: number; stalePrinting: number; exhaustedClaims: number }> {
   const agentFilter = scope.agentId ? sql`AND agent_id = ${scope.agentId}` : sql``;
 
   const expired = await db.execute(sql`
@@ -46,7 +46,6 @@ export async function sweepPrintJobs(scope: { agentId?: string } = {}): Promise<
   const result = {
     expired: expired.rows.length,
     requeuedClaims: requeuedClaims.rows.length,
-    requeuedPrinting: 0,
     stalePrinting: stalePrinting.rows.length,
     exhaustedClaims: exhaustedClaims.rows.length,
   };
