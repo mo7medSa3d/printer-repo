@@ -44,6 +44,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0009_runtime_invariant_guard.sql", "0010_discovery.sql", "0011_worker_schema_fk_hardening.sql",
       "0012_runtime_state_checks.sql", "0013_runtime_state_constraint_scope_fix.sql", "0014_discovery_state_checks.sql",
       "0015_metrics_and_agent_notifications.sql", "0016_print_job_rate_limits.sql", "0017_notify_requeued_jobs.sql",
+      "0018_global_print_job_idempotency.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
@@ -65,7 +66,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
     }
   });
 
-  it("applies current migration 0017 over an existing populated 0016 database without data loss", async () => {
+  it("applies current migrations over an existing populated 0016 database without data loss", async () => {
     const pool = new Pool({ connectionString: databaseUrlFor(tempDb), max: 4 });
     const db = drizzle(pool);
     try {
@@ -144,6 +145,8 @@ suite("production-like PostgreSQL migration upgrade", () => {
 
       const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid = 'print_jobs'::regclass AND tgname = 'print_jobs_notify_agent_job_available'`);
       expect(trigger.rowCount).toBe(1);
+      const uniqueIndex = await pool.query(`SELECT indexname FROM pg_indexes WHERE tablename = 'print_jobs' AND indexname = 'print_jobs_idempotency_unique'`);
+      expect(uniqueIndex.rowCount).toBe(1);
     } finally {
       await pool.end();
     }
