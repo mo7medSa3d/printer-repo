@@ -25,6 +25,7 @@ import {
 import { SettingsSection } from "../ui";
 import type { DesktopState } from "../types";
 import { friendlyPrinterError } from "../lib/printers";
+import { getAutostart, setAutostart } from "../lib/ipc";
 
 export function SettingsPage({ s }: { s: DesktopState }) {
   const anyStatus = s.agentStatus as Record<string, unknown> | null;
@@ -175,7 +176,6 @@ export function SettingsPage({ s }: { s: DesktopState }) {
                 aria-label="Start agent with Windows"
                 onClick={async () => {
                   if (s.autostart === null) return;
-                  const { setAutostart, getAutostart } = await import("../lib/ipc");
                   const res = await setAutostart(!s.autostart);
                   s.setMsg({ text: res, type: "success" });
                   const st = await getAutostart();
