@@ -30,6 +30,7 @@ export const PHYSICAL_OUTCOME_UNKNOWN_MARKERS = [
   "AGENT_EXECUTION_TIMEOUT",
   "AGENT_RESTART_DURING_PRINT",
   "JOB_EXPIRED_DURING_PRINT",
+  "UNKNOWN_PARTIAL_DELIVERY",
 ] as const;
 
 export function derivePhysicalOutcome(status: JobStatus | string, error: string | null | undefined): PhysicalOutcome {

@@ -3,6 +3,7 @@ package printer
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,3 +88,43 @@ func TestNetworkPrinterDialFailure(t *testing.T) {
 		t.Fatalf("expected dial error")
 	}
 }
+
+func TestNetworkPrinterPartialDelivery(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Server accepts, reads 10 bytes, and forcefully closes connection
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		buf := make([]byte, 10)
+		_, _ = conn.Read(buf)
+		// Force close while client is sending a larger payload
+		_ = conn.Close()
+	}()
+
+	p := &NetworkPrinter{Address: "127.0.0.1:19999"}
+	// Large payload to ensure write loop has multiple iterations / gets interrupted
+	largeData := make([]byte, 1024*1024)
+	for i := range largeData {
+		largeData[i] = 'A'
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err = p.Print(ctx, largeData)
+	if err == nil {
+		t.Fatal("expected error on severed connection")
+	}
+	// Check that error contains UNKNOWN_PARTIAL_DELIVERY marker
+	if !strings.Contains(err.Error(), "UNKNOWN_PARTIAL_DELIVERY") {
+		t.Fatalf("expected UNKNOWN_PARTIAL_DELIVERY error marker, got: %v", err)
+	}
+}
+

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,8 @@ const (
 )
 
 type NetworkPrinter struct {
-	Address string
+	Address  string
+	Protocol string
 }
 
 func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
@@ -36,6 +38,9 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	for written < len(data) {
 		select {
 		case <-ctx.Done():
+			if written > 0 {
+				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
+			}
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 		default:
 		}
@@ -43,9 +48,15 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 		n, err := conn.Write(data[written:])
 		written += n
 		if err != nil {
+			if written > 0 {
+				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: write %d/%d to %s: %w", written, len(data), p.Address, err)
+			}
 			return fmt.Errorf("write %d/%d to %s: %w", written, len(data), p.Address, err)
 		}
 		if n == 0 {
+			if written > 0 {
+				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: short write 0 bytes after %d/%d to %s", written, len(data), p.Address)
+			}
 			return fmt.Errorf("short write 0 bytes to %s", p.Address)
 		}
 	}
@@ -55,18 +66,26 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 // SupportsKind exposes the render paths this byte-stream backend can actually
 // produce. JPEG images are converted to ESC/POS before being written.
 func (p *NetworkPrinter) SupportsKind(kind string) bool {
-	switch NormalizeKind(kind) {
-	case KindRaw, KindESCPOS, KindImage:
-		return true
+	k := NormalizeKind(kind)
+	switch strings.ToLower(strings.TrimSpace(p.Protocol)) {
+	case "zpl":
+		return k == KindRaw || k == KindZPL || k == KindLabel
+	case "tspl":
+		return k == KindRaw || k == KindTSPL || k == KindLabel
 	default:
-		return false
+		switch k {
+		case KindRaw, KindESCPOS, KindImage:
+			return true
+		default:
+			return false
+		}
 	}
 }
 
 func (p *NetworkPrinter) PrintDocument(ctx context.Context, doc Document) error {
 	kind := NormalizeKind(doc.Kind)
 	switch kind {
-	case KindRaw, KindESCPOS:
+	case KindRaw, KindESCPOS, KindZPL, KindTSPL, KindLabel:
 		return p.Print(ctx, doc.Data)
 	case KindImage:
 		data, err := JPEGToESCPOS(doc.Data)

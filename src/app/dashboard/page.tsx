@@ -18,6 +18,7 @@ export default async function DashboardPage() {
     id: string;
     name: string;
     pairingCode: string | null;
+    pairingCodeExpiresAt?: Date | null;
     status: string;
     lifecycle: string;
     metadata: unknown;
@@ -35,6 +36,7 @@ export default async function DashboardPage() {
         id: agents.id,
         name: agents.name,
         pairingCode: agents.pairingCode,
+        pairingCodeExpiresAt: agents.pairingCodeExpiresAt,
         status: agents.status,
         lifecycle: agents.lifecycle,
         metadata: agents.metadata,

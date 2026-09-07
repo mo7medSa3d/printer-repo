@@ -79,8 +79,8 @@ export class RuntimePrinterField extends Component {
         <div class="o_field_widget o_field_runtime_printer">
             <select class="o_input" t-att-disabled="props.readonly || state.loading || !state.agentId" t-on-change="onChange">
                 <option value=""><t t-esc="state.loading ? 'Loading printers…' : (!state.agentId ? 'Select Gateway Runtime Agent first' : 'Select Gateway Runtime Printer')"/></option>
-                <option t-foreach="state.printers" t-as="printer" t-key="printer.id" t-att-value="printer.id" t-att-selected="printer.id === props.record.data[props.name]">
-                    <t t-esc="printer.name"/> — <t t-esc="printer.id"/> — <t t-esc="printer.status"/>
+                <option t-foreach="filteredPrinters" t-as="printer" t-key="printer.id" t-att-value="printer.id" t-att-selected="printer.id === props.record.data[props.name]">
+                    <t t-esc="printer.name"/> [<t t-esc="printer.deviceClass || 'generic'"/>] — <t t-esc="printer.status"/>
                 </option>
             </select>
             <small t-if="state.error" class="text-danger">Gateway printer discovery failed.</small>
@@ -88,15 +88,31 @@ export class RuntimePrinterField extends Component {
 
     setup() {
         this.rpc = useService("rpc");
-        this.state = useState({ loading: false, printers: [], agentId: false, error: null });
+        this.state = useState({ loading: false, printers: [], agentId: false, destinationType: false, error: null });
         onWillStart(() => this.load(this.props));
         onWillUpdateProps((nextProps) => {
             const before = this.scope(this.props);
             const after = this.scope(nextProps);
-            if (before.companyId !== after.companyId || before.branchId !== after.branchId || before.agentId !== after.agentId) {
+            if (before.companyId !== after.companyId || before.branchId !== after.branchId || before.agentId !== after.agentId || before.destinationType !== after.destinationType) {
                 this.load(nextProps);
             }
         });
+    }
+
+    get filteredPrinters() {
+        const dest = this.state.destinationType;
+        if (!dest || !Array.isArray(this.state.printers)) {
+            return this.state.printers;
+        }
+        if (dest === "pos" || dest === "pos_printer") {
+            const thermal = this.state.printers.filter(p => !["laser", "inkjet"].includes((p.deviceClass || "").toLowerCase()));
+            return thermal.length ? thermal : this.state.printers;
+        }
+        if (dest === "picking_type") {
+            const labels = this.state.printers.filter(p => ["label", "thermal", "unknown"].includes((p.deviceClass || "").toLowerCase()));
+            return labels.length ? labels : this.state.printers;
+        }
+        return this.state.printers;
     }
 
     scope(props) {
@@ -104,12 +120,14 @@ export class RuntimePrinterField extends Component {
             companyId: relationalId(props.record?.data?.company_id),
             branchId: relationalId(props.record?.data?.branch_id),
             agentId: props.record?.data?.runtime_agent_id || false,
+            destinationType: props.record?.data?.destination_type || false,
         };
     }
 
     async load(props) {
-        const { companyId, branchId, agentId } = this.scope(props);
+        const { companyId, branchId, agentId, destinationType } = this.scope(props);
         this.state.agentId = agentId;
+        this.state.destinationType = destinationType;
         this.state.printers = [];
         this.state.error = null;
         if (!companyId || !branchId || !agentId) {

@@ -14,6 +14,9 @@ const (
 	KindESCPOS = "escpos"
 	KindPDF    = "pdf"
 	KindImage  = "image"
+	KindZPL    = "zpl"
+	KindTSPL   = "tspl"
+	KindLabel  = "label"
 
 	defaultDocumentPrintTimeout = 20 * time.Second
 	defaultPDFDocumentTimeout   = 120 * time.Second
@@ -83,8 +86,8 @@ func PrintDocument(ctx context.Context, p Printer, doc Document) error {
 }
 
 func SupportedKinds(p Printer) []string {
-	kinds := make([]string, 0, 4)
-	for _, k := range []string{KindRaw, KindESCPOS, KindPDF, KindImage} {
+	kinds := make([]string, 0, 7)
+	for _, k := range []string{KindRaw, KindESCPOS, KindPDF, KindImage, KindZPL, KindTSPL, KindLabel} {
 		if SupportsKind(p, k) {
 			kinds = append(kinds, k)
 		}

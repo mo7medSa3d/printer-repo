@@ -26,7 +26,7 @@ export async function createAgent(name: string) {
   const id = `agt_${nanoid(8)}`;
   await db.insert(agents).values({
     id, name: name.trim(), pairingCode,
-    pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30),
+    pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 10),
     status: "offline", lifecycle: "active",
   });
   revalidatePath("/dashboard");
@@ -96,7 +96,7 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
   await db.transaction(async (tx) => {
     await tx.update(agents).set({
       lifecycle, secret: null, pairingCode,
-      pairingCodeExpiresAt: pairingCode ? new Date(Date.now() + 1000 * 60 * 30) : null,
+      pairingCodeExpiresAt: pairingCode ? new Date(Date.now() + 1000 * 60 * 10) : null,
       status: "offline", updatedAt: new Date(),
     }).where(eq(agents.id, id));
     if (lifecycle !== "active") {

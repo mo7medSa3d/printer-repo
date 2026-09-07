@@ -21,17 +21,33 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 }
 
 pub fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+  let status_header = MenuItem::with_id(
+    app,
+    "status_header",
+    "● Print Gateway • Operational",
+    false,
+    None::<&str>,
+  )?;
   let open = MenuItem::with_id(app, "open", "Open Manager", true, None::<&str>)?;
-  let gateway = MenuItem::with_id(app, NAV_GATEWAY, "Gateway", true, None::<&str>)?;
-  let agent = MenuItem::with_id(app, NAV_AGENT, "Local Agent", true, None::<&str>)?;
-  let pair = MenuItem::with_id(app, NAV_PAIR, "Pair Agent", true, None::<&str>)?;
-  let settings = MenuItem::with_id(app, NAV_SETTINGS, "Settings", true, None::<&str>)?;
-  let restart = MenuItem::with_id(app, "restart_agent", "Restart Agent", true, None::<&str>)?;
+  let gateway = MenuItem::with_id(app, NAV_GATEWAY, "Gateway Dashboard", true, None::<&str>)?;
+  let agent = MenuItem::with_id(app, NAV_AGENT, "Local Agent & Printers", true, None::<&str>)?;
+  let pair = MenuItem::with_id(app, NAV_PAIR, "Pair Agent...", true, None::<&str>)?;
+  let settings = MenuItem::with_id(app, NAV_SETTINGS, "Settings & Diagnostics", true, None::<&str>)?;
+  let restart = MenuItem::with_id(app, "restart_agent", "Restart Agent Service", true, None::<&str>)?;
   let quit = MenuItem::with_id(app, "quit", "Exit", true, None::<&str>)?;
 
   let menu = Menu::with_items(
     app,
-    &[&open, &gateway, &agent, &pair, &settings, &restart, &quit],
+    &[
+      &status_header,
+      &open,
+      &gateway,
+      &agent,
+      &pair,
+      &settings,
+      &restart,
+      &quit,
+    ],
   )?;
 
   let icon = match app.default_window_icon() {

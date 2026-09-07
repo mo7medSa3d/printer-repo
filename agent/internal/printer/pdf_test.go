@@ -436,6 +436,9 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 		kinds []string
 	}{
 		{"raw tcp", &NetworkPrinter{Address: "127.0.0.1:9100"}, []string{KindRaw, KindESCPOS, KindImage}},
+		{"zpl tcp", &NetworkPrinter{Address: "127.0.0.1:9100", Protocol: "zpl"}, []string{KindRaw, KindZPL, KindLabel}},
+		{"tspl tcp", &NetworkPrinter{Address: "127.0.0.1:9100", Protocol: "tspl"}, []string{KindRaw, KindTSPL, KindLabel}},
+		{"label printer", NewLabelPrinter(&NetworkPrinter{Address: "127.0.0.1:9100"}, ProtocolZPL, "Zebra"), []string{KindRaw, KindZPL, KindTSPL, KindLabel}},
 		{"mock spooler", newMockSpoolerPrinter("Test"), []string{KindRaw, KindESCPOS, KindPDF}},
 		{"usb", &USBPrinter{ID: "u", Name: "USB"}, []string{KindRaw, KindESCPOS}},
 	}

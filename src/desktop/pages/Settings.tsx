@@ -10,6 +10,7 @@ import {
   Server,
   ShieldCheck,
   Square,
+  Copy,
 } from "lucide-react";
 import {
   Button,
@@ -191,43 +192,139 @@ export function SettingsPage({ s }: { s: DesktopState }) {
         </SettingsSection>
       </div>
 
-      <Card className="overflow-hidden">
-        <div className="flex items-start gap-3.5 border-b border-edge bg-surface px-6 py-5">
-          <span className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
-            <KeyRound className="h-5 w-5" aria-hidden />
-          </span>
-          <div className="min-w-0">
-            <h2 className="text-[17px] font-semibold leading-tight tracking-[-0.01em] text-ink">Pair agent</h2>
-            <p className="mt-1 text-[13px] text-ink-3">Connect this PC to the gateway as a print agent</p>
+      {/* Pair Agent Hero Card */}
+      <Card className="overflow-hidden border-2 border-brand/20">
+        <div className="flex items-start justify-between gap-4 border-b border-edge bg-surface px-6 py-5">
+          <div className="flex items-start gap-3.5">
+            <span className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
+              <KeyRound className="h-5 w-5" aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-[17px] font-semibold leading-tight tracking-[-0.01em] text-ink">Pair agent</h2>
+              <p className="mt-1 text-[13px] text-ink-3">Connect this PC to the gateway as a managed edge print agent</p>
+            </div>
           </div>
+          <StatusBadge
+            label={s.isOnline && s.gatewayConnected ? "Paired & Ready" : "Pairing Available"}
+            tone={s.isOnline && s.gatewayConnected ? "ok" : "warn"}
+          />
         </div>
         <div className="grid gap-6 px-6 py-6 lg:grid-cols-[1fr_auto] lg:items-end">
           <ol className="space-y-3 text-[14px] text-ink-2">
-            {["Save the gateway URL above.", "Generate a pairing code on the gateway dashboard.", "Enter it here — the agent registers and stays paired."].map((step, i) => (
+            {[
+              "Configure and save the Gateway URL above.",
+              "Generate a 6-character pairing code from the Central Gateway dashboard or Odoo 19 wizard.",
+              "Enter the code below — credentials are securely persisted to Windows DPAPI / agent config.",
+            ].map((step, i) => (
               <li key={step} className="flex items-center gap-3">
-                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-brand text-[12px] font-bold text-brand-contrast">{i + 1}</span>
-                {step}
+                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-brand text-[12px] font-bold text-brand-contrast">
+                  {i + 1}
+                </span>
+                <span>{step}</span>
               </li>
             ))}
           </ol>
-          <div className="flex w-full max-w-sm items-end gap-3">
-            <Field label="Pairing code" htmlFor="pair-code" className="flex-1">
-              <Input
-                id="pair-code"
-                value={s.pairCode}
-                onChange={(e) => s.setPairCode(e.target.value.toUpperCase())}
-                placeholder="AB12CD"
-                maxLength={6}
-                className="text-center font-mono text-[15px] uppercase tracking-[0.3em]"
-                autoComplete="off"
-              />
+          <div className="flex w-full max-w-sm flex-col gap-3">
+            <Field label="6-Digit Pairing Code" htmlFor="pair-code" className="flex-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  id="pair-code"
+                  value={s.pairCode}
+                  onChange={(e) => s.setPairCode(e.target.value.toUpperCase())}
+                  placeholder="AB12CD"
+                  maxLength={6}
+                  className="text-center font-mono text-[18px] font-bold uppercase tracking-[0.4em]"
+                  autoComplete="off"
+                />
+                <Button
+                  variant="primary"
+                  onClick={s.pair}
+                  loading={s.busy}
+                  disabled={!s.pairCode.trim() || s.pairCode.trim().length !== 6}
+                  icon={<ShieldCheck className="h-[18px] w-[18px]" />}
+                >
+                  Pair
+                </Button>
+              </div>
             </Field>
+          </div>
+        </div>
+      </Card>
+
+      {/* Live Diagnostics & Log Viewer */}
+      <Card className="overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-edge bg-surface px-6 py-5">
+          <div>
+            <h2 className="text-[17px] font-semibold leading-tight text-ink">Live Diagnostics & Event Stream</h2>
+            <p className="mt-1 text-[13px] text-ink-3">Real-time daemon events, hardware discovery signals, and error logs</p>
+          </div>
+          <div className="flex items-center gap-2">
             <Button
-              variant="primary"
-              onClick={s.pair}
-              loading={s.busy}
-              icon={<ShieldCheck className="h-[18px] w-[18px]" />}
-            >Pair agent</Button>
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const report = [
+                  `=== Odoo Print Agent Diagnostic Export ===`,
+                  `Generated At: ${new Date().toISOString()}`,
+                  `App Version: ${s.version || "1.0.0"}`,
+                  `Agent Running: ${s.isOnline}`,
+                  `Gateway URL: ${s.gatewayUrl || "Not configured"}`,
+                  `Gateway Reachable: ${s.gatewayConnected}`,
+                  `Last Heartbeat: ${s.lastHeartbeat || "None"}`,
+                  `Printers Count: ${s.printers.length}`,
+                  `Pending Jobs: ${s.pendingJobs}, Failed Jobs: ${s.failedJobs}`,
+                  ``,
+                  `=== Discovered Printers ===`,
+                  ...s.printers.map((p) => ` - ${p.name} [${p.status}] (${p.printer_type || p.device_class || "unknown"}, ${p.connection_type})`),
+                  ``,
+                  `=== Runtime Paths ===`,
+                  ...paths.map(([k, v]) => ` - ${k}: ${v}`),
+                ].join("\n");
+
+                navigator.clipboard.writeText(report).then(() => {
+                  s.setMsg({ text: "Diagnostic logs copied to clipboard", type: "success" });
+                }).catch(() => {
+                  s.setMsg({ text: "Unable to copy diagnostics", type: "error" });
+                });
+              }}
+              icon={<Copy className="h-3.5 w-3.5" />}
+            >
+              Export Logs
+            </Button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <div className="max-h-64 overflow-y-auto rounded-xl border border-edge bg-slate-950 p-4 font-mono text-[12px] text-slate-300 shadow-inner space-y-1.5">
+            <div className="text-emerald-400">
+              <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [INFO] Edge Manager initialized (v{s.version || "1.0.0"})
+            </div>
+            <div className={s.isOnline ? "text-emerald-400" : "text-rose-400"}>
+              <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [{s.isOnline ? "INFO" : "WARN"}] Local Agent Service: {s.isOnline ? "Running (OdooPrintAgent.exe active)" : "Stopped"}
+            </div>
+            <div className={s.gatewayConnected ? "text-emerald-400" : "text-amber-400"}>
+              <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [{s.gatewayConnected ? "INFO" : "WARN"}] Gateway: {s.gatewayConnected ? `Connected to ${s.gatewayUrl}` : s.gatewayUrl ? "Unreachable" : "Not configured"}
+            </div>
+            {s.lastHeartbeat && (
+              <div className="text-slate-300">
+                <span className="text-slate-500">[{new Date(s.lastHeartbeat).toLocaleTimeString()}]</span> [INFO] Gateway heartbeat ack received
+              </div>
+            )}
+            {s.healthError && (
+              <div className="text-rose-400">
+                <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [ERROR] Gateway health check: {friendlyPrinterError(s.healthError)}
+              </div>
+            )}
+            {s.printers.map((p) => (
+              <div key={p.id} className="text-slate-300">
+                <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [INFO] Hardware device online: {p.name} ({p.connection_type})
+              </div>
+            ))}
+            {s.failedJobs > 0 && (
+              <div className="text-rose-400">
+                <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [WARN] {s.failedJobs} job(s) in failed state
+              </div>
+            )}
           </div>
         </div>
       </Card>

@@ -59,18 +59,25 @@ export function printerTone(status: string): Tone {
 }
 
 export function jobTone(status: string): Tone {
-  switch (status) {
+  switch (status.toLowerCase()) {
     case "success":
     case "completed":
       return "ok";
+    case "unknown_partial_delivery":
+    case "partial":
+    case "partial_delivery":
+      return "warn";
     case "failed":
     case "expired":
+    case "canceled":
+    case "cancelled":
       return "bad";
     case "printing":
-      return "warn";
+    case "processing":
     case "claimed":
       return "info";
     case "queued":
+    case "pending":
       return "neutral";
     default:
       return "neutral";
@@ -84,7 +91,13 @@ export function labelPrinter(status: string): string {
 }
 
 export function labelJob(status: string): string {
-  if (status === "success" || status === "completed") return "Completed";
+  const s = status.toLowerCase();
+  if (s === "success" || s === "completed") return "Completed";
+  if (s === "unknown_partial_delivery" || s === "partial") return "Attention Needed";
+  if (s === "printing" || s === "processing") return "Printing";
+  if (s === "claimed") return "Claimed";
+  if (s === "queued" || s === "pending") return "Queued";
+  if (s === "failed") return "Failed";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 

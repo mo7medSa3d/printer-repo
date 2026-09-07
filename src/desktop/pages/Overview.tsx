@@ -241,31 +241,61 @@ export function OverviewPage({ s }: { s: DesktopState }) {
               />
             ) : (
               <div className="space-y-2.5">
-                {shownPrinters.slice(0, 5).map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => s.setSelectedPrinter(p)}
-                    className="flex w-full items-center gap-4 rounded-xl border border-edge bg-surface px-4 py-3.5 text-left transition-colors duration-150 hover:border-edge-accent hover:bg-brand-subtle focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)]"
-                  >
-                    <PrinterAvatar
-                      name={p.name}
-                      size="lg"
-                      tone={printerTone(p.status) === "neutral" ? "brand" : printerTone(p.status)}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[15px] font-semibold text-ink">
-                        {p.name}
-                      </span>
-                      <span className="block truncate text-[13px] text-ink-3">
-                        {humanType(p)} · {humanConnection(p)} · {printerEndpoint(p)}
-                      </span>
-                    </span>
-                    <StatusBadge
-                      tone={printerTone(p.status)}
-                      label={labelPrinter(p.status)}
-                    />
-                  </button>
-                ))}
+                {shownPrinters.slice(0, 5).map((p) => {
+                  const pType = (p.printer_type || "").toLowerCase();
+                  const pClass = (p.device_class || "").toLowerCase();
+                  const isThermal = pType === "thermal" || pClass === "thermal";
+                  const isLabel = pType === "label" || pClass === "label";
+                  const isSpooler = p.connection_type === "spooler" || pClass === "laser";
+                  const badgeLabel = isLabel ? "ZPL / TSPL" : isThermal ? "ESC/POS" : isSpooler ? "Spooler" : "Raw";
+
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex w-full items-center justify-between gap-4 rounded-xl border border-edge bg-surface px-4 py-3.5 transition-colors duration-150 hover:border-edge-accent focus-within:border-edge-accent"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => s.setSelectedPrinter(p)}
+                        className="flex min-w-0 flex-1 items-center gap-3.5 text-left focus:outline-none"
+                      >
+                        <PrinterAvatar
+                          name={p.name}
+                          size="lg"
+                          tone={printerTone(p.status) === "neutral" ? "brand" : printerTone(p.status)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[15px] font-semibold text-ink">
+                            {p.name}
+                          </span>
+                          <span className="block truncate text-[13px] text-ink-3">
+                            {humanType(p)} · {humanConnection(p)} · {printerEndpoint(p)}
+                          </span>
+                        </span>
+                      </button>
+
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        <span className="hidden sm:inline-flex rounded-md border border-edge bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink-2">
+                          {badgeLabel}
+                        </span>
+                        <StatusBadge
+                          tone={printerTone(p.status)}
+                          label={labelPrinter(p.status)}
+                        />
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => s.handleTest(p.id)}
+                          disabled={s.busy}
+                          icon={<Zap className="h-3.5 w-3.5 text-brand" />}
+                          title={`Send test print to ${p.name}`}
+                        >
+                          Test
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
                 <ViewAllButton
                   label="View all printers"
                   onClick={() => s.navigate("printers")}
@@ -306,6 +336,29 @@ export function OverviewPage({ s }: { s: DesktopState }) {
                 },
               ]}
             />
+            {/* Local Queue Buffer Gauge */}
+            <div className="section-rule mt-5 pt-5 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold uppercase tracking-wider text-ink-3">
+                  Local Queue Buffer
+                </span>
+                <span className={`font-semibold ${s.pendingJobs > 20 ? "text-warn" : s.pendingJobs > 0 ? "text-brand" : "text-ok"}`}>
+                  {s.pendingJobs > 20 ? "Backlogged" : s.pendingJobs > 0 ? "In Flight" : "Ready"}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-ink font-bold text-sm">{s.pendingJobs} <span className="text-ink-3 font-normal">/ 50 jobs</span></span>
+                <span className="text-ink-3">{Math.min(100, Math.round((s.pendingJobs / 50) * 100))}%</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2 border border-edge">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    s.pendingJobs > 20 ? "bg-warn-solid" : "bg-brand"
+                  }`}
+                  style={{ width: `${Math.max(4, Math.min(100, (s.pendingJobs / 50) * 100))}%` }}
+                />
+              </div>
+            </div>
             <div className="section-rule mt-5 pt-5">
               <div className="mb-3 text-[12px] font-semibold uppercase tracking-[0.06em] text-ink-3">
                 Quick actions
@@ -408,37 +461,84 @@ export function OverviewPage({ s }: { s: DesktopState }) {
         )}
       </Card>
 
-      {/* Quick print test shortcut */}
-      {shownPrinters.length > 0 && (
-        <Card className="p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-start gap-3.5">
-              <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
-                <Zap className="h-[22px] w-[22px]" aria-hidden />
-              </span>
-              <div className="min-w-0">
-                <div className="text-[16px] font-semibold text-ink">
-                  Verify a printer end to end
+      {/* Hardware Profile Validation */}
+      {shownPrinters.length > 0 && (() => {
+        const thermal = shownPrinters.find((p) => {
+          const t = (p.printer_type || "").toLowerCase();
+          const d = (p.device_class || "").toLowerCase();
+          return t === "thermal" || d === "thermal";
+        });
+        const label = shownPrinters.find((p) => {
+          const t = (p.printer_type || "").toLowerCase();
+          const d = (p.device_class || "").toLowerCase();
+          return t === "label" || d === "label";
+        });
+        const spooler = shownPrinters.find(
+          (p) => p.connection_type === "spooler" || (p.device_class || "").toLowerCase() === "laser"
+        );
+
+        return (
+          <Card className="p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3.5">
+                <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-edge-accent bg-brand-subtle text-brand">
+                  <Zap className="h-[22px] w-[22px]" aria-hidden />
+                </span>
+                <div className="min-w-0">
+                  <div className="text-[16px] font-semibold text-ink">
+                    Hardware Profile Validation
+                  </div>
+                  <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
+                    Verify physical rendering across Universal Hardware Profiles: ESC/POS (receipts),
+                    ZPL/TSPL (labels), or OS Spooler (A4 documents).
+                  </p>
                 </div>
-                <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
-                  A test print travels the same pipeline as a real job: queued, claimed by the
-                  agent, then printed.
-                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {thermal && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => s.handleTest(thermal.id)}
+                    icon={<Zap className="h-4 w-4 text-brand" />}
+                  >
+                    Test ESC/POS
+                  </Button>
+                )}
+                {label && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => s.handleTest(label.id)}
+                    icon={<Zap className="h-4 w-4 text-brand" />}
+                  >
+                    Test ZPL Label
+                  </Button>
+                )}
+                {spooler && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => s.handleTest(spooler.id)}
+                    icon={<Zap className="h-4 w-4 text-brand" />}
+                  >
+                    Test Spooler
+                  </Button>
+                )}
+                {!thermal && !label && !spooler && (
+                  <Button
+                    variant="secondary"
+                    className="shrink-0"
+                    onClick={() => s.handleTest(shownPrinters[0].id)}
+                    icon={<Zap className="h-4 w-4" />}
+                  >
+                    Test {shownPrinters[0].name.length > 18
+                      ? `${shownPrinters[0].name.slice(0, 18)}…`
+                      : shownPrinters[0].name}
+                  </Button>
+                )}
               </div>
             </div>
-            <Button
-              variant="secondary"
-              className="shrink-0"
-              onClick={() => s.handleTest(shownPrinters[0].id)}
-              icon={<Zap className="h-4 w-4" />}
-            >
-              Test {shownPrinters[0].name.length > 18
-                ? `${shownPrinters[0].name.slice(0, 18)}…`
-                : shownPrinters[0].name}
-            </Button>
-          </div>
-        </Card>
-      )}
+          </Card>
+        );
+      })()}
     </div>
   );
 }

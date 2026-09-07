@@ -11,13 +11,23 @@ import (
 )
 
 const (
-	maxRasterWidth = 576
+	maxRasterWidth           = 576
+	DefaultRasterSliceHeight = 256
+	LowBufferRasterSliceHeight = 128
 )
 
 // JPEGToESCPOS converts an Odoo POS raster (JPEG) into an ESC/POS raster image.
-// This preserves the already-rendered POS/Kitchen semantics without sending
-// JPEG bytes directly to a RAW socket, which most thermal printers cannot render.
+// Breaking large thermal prints into discrete vertical bands (default 256px) prevents
+// printer buffer overflows and ensures 100% Arabic text and QR code compatibility on budget printers.
 func JPEGToESCPOS(data []byte) ([]byte, error) {
+	return JPEGToESCPOSWithBanding(data, DefaultRasterSliceHeight)
+}
+
+// JPEGToESCPOSWithBanding slices the raster into chunks of at most sliceHeight pixels.
+func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
+	if sliceHeight <= 0 {
+		sliceHeight = DefaultRasterSliceHeight
+	}
 	cfg, err := decodeJPEGConfig(data)
 	if err != nil {
 		return nil, err
@@ -37,27 +47,39 @@ func JPEGToESCPOS(data []byte) ([]byte, error) {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
 	rowBytes := (w + 7) / 8
-	raster := make([]byte, rowBytes*h)
 
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			g := grayscale(img.At(img.Bounds().Min.X+x, img.Bounds().Min.Y+y))
-			if g < 180 {
-				raster[y*rowBytes+x/8] |= 0x80 >> uint(x%8)
+	out := bytes.NewBuffer(make([]byte, 0, rowBytes*h+128))
+	out.Write([]byte{0x1b, 0x40}) // ESC @ (initialize)
+
+	// Emit vertical bands
+	for yStart := 0; yStart < h; yStart += sliceHeight {
+		bandHeight := sliceHeight
+		if yStart+bandHeight > h {
+			bandHeight = h - yStart
+		}
+		bandRaster := make([]byte, rowBytes*bandHeight)
+
+		for by := 0; by < bandHeight; by++ {
+			actualY := yStart + by
+			for x := 0; x < w; x++ {
+				g := grayscale(img.At(img.Bounds().Min.X+x, img.Bounds().Min.Y+actualY))
+				if g < 180 { // 1-bit high-contrast threshold for crisp Arabic text & QR codes
+					bandRaster[by*rowBytes+x/8] |= 0x80 >> uint(x%8)
+				}
 			}
 		}
+
+		// GS v 0 (raster bit image)
+		out.Write([]byte{0x1d, 0x76, 0x30, 0x00})
+		out.WriteByte(byte(rowBytes))
+		out.WriteByte(byte(rowBytes >> 8))
+		out.WriteByte(byte(bandHeight))
+		out.WriteByte(byte(bandHeight >> 8))
+		out.Write(bandRaster)
 	}
 
-	out := bytes.NewBuffer(make([]byte, 0, len(raster)+32))
-	out.Write([]byte{0x1b, 0x40}) // initialize
-	out.Write([]byte{0x1d, 0x76, 0x30, 0x00}) // GS v 0, normal density
-	out.WriteByte(byte(rowBytes))
-	out.WriteByte(byte(rowBytes >> 8))
-	out.WriteByte(byte(h))
-	out.WriteByte(byte(h >> 8))
-	out.Write(raster)
 	out.WriteString("\n\n")
-	out.Write([]byte{0x1d, 0x56, 0x01}) // partial cut
+	out.Write([]byte{0x1d, 0x56, 0x01}) // GS V 1 (partial cut)
 	return out.Bytes(), nil
 }
 

@@ -57,10 +57,10 @@ export function printerTone(status: string): Tone {
 export function jobTone(status: string): Tone {
   const s = String(status).toLowerCase();
   if (s === "success" || s === "completed") return "ok";
-  if (s === "failed" || s === "expired") return "bad";
-  if (s === "printing") return "warn";
-  if (s === "claimed") return "info";
-  if (s === "queued") return "neutral";
+  if (s === "unknown_partial_delivery" || s === "partial" || s === "partial_delivery") return "warn";
+  if (s === "failed" || s === "expired" || s === "canceled" || s === "cancelled") return "bad";
+  if (s === "printing" || s === "processing" || s === "claimed") return "info";
+  if (s === "queued" || s === "pending") return "neutral";
   return "neutral";
 }
 
@@ -178,18 +178,21 @@ export function StatusBadge({
   tone = "neutral",
   label,
   icon,
+  pulse,
   className = "",
 }: {
   tone?: Tone;
   label: string;
   icon?: React.ReactNode;
+  pulse?: boolean;
   className?: string;
 }) {
+  const shouldPulse = pulse ?? (tone === "info");
   return (
     <span
       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[13px] font-semibold whitespace-nowrap ${toneBg[tone]} ${className}`}
     >
-      {icon ?? <StatusDot tone={tone} />}
+      {icon ?? <StatusDot tone={tone} pulse={shouldPulse} />}
       {label}
     </span>
   );
@@ -205,6 +208,50 @@ export function Card({
   className?: string;
 }) {
   return <div className={`card ${className}`}>{children}</div>;
+}
+
+export function StatCard({
+  title,
+  value,
+  subtitle,
+  icon,
+  tone = "neutral",
+  trend,
+  className = "",
+}: {
+  title: string;
+  value: React.ReactNode;
+  subtitle?: React.ReactNode;
+  icon?: React.ReactNode;
+  tone?: Tone;
+  trend?: { text: string; positive?: boolean };
+  className?: string;
+}) {
+  return (
+    <div className={`card p-5 flex flex-col justify-between transition-shadow hover:shadow-md ${className}`}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[13px] font-semibold text-ink-3 uppercase tracking-wider">{title}</span>
+        {icon && (
+          <div className={`flex h-10 w-10 items-center justify-center rounded-xl border ${toneBg[tone]}`}>
+            {icon}
+          </div>
+        )}
+      </div>
+      <div className="mt-4">
+        <div className="text-3xl font-bold tracking-tight text-ink tabular-nums">{value}</div>
+        {(subtitle || trend) && (
+          <div className="mt-1.5 flex items-center gap-2 text-[12px] text-ink-3">
+            {trend && (
+              <span className={`font-semibold ${trend.positive ? "text-ok" : "text-bad"}`}>
+                {trend.text}
+              </span>
+            )}
+            {subtitle && <span>{subtitle}</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function CardHeader({

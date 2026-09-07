@@ -6,3 +6,4 @@ access_print_gateway_binding_user,print_gateway.binding user,model_print_gateway
 access_print_gateway_binding_admin,print_gateway.binding admin,model_print_gateway_binding,base.group_system,1,1,1,1
 access_print_gateway_print_job_user,print_gateway.print_job user,model_print_gateway_print_job,base.group_user,1,0,0,0
 access_print_gateway_print_job_admin,print_gateway.print_job admin,model_print_gateway_print_job,base.group_system,1,1,1,0
+access_print_gateway_pair_wizard_admin,print_gateway.pair_agent_wizard admin,model_print_gateway_pair_agent_wizard,base.group_system,1,1,1,1
