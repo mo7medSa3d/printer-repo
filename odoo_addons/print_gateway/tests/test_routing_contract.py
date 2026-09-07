@@ -40,7 +40,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         })
         self.assertEqual(binding.destination_ref._name, 'ir.actions.report')
 
-    def test_binding_rejects_arbitrary_company_destination(self):
+    def test_binding_rejects_unsupported_reference_model(self):
         with self.assertRaises(Exception):
             self.env['print_gateway.binding'].create({
                 'company_id': self.company.id,
@@ -52,15 +52,16 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             })
 
     def test_cross_company_destination_is_rejected(self):
-        pos_config = self.env['pos.config'].search([('company_id', '=', self.company.id)], limit=1)
-        if not pos_config:
-            self.skipTest('Odoo test database has no POS configuration to use as a company-scoped destination.')
+        picking_type = self.env['stock.picking.type'].search([('company_id', '=', self.company.id)], limit=1)
+        self.assertTrue(picking_type, 'Expected at least one company-scoped stock operation type in the Odoo test database.')
+        report = self.env['ir.actions.report'].search([('model', '=', 'stock.picking')], limit=1)
+        self.assertTrue(report, 'Expected a stock picking report in the Odoo test database.')
         with self.assertRaises(ValidationError):
             self.env['print_gateway.binding'].create({
                 'company_id': self.other_company.id,
-                'destination_type': 'pos',
-                'destination_pos_config_id': pos_config.id,
-                'report_id': self.env.ref('point_of_sale.action_report_pos_order').id,
+                'destination_type': 'picking_type',
+                'destination_picking_type_id': picking_type.id,
+                'report_id': report.id,
                 'printer_id': 'printer_runtime_1',
             })
 
