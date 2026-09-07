@@ -74,16 +74,16 @@ async function insertQueuedJobAtomically({
   documentType?: string | null;
   rateLimitKeyId?: string | null;
 }): Promise<void> {
-  if (!rateLimitKeyId) throw new Error("Odoo API key identity is required for print jobs");
-
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
+    if (rateLimitKeyId) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
+    }
 
     if (idempotencyKey) {
-      const existing = await tx.execute(sql`
-        SELECT id FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1
-      `);
+      const existing = rateLimitKeyId
+        ? await tx.execute(sql`SELECT id FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1`)
+        : await tx.execute(sql`SELECT id FROM print_jobs WHERE api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1`);
       if (existing.rows.length > 0) {
         const err = new Error("DUPLICATE_JOB");
         Object.assign(err, { code: "DUPLICATE_JOB" });
@@ -103,40 +103,42 @@ async function insertQueuedJobAtomically({
     if (agentQueued >= MAX_AGENT_QUEUED_JOBS) throw new AgentQueuedJobsFullError(agentId, agentQueued);
     if (inFlight >= MAX_AGENT_IN_FLIGHT_JOBS) throw new AgentQueueFullError(agentId, inFlight);
 
-    const now = new Date();
-    const limit = await tx.execute(sql`SELECT minute_window_started_at, minute_count, hour_window_started_at, hour_count
-      FROM print_job_rate_limits WHERE api_key_id = ${rateLimitKeyId} FOR UPDATE`);
-    const existingLimit = limit.rows[0] as {
-      minute_window_started_at?: string | Date; minute_count?: number | string;
-      hour_window_started_at?: string | Date; hour_count?: number | string;
-    } | undefined;
-    if (!existingLimit) {
-      await tx.execute(sql`INSERT INTO print_job_rate_limits
-        (api_key_id, minute_window_started_at, minute_count, hour_window_started_at, hour_count, updated_at)
-        VALUES (${rateLimitKeyId}, ${now}, 1, ${now}, 1, ${now})`);
-    } else {
-      const minuteStarted = new Date(existingLimit.minute_window_started_at ?? now);
-      const hourStarted = new Date(existingLimit.hour_window_started_at ?? now);
-      const minuteElapsed = Math.max(0, now.getTime() - minuteStarted.getTime());
-      const hourElapsed = Math.max(0, now.getTime() - hourStarted.getTime());
-      const nextMinuteCount = minuteElapsed >= 60_000 ? 1 : Number(existingLimit.minute_count ?? 0) + 1;
-      const nextHourCount = hourElapsed >= 3_600_000 ? 1 : Number(existingLimit.hour_count ?? 0) + 1;
-      if (nextMinuteCount > PRINT_JOB_RATE_LIMIT_PER_MINUTE || nextHourCount > PRINT_JOB_RATE_LIMIT_PER_HOUR) {
-        const minuteRetry = minuteElapsed >= 60_000 ? 0 : Math.ceil((60_000 - minuteElapsed) / 1000);
-        const hourRetry = hourElapsed >= 3_600_000 ? 0 : Math.ceil((3_600_000 - hourElapsed) / 1000);
-        throw new PrintJobRateLimitError(Math.max(1, minuteRetry, hourRetry));
+    if (rateLimitKeyId) {
+      const now = new Date();
+      const limit = await tx.execute(sql`SELECT minute_window_started_at, minute_count, hour_window_started_at, hour_count
+        FROM print_job_rate_limits WHERE api_key_id = ${rateLimitKeyId} FOR UPDATE`);
+      const existingLimit = limit.rows[0] as {
+        minute_window_started_at?: string | Date; minute_count?: number | string;
+        hour_window_started_at?: string | Date; hour_count?: number | string;
+      } | undefined;
+      if (!existingLimit) {
+        await tx.execute(sql`INSERT INTO print_job_rate_limits
+          (api_key_id, minute_window_started_at, minute_count, hour_window_started_at, hour_count, updated_at)
+          VALUES (${rateLimitKeyId}, ${now}, 1, ${now}, 1, ${now})`);
+      } else {
+        const minuteStarted = new Date(existingLimit.minute_window_started_at ?? now);
+        const hourStarted = new Date(existingLimit.hour_window_started_at ?? now);
+        const minuteElapsed = Math.max(0, now.getTime() - minuteStarted.getTime());
+        const hourElapsed = Math.max(0, now.getTime() - hourStarted.getTime());
+        const nextMinuteCount = minuteElapsed >= 60_000 ? 1 : Number(existingLimit.minute_count ?? 0) + 1;
+        const nextHourCount = hourElapsed >= 3_600_000 ? 1 : Number(existingLimit.hour_count ?? 0) + 1;
+        if (nextMinuteCount > PRINT_JOB_RATE_LIMIT_PER_MINUTE || nextHourCount > PRINT_JOB_RATE_LIMIT_PER_HOUR) {
+          const minuteRetry = minuteElapsed >= 60_000 ? 0 : Math.ceil((60_000 - minuteElapsed) / 1000);
+          const hourRetry = hourElapsed >= 3_600_000 ? 0 : Math.ceil((3_600_000 - hourElapsed) / 1000);
+          throw new PrintJobRateLimitError(Math.max(1, minuteRetry, hourRetry));
+        }
+        await tx.execute(sql`UPDATE print_job_rate_limits SET
+          minute_window_started_at = ${minuteElapsed >= 60_000 ? now : minuteStarted},
+          minute_count = ${nextMinuteCount},
+          hour_window_started_at = ${hourElapsed >= 3_600_000 ? now : hourStarted},
+          hour_count = ${nextHourCount}, updated_at = ${now}
+          WHERE api_key_id = ${rateLimitKeyId}`);
       }
-      await tx.execute(sql`UPDATE print_job_rate_limits SET
-        minute_window_started_at = ${minuteElapsed >= 60_000 ? now : minuteStarted},
-        minute_count = ${nextMinuteCount},
-        hour_window_started_at = ${hourElapsed >= 3_600_000 ? now : hourStarted},
-        hour_count = ${nextHourCount}, updated_at = ${now}
-        WHERE api_key_id = ${rateLimitKeyId}`);
     }
 
     await tx.insert(printJobs).values({
       id: jobId,
-      apiKeyId: rateLimitKeyId,
+      apiKeyId: rateLimitKeyId ?? null,
       destination: destination ?? null,
       documentType: documentType ?? null,
       agentId,
