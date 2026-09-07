@@ -8,9 +8,11 @@ from odoo.exceptions import ValidationError
 class PosOrderGatewayPrinting(models.Model):
     _inherit = "pos.order"
 
-    def action_print_gateway_receipt(self):
+    def action_print_gateway_receipt(self, image):
         self.ensure_one()
-        return self.env["print_gateway.print_router"].route_pos_receipt(self)
+        if not image:
+            raise ValidationError(_("The rendered POS receipt image is required."))
+        return self.env["print_gateway.print_router"].route_pos_receipt(self, image)
 
     def action_print_gateway_kitchen(self, printer_id, image, reprint=False):
         self.ensure_one()
