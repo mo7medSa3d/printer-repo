@@ -16,8 +16,9 @@ describe("Odoo addon static contracts", () => {
   it("routes backend reports through the central router and stays native only when Gateway is disabled", () => {
     const src = read("models/ir_actions_report.py");
     expect(src).toContain("def report_action");
-    expect(src).toContain("_gateway_config(company)");
-    expect(src).toContain("router.route_report");
+    expect(src).toContain("router = self.env[\"print_gateway.print_router\"]");
+    expect(src).toContain("route = router.route_report");
+    expect(src).toContain('if not route.get("native")');
     expect(src).toContain("super().report_action");
     expect(src).not.toContain("async_report");
   });
