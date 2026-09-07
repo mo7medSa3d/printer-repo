@@ -24,7 +24,7 @@ class PrintGatewayConfig(models.Model):
     enabled = fields.Boolean(string="Gateway Printing Enabled", default=False)
     gateway_url = fields.Char(string="Gateway URL", required=True)
     gateway_api_key = fields.Char(
-        string="API Key", copy=False, groups="base.group_system", password=True,
+        string="API Key", copy=False, groups="base.group_system",
     )
     last_test_at = fields.Datetime(readonly=True)
     last_test_status = fields.Selection([("success", "Success"), ("failed", "Failed")], readonly=True)
@@ -38,16 +38,18 @@ class PrintGatewayConfig(models.Model):
     @staticmethod
     def _allowed_private_hosts():
         raw = os.environ.get("ODOO_PRINT_GATEWAY_ALLOWED_HOSTS", "")
-        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+        return {item.strip().lower().rstrip(".") for item in raw.split(",") if item.strip()}
 
     @classmethod
-    def _validate_gateway_host(cls, hostname):
+    def _validate_gateway_host(cls, hostname, *, resolve=False):
         hostname = hostname.strip().rstrip(".").lower()
         allow_private = os.environ.get("ODOO_PRINT_GATEWAY_ALLOW_PRIVATE") == "1"
         explicitly_allowed = hostname in cls._allowed_private_hosts()
         try:
             addresses = {ipaddress.ip_address(hostname)}
         except ValueError:
+            if not resolve:
+                return
             try:
                 addresses = {
                     ipaddress.ip_address(item[4][0])
@@ -60,13 +62,8 @@ class PrintGatewayConfig(models.Model):
                 if not (allow_private and explicitly_allowed):
                     raise ValidationError(_("Private or local Gateway addresses require explicit deployment allow-listing."))
 
-    @api.constrains("gateway_url")
-    def _check_gateway_url(self):
-        for record in self:
-            self._validate_gateway_url(record.gateway_url)
-
     @classmethod
-    def _validate_gateway_url(cls, value):
+    def _validate_gateway_url(cls, value, *, resolve_host=False):
         if not value or not isinstance(value, str):
             raise ValidationError(_("Gateway URL is required."))
         raw = value.strip()
@@ -79,12 +76,17 @@ class PrintGatewayConfig(models.Model):
             raise ValidationError(_("Gateway URL must not contain credentials, query parameters, or fragments."))
         if parsed.path not in ("", "/"):
             raise ValidationError(_("Gateway URL must be the Gateway origin, without an API path."))
-        cls._validate_gateway_host(parsed.hostname)
+        cls._validate_gateway_host(parsed.hostname, resolve=resolve_host)
         return raw.rstrip("/")
 
-    def _gateway_base(self):
+    @api.constrains("gateway_url")
+    def _check_gateway_url(self):
+        for record in self:
+            self._validate_gateway_url(record.gateway_url)
+
+    def _gateway_base(self, *, for_request=False):
         self.ensure_one()
-        return self._validate_gateway_url(self.gateway_url)
+        return self._validate_gateway_url(self.gateway_url, resolve_host=for_request)
 
     def _gateway_headers(self):
         self.ensure_one()
@@ -119,7 +121,7 @@ class PrintGatewayConfig(models.Model):
         self._check_admin()
         try:
             response = requests.get(
-                "%s/api/odoo/health" % self._gateway_base(),
+                "%s/api/odoo/health" % self._gateway_base(for_request=True),
                 headers=self._gateway_headers(),
                 timeout=(5, 10),
                 allow_redirects=False,
