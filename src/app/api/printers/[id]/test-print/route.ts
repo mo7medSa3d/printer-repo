@@ -14,8 +14,7 @@ export const dynamic = "force-dynamic";
 //
 // Two callers authenticate here:
 //   - Desktop Manager (Tauri) sends a manager session (cookie/Bearer);
-//   - the Odoo addon (print_gateway.printer.action_test_print) sends a
-//     branch-scoped Odoo API key — it has no manager session.
+//   - the Odoo addon sends an installation-level Odoo API key — it has no manager session.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
@@ -25,10 +24,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!agent) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
 
   const claims = await validateManager(req);
-  const odoo = claims ? null : await validateOdooKey(req, agent.branchId);
+  const odoo = claims ? null : await validateOdooKey(req);
   if (!claims && !odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (printer.lifecycle !== "active") return NextResponse.json({ error: "printer disabled" }, { status: 409 });
-  if (odoo?.branchId && odoo.branchId !== agent.branchId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
 
