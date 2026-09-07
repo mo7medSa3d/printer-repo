@@ -34,15 +34,15 @@ class PrintGatewayBinding(models.Model):
         DESTINATION_MODELS, string="Destination", required=True, default="pos",
     )
     destination_pos_config_id = fields.Many2one(
-        "pos.config", string="POS Configuration", ondelete="restrict",
+        "pos.config", string="POS Configuration", ondelete="restrict", check_company=True,
         domain="[('company_id', '=', company_id), ('active', '=', True)]",
     )
     destination_pos_printer_id = fields.Many2one(
-        "pos.printer", string="POS / Kitchen Printer", ondelete="restrict",
+        "pos.printer", string="POS / Kitchen Printer", ondelete="restrict", check_company=True,
         domain="[('company_id', '=', company_id)]",
     )
     destination_picking_type_id = fields.Many2one(
-        "stock.picking.type", string="Operation Type", ondelete="restrict",
+        "stock.picking.type", string="Operation Type", ondelete="restrict", check_company=True,
         domain="[('company_id', '=', company_id), ('active', '=', True)]",
     )
     destination_report_id = fields.Many2one(
@@ -189,6 +189,8 @@ class PrintGatewayBinding(models.Model):
 
     @api.model
     def find_for(self, company, document_type, report=None, record=None, explicit_destination=None):
+        if company != self.env.company:
+            raise ValidationError(_("Print binding resolution must use the active Odoo company."))
         normalized = (document_type or "").strip().lower()
         if not normalized:
             raise ValidationError(_("Print document type is required."))
