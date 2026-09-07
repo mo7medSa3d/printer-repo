@@ -15,6 +15,12 @@ The Odoo integration contract is intentionally small. Odoo owns business/routing
 
 The raw Odoo key is returned only at creation time. Gateway stores a cryptographic hash and revoke timestamp; list endpoints never return the secret.
 
+## Health / Test Connection
+
+### `GET /api/odoo/health`
+
+Requires the Odoo installation API key and the configured `X-Odoo-Database` header. Returns `{ "ok": true }` only when authentication succeeds. This is the endpoint used by Odoo's **Test Connection** action.
+
 ## Odoo → Gateway
 
 ### `POST /api/print/jobs`
@@ -35,11 +41,11 @@ Request:
 }
 ```
 
-The contract has no Gateway branch identifier and no Odoo configuration synchronization payload.
+The contract has no Gateway branch identifier, branch synchronization, destination/document-type catalog, or Odoo runtime provisioning fields.
 
-`201` means the Gateway accepted the durable runtime job. A repeated request with the same idempotency key is deduplicated instead of creating a second physical job.
+`201` means the Gateway accepted the durable runtime job. A repeated request with the same idempotency key is deduplicated instead of creating a second logical job.
 
-Errors include `400` invalid request/payload, `401` authentication/database rejection, `404` unknown printer, `409` conflict, `422` capability mismatch, `429` rate limiting, `503` runtime unavailable, and `500` internal failure.
+Errors include `400` invalid request/payload, `401` authentication/database rejection, `404` unknown printer, `409` idempotency conflict, `422` capability mismatch, `429` rate limiting, `503` runtime unavailable, and `500` internal failure.
 
 ### `GET /api/print/jobs?id=<job-id>`
 
@@ -54,7 +60,7 @@ Manager-authenticated metadata only.
 Manager-authenticated. The response contains the raw `apiKey` once and explicitly instructs the user to copy it.
 
 ### `DELETE /api/odoo/keys`
-Manager-authenticated soft revoke using `{ "id": "key_..." }`.
+Manager-authenticated. Revokes the key by ID; subsequent authenticated requests fail.
 
 ## Agent runtime APIs
 
