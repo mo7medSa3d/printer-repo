@@ -3,7 +3,7 @@ import { db } from "../../../../db";
 import { printJobs } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
 import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
-import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError } from "../../../../lib/print-job-service";
+import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -110,7 +110,10 @@ export async function POST(req: Request) {
       });
     }
     if (error instanceof AgentQueueFullError || error instanceof AgentQueuedJobsFullError) {
-      return NextResponse.json({ error: error.code, retryable: true }, { status: 503 });
+      return NextResponse.json({ error: error.code, code: error.code, retryable: true }, { status: 503 });
+    }
+    if (error instanceof PrintJobCapabilityError) {
+      return NextResponse.json({ error: error.message, code: error.code, retryable: false }, { status: 422 });
     }
     if (error instanceof Error && (error as Error & { code?: string }).code === "DUPLICATE_JOB" && parsed.data.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({
@@ -120,7 +123,7 @@ export async function POST(req: Request) {
       return idempotencyConflict();
     }
     const message = error instanceof Error ? error.message : "print job creation failed";
-    const status = /not found/i.test(message) ? 404 : /not online|disabled|virtual|retired/i.test(message) ? 503 : /capability|cannot print/i.test(message) ? 422 : 500;
+    const status = /not found/i.test(message) ? 404 : /not online|disabled|virtual|retired/i.test(message) ? 503 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }
