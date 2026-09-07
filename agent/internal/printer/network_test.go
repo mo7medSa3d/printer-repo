@@ -2,6 +2,7 @@ package printer
 
 import (
 	"context"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -96,21 +97,24 @@ func TestNetworkPrinterPartialDelivery(t *testing.T) {
 	}
 	defer ln.Close()
 
-	// Server accepts, reads 10 bytes, and forcefully closes connection
+	// Server accepts, reads 10 bytes, and forcefully closes connection with TCP RST
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
 		buf := make([]byte, 10)
-		_, _ = conn.Read(buf)
-		// Force close while client is sending a larger payload
+		_, _ = io.ReadFull(conn, buf)
+		// Force immediate TCP RST on Windows and Linux by setting linger to 0
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetLinger(0)
+		}
 		_ = conn.Close()
 	}()
 
 	p := &NetworkPrinter{Address: "127.0.0.1:19999"}
-	// Large payload to ensure write loop has multiple iterations / gets interrupted
-	largeData := make([]byte, 1024*1024)
+	// Large payload (2MB) to ensure write loop has multiple iterations and gets interrupted
+	largeData := make([]byte, 2*1024*1024)
 	for i := range largeData {
 		largeData[i] = 'A'
 	}
