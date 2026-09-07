@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, boolean, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const agents = pgTable("agents", {
@@ -129,7 +129,7 @@ export const discoveredDevices = pgTable("discovered_devices", {
 
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
-  apiKeyId: text("api_key_id").references(() => apiKeys.id).notNull(),
+  apiKeyId: text("api_key_id").references(() => apiKeys.id),
   destination: text("destination"),
   documentType: text("document_type"),
   agentId: text("agent_id").references(() => agents.id).notNull(),
@@ -153,7 +153,7 @@ export const printJobs = pgTable("print_jobs", {
   statusExpiresIdx: index("print_jobs_status_expires_idx").on(table.status, table.expiresAt),
   claimedAtIdx: index("print_jobs_claimed_at_idx").on(table.status, table.claimedAt),
   apiKeyIdIdx: index("print_jobs_api_key_id_idx").on(table.apiKeyId),
-  idempotencyUnique: uniqueIndex("print_jobs_idempotency_unique").on(table.apiKeyId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
+  idempotencyUnique: uniqueIndex("print_jobs_idempotency_unique").on(table.apiKeyId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL AND api_key_id IS NOT NULL`),
   statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
   retriesCheck: check("print_jobs_retries_check", sql`${table.retries} >= 0`),
   deliveryAttemptsCheck: check("print_jobs_delivery_attempts_check", sql`${table.deliveryAttempts} >= 0`),
