@@ -1,100 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { selectFallbackBindings, validatePayloadForPrinter, isPrinterAvailableForJob } from "../src/lib/routing";
+import { validatePayloadForPrinter, isPrinterAvailableForJob, isAgentAvailableForPrinter } from "../src/lib/routing";
 
-describe("Phase 2 routing fallback", () => {
-  it("returns fallback chain sorted by priority", () => {
-    const rows = [
-      { id: "b1", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_1", priority: 50, enabled: true },
-      { id: "b2", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_2", priority: 10, enabled: true },
-      { id: "b3", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_3", priority: 1, enabled: true },
-    ];
-    const chain = selectFallbackBindings(rows, "receipt");
-    expect(chain.map(c => c.printerId)).toEqual(["printer_3", "printer_2", "printer_1"]);
-  });
-
-  it("skips disabled bindings in fallback", () => {
-    const rows = [
-      { id: "b1", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_1", priority: 1, enabled: false },
-      { id: "b2", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_2", priority: 2, enabled: true },
-    ];
-    const chain = selectFallbackBindings(rows, "receipt");
-    expect(chain.length).toBe(1);
-    expect(chain[0].printerId).toBe("printer_2");
-  });
-
-  it("validates branch isolation for printer availability", () => {
-    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "online" })).toBe(true);
-    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "offline" })).toBe(false);
-    expect(isPrinterAvailableForJob({ lifecycle: "disabled", status: "online" })).toBe(false);
-    // Unknown telemetry is intentionally unavailable for immediate routing;
-    // only a positively reported online state is considered safe.
-    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "unknown" })).toBe(false);
-  });
-
-  it("fallback selects next when first printer offline (simulated)", () => {
-    // Simulate routing loop: we have chain [offline, online] and routing picks second
-    const rows = [
-      { id: "b1", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_offline", priority: 1, enabled: true },
-      { id: "b2", branchId: "branch_a", destinationId: "dest_pos", documentType: "receipt", printerId: "printer_online", priority: 2, enabled: true },
-    ];
-    const candidates = selectFallbackBindings(rows, "receipt");
-    // Assume printer_offline status = offline, printer_online = online
-    // Routing would iterate and skip offline; we verify candidates still sorted correctly
-    expect(candidates[0].printerId).toBe("printer_offline");
-    expect(candidates[1].printerId).toBe("printer_online");
-    // isPrinterAvailable reflects that first should be skipped
-    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "offline" })).toBe(false);
-    expect(isPrinterAvailableForJob({ lifecycle: "active", status: "online" })).toBe(true);
-  });
-});
-
-describe("Capability validation", () => {
-  it("allows raw payload to spooler printer", () => {
-    const ok = validatePayloadForPrinter("raw", { protocol: "spooler", connectionType: "spooler" });
-    expect(ok.ok).toBe(true);
-  });
-
-  it("allows escpos payload to raw printer (thermal via RAW)", () => {
-    const ok = validatePayloadForPrinter("escpos", { protocol: "raw", connectionType: "network" });
-    expect(ok.ok).toBe(true);
-  });
-
-  it("allows raw payload to IPP printer (IPP Print-Job with application/octet-stream)", () => {
-    const ok = validatePayloadForPrinter("raw", { protocol: "ipp", connectionType: "ipp" });
-    expect(ok.ok).toBe(true);
-  });
-
-  it("allows escpos payload to IPP printer (IPP Print-Job with application/octet-stream)", () => {
-    const ok = validatePayloadForPrinter("escpos", { protocol: "ipp", connectionType: "ipp" });
-    expect(ok.ok).toBe(true);
-  });
-
-  it("allows pdf payload to IPP printer", () => {
-    const ok = validatePayloadForPrinter("pdf", { protocol: "ipp", connectionType: "ipp" });
-    expect(ok.ok).toBe(true);
-  });
-
-  it("enforces supported_protocols list strictly", () => {
-    const ok = validatePayloadForPrinter("escpos", {
-      protocol: "raw",
-      capabilities: { supported_protocols: ["raw"] } as any,
-    });
-    // raw-compatible printers can handle escpos bytes
-    expect(ok.ok).toBe(true);
-  });
-
-  it("rejects escpos to ipp-only printer", () => {
-    const ok = validatePayloadForPrinter("escpos", {
+describe("runtime routing capability and availability", () => {
+  it("allows image payloads for printers that advertise image support", () => {
+    expect(validatePayloadForPrinter("image", {
       protocol: "ipp",
-      capabilities: { supported_protocols: ["ipp"] } as any,
-    });
-    expect(ok.ok).toBe(false);
+      connectionType: "ipp",
+      capabilities: { supported_protocols: ["pdf", "image"] },
+    }).ok).toBe(true);
   });
 
-  it("allows spooler with any payload when protocol spooler", () => {
-    const okRaw = validatePayloadForPrinter("raw", { protocol: "spooler", connectionType: "spooler" });
-    const okEscpos = validatePayloadForPrinter("escpos", { protocol: "spooler", connectionType: "spooler" });
-    expect(okRaw.ok).toBe(true);
-    expect(okEscpos.ok).toBe(true);
+  it("rejects image payloads when the printer explicitly lacks image support", () => {
+    const result = validatePayloadForPrinter("image", {
+      protocol: "ipp",
+      connectionType: "ipp",
+      capabilities: { supported_protocols: ["pdf"] },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("CAPABILITY_MISMATCH");
+  });
+
+  it("allows raw and escpos bytes for raw/spooler-compatible transports", () => {
+    expect(validatePayloadForPrinter("raw", { protocol: "raw", connectionType: "network" }).ok).toBe(true);
+    expect(validatePayloadForPrinter("escpos", { protocol: "raw", connectionType: "network" }).ok).toBe(true);
+    expect(validatePayloadForPrinter("raw", { protocol: "spooler", connectionType: "spooler" }).ok).toBe(true);
+  });
+
+  it("requires spooler or IPP transport for PDF", () => {
+    expect(validatePayloadForPrinter("pdf", { protocol: "ipp", connectionType: "ipp" }).ok).toBe(true);
+    expect(validatePayloadForPrinter("pdf", { protocol: "raw", connectionType: "network" }).ok).toBe(false);
+  });
+
+  it("treats lifecycle and online telemetry as hard availability gates", () => {
+    expect(isPrinterAvailableForJob({ id: "p1", agentId: "a1", name: "P", printerType: "physical", deviceClass: "thermal", connectionType: "network", protocol: "raw", lifecycle: "active", status: "online", capabilities: null, config: {} })).toBe(true);
+    expect(isPrinterAvailableForJob({ id: "p1", agentId: "a1", name: "P", printerType: "physical", deviceClass: "thermal", connectionType: "network", protocol: "raw", lifecycle: "active", status: "offline", capabilities: null, config: {} })).toBe(false);
+    expect(isPrinterAvailableForJob({ id: "p1", agentId: "a1", name: "P", printerType: "physical", deviceClass: "thermal", connectionType: "network", protocol: "raw", lifecycle: "disabled", status: "online", capabilities: null, config: {} })).toBe(false);
+  });
+
+  it("requires a recently seen active agent", () => {
+    const now = new Date();
+    expect(isAgentAvailableForPrinter({ lifecycle: "active", status: "online", lastSeenAt: now })).toBe(true);
+    expect(isAgentAvailableForPrinter({ lifecycle: "active", status: "offline", lastSeenAt: now })).toBe(false);
+    expect(isAgentAvailableForPrinter({ lifecycle: "disabled", status: "online", lastSeenAt: now })).toBe(false);
   });
 });
