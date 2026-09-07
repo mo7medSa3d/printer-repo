@@ -10,17 +10,18 @@ import (
 
 // Document kinds mirror the Gateway payload contract.
 const (
-	KindRaw   = "raw"
+	KindRaw    = "raw"
 	KindESCPOS = "escpos"
-	KindPDF   = "pdf"
+	KindPDF    = "pdf"
+	KindImage  = "image"
 
 	defaultDocumentPrintTimeout = 20 * time.Second
 	defaultPDFDocumentTimeout   = 120 * time.Second
 )
 
 type Document struct {
-	Kind string
-	Data []byte
+	Kind  string
+	Data  []byte
 	JobID string
 }
 
@@ -82,8 +83,8 @@ func PrintDocument(ctx context.Context, p Printer, doc Document) error {
 }
 
 func SupportedKinds(p Printer) []string {
-	kinds := make([]string, 0, 3)
-	for _, k := range []string{KindRaw, KindESCPOS, KindPDF} {
+	kinds := make([]string, 0, 4)
+	for _, k := range []string{KindRaw, KindESCPOS, KindPDF, KindImage} {
 		if SupportsKind(p, k) {
 			kinds = append(kinds, k)
 		}
