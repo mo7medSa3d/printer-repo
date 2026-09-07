@@ -25,7 +25,7 @@
                 <sheet>
                     <div class="o_form_label">Gateway Configuration</div>
                     <div class="text-muted mb-3">
-                        Odoo owns business and routing configuration. The external Gateway owns runtime agents and printers.
+                        Odoo owns business records and print intent. The Gateway owns runtime agents and printers.
                     </div>
                     <group>
                         <field name="company_id" readonly="1"/>
@@ -49,6 +49,5 @@
         <field name="name">Gateway Configuration</field>
         <field name="res_model">print_gateway.gateway_config</field>
         <field name="view_mode">list,form</field>
-        <field name="context">{'default_company_id': company_id}</field>
     </record>
 </odoo>
