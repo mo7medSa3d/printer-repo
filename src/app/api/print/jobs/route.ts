@@ -40,16 +40,39 @@ function responseForRow(row: typeof printJobs.$inferSelect) {
   };
 }
 
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    );
+  }
+  return value;
+}
+
+function idempotencyFingerprint(request: {
+  printerId: string;
+  documentType: string;
+  destination?: string;
+  payload: PrintJobPayload;
+}) {
+  return JSON.stringify({
+    printerId: request.printerId,
+    documentType: request.documentType.trim().toLowerCase(),
+    destination: request.destination?.trim() || null,
+    payload: canonicalize(request.payload),
+  });
+}
+
 function idempotencyMatches(row: typeof printJobs.$inferSelect, request: {
   printerId: string;
   documentType: string;
   destination?: string;
   payload: PrintJobPayload;
 }) {
-  return row.printerId === request.printerId
-    && (row.destination ?? null) === (request.destination ?? null)
-    && (row.documentType ?? "").trim().toLowerCase() === request.documentType.trim().toLowerCase()
-    && JSON.stringify(row.payload) === JSON.stringify(request.payload);
+  return idempotencyFingerprint(row) === idempotencyFingerprint(request);
 }
 
 function idempotencyConflict() {
