@@ -56,21 +56,14 @@ class PrintGatewayRouter(models.AbstractModel):
         config = self._gateway_config(company)
         if not config:
             return {"gateway_enabled": False, "native": True}
-
         dtype = self._document_type(report=report, record=record, explicit=document_type)
         destination = self.destination_for(report=report, record=record)
-        binding = self.env["print_gateway.binding"].find_for(
-            company, dtype, report=report, record=record,
-        )
+        binding = self.env["print_gateway.binding"].find_for(company, dtype, report=report, record=record)
         if not binding:
             raise ValidationError(_("Gateway printing is enabled, but no Print Binding exists for %s (%s).") % (destination.display_name, dtype))
         return {
-            "gateway_enabled": True,
-            "native": False,
-            "config": config,
-            "binding": binding,
-            "document_type": dtype,
-            "destination": destination,
+            "gateway_enabled": True, "native": False, "config": config,
+            "binding": binding, "document_type": dtype, "destination": destination,
         }
 
     @api.model
@@ -90,6 +83,22 @@ class PrintGatewayRouter(models.AbstractModel):
         return {"type": "pdf", "encoding": "base64", "data": base64.b64encode(bytes(pdf_content)).decode("ascii")}
 
     @api.model
+    def _persist_durable_job(self, values):
+        """Create and commit only the outbox row in an independent transaction.
+
+        Printing must survive a request rollback: a network timeout may leave the
+        physical result unknown, so the same idempotency key must remain available
+        for safe reconciliation/retry.
+        """
+        registry = self.env.registry
+        with registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            job = env["print_gateway.print_job"].create_operation(**values)
+            job_id = job.id
+            cr.commit()
+        return self.env["print_gateway.print_job"].browse(job_id)
+
+    @api.model
     def route_report(self, report, records, data=None):
         report.ensure_one()
         records = records.exists()
@@ -102,35 +111,28 @@ class PrintGatewayRouter(models.AbstractModel):
         route = self.resolve_binding(report=report, record=records[0])
         if route.get("native"):
             return route
-
         for record in records[1:]:
             current = self.resolve_binding(report=report, record=record)
             if current["binding"].id != route["binding"].id:
                 raise ValidationError(_("The selected records resolve to different Print Bindings. Print them separately."))
 
         payload = self._render_pdf_payload(report, records, data=data)
-        job = self.env["print_gateway.print_job"].create_operation(
-            company=self._company_for_record(records[0]),
-            gateway_config=route["config"],
-            printer_id=route["binding"].printer_id,
-            destination=route["destination"].display_name,
-            document_type=route["document_type"],
-            payload=payload,
-            source_model=records[0]._name,
-            source_record_id=records[0].id,
-            report=report,
-            idempotency_key=uuid.uuid4().hex,
-        )
-        # Durable outbox row exists before any network call. User-facing print
-        # requests submit synchronously so Gateway failures are explicit;
-        # queued/unknown rows are retried by the Odoo cron.
+        job = self._persist_durable_job({
+            "company": self._company_for_record(records[0]),
+            "gateway_config": route["config"],
+            "printer_id": route["binding"].printer_id,
+            "destination": route["destination"].display_name,
+            "document_type": route["document_type"],
+            "payload": payload,
+            "source_model": records[0]._name,
+            "source_record_id": records[0].id,
+            "report": report,
+            "idempotency_key": uuid.uuid4().hex,
+        })
         job.action_submit(raise_on_failure=True)
         return {
-            "gateway_enabled": True,
-            "native": False,
-            "status": job.status,
-            "job_id": job.id,
-            "message": _("Print job %s accepted by the Gateway.") % job.id,
+            "gateway_enabled": True, "native": False, "status": job.status,
+            "job_id": job.id, "message": _("Print job %s accepted by the Gateway.") % job.id,
         }
 
     @api.model
