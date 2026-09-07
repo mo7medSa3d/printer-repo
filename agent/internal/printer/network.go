@@ -10,11 +10,13 @@ import (
 const maxPrintBytes = 5 * 1024 * 1024
 
 const (
-	dialTimeout      = 10 * time.Second
+	dialTimeout       = 10 * time.Second
 	writeStallTimeout = 60 * time.Second
 )
 
-type NetworkPrinter struct{ Address string }
+type NetworkPrinter struct {
+	Address string
+}
 
 func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
@@ -50,13 +52,11 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// SupportsKind mirrors the Gateway's canonical runtime payload contract.
-// A RAW TCP 9100 endpoint is a byte stream: raw and ESC/POS are safe to send
-// directly, while PDFs and raster images require a renderer and are therefore
-// not advertised as direct capabilities here.
+// SupportsKind exposes the render paths this byte-stream backend can actually
+// produce. JPEG images are converted to ESC/POS before being written.
 func (p *NetworkPrinter) SupportsKind(kind string) bool {
 	switch NormalizeKind(kind) {
-	case KindRaw, KindESCPOS:
+	case KindRaw, KindESCPOS, KindImage:
 		return true
 	default:
 		return false
@@ -68,6 +68,12 @@ func (p *NetworkPrinter) PrintDocument(ctx context.Context, doc Document) error 
 	switch kind {
 	case KindRaw, KindESCPOS:
 		return p.Print(ctx, doc.Data)
+	case KindImage:
+		data, err := JPEGToESCPOS(doc.Data)
+		if err != nil {
+			return fmt.Errorf("render image for raw TCP printer: %w", err)
+		}
+		return p.Print(ctx, data)
 	default:
 		return CapabilityMismatchf("raw TCP printer %s cannot render %s payloads", p.Address, kind)
 	}
