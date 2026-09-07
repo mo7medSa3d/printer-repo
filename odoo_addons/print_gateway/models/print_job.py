@@ -31,6 +31,7 @@ class PrintGatewayJob(models.Model):
         ("queued", "Queued"), ("submitted", "Submitted"), ("claimed", "Claimed"),
         ("printing", "Printing"), ("success", "Success"), ("failed", "Failed"),
         ("unknown", "Unknown Outcome"),
+        ("partial", "Attention / Partial Delivery"),
     ], default="queued", required=True, index=True)
     physical_outcome = fields.Selection([
         ("not_printed", "Definitely not printed"),
@@ -53,14 +54,18 @@ class PrintGatewayJob(models.Model):
         "UNIQUE(company_id, idempotency_key)",
         "The same logical print operation may only be created once.",
     )
-    _TERMINAL = frozenset(("success", "failed"))
+    _TERMINAL = frozenset(("success", "failed", "partial"))
 
     @api.depends("status", "last_error")
     def _compute_physical_outcome(self):
         for job in self:
             if job.status == "success":
                 job.physical_outcome = "printed"
-            elif job.status == "unknown" or str(job.last_error or "").startswith("UNKNOWN_SUBMISSION_OUTCOME"):
+            elif (
+                job.status in ("unknown", "partial")
+                or "UNKNOWN_PARTIAL_DELIVERY" in str(job.last_error or "")
+                or str(job.last_error or "").startswith("UNKNOWN_SUBMISSION_OUTCOME")
+            ):
                 job.physical_outcome = "unknown"
             else:
                 job.physical_outcome = "not_printed"
@@ -223,7 +228,10 @@ class PrintGatewayJob(models.Model):
                     status = "success"
                 if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
                     continue
-                values = {"status": status, "last_error": body.get("error") or False}
+                err_msg = body.get("error") or False
+                if err_msg and "UNKNOWN_PARTIAL_DELIVERY" in str(err_msg):
+                    status = "partial"
+                values = {"status": status, "last_error": err_msg}
                 if status in self._TERMINAL:
                     values["completed_at"] = fields.Datetime.now()
                 job.write(values)
@@ -239,6 +247,27 @@ class PrintGatewayJob(models.Model):
         is not collapsed into the old Gateway job.
         """
         for job in self.filtered(lambda row: row.status == "failed" and row.physical_outcome == "not_printed"):
+            retry = self.create_operation(
+                company=job.company_id,
+                gateway_config=job.gateway_config_id,
+                printer_id=job.printer_id,
+                destination=job.destination,
+                document_type=job.document_type,
+                payload=json.loads(job.payload),
+                source_model=job.source_model,
+                source_record_id=job.source_record_id,
+                report=job.report_id,
+                idempotency_key=uuid.uuid4().hex,
+            )
+            retry.action_submit()
+        return True
+
+    def action_force_reprint(self):
+        """Explicitly re-issue print operation for jobs with partial delivery or unknown physical outcome.
+
+        This requires conscious operator action, preventing automated double printing of receipts/invoices.
+        """
+        for job in self.filtered(lambda row: row.status in ("partial", "unknown") or row.physical_outcome == "unknown"):
             retry = self.create_operation(
                 company=job.company_id,
                 gateway_config=job.gateway_config_id,

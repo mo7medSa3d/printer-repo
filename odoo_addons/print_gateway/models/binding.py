@@ -206,6 +206,12 @@ class PrintGatewayBinding(models.Model):
         agent = selected_printer.get("agent") if isinstance(selected_printer.get("agent"), dict) else {}
         if agent.get("id") != self.runtime_agent_id:
             raise ValidationError(_("Gateway Runtime Printer does not belong to the selected Runtime Agent."))
+        device_class = str(selected_printer.get("deviceClass") or "").strip().lower()
+        if self.destination_type in ("pos", "pos_printer") and device_class in ("laser", "inkjet"):
+            raise ValidationError(_("Point of Sale receipts require a thermal receipt printer, not a document/laser printer."))
+        if self.destination_type == "picking_type" and device_class in ("laser", "inkjet") and not self.report_id:
+            raise ValidationError(_("Direct inventory/warehouse operations require a label or thermal printer."))
+
 
     @api.constrains("company_id", "branch_id", "runtime_agent_id", "printer_id")
     def _check_runtime_scope(self):
@@ -321,3 +327,23 @@ class PrintGatewayBinding(models.Model):
             ("destination_ref", "=", "%s,%s" % (destination._name, destination.id)),
             ("document_type", "=", normalized),
         ], order="priority asc, id asc", limit=1)
+
+    @api.model
+    def dispatch_report_action(self, report_name=None, res_ids=None, context=None):
+        context = dict(context or self.env.context)
+        report = self.env["ir.actions.report"].search([("report_name", "=", report_name)], limit=1)
+        if not report:
+            return {"dispatched": False}
+
+        records = self.env[report.model].browse(res_ids or []).exists()
+        router = self.env["print_gateway.print_router"]
+        route = router.route_report(report, records)
+        if route.get("native"):
+            return {"dispatched": False}
+
+        return {
+            "dispatched": True,
+            "printer_name": route.get("printer_id"),
+            "message": route.get("message") or _("Sent silently to printer."),
+        }
+
