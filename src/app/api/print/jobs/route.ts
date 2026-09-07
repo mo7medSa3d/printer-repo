@@ -54,13 +54,13 @@ function canonicalize(value: unknown): unknown {
 
 function idempotencyFingerprint(request: {
   printerId: string;
-  documentType: string;
-  destination?: string;
-  payload: PrintJobPayload;
+  documentType?: string | null;
+  destination?: string | null;
+  payload: unknown;
 }) {
   return JSON.stringify({
     printerId: request.printerId,
-    documentType: request.documentType.trim().toLowerCase(),
+    documentType: request.documentType?.trim().toLowerCase() || null,
     destination: request.destination?.trim() || null,
     payload: canonicalize(request.payload),
   });
