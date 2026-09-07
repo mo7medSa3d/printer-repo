@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""The single print-routing layer for Gateway-enabled Odoo printing."""
+"""Single Odoo print routing entry point for Gateway-enabled printing."""
 
 import base64
 import uuid
@@ -23,40 +23,32 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def _gateway_config(self, company):
-        config = self.env["print_gateway.gateway_config"].search(
-            [("company_id", "=", company.id)], limit=1
-        )
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", company.id)], limit=1)
         return config if config.enabled else False
 
     @api.model
     def _document_type(self, report=None, record=None, explicit=None):
         value = explicit or self.env.context.get("print_gateway_document_type")
         if value:
-            return str(value).strip().lower()
-        if record and record._name in REPORT_DOCUMENT_TYPES:
-            return REPORT_DOCUMENT_TYPES[record._name]
-        if report and report.model in REPORT_DOCUMENT_TYPES:
-            return REPORT_DOCUMENT_TYPES[report.model]
-        report_name = (report.report_name or "").lower() if report else ""
-        if "invoice" in report_name:
-            return "invoice"
-        if "receipt" in report_name:
-            return "receipt"
-        return "document"
+            normalized = str(value).strip().lower()
+            if normalized:
+                return normalized
+        model = record._name if record else report.model if report else ""
+        if model in REPORT_DOCUMENT_TYPES:
+            return REPORT_DOCUMENT_TYPES[model]
+        if report:
+            technical = (report.report_name or "").strip().lower()
+            if technical:
+                return "report:%s" % technical
+        raise ValidationError(_("Print document type cannot be determined for this print action."))
+
+    @api.model
+    def destination_for(self, *, report=None, record=None):
+        return self.env["print_gateway.binding"].destination_for(record=record, report=report)
 
     @api.model
     def _company_for_record(self, record):
         return getattr(record, "company_id", False) or self.env.company
-
-    @api.model
-    def _destination(self, report=None, record=None):
-        if record and record._name == "pos.order" and "config_id" in record._fields and record.config_id:
-            return record.config_id
-        if record and record._name == "stock.picking" and "picking_type_id" in record._fields and record.picking_type_id:
-            return record.picking_type_id
-        if report:
-            return report
-        return self._company_for_record(record) if record else self.env.company
 
     @api.model
     def resolve_binding(self, *, report=None, record=None, document_type=None):
@@ -66,22 +58,19 @@ class PrintGatewayRouter(models.AbstractModel):
             return {"gateway_enabled": False, "native": True}
 
         dtype = self._document_type(report=report, record=record, explicit=document_type)
+        destination = self.destination_for(report=report, record=record)
         binding = self.env["print_gateway.binding"].find_for(
             company, dtype, report=report, record=record,
         )
         if not binding:
-            destination = self._destination(report=report, record=record)
-            raise ValidationError(
-                _("Gateway printing is enabled, but no Print Binding exists for %s (%s).")
-                % (destination.display_name, dtype)
-            )
+            raise ValidationError(_("Gateway printing is enabled, but no Print Binding exists for %s (%s).") % (destination.display_name, dtype))
         return {
             "gateway_enabled": True,
             "native": False,
             "config": config,
             "binding": binding,
             "document_type": dtype,
-            "destination": self._destination(report=report, record=record),
+            "destination": destination,
         }
 
     @api.model
@@ -101,38 +90,18 @@ class PrintGatewayRouter(models.AbstractModel):
         return {"type": "pdf", "encoding": "base64", "data": base64.b64encode(bytes(pdf_content)).decode("ascii")}
 
     @api.model
-    def _register_post_commit_submission(self, job):
-        registry = self.env.registry
-        dbname = self.env.cr.dbname
-        uid = self.env.uid
-        context = dict(self.env.context)
-        job_id = job.id
-
-        def submit_after_commit():
-            try:
-                with registry.cursor() as cr:
-                    env = api.Environment(cr, uid, context)
-                    operation = env["print_gateway.print_job"].browse(job_id).exists()
-                    if operation:
-                        operation.action_submit()
-                        cr.commit()
-            except Exception:
-                # The operation remains durable in Odoo and the retry cron is
-                # responsible for the next attempt. Never emit payload/secrets.
-                return
-
-        self.env.cr.postcommit.add(submit_after_commit)
-
-    @api.model
     def route_report(self, report, records, data=None):
         report.ensure_one()
         records = records.exists()
         if not records:
-            raise ValidationError(_("Cannot print an empty report."))
+            config = self._gateway_config(self.env.company)
+            if config:
+                raise ValidationError(_("Gateway printing requires at least one report record."))
+            return {"gateway_enabled": False, "native": True}
 
         route = self.resolve_binding(report=report, record=records[0])
         if route.get("native"):
-            return {"gateway_enabled": False, "native": True}
+            return route
 
         for record in records[1:]:
             current = self.resolve_binding(report=report, record=record)
@@ -150,17 +119,18 @@ class PrintGatewayRouter(models.AbstractModel):
             source_model=records[0]._name,
             source_record_id=records[0].id,
             report=report,
-            # A fresh key identifies this logical print action. Retries reuse
-            # the exact persisted key; repeated manual/reprint actions get new keys.
             idempotency_key=uuid.uuid4().hex,
         )
-        self._register_post_commit_submission(job)
+        # Durable outbox row exists before any network call. User-facing print
+        # requests submit synchronously so Gateway failures are explicit;
+        # queued/unknown rows are retried by the Odoo cron.
+        job.action_submit(raise_on_failure=True)
         return {
             "gateway_enabled": True,
             "native": False,
             "status": job.status,
             "job_id": job.id,
-            "message": _("Print job %s queued.") % job.id,
+            "message": _("Print job %s accepted by the Gateway.") % job.id,
         }
 
     @api.model
