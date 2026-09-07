@@ -38,7 +38,6 @@
                         <field name="last_test_at" readonly="1"/>
                         <field name="last_test_error" readonly="1" invisible="not last_test_error" colspan="2"/>
                     </group>
-                    <field name="runtime_agent_id" invisible="1"/>
                 </sheet>
             </form>
         </field>
