@@ -1,49 +1,90 @@
-# Print Manager Architecture
+# Print Gateway Architecture
 
-## Authority boundary
-
-- **Odoo** is the business/configuration source of truth: branches, destinations, document types, routing bindings and business report mapping.
-- **Gateway** is the runtime authority/cache: paired agents, runtime printers, heartbeat, availability, jobs and execution/delivery state.
-- Gateway-created branches are provisioning records that must be reconciled to Odoo; they are not a competing business authority.
-
-## Ownership
+## Target architecture
 
 ```text
-Odoo business configuration -> Gateway -> Branch -> Agent -> Printer -> physical device
+Odoo business action
+  -> Central Odoo Print Router
+  -> Odoo durable outbox
+  -> Gateway URL + installation API key
+  -> Gateway runtime queue
+  -> Agent
+  -> Physical Printer
 ```
 
-The Gateway stores ownership only as `Agent.branchId` and `Printer.agentId`. A Printer's branch is derived by joining through its Agent. There is no writable `Printer.branchId` in the Gateway database.
+Odoo is the source of truth for business documents, the native company/branch hierarchy, business print context, deterministic destinations, document/report context, and print bindings. Gateway is the source of truth for runtime agents, heartbeats, runtime printers, queueing, delivery, and execution state.
 
-Odoo mirrors the same relationship as `Branch -> Agent -> Printer`. Odoo `printer.branch_id` is a stored related value (`agent_id.branch_id`) only for search/indexing/display; it is derived and must never be edited independently.
+## Ownership boundary
 
-## Lifecycle
+Odoo owns:
 
-Agents and Printers use `active <-> disabled` and `active/disabled -> retired`; `retired` is terminal. Disabling/retiring an Agent revokes credentials and disables its Printers. Re-enabling a disabled Agent requires fresh pairing credentials. A retired Agent is replaced by a new identity.
+- existing companies and branches
+- sales, invoices, inventory, purchase, POS and other business records
+- native Odoo destination/context records
+- document/report context
+- `print_gateway.binding`
+- durable print intent/outbox
 
-## Branch movement
+Gateway owns:
 
-Agents are not arbitrarily moved between branches after provisioning. The supported safe operation is retire the existing identity and create/re-pair a new Agent in the new Branch. This avoids transient cross-branch printer/binding inconsistency.
+- agents
+- pairing and agent credentials
+- heartbeats and online state
+- runtime printer discovery/configuration
+- runtime printer lifecycle
+- runtime queue and delivery claims
+- runtime job state
 
-## Routing and content
+The Gateway does not store or create Odoo branches, destinations, document catalogs, or print bindings. The Odoo addon does not create or synchronize Gateway agents or printers.
 
-Bindings are scoped to Branch and selected deterministically by priority then stable binding ID. A cross-branch mismatch fails closed. A Printer must have an active Agent and active lifecycle state to accept new jobs.
+## Odoo addon models
 
-Payload content is explicit (`pdf`, `raw`, `escpos`). A PDF is never relabeled as RAW. PDF delivery requires a PDF-capable spooler or IPP path; actual byte-stream payloads must be supplied when RAW/ESC-POS is required.
+Only these models remain:
 
-## Idempotency and history
+1. `print_gateway.gateway_config` — enabled flag, Gateway origin, installation API key, connection-test state.
+2. `print_gateway.binding` — deterministic Odoo destination reference + document type -> Gateway runtime printer ID, with enabled/priority.
+3. `print_gateway.print_job` — durable Odoo print intent, idempotency key, remote job ID and reconciliation state.
 
-One logical print operation uses one stable idempotency key across retries. PostgreSQL uniqueness prevents concurrent duplicate logical jobs. Physical delivery remains potentially at-least-once. Jobs retain Agent/Printer/Branch foreign keys and lifecycle changes do not delete history.
+There is no `print_gateway.branch` model, Gateway Branch ID, branch synchronization, duplicate destination/document-type model, report-mapping model, async/bridge compatibility model, or runtime agent/printer model in Odoo.
 
-## Synchronization
+## Deterministic routing
 
-Odoo pull synchronization follows Branch -> Agents -> Printers -> Bindings. Non-2xx responses, timeouts and malformed JSON are failures. Complete synchronization is `success`; a failed optional runtime section is `partial`; required endpoint failure is `failed`.
-## Production Engineering Semantics
+For Gateway-enabled printing, the central router must resolve both a document type and a deterministic destination from an existing Odoo record. Supported destination rules are explicit:
 
-- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
-- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
-- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
-- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
-- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
-- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal.
-- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
+- `pos.order` -> its `pos.config`
+- `stock.picking` -> its `stock.picking.type`
+- other report-driven flows -> the exact `ir.actions.report` record
 
+There is no fallback to company-as-destination and no arbitrary report-name heuristic. Unsupported/ambiguous destinations fail closed.
+
+Bindings are looked up by Odoo company, exact destination reference and normalized document type, ordered by ascending priority then stable ID. Missing or cross-company bindings are errors.
+
+## Report printing
+
+When Gateway printing is disabled, Odoo's native report action remains available. When Gateway printing is enabled, `ir.actions.report.report_action()` routes through the central Print Router, renders a PDF payload, persists the durable outbox row, and submits to the Gateway. A Gateway error is returned to the caller; native report printing is never used as a fallback.
+
+## POS printing
+
+Receipt, reprint and Restaurant Print Bill paths use the Odoo POS router and never call the native POS printer when Gateway mode is enabled. POS order-preparation/kitchen printing is explicitly fail-closed until an equivalent Gateway binding/transport exists; it cannot silently fall back to browser/native printing.
+
+The browser does not open a PDF, navigate to a report URL, call `window.print()`, or show a browser print dialog for Gateway-enabled receipt actions. It receives a success/error/job notification instead.
+
+## Reliability
+
+Every logical print operation has one stable idempotency key. The Odoo outbox row is committed before the Gateway HTTP call. Transport timeouts produce an `unknown` physical outcome rather than an unsafe retry with a new job identity. Gateway PostgreSQL uniqueness prevents concurrent duplicate logical jobs. Odoo and Gateway reconciliation reuse the same remote job identity.
+
+## Security
+
+Odoo API keys are installation-scoped, randomly generated, shown once, hashed at rest, and revocable. Gateway APIs validate the configured Odoo database binding. Gateway URL validation rejects credentials, query/fragment components, non-origin paths and private/local addresses unless an explicit deployment allow-list is configured. Redirects are disabled. Logs do not contain API keys or print payloads.
+
+## Verification gates
+
+Required before production approval:
+
+- Gateway unit/integration tests
+- Odoo 19 install/upgrade and module tests
+- POS frontend interception tests
+- migration upgrade test from the previous schema
+- Go agent tests and race tests
+- real staging Gateway -> Agent -> physical printer test
+- repository-wide search proving legacy branch/sync architecture is absent
