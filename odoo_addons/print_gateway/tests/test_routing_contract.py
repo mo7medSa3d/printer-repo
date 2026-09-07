@@ -1,4 +1,5 @@
 from unittest.mock import patch
+import uuid
 
 import requests
 
@@ -28,6 +29,26 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 self.config = self.env["print_gateway.gateway_config"].create(
                     {"company_id": self.company.id, **values}
                 )
+
+        # Durable outbox operations intentionally commit through independent
+        # PostgreSQL cursors. Keep those tests on a separate committed company so
+        # the uncommitted TransactionCase configuration above can never contend on
+        # the gateway_config company uniqueness constraint.
+        durable_company_name = "Gateway Durable Test %s" % uuid.uuid4().hex
+        with self.env.registry.cursor() as cr:
+            setup_env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            durable_company = setup_env["res.company"].create({"name": durable_company_name})
+            with patch.object(PrintGatewayConfig, "_validate_gateway_host"):
+                durable_config = setup_env["print_gateway.gateway_config"].create(
+                    {
+                        "company_id": durable_company.id,
+                        **values,
+                    }
+                )
+            self.durable_company_id = durable_company.id
+            self.durable_config_id = durable_config.id
+            cr.commit()
+
         self.other_company = self.env["res.company"].create(
             {"name": "Gateway Contract Other Company"}
         )
@@ -36,45 +57,24 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         self.config.write({"enabled": enabled})
         return self.config
 
-    def _ensure_committed_durable_config(self):
-        values = {
-            "gateway_url": "https://gateway.example.com",
-            "gateway_api_key": "odoo_test_key",
-            "enabled": True,
-        }
-        with self.env.registry.cursor() as cr:
-            env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            with patch.object(PrintGatewayConfig, "_validate_gateway_host"):
-                config = env["print_gateway.gateway_config"].search(
-                    [("company_id", "=", self.company.id)], limit=1
-                )
-                if config:
-                    config.write(values)
-                else:
-                    config = env["print_gateway.gateway_config"].create(
-                        {"company_id": self.company.id, **values}
-                    )
-            config_id = config.id
-            cr.commit()
-        return config_id
-
     def _job(self, key):
-        """Create a durable job, then return only its scalar id.
+        """Create a durable job and return only its scalar id.
 
         The production outbox deliberately commits through an independent cursor.
-        The Odoo test cursor must never be committed/rolled back manually, so every
-        durable-job operation is isolated in its own fresh cursor instead.
+        The Odoo TransactionCase cursor must never be committed or rolled back
+        manually, so both creation and observation stay on fresh cursors.
         """
-        config_id = self._ensure_committed_durable_config()
-        printer_id = "printer_runtime_%s" % key
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id)
+            env = env.with_company(company)
+            config = env["print_gateway.gateway_config"].browse(self.durable_config_id)
             router = env["print_gateway.print_router"]
             job_id = router._persist_durable_job(
                 {
-                    "company": env["res.company"].browse(self.company.id),
-                    "gateway_config": env["print_gateway.gateway_config"].browse(config_id),
-                    "printer_id": printer_id,
+                    "company": company,
+                    "gateway_config": config,
+                    "printer_id": "printer_runtime_%s" % key,
                     "destination": "Sales",
                     "document_type": "order",
                     "payload": {"type": "raw", "encoding": "base64", "data": "aGVsbG8="},
@@ -246,6 +246,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         job_id = self._job("timeout-contract-key")
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id)
+            env = env.with_company(company)
             job = env["print_gateway.print_job"].browse(job_id).exists()
             self.assertTrue(job)
             with patch.object(PrintGatewayConfig, "_validate_gateway_host"), patch(
@@ -257,6 +259,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id)
+            env = env.with_company(company)
             job = env["print_gateway.print_job"].browse(job_id).exists()
             self.assertEqual(job.status, "unknown")
             self.assertIn("UNKNOWN_SUBMISSION_OUTCOME", job.last_error)
@@ -266,6 +270,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             job_id = self._job("retry-safety-%s" % status)
             with self.env.registry.cursor() as cr:
                 env = api.Environment(cr, self.env.uid, dict(self.env.context))
+                company = env["res.company"].browse(self.durable_company_id)
+                env = env.with_company(company)
                 job = env["print_gateway.print_job"].browse(job_id).exists()
                 job.write({"status": status})
                 job.action_retry()
@@ -275,6 +281,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         job_id = self._job("retry-failed-original")
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id)
+            env = env.with_company(company)
             job = env["print_gateway.print_job"].browse(job_id).exists()
             job.write({"status": "failed", "last_error": "GATEWAY_HTTP_503"})
             with patch.object(type(job), "action_submit", autospec=True, return_value=True) as submit:
