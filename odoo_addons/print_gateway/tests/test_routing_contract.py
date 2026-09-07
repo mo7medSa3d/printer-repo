@@ -20,6 +20,10 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             'gateway_api_key': 'odoo_test_key',
             'enabled': True,
         })
+        # The production durable-job path intentionally uses a new database cursor.
+        # Commit shared class fixtures so that cursor can observe the same gateway config.
+        cls.env.flush_all()
+        cls.env.cr.commit()
 
     def _make_config(self, enabled=True):
         config = self.env['print_gateway.gateway_config'].search([('company_id', '=', self.company.id)], limit=1)
@@ -54,12 +58,17 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_manual_destination_reference_cannot_override_derived_native_destination(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
+        other_report = self.env['ir.actions.report'].search([
+            ('model', '=', 'stock.picking'),
+            ('id', '!=', report.id),
+        ], limit=1)
+        self.assertTrue(other_report, 'Expected another valid report destination in the Odoo test database.')
         binding = self.env['print_gateway.binding'].create({
             'company_id': self.company.id,
             'destination_type': 'report',
             'destination_report_id': report.id,
             'report_id': report.id,
-            'destination_ref': 'res.company,%s' % self.company.id,
+            'destination_ref': 'ir.actions.report,%s' % other_report.id,
             'printer_id': 'printer_runtime_1',
         })
         self.assertEqual(binding.destination_ref._name, 'ir.actions.report')
