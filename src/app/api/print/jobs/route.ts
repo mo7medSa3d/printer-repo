@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { printJobs } from "../../../../db/schema";
-import { validateOdooKey } from "../../../../lib/odoo-auth";
+import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../lib/odoo-auth";
 import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
 import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
@@ -65,6 +65,14 @@ export async function POST(req: Request) {
   try { raw = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
   const parsed = bodySchema.safeParse(raw);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
+
+  if (!isOdooKeyAllowedForDocumentType(odoo, parsed.data.documentType, "write")) {
+    return NextResponse.json({
+      error: "API key is not allowed to create this document type",
+      code: "ODOO_KEY_NOT_ALLOWED",
+      retryable: false,
+    }, { status: 403 });
+  }
 
   let payload: PrintJobPayload;
   try { payload = validatePrintJobPayload(parsed.data.payload); }
@@ -137,5 +145,8 @@ export async function GET(req: Request) {
     where: and(eq(printJobs.id, id), eq(printJobs.apiKeyId, odoo.id)),
   });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!isOdooKeyAllowedForDocumentType(odoo, row.documentType, "read")) {
+    return NextResponse.json({ error: "API key is not allowed to read this document type", code: "ODOO_KEY_NOT_ALLOWED", retryable: false }, { status: 403 });
+  }
   return NextResponse.json(responseForRow(row), { status: 200 });
 }
