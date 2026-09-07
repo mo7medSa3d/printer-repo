@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Native Odoo print binding: Destination + Document Type -> Gateway Printer."""
+"""Native Odoo print binding: Destination + Document Type -> Printer."""
 
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
@@ -19,28 +19,19 @@ class PrintGatewayBinding(models.Model):
     _order = "priority, id"
 
     company_id = fields.Many2one(
-        "res.company",
-        required=True,
-        default=lambda self: self.env.company,
-        ondelete="restrict",
-        index=True,
+        "res.company", required=True, default=lambda self: self.env.company,
+        ondelete="restrict", index=True,
     )
     destination_ref = fields.Reference(
         selection=DESTINATION_MODELS,
         string="Destination",
         required=True,
-        ondelete="restrict",
-        help="Existing Odoo object that represents the print destination/context.",
+        help="Existing Odoo object representing the print destination/context.",
     )
-    document_type = fields.Char(
-        required=True,
-        help="Logical document type, for example receipt, invoice, order, delivery, or label.",
-    )
+    document_type = fields.Char(required=True)
     printer_id = fields.Char(
-        string="Printer",
-        required=True,
-        index=True,
-        help="Gateway runtime printer id. The Odoo module never creates or manages printers.",
+        string="Printer", required=True, index=True,
+        help="Runtime printer identity owned by the Gateway.",
     )
     enabled = fields.Boolean(default=True)
     priority = fields.Integer(default=10, help="Lower value is tried first.")
@@ -70,13 +61,13 @@ class PrintGatewayBinding(models.Model):
                 raise ValidationError(_("Document Type is required."))
             if not record.printer_id or not record.printer_id.strip():
                 raise ValidationError(_("Printer is required."))
-            destination = record.destination_ref
-            destination_company = getattr(destination, "company_id", False)
+            destination_company = getattr(record.destination_ref, "company_id", False)
             if destination_company and destination_company.id != record.company_id.id:
                 raise ValidationError(
-                    _("Destination %s belongs to another Odoo company.") % destination.display_name
+                    _("Destination %s belongs to another Odoo company.")
+                    % record.destination_ref.display_name
                 )
-            if destination._name == "res.company" and destination.id != record.company_id.id:
+            if record.destination_ref._name == "res.company" and record.destination_ref.id != record.company_id.id:
                 raise ValidationError(_("Company destination must match the binding company."))
 
     @staticmethod
@@ -85,7 +76,6 @@ class PrintGatewayBinding(models.Model):
 
     @api.model
     def _candidate_values(self, report, record=None):
-        """Return native Odoo destination objects from most to least specific."""
         candidates = []
         if record:
             if record._name == "pos.order" and "config_id" in record._fields and record.config_id:
@@ -104,32 +94,22 @@ class PrintGatewayBinding(models.Model):
         if not document_type:
             return False
         candidates = self._candidate_values(report, record=record)
-        domain = [
+        rows = self.search([
             ("company_id", "=", company.id),
             ("enabled", "=", True),
             ("document_type", "=", document_type),
-        ]
-        rows = self.search(domain, order="priority asc, id asc")
+        ], order="priority asc, id asc")
         candidate_keys = {
             "%s,%s" % (value._name, value.id): index
             for index, value in enumerate(candidates)
         }
-        ranked = rows.filtered(
-            lambda binding: "%s,%s" % (
-                binding.destination_ref._name,
-                binding.destination_ref.id,
-            ) in candidate_keys
-        )
-        return ranked.sorted(
-            key=lambda binding: (
-                candidate_keys.get(
-                    "%s,%s" % (
-                        binding.destination_ref._name,
-                        binding.destination_ref.id,
-                    ),
-                    999,
-                ),
-                binding.priority,
-                binding.id,
-            )
-        )[:1]
+        matching = rows.filtered(lambda binding: "%s,%s" % (
+            binding.destination_ref._name, binding.destination_ref.id
+        ) in candidate_keys)
+        return matching.sorted(key=lambda binding: (
+            candidate_keys.get(
+                "%s,%s" % (binding.destination_ref._name, binding.destination_ref.id), 999
+            ),
+            binding.priority,
+            binding.id,
+        ))[:1]
