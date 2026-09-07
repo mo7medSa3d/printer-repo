@@ -12,6 +12,8 @@ class PrintGatewayRuntimePrinterController(http.Controller):
         company = env["res.company"].browse(company_id or env.company.id).exists()
         if not company or company not in env.companies:
             raise ValidationError("The selected Odoo Company is not available to the current user.")
+        if company.parent_id:
+            raise ValidationError("The selected Odoo Company must be a parent Company, not a Branch.")
         branch = env["res.company"].browse(branch_id).exists() if branch_id else False
         if branch:
             if branch not in env.companies:
@@ -21,11 +23,10 @@ class PrintGatewayRuntimePrinterController(http.Controller):
         return company, branch
 
     def _get_config(self, company):
-        root_company = company.parent_id if company.parent_id else company
         config = request.env["print_gateway.gateway_config"].search(
-            [("company_id", "=", root_company.id)], limit=1,
+            [("company_id", "=", company.id)], limit=1,
         )
-        return config, root_company
+        return config, company
 
     @http.route('/print_gateway/runtime-agents', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_agents(self, company_id=None, branch_id=None):
@@ -66,11 +67,7 @@ class PrintGatewayRuntimePrinterController(http.Controller):
         assignment = request.env['print_gateway.runtime_agent_assignment'].search([
             ('company_id', '=', root_company.id), ('branch_id', '=', branch.id), ('enabled', '=', True),
         ], limit=1)
-        return {
-            'enabled': True,
-            'selectedAgentId': assignment.runtime_agent_id if assignment else False,
-            'agents': sanitized,
-        }
+        return {'enabled': True, 'selectedAgentId': assignment.runtime_agent_id if assignment else False, 'agents': sanitized}
 
     @http.route('/print_gateway/runtime-printers', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_printers(self, company_id=None, branch_id=None, agent_id=None):
