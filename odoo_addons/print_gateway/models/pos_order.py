@@ -24,6 +24,8 @@ class PosOrderGatewayPrinting(models.Model):
             raise ValidationError(_("The selected Kitchen / Preparation printer is invalid.")) from exc
         if not printer:
             raise ValidationError(_("The selected Kitchen / Preparation printer no longer exists."))
+        if printer.company_id != self.env.company:
+            raise ValidationError(_("The selected Kitchen / Preparation printer belongs to another active Odoo company."))
         if printer.company_id != self.company_id:
             raise ValidationError(_("The selected Kitchen / Preparation printer belongs to another Odoo company."))
         return self.env["print_gateway.print_router"].route_kitchen_print(
@@ -32,6 +34,7 @@ class PosOrderGatewayPrinting(models.Model):
 
     def is_gateway_printing_enabled(self):
         self.ensure_one()
-        company = self.company_id or self.env.company
-        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", company.id)], limit=1)
+        if self.company_id != self.env.company:
+            raise ValidationError(_("Gateway printing must use the active Odoo company."))
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", self.env.company.id)], limit=1)
         return bool(config and config.enabled)
