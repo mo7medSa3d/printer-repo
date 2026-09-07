@@ -3,9 +3,9 @@ import { db } from "../../../../db";
 import { printJobs } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
 import { validatePrintJobPayload } from "../../../../lib/payload";
-import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError } from "../../../../lib/print-job-service";
+import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, BranchQueuedJobsFullError } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -40,6 +40,24 @@ function responseForRow(row: typeof printJobs.$inferSelect) {
   };
 }
 
+function idempotencyMatches(
+  row: typeof printJobs.$inferSelect,
+  request: { printerId: string; documentType: string; destination?: string; payload: ReturnType<typeof validatePrintJobPayload> },
+): boolean {
+  return row.printerId === request.printerId
+    && (row.destinationId ?? null) === (request.destination ?? null)
+    && (row.documentType ?? "").trim().toLowerCase() === request.documentType.trim().toLowerCase()
+    && JSON.stringify(row.payload) === JSON.stringify(request.payload);
+}
+
+function idempotencyConflict() {
+  return NextResponse.json({
+    error: "IDEMPOTENCY_CONFLICT",
+    code: "IDEMPOTENCY_CONFLICT",
+    retryable: false,
+  }, { status: 409 });
+}
+
 export async function POST(req: Request) {
   if (hasBodyOverLimit(req, MAX_BODY)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
   const odoo = await validateOdooKey(req);
@@ -60,9 +78,12 @@ export async function POST(req: Request) {
 
   if (parsed.data.idempotencyKey) {
     const existing = await db.query.printJobs.findFirst({
-      where: and(eq(printJobs.idempotencyKey, parsed.data.idempotencyKey), eq(printJobs.printerId, parsed.data.printerId)),
+      where: eq(printJobs.idempotencyKey, parsed.data.idempotencyKey),
     });
-    if (existing) return NextResponse.json(responseForRow(existing), { status: 200 });
+    if (existing) {
+      if (idempotencyMatches(existing, parsed.data)) return NextResponse.json(responseForRow(existing), { status: 200 });
+      return idempotencyConflict();
+    }
   }
 
   try {
@@ -89,8 +110,15 @@ export async function POST(req: Request) {
         headers: { "Retry-After": String(error.retryAfterSeconds), "Cache-Control": "no-store" },
       });
     }
-    if (error instanceof AgentQueueFullError || error instanceof AgentQueuedJobsFullError) {
+    if (error instanceof AgentQueueFullError || error instanceof AgentQueuedJobsFullError || error instanceof BranchQueuedJobsFullError) {
       return NextResponse.json({ error: error.code, retryable: true }, { status: 503 });
+    }
+    if (error instanceof Error && (error as Error & { code?: string }).code === "DUPLICATE_JOB" && parsed.data.idempotencyKey) {
+      const existing = await db.query.printJobs.findFirst({ where: eq(printJobs.idempotencyKey, parsed.data.idempotencyKey) });
+      if (existing && idempotencyMatches(existing, parsed.data)) {
+        return NextResponse.json(responseForRow(existing), { status: 200 });
+      }
+      return idempotencyConflict();
     }
     const message = error instanceof Error ? error.message : "print job creation failed";
     const status = /not found/i.test(message) ? 404 : /not online|disabled|virtual|retired/i.test(message) ? 503 : /capability|cannot print/i.test(message) ? 422 : 500;
