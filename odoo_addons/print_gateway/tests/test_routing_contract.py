@@ -41,10 +41,23 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         super().tearDownClass()
 
     def _make_config(self, enabled=True):
+        configs = self.env['print_gateway.gateway_config'].search([('company_id', '=', self.company.id)])
+        configs.write({'enabled': False})
         config = self.env['print_gateway.gateway_config'].browse(self.config_id)
         config.invalidate_recordset(['enabled'])
         config.enabled = enabled
         return config
+
+    def _job(self, key):
+        return self.env['print_gateway.print_job'].create_operation(
+            company=self.company,
+            gateway_config=self.env['print_gateway.gateway_config'].browse(self.config_id),
+            printer_id='printer_runtime_1',
+            destination='Sales',
+            document_type='order',
+            payload={'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
+            idempotency_key=key,
+        )
 
     def test_binding_requires_deterministic_native_destination(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
@@ -175,48 +188,38 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             cr.commit()
 
     def test_gateway_timeout_persists_unknown_outcome(self):
-        with self.env.registry.cursor() as cr:
-            env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            router = env['print_gateway.print_router']
-            config = env['print_gateway.gateway_config'].browse(self.config_id)
-            job = router._persist_durable_job({
-                'company': env.company,
-                'gateway_config': config,
-                'printer_id': 'printer_runtime_1',
-                'destination': 'Sales',
-                'document_type': 'order',
-                'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
-                'idempotency_key': 'timeout-contract-key',
-            })
-            job = env['print_gateway.print_job'].browse(job.id)
-            with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
-                'odoo.addons.print_gateway.models.print_job.requests.post',
-                side_effect=requests.exceptions.Timeout('simulated'),
-            ):
-                with self.assertRaises(ValidationError):
-                    job.action_submit(raise_on_failure=True)
-            job.invalidate_recordset(['status', 'last_error', 'attempts', 'next_retry_at'])
-            persisted = env['print_gateway.print_job'].browse(job.id).exists()
-            persisted.invalidate_recordset(['status', 'last_error'])
-            self.assertEqual(persisted.status, 'unknown')
-            self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', persisted.last_error)
-            cr.commit()
+        job = self._job('timeout-contract-key')
+        with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
+            'odoo.addons.print_gateway.models.print_job.requests.post',
+            side_effect=requests.exceptions.Timeout('simulated'),
+        ):
+            with self.assertRaises(ValidationError):
+                job.action_submit(raise_on_failure=True)
+        job.invalidate_recordset(['status', 'last_error', 'attempts', 'next_retry_at'])
+        self.assertEqual(job.status, 'unknown')
+        self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', job.last_error)
 
     def test_manual_retry_does_not_reset_in_flight_or_unknown_jobs(self):
-        router = self.env['print_gateway.print_router']
-        config = self.env['print_gateway.gateway_config'].browse(self.config_id)
         for status in ('submitted', 'claimed', 'printing', 'unknown'):
-            job = router._persist_durable_job({
-                'company': self.env.company,
-                'gateway_config': config,
-                'printer_id': 'printer_runtime_1',
-                'destination': 'Sales',
-                'document_type': 'order',
-                'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
-                'idempotency_key': 'retry-safety-%s' % status,
-            })
-            job = self.env['print_gateway.print_job'].browse(job.id)
+            job = self._job('retry-safety-%s' % status)
             job.write({'status': status})
             job.action_retry()
             job.invalidate_recordset(['status'])
             self.assertEqual(job.status, status)
+
+    def test_manual_retry_creates_a_new_operation_only_for_definite_failure(self):
+        job = self._job('retry-failed-original')
+        job.write({'status': 'failed', 'last_error': 'GATEWAY_HTTP_503'})
+        with patch.object(
+            type(job), 'action_submit', autospec=True, return_value=True
+        ) as submit:
+            job.action_retry()
+        retries = self.env['print_gateway.print_job'].search([
+            ('id', '!=', job.id),
+            ('source_record_id', '=', False),
+            ('printer_id', '=', job.printer_id),
+            ('idempotency_key', '!=', job.idempotency_key),
+        ])
+        self.assertEqual(len(retries), 1)
+        self.assertNotEqual(retries.idempotency_key, job.idempotency_key)
+        submit.assert_called_once()
