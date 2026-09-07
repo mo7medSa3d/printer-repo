@@ -1,18 +1,17 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '19.0.1.3.0',
-    'summary': 'Silent print routing for Odoo 19 through a central Gateway router',
+    'version': '19.0.2.0.0',
+    'summary': 'Silent Odoo 19 printing through an external Gateway and runtime Agent',
     'description': """
-Odoo Print Gateway — Silent Print Routing
+Odoo Print Gateway — Integration Only
 
-Odoo remains the business source of truth. The module resolves print intent
-and bindings, renders the printable payload, and submits durable operations to
-an external Gateway. The Gateway owns agent/runtime execution.
+Odoo owns business records and print intent. This module stores only the Gateway
+connection, native Odoo print bindings, and a durable print outbox. The Gateway
+owns agents, runtime printers, heartbeats, and execution state.
 
-Gateway-enabled report and POS printing never falls back to browser printing.
-Native Odoo printing remains available only when Gateway routing is explicitly
-disabled for the active context.
+Gateway-enabled printing is silent: there is no browser print fallback. Native
+Odoo printing occurs only when Gateway printing is explicitly disabled.
     """,
     'author': 'Odoo Print Gateway',
     'website': 'https://github.com/mo7medSa3d/printer-repo',
@@ -21,23 +20,13 @@ disabled for the active context.
     'data': [
         'security/ir.model.access.csv',
         'security/security.xml',
-        'views/branch_views.xml',
-        'views/destination_views.xml',
-        'views/document_type_views.xml',
-        'views/printer_views.xml',
-        'views/agent_views.xml',
-        'views/printer_binding_views.xml',
+        'views/gateway_config_views.xml',
+        'views/binding_views.xml',
         'views/print_job_views.xml',
-        'views/report_mapping_views.xml',
-        'views/ir_actions_report_views.xml',
+        'views/menu.xml',
         'data/cron.xml',
-        'data/report_mappings.xml',
     ],
     'assets': {
-        'web.assets_backend': [
-            'print_gateway/static/src/scss/print_gateway_tokens.scss',
-            'print_gateway/static/src/scss/print_gateway_backend.scss',
-        ],
         'point_of_sale._assets_pos': [
             'print_gateway/static/src/js/pos_print_router.js',
         ],
