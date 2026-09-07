@@ -1,6 +1,7 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_print_gateway_config_user,print_gateway.gateway_config user,model_print_gateway_gateway_config,base.group_user,1,0,0,0
 access_print_gateway_config_admin,print_gateway.gateway_config admin,model_print_gateway_gateway_config,base.group_system,1,1,1,0
+access_print_gateway_runtime_assignment_admin,print_gateway.runtime_agent_assignment admin,model_print_gateway_runtime_agent_assignment,base.group_system,1,1,1,1
 access_print_gateway_binding_user,print_gateway.binding user,model_print_gateway_binding,base.group_user,1,0,0,0
 access_print_gateway_binding_admin,print_gateway.binding admin,model_print_gateway_binding,base.group_system,1,1,1,1
 access_print_gateway_print_job_user,print_gateway.print_job user,model_print_gateway_print_job,base.group_user,1,0,0,0

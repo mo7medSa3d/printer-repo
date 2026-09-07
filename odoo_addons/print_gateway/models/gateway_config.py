@@ -27,9 +27,10 @@ class PrintGatewayConfig(models.Model):
         string="API Key", copy=False, groups="base.group_system",
     )
     runtime_agent_id = fields.Char(
-        string="Runtime Agent",
+        string="Legacy Runtime Agent Reference",
         copy=False,
-        help="Opaque Gateway runtime-agent ID assigned to this Odoo company/branch. The agent remains owned by the Gateway.",
+        groups="base.group_system",
+        help="Backward-compatible opaque Gateway runtime-agent reference from the earlier configuration model. New branch bindings do not use this field as their source of truth.",
     )
     last_test_at = fields.Datetime(readonly=True)
     last_test_status = fields.Selection([("success", "Success"), ("failed", "Failed")], readonly=True)
@@ -93,7 +94,7 @@ class PrintGatewayConfig(models.Model):
     def _check_runtime_agent_id(self):
         for record in self:
             if record.runtime_agent_id and (not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip()):
-                raise ValidationError(_("Runtime Agent must be a non-empty Gateway agent ID."))
+                raise ValidationError(_("Legacy Runtime Agent must be a non-empty Gateway agent ID."))
 
     def _gateway_base(self, *, for_request=False):
         self.ensure_one()

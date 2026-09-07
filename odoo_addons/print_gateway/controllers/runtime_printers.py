@@ -7,22 +7,39 @@ from odoo.exceptions import ValidationError
 
 
 class PrintGatewayRuntimePrinterController(http.Controller):
-    def _get_config(self):
-        company = request.env.company
-        config = request.env['print_gateway.gateway_config'].search([('company_id', '=', company.id)], limit=1)
-        return config
+    def _scope(self, company_id=None, branch_id=None):
+        env = request.env
+        company = env["res.company"].browse(company_id or env.company.id).exists()
+        if not company or company not in env.companies:
+            raise ValidationError("The selected Odoo Company is not available to the current user.")
+        if company.parent_id:
+            raise ValidationError("The selected Odoo Company must be a parent Company, not a Branch.")
+        branch = env["res.company"].browse(branch_id).exists() if branch_id else False
+        if branch:
+            if branch not in env.companies:
+                raise ValidationError("The selected Odoo Branch is not available to the current user.")
+            if branch.parent_id != company:
+                raise ValidationError("Odoo Branch must belong directly to the selected Odoo Company.")
+        return company, branch
+
+    def _get_config(self, company):
+        config = request.env["print_gateway.gateway_config"].search(
+            [("company_id", "=", company.id)], limit=1,
+        )
+        return config, company
 
     @http.route('/print_gateway/runtime-agents', type='jsonrpc', auth='user', methods=['POST'])
-    def runtime_agents(self):
-        config = self._get_config()
+    def runtime_agents(self, company_id=None, branch_id=None):
+        company, branch = self._scope(company_id, branch_id)
+        if not branch:
+            raise ValidationError("An Odoo Branch is required for runtime-agent assignment.")
+        config, root_company = self._get_config(company)
         if not config or not config.enabled:
             return {'enabled': False, 'selectedAgentId': False, 'agents': []}
         try:
             response = requests.get(
                 '%s/api/odoo/agents' % config._gateway_base(for_request=True),
-                headers=config._gateway_headers(),
-                timeout=(5, 10),
-                allow_redirects=False,
+                headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False,
             )
             if response.status_code != 200:
                 raise ValidationError('Gateway agent discovery failed (HTTP %s).' % response.status_code)
@@ -39,33 +56,33 @@ class PrintGatewayRuntimePrinterController(http.Controller):
             if not isinstance(agent, dict):
                 continue
             agent_id = agent.get('id')
-            if not isinstance(agent_id, str) or not agent_id.strip():
-                continue
             lifecycle = agent.get('lifecycle') if isinstance(agent.get('lifecycle'), str) else 'active'
-            if lifecycle == 'retired':
+            if not isinstance(agent_id, str) or not agent_id.strip() or lifecycle == 'retired':
                 continue
             sanitized.append({
                 'id': agent_id,
                 'name': agent.get('name') if isinstance(agent.get('name'), str) else agent_id,
                 'status': agent.get('status') if isinstance(agent.get('status'), str) else 'offline',
             })
-        return {
-            'enabled': True,
-            'selectedAgentId': config.runtime_agent_id or False,
-            'agents': sanitized,
-        }
+        assignment = request.env['print_gateway.runtime_agent_assignment'].search([
+            ('company_id', '=', root_company.id), ('branch_id', '=', branch.id), ('enabled', '=', True),
+        ], limit=1)
+        return {'enabled': True, 'selectedAgentId': assignment.runtime_agent_id if assignment else False, 'agents': sanitized}
 
     @http.route('/print_gateway/runtime-printers', type='jsonrpc', auth='user', methods=['POST'])
-    def runtime_printers(self):
-        config = self._get_config()
+    def runtime_printers(self, company_id=None, branch_id=None, agent_id=None):
+        company, branch = self._scope(company_id, branch_id)
+        if not branch:
+            raise ValidationError("An Odoo Branch is required for runtime-printer selection.")
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            return {'enabled': True, 'selectedAgentId': False, 'printers': []}
+        config, _root_company = self._get_config(company)
         if not config or not config.enabled:
-            return {'enabled': False, 'selectedAgentId': False, 'agents': [], 'printers': []}
+            return {'enabled': False, 'selectedAgentId': False, 'printers': []}
         try:
             response = requests.get(
                 '%s/api/odoo/printers' % config._gateway_base(for_request=True),
-                headers=config._gateway_headers(),
-                timeout=(5, 10),
-                allow_redirects=False,
+                headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False,
             )
             if response.status_code != 200:
                 raise ValidationError('Gateway printer discovery failed (HTTP %s).' % response.status_code)
@@ -78,34 +95,22 @@ class PrintGatewayRuntimePrinterController(http.Controller):
         if not isinstance(printers, list):
             raise ValidationError('Gateway returned an invalid printer discovery response.')
         sanitized = []
-        agents = {}
         for printer in printers:
             if not isinstance(printer, dict):
                 continue
             printer_id = printer.get('id')
             if not isinstance(printer_id, str) or not printer_id.strip():
                 continue
-            name = printer.get('name') if isinstance(printer.get('name'), str) else 'Unnamed printer'
-            status = printer.get('status') if isinstance(printer.get('status'), str) else 'unknown'
             lifecycle = printer.get('lifecycle') if isinstance(printer.get('lifecycle'), str) else 'active'
             agent = printer.get('agent') if isinstance(printer.get('agent'), dict) else {}
-            agent_id = agent.get('id') if isinstance(agent.get('id'), str) else ''
-            agent_name = agent.get('name') if isinstance(agent.get('name'), str) else ''
-            if lifecycle == 'retired' or not agent_id:
-                continue
-            agents[agent_id] = {'id': agent_id, 'name': agent_name or agent_id}
-            if config.runtime_agent_id and agent_id != config.runtime_agent_id:
+            returned_agent_id = agent.get('id') if isinstance(agent.get('id'), str) else ''
+            if lifecycle == 'retired' or returned_agent_id != agent_id:
                 continue
             sanitized.append({
                 'id': printer_id,
-                'name': name,
-                'status': status,
-                'agentId': agent_id,
-                'agentName': agent_name,
+                'name': printer.get('name') if isinstance(printer.get('name'), str) else printer_id,
+                'status': printer.get('status') if isinstance(printer.get('status'), str) else 'unknown',
+                'agentId': returned_agent_id,
+                'agentName': agent.get('name') if isinstance(agent.get('name'), str) else agent_id,
             })
-        return {
-            'enabled': True,
-            'selectedAgentId': config.runtime_agent_id or False,
-            'agents': sorted(agents.values(), key=lambda item: item['name'].lower()),
-            'printers': sanitized,
-        }
+        return {'enabled': True, 'selectedAgentId': agent_id, 'printers': sanitized}

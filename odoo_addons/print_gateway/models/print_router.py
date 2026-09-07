@@ -23,8 +23,19 @@ class PrintGatewayRouter(models.AbstractModel):
     _description = "Print Gateway Central Router"
 
     @api.model
+    def _binding_scope(self, company=None):
+        """Return (Odoo company owning the Gateway config, branch context)."""
+        company = company or self.env.company
+        branch = company if company.parent_id else False
+        gateway_company = company.parent_id if branch else company
+        return gateway_company, branch
+
+    @api.model
     def _gateway_config(self, company):
-        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", company.id)], limit=1)
+        gateway_company, _branch = self._binding_scope(company)
+        config = self.env["print_gateway.gateway_config"].search(
+            [("company_id", "=", gateway_company.id)], limit=1,
+        )
         return config if config and config.enabled else False
 
     @api.model
@@ -32,11 +43,11 @@ class PrintGatewayRouter(models.AbstractModel):
         current = self.env.company
         if not company or company != current:
             raise ValidationError(
-                _("Print routing must use the active Odoo company (%s).") % current.display_name
+                _("Print routing must use the active Odoo company/branch (%s).") % current.display_name
             )
         if record and getattr(record, "company_id", False) and record.company_id != current:
             raise ValidationError(
-                _("The printable document belongs to %s, but the active Odoo company is %s.")
+                _("The printable document belongs to %s, but the active Odoo company/branch is %s.")
                 % (record.company_id.display_name, current.display_name)
             )
         return current
@@ -70,6 +81,7 @@ class PrintGatewayRouter(models.AbstractModel):
         current_company = self.env.company
         requested_company = company or current_company
         self._assert_current_company(requested_company, record=record)
+        gateway_company, branch = self._binding_scope(current_company)
         config = self._gateway_config(current_company)
         if not config:
             return {"gateway_enabled": False, "native": True}
@@ -80,16 +92,17 @@ class PrintGatewayRouter(models.AbstractModel):
             explicit_destination=explicit_destination,
         )
         binding = self.env["print_gateway.binding"].find_for(
-            current_company,
+            gateway_company,
             dtype,
             report=report,
             record=record,
             explicit_destination=explicit_destination,
+            branch=branch,
         )
         if not binding:
             raise ValidationError(
-                _("Gateway printing is enabled, but no Print Binding exists for %s (%s).")
-                % (destination.display_name, dtype)
+                _("Gateway printing is enabled, but no Print Binding exists for %s (%s) in %s.")
+                % (destination.display_name, dtype, branch.display_name if branch else gateway_company.display_name)
             )
         return {
             "gateway_enabled": True,
@@ -98,7 +111,8 @@ class PrintGatewayRouter(models.AbstractModel):
             "binding": binding,
             "document_type": dtype,
             "destination": destination,
-            "company": current_company,
+            "company": gateway_company,
+            "branch": branch,
         }
 
     @staticmethod
@@ -157,14 +171,7 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def _persist_durable_job(self, values):
-        """Create the durable Odoo outbox row in an independent transaction.
-
-        The caller's Odoo transaction may already have an active PostgreSQL
-        snapshot. Returning an ORM recordset from the independent cursor would
-        therefore be unsafe: that snapshot may not see the newly committed row.
-        Return only the immutable database id and let the caller cross the
-        transaction boundary explicitly.
-        """
+        """Create the durable Odoo outbox row in an independent transaction."""
         durable_values = dict(values)
         for key in ("company", "gateway_config", "report"):
             record = durable_values.get(key)
@@ -208,19 +215,12 @@ class PrintGatewayRouter(models.AbstractModel):
                 raise
 
     def _submit_route(
-        self,
-        *,
-        route,
-        payload,
-        company,
-        report=None,
-        source_model=None,
-        source_record_id=None,
-        idempotency_key=None,
+        self, *, route, payload, company, report=None, source_model=None,
+        source_record_id=None, idempotency_key=None,
     ):
         self._assert_current_company(company)
         job_id = self._persist_durable_job({
-            "company": company,
+            "company": route["company"],
             "gateway_config": route["config"],
             "printer_id": route["binding"].printer_id,
             "destination": route["destination"].display_name,
@@ -266,14 +266,8 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def route_render_target(
-        self,
-        report_ref,
-        render_target,
-        *,
-        company=None,
-        document_type=None,
-        explicit_destination=None,
-        context_values=None,
+        self, report_ref, render_target, *, company=None, document_type=None,
+        explicit_destination=None, context_values=None,
     ):
         report = self.env.ref(report_ref, raise_if_not_found=False) if isinstance(report_ref, str) else report_ref
         if not report:
@@ -282,9 +276,7 @@ class PrintGatewayRouter(models.AbstractModel):
         company = company or self.env.company
         self._assert_current_company(company)
         route = self.resolve_binding(
-            report=report,
-            document_type=document_type,
-            company=company,
+            report=report, document_type=document_type, company=company,
             explicit_destination=explicit_destination,
         )
         if route.get("native"):
@@ -294,13 +286,7 @@ class PrintGatewayRouter(models.AbstractModel):
             render_target,
             context_values=context_values,
         )
-        return self._submit_route(
-            route=route,
-            payload=payload,
-            company=company,
-            report=report,
-            source_model=report.model,
-        )
+        return self._submit_route(route=route, payload=payload, company=company, report=report, source_model=report.model)
 
     @api.model
     def route_pos_receipt(self, order, image_base64):
@@ -311,11 +297,8 @@ class PrintGatewayRouter(models.AbstractModel):
         if route.get("native"):
             return route
         return self._submit_route(
-            route=route,
-            payload={"type": "image", "encoding": "base64", "data": image_base64},
-            company=self.env.company,
-            source_model=order._name,
-            source_record_id=order.id,
+            route=route, payload={"type": "image", "encoding": "base64", "data": image_base64},
+            company=self.env.company, source_model=order._name, source_record_id=order.id,
         )
 
     @api.model
@@ -328,21 +311,14 @@ class PrintGatewayRouter(models.AbstractModel):
             raise ValidationError(_("Kitchen printer belongs to another Odoo company."))
         self._validate_jpeg_base64(image_base64)
         route = self.resolve_binding(
-            record=order,
-            company=company,
-            document_type="kitchen",
-            explicit_destination=native_printer,
+            record=order, company=company, document_type="kitchen", explicit_destination=native_printer,
         )
         if route.get("native"):
             return route
         stable_key = "%s:%s" % (idempotency_key or uuid.uuid4().hex, native_printer.id)
         return self._submit_route(
-            route=route,
-            payload={"type": "image", "encoding": "base64", "data": image_base64},
-            company=company,
-            source_model=order._name,
-            source_record_id=order.id,
-            idempotency_key=stable_key,
+            route=route, payload={"type": "image", "encoding": "base64", "data": image_base64},
+            company=company, source_model=order._name, source_record_id=order.id, idempotency_key=stable_key,
         )
 
     @api.model
@@ -358,9 +334,6 @@ class PrintGatewayRouter(models.AbstractModel):
         if route.get("native"):
             return route
         return self._submit_route(
-            route=route,
-            payload={"type": "image", "encoding": "base64", "data": image_base64},
-            company=self.env.company,
-            source_model=session._name,
-            source_record_id=session.id,
+            route=route, payload={"type": "image", "encoding": "base64", "data": image_base64},
+            company=self.env.company, source_model=session._name, source_record_id=session.id,
         )

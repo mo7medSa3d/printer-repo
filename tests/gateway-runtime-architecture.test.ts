@@ -26,13 +26,20 @@ const odooProductionFiles = odooSource.filter((file) => {
 function readAll(files: string[]): string { return files.map((file) => `${relative(root, file)}\n${readFileSync(file, "utf8")}`).join("\n"); }
 
 describe("gateway runtime ownership contract", () => {
-  it("has no Gateway business-entity ownership in active TypeScript", () => {
+  it("has no Gateway business-entity ownership in active TypeScript or schema", () => {
     const source = readAll(activeSource);
+    const schema = readFileSync(join(root, "src/db/schema.ts"), "utf8");
     for (const token of [
       "db.query.branches", "db.query.destinations", "db.query.documentTypes", "db.query.printerBindings",
       "pgTable(\"branches\"", "pgTable(\"destinations\"", "pgTable(\"document_types\"", "pgTable(\"printer_bindings\"",
       "gateway_branch_id", "/api/odoo/sync", "normalizeLegacyPrinterInput", "destinationId",
     ]) expect(source).not.toContain(token);
+    for (const token of [
+      'pgTable("branches"', 'pgTable("destinations"', 'pgTable("document_types"', 'pgTable("printer_bindings"',
+      'pgTable("odoo_companies"', 'pgTable("odoo_bindings"',
+    ]) expect(schema).not.toContain(token);
+    expect(schema).toContain('pgTable("agents"');
+    expect(schema).toContain('pgTable("printers"');
   });
 
   it("does not expose removed Gateway branch or business-sync APIs while retaining runtime-agent discovery", () => {
@@ -122,7 +129,7 @@ describe("gateway runtime ownership contract", () => {
   it("keeps only the active Odoo integration model files", () => {
     const modelsDir = join(root, "odoo_addons/print_gateway/models");
     expect(readdirSync(modelsDir).filter((name) => name.endsWith(".py")).sort()).toEqual([
-      "__init__.py", "binding.py", "gateway_config.py", "ir_actions_report.py", "pos_order.py", "pos_session.py", "print_job.py", "print_router.py",
+      "__init__.py", "binding.py", "gateway_config.py", "ir_actions_report.py", "pos_order.py", "pos_session.py", "print_job.py", "print_router.py", "runtime_assignment.py",
     ]);
   });
 

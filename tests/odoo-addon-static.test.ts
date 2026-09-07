@@ -61,8 +61,8 @@ describe("Odoo addon static contracts", () => {
   it("validates runtime printer ownership at the Odoo binding boundary", () => {
     const binding = read("models/binding.py");
     const router = read("models/print_router.py");
-    expect(binding).toContain("A runtime Gateway printer must be selected.");
-    expect(binding).toContain("Destination belongs to another Odoo company.");
+    expect(binding).toContain("A Gateway Runtime Printer must be selected.");
+    expect(binding).toContain("Odoo Destination belongs to another company/branch context.");
     expect(router).toContain("The selected records resolve to different Print Bindings");
     expect(router).toContain("printer_id");
   });
