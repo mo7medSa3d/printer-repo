@@ -93,7 +93,7 @@ describe("production hardening contracts", () => {
 
   it("keeps direct print submission printer-scoped and payload-validated", () => {
     const route = read("src/app/api/print/jobs/route.ts");
-    expect(route).toContain("validatePrintJobPayload(parsed.payload)");
+    expect(route).toContain("validatePrintJobPayload(parsed.data.payload)");
     expect(route).toContain("printerId");
     expect(route).not.toContain("branchId");
     expect(route).not.toContain("branch_id");
