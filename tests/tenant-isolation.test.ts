@@ -62,19 +62,16 @@ describe("Odoo database tenant isolation", () => {
       },
     });
 
-    await expect(validateOdooKey(req, "odoo_company_1")).resolves.toBeNull();
+    await expect(validateOdooKey(req)).resolves.toBeNull();
     expect(apiKeyFindFirst).not.toHaveBeenCalled();
   });
 
-  it("accepts the same native company id only from the configured database", async () => {
+  it("accepts an authenticated key only from the configured database", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("ODOO_DATABASE_NAME", "odoo_a");
     const hash = createHash("sha256").update("odoo_testkey").digest("hex");
     apiKeyFindFirst.mockResolvedValue({
       id: "key_a",
-      branchId: "odoo_company_1",
-      scope: "standard",
-      allowedDocumentTypes: null,
       hashedKey: hash,
       revokedAt: null,
     });
@@ -83,13 +80,13 @@ describe("Odoo database tenant isolation", () => {
       method: "POST",
       headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_a" },
     });
-    await expect(validateOdooKey(reqA, "odoo_company_1")).resolves.toMatchObject({ id: "key_a", branchId: "odoo_company_1" });
+    await expect(validateOdooKey(reqA)).resolves.toMatchObject({ id: "key_a" });
 
     const reqB = new Request("https://gateway.test/api/print/jobs", {
       method: "POST",
       headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_b" },
     });
-    await expect(validateOdooKey(reqB, "odoo_company_1")).resolves.toBeNull();
+    await expect(validateOdooKey(reqB)).resolves.toBeNull();
 
     expect(apiKeyFindFirst).toHaveBeenCalledTimes(1);
   });
