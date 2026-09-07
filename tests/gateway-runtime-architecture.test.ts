@@ -19,7 +19,6 @@ function sourceFiles(dir: string): string[] {
 
 const activeSource = sourceFiles(join(root, "src"));
 const odooSource = sourceFiles(join(root, "odoo_addons", "print_gateway")).filter((file) => !file.includes(join("odoo_addons", "print_gateway", "tests")));
-// Migration scripts intentionally mention retired schema names and are not active addon production source.
 const odooProductionFiles = odooSource.filter((file) => !file.includes("/tests/") && !file.includes("/migrations/"));
 function readAll(files: string[]): string { return files.map((file) => `${relative(root, file)}\n${readFileSync(file, "utf8")}`).join("\n"); }
 
@@ -71,18 +70,32 @@ describe("gateway runtime ownership contract", () => {
 
   it("never invokes native POS receipt printing from the Gateway-enabled branch", () => {
     const source = readFileSync(join(root, "odoo_addons/print_gateway/static/src/js/pos_print_router.js"), "utf8");
-    const gatewayBlock = source.split("if (gatewayEnabled !== true)", 2)[1]?.split("if (!currentOrder.isSynced)", 2)[0] ?? "";
+    const nativeFallback = source.indexOf("if (gatewayEnabled !== true) {\n            return super.printReceipt");
+    const gatewayStart = source.indexOf("if (gatewayEnabled !== true) {\n            return super.printReceipt");
+    const syncStart = source.indexOf("if (!currentOrder.isSynced)", gatewayStart);
+    const gatewayBlock = syncStart >= 0 ? source.slice(syncStart) : "";
+    expect(nativeFallback).toBeGreaterThanOrEqual(0);
     expect(gatewayBlock).not.toContain("super.printReceipt");
     expect(gatewayBlock).not.toContain("window.print");
     expect(source).toContain("is_gateway_printing_enabled");
     expect(source).toContain("syncAllOrders");
+    expect(source).toContain("basic_receipt: Boolean(basic)");
+    expect(source).toContain("action_print_gateway_receipt");
   });
 
   it("blocks native POS order-preparation printing while Gateway mode is enabled", () => {
     const source = readFileSync(join(root, "odoo_addons/print_gateway/static/src/js/pos_print_router.js"), "utf8");
-    const kitchenBlock = source.split("async printOrderChanges(data, printer)", 2)[1]?.split("return super.printOrderChanges", 2)[0] ?? "";
-    expect(kitchenBlock).toContain("is_gateway_printing_enabled");
-    expect(kitchenBlock).toContain("successful: false");
+    const methodStart = source.indexOf("async printOrderChanges(data, printer) {");
+    const method = methodStart >= 0 ? source.slice(methodStart) : "";
+    const gatewayGuard = method.indexOf("if (gatewayEnabled !== true) {");
+    const gatewayCall = method.indexOf("action_print_gateway_kitchen");
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(gatewayGuard).toBeGreaterThanOrEqual(0);
+    expect(gatewayCall).toBeGreaterThan(gatewayGuard);
+    const enabledPath = method.slice(gatewayGuard);
+    expect(enabledPath).toContain("action_print_gateway_kitchen");
+    expect(enabledPath).toContain("successful: false");
+    expect(enabledPath).not.toContain("return super.printOrderChanges");
   });
 
   it("contains no native browser-print fallback in addon production source", () => {
