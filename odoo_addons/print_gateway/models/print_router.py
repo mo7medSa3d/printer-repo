@@ -2,6 +2,7 @@
 """Single Odoo print-routing authority for Gateway-enabled printing."""
 
 import base64
+import binascii
 import uuid
 
 from odoo import api, models, _
@@ -15,6 +16,7 @@ REPORT_DOCUMENT_TYPES = {
     "purchase.order": "purchase_order",
     "pos.order": "receipt",
 }
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class PrintGatewayRouter(models.AbstractModel):
@@ -45,23 +47,29 @@ class PrintGatewayRouter(models.AbstractModel):
         raise ValidationError(_("Print document type cannot be determined for this print action."))
 
     @api.model
-    def destination_for(self, *, report=None, record=None):
-        return self.env["print_gateway.binding"].destination_for(record=record, report=report)
+    def destination_for(self, *, report=None, record=None, explicit_destination=None):
+        return self.env["print_gateway.binding"].destination_for(
+            record=record, report=report, explicit_destination=explicit_destination,
+        )
 
     @api.model
     def _company_for_record(self, record):
         return getattr(record, "company_id", False) or self.env.company
 
     @api.model
-    def resolve_binding(self, *, report=None, record=None, document_type=None, company=None):
+    def resolve_binding(self, *, report=None, record=None, document_type=None, company=None,
+                        explicit_destination=None):
         company = company or (self._company_for_record(record) if record else self.env.company)
         config = self._gateway_config(company)
         if not config:
             return {"gateway_enabled": False, "native": True}
         dtype = self._document_type(report=report, record=record, explicit=document_type)
-        destination = self.destination_for(report=report, record=record)
+        destination = self.destination_for(
+            report=report, record=record, explicit_destination=explicit_destination,
+        )
         binding = self.env["print_gateway.binding"].find_for(
             company, dtype, report=report, record=record,
+            explicit_destination=explicit_destination,
         )
         if not binding:
             raise ValidationError(_(
@@ -84,6 +92,20 @@ class PrintGatewayRouter(models.AbstractModel):
             raise ValidationError(_("The rendered report %s is not a valid PDF.") % report.display_name)
         return bytes(pdf_content)
 
+    @staticmethod
+    def _validate_jpeg_base64(image):
+        if not isinstance(image, str) or not image:
+            raise ValidationError(_("The POS print image is missing."))
+        try:
+            data = base64.b64decode(image, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValidationError(_("The POS print image is not valid base64.")) from exc
+        if not data or len(data) > MAX_IMAGE_BYTES:
+            raise ValidationError(_("The POS print image exceeds the 5 MiB safety limit."))
+        if not data.startswith(b"\xff\xd8\xff"):
+            raise ValidationError(_("The POS print image is not a JPEG."))
+        return image
+
     @api.model
     def _render_pdf_payload(self, report, records, data=None):
         report.ensure_one()
@@ -96,14 +118,12 @@ class PrintGatewayRouter(models.AbstractModel):
             raise ValidationError(_("Failed to render %s for Gateway printing.") % report.display_name) from exc
         pdf_content = self._validate_pdf(pdf_content, report)
         return {
-            "type": "pdf",
-            "encoding": "base64",
+            "type": "pdf", "encoding": "base64",
             "data": base64.b64encode(pdf_content).decode("ascii"),
         }
 
     @api.model
     def _render_pdf_payload_from_target(self, report, render_target, data=None):
-        """Render a report that is invoked directly by a controller/service instead of report_action()."""
         report.ensure_one()
         try:
             pdf_content, _ = report._render_qweb_pdf(report, res_ids=render_target, data=data)
@@ -111,8 +131,7 @@ class PrintGatewayRouter(models.AbstractModel):
             raise ValidationError(_("Failed to render %s for Gateway printing.") % report.display_name) from exc
         pdf_content = self._validate_pdf(pdf_content, report)
         return {
-            "type": "pdf",
-            "encoding": "base64",
+            "type": "pdf", "encoding": "base64",
             "data": base64.b64encode(pdf_content).decode("ascii"),
         }
 
@@ -126,7 +145,8 @@ class PrintGatewayRouter(models.AbstractModel):
             cr.commit()
         return self.env["print_gateway.print_job"].browse(job_id)
 
-    def _submit_route(self, *, route, payload, company, report, source_model=None, source_record_id=None):
+    def _submit_route(self, *, route, payload, company, report, source_model=None,
+                      source_record_id=None, idempotency_key=None):
         job = self._persist_durable_job({
             "company": company,
             "gateway_config": route["config"],
@@ -137,7 +157,7 @@ class PrintGatewayRouter(models.AbstractModel):
             "source_model": source_model,
             "source_record_id": source_record_id,
             "report": report,
-            "idempotency_key": uuid.uuid4().hex,
+            "idempotency_key": idempotency_key or uuid.uuid4().hex,
         })
         job.action_submit(raise_on_failure=True)
         return {
@@ -178,11 +198,7 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def route_render_target(self, report, render_target, *, company=None, document_type=None, data=None):
-        """Route a direct Odoo report-rendering endpoint through the same router.
-
-        This exists specifically for controller/service print entry points that bypass
-        ir.actions.report.report_action(), while keeping report rendering itself intact.
-        """
+        """Route a direct Odoo report-rendering endpoint through the same router."""
         report.ensure_one()
         company = company or self.env.company
         route = self.resolve_binding(
@@ -211,3 +227,36 @@ class PrintGatewayRouter(models.AbstractModel):
         if not report:
             raise ValidationError(_("The POS receipt report is unavailable."))
         return self.route_report(report, order)
+
+    @api.model
+    def route_kitchen_print(self, order, native_printer, image_base64, *, reprint=False):
+        """Route an Odoo 19 rendered Kitchen/Preparation ticket through the normal outbox.
+
+        Odoo's POS printer service rasterizes OrderChangeReceipt to JPEG before physical
+        printing, so Gateway receives that same semantic representation rather than a
+        PDF approximation. The native `pos.printer` is used only as Odoo-owned routing
+        context; the physical target remains the Gateway runtime printer in the binding.
+        """
+        order.ensure_one()
+        native_printer.ensure_one()
+        company = order.company_id
+        if native_printer.company_id != company:
+            raise ValidationError(_("Kitchen printer belongs to another Odoo company."))
+        self._validate_jpeg_base64(image_base64)
+        route = self.resolve_binding(
+            record=order,
+            company=company,
+            document_type="kitchen",
+            explicit_destination=native_printer,
+        )
+        if route.get("native"):
+            return route
+        return self._submit_route(
+            route=route,
+            payload={"type": "image", "encoding": "base64", "data": image_base64},
+            company=company,
+            report=None,
+            source_model=order._name,
+            source_record_id=order.id,
+            idempotency_key=uuid.uuid4().hex,
+        )
