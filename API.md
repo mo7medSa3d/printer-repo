@@ -44,15 +44,15 @@ Request:
 
 No Gateway branch ID, Gateway destination ID, Gateway document-type ID, agent provisioning data, or printer-creation data is accepted.
 
-The Gateway validates the Odoo key, database binding, payload, expiration and idempotency before queueing the runtime job.
+The Gateway validates the Odoo key, database binding, payload, expiration and idempotency before queueing the runtime job. A created Odoo-originated job is stamped with the authenticated API-key identity so status lookup and idempotency are installation-scoped. Internal Manager-created jobs may omit that identity and are not exposed through this Odoo status endpoint.
 
 `201` means a new job was accepted. `200` means an idempotent retry matched an existing job and returns that job identity. A reused key with different routing/payload data returns `409 IDEMPOTENCY_CONFLICT`.
 
-Typical failures include `400` invalid input, `401` authentication failure, `404` unknown runtime printer, `422` capability mismatch, `429` rate limit, `503` runtime/queue availability failure and `500` internal failure. Gateway-enabled Odoo printing never converts these failures into browser/native printing.
+Typical failures include `400` invalid input, `401` authentication failure, `404` unknown runtime printer/job, `422 CAPABILITY_MISMATCH` when the payload cannot be delivered by the selected printer, `429 PRINT_JOB_RATE_LIMITED`, `503` runtime/queue availability failure and `500` internal failure. Gateway-enabled Odoo printing never converts these failures into browser/native printing.
 
 ## `GET /api/print/jobs?id=<jobId>`
 
-Authenticated with the Odoo installation key. Returns the runtime status and routing identifiers for the requested job. This endpoint is for Odoo print-job reconciliation and status display.
+Authenticated with the Odoo installation key. Returns the runtime status and routing identifiers only when the requested job was created with that same API key. A job belonging to another installation, or a legacy/internal job without an Odoo API-key identity, is returned as `404 Not found`.
 
 ## Runtime ownership boundary
 
@@ -60,4 +60,4 @@ Gateway APIs for Branches, business destinations, business document catalogs and
 
 ## Reliability contract
 
-The Odoo addon commits a durable outbox row before making the HTTP submission. The same idempotency key is reused for retry attempts of that logical operation. Network timeouts are recorded as an unknown physical outcome instead of a definite failure. Gateway-side idempotency ensures reconciliation does not create a second logical job.
+The Odoo addon commits a durable outbox row before making the HTTP submission. The same idempotency key is reused for retry attempts of that logical operation. Network timeouts are recorded as an unknown physical outcome instead of a definite failure. Gateway-side idempotency is installation-scoped for Odoo keys, while the durable database uniqueness constraint prevents duplicate logical jobs within one installation.
