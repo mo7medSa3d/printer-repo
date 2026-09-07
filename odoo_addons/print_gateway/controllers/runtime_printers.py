@@ -7,7 +7,7 @@ from odoo.exceptions import ValidationError
 
 
 class PrintGatewayRuntimePrinterController(http.Controller):
-    @http.route('/print_gateway/runtime-printers', type='json', auth='user', methods=['POST'])
+    @http.route('/print_gateway/runtime-printers', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_printers(self):
         company = request.env.company
         config = request.env['print_gateway.gateway_config'].search([('company_id', '=', company.id)], limit=1)
