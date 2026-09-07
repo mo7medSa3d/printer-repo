@@ -19,20 +19,14 @@ patch(PosStore.prototype, {
             throw error;
         }
 
-        let gatewayEnabled = false;
-        const serverOrderId = currentOrder.id;
-        if (serverOrderId) {
-            gatewayEnabled = await this.data.call(
-                "pos.order",
-                "is_gateway_printing_enabled",
-                [[serverOrderId]],
-                {},
-                true
-            );
-        }
+        const sessionId = this.session?.id;
+        const gatewayEnabled = sessionId
+            ? await this.data.call("pos.session", "is_gateway_printing_enabled", [[sessionId]], {}, true)
+            : false;
 
-        // Preserve Odoo's native print path exactly when Gateway printing is disabled.
-        // Gateway-specific synchronization/validation belongs only to the Gateway path.
+        // Preserve Odoo's native print path only when Gateway printing is disabled.
+        // Gateway-specific synchronization and server-id validation belong only to the
+        // Gateway path so offline/native POS behavior remains unchanged.
         if (gatewayEnabled !== true) {
             return super.printReceipt({ order: currentOrder, basic, printBillActionTriggered });
         }
@@ -81,7 +75,12 @@ patch(PosStore.prototype, {
 
     getOrderData(order, reprint) {
         const data = super.getOrderData(order, reprint);
-        return { ...data, __gateway_order_id: order.id, __gateway_reprint: Boolean(reprint) };
+        return {
+            ...data,
+            __gateway_order_id: order.id,
+            __gateway_session_id: this.session?.id,
+            __gateway_reprint: Boolean(reprint),
+        };
     },
 
     generateOrderChange(order, orderChange, categories, reprint = false) {
@@ -108,15 +107,26 @@ patch(PosStore.prototype, {
 
     async printOrderChanges(data, printer) {
         const orderId = data?.orderData?.__gateway_order_id;
+        const sessionId = data?.orderData?.__gateway_session_id;
         const reprint = Boolean(data?.orderData?.__gateway_reprint);
         const operationId = data?.orderData?.__gateway_print_id;
-        if (!orderId) {
-            return super.printOrderChanges(data, printer);
-        }
-        const gatewayEnabled = await this.data.call("pos.order", "is_gateway_printing_enabled", [[orderId]], {}, true);
+
+        const gatewayEnabled = sessionId
+            ? await this.data.call("pos.session", "is_gateway_printing_enabled", [[sessionId]], {}, true)
+            : false;
         if (gatewayEnabled !== true) {
             return super.printOrderChanges(data, printer);
         }
+        if (!orderId) {
+            const message = "POS order has no server identifier; Gateway kitchen printing cannot continue.";
+            this.notification.add(message, { type: "danger" });
+            return {
+                successful: false,
+                canRetry: true,
+                message: { title: "Print Gateway", body: message },
+            };
+        }
+
         try {
             const receipt = renderToElement("point_of_sale.OrderChangeReceipt", { data });
             const image = await elementToJpeg(receipt);
