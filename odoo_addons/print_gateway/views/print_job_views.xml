@@ -39,6 +39,7 @@
                 <field name="status" widget="badge" decoration-danger="status == 'failed'" decoration-warning="status in ('partial', 'unknown')" decoration-success="status == 'success'" decoration-info="status in ('queued', 'submitted', 'claimed', 'printing')"/>
                 <field name="physical_outcome" widget="badge" decoration-danger="physical_outcome == 'not_printed'" decoration-warning="physical_outcome == 'unknown'" decoration-success="physical_outcome == 'printed'"/>
                 <field name="attempts" optional="show"/>
+                <field name="reprint_attempt_count" optional="hide" string="Reprints"/>
                 <field name="gateway_job_id" optional="hide"/>
             </list>
         </field>
@@ -87,6 +88,7 @@
                         <group string="Gateway Execution">
                             <field name="gateway_job_id" readonly="1"/>
                             <field name="attempts" readonly="1"/>
+                            <field name="reprint_attempt_count" readonly="1" invisible="reprint_attempt_count == 0"/>
                             <field name="next_retry_at" readonly="1"/>
                             <field name="completed_at" readonly="1" invisible="not completed_at"/>
                         </group>

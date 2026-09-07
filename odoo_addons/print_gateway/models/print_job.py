@@ -41,6 +41,7 @@ class PrintGatewayJob(models.Model):
     payload = fields.Text(required=True, copy=False, readonly=True)
     idempotency_key = fields.Char(required=True, index=True, copy=False, readonly=True)
     attempts = fields.Integer(default=0, readonly=True)
+    reprint_attempt_count = fields.Integer(string="Reprint Attempts", default=0, readonly=True)
     next_retry_at = fields.Datetime(index=True, readonly=True)
     last_error = fields.Text(readonly=True)
     source_model = fields.Char(readonly=True)
@@ -266,8 +267,16 @@ class PrintGatewayJob(models.Model):
         """Explicitly re-issue print operation for jobs with partial delivery or unknown physical outcome.
 
         This requires conscious operator action, preventing automated double printing of receipts/invoices.
+        Generates a deterministic derived idempotency key: ${original_key}-reprint-${reprint_attempt_count}.
         """
         for job in self.filtered(lambda row: row.status in ("partial", "unknown") or row.physical_outcome == "unknown"):
+            new_count = (job.reprint_attempt_count or 0) + 1
+            job.write({"reprint_attempt_count": new_count})
+            derived_key = "%s-reprint-%d" % (job.idempotency_key, new_count)
+            _logger.info(
+                "Force reprint requested for print job %s (attempt %d, derived key: %s)",
+                job.id, new_count, derived_key,
+            )
             retry = self.create_operation(
                 company=job.company_id,
                 gateway_config=job.gateway_config_id,
@@ -278,7 +287,7 @@ class PrintGatewayJob(models.Model):
                 source_model=job.source_model,
                 source_record_id=job.source_record_id,
                 report=job.report_id,
-                idempotency_key=uuid.uuid4().hex,
+                idempotency_key=derived_key,
             )
             retry.action_submit()
         return True
