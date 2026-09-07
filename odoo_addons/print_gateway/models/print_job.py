@@ -234,11 +234,11 @@ class PrintGatewayJob(models.Model):
     def action_retry(self):
         """Create a new logical print operation only from a definitely failed job.
 
-        Reusing the old idempotency key would intentionally return the old Gateway
-        job instead of printing again. Mutating an in-flight or unknown job is also
-        unsafe because its physical outcome may already be printed.
+        Unknown physical outcomes are never retried from the UI. A failed job that
+        is definitely not printed gets a fresh idempotency key so the new operation
+        is not collapsed into the old Gateway job.
         """
-        for job in self.filtered(lambda row: row.status == "failed"):
+        for job in self.filtered(lambda row: row.status == "failed" and row.physical_outcome == "not_printed"):
             retry = self.create_operation(
                 company=job.company_id,
                 gateway_config=job.gateway_config_id,
