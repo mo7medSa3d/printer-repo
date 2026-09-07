@@ -1,35 +1,64 @@
 /** @odoo-module */
 
 import { patch } from "@web/core/utils/patch";
+import { formatDateTime } from "@web/core/l10n/dates";
 import { SaleDetailsButton } from "@point_of_sale/app/components/navbar/sale_details_button/sale_details_button";
+import { renderToElement } from "@web/core/utils/render";
+import { htmlToCanvas } from "@point_of_sale/app/services/render_service";
+
+async function elementToJpeg(element) {
+    const canvas = await htmlToCanvas(element, { addClass: "pos-receipt-print" });
+    return canvas.toDataURL("image/jpeg").replace("data:image/jpeg;base64,", "");
+}
 
 patch(SaleDetailsButton.prototype, {
     async onClick() {
+        const sessionId = this.pos.session?.id;
+        if (!sessionId) {
+            return super.onClick();
+        }
+
         const enabled = await this.pos.data.call(
             "pos.session",
             "is_gateway_printing_enabled",
-            [[this.pos.session.id]],
+            [[sessionId]],
             {},
             true
         );
         if (enabled !== true) {
             return super.onClick();
         }
+
         try {
+            const saleDetails = await this.pos.data.call(
+                "report.point_of_sale.report_saledetails",
+                "get_sale_details",
+                [false, false, false, [sessionId]]
+            );
+            const report = renderToElement(
+                "point_of_sale.SaleDetailsReport",
+                Object.assign({}, saleDetails, {
+                    date: formatDateTime(luxon.DateTime.now()),
+                    pos: this.pos,
+                    formatCurrency: this.pos.env.utils.formatCurrency,
+                })
+            );
+            const canvas = await htmlToCanvas(report, { addClass: "pos-receipt-print" });
+            const image = canvas.toDataURL("image/jpeg").replace("data:image/jpeg;base64,", "");
             const result = await this.pos.data.call(
                 "pos.session",
                 "action_print_gateway_sale_details",
-                [[this.pos.session.id]],
-                {},
+                [[sessionId]],
+                { image },
                 true
             );
-            if (result?.gateway_enabled) {
-                this.env.services.notification.add(result.message || "Sale details print job accepted.", { type: "success" });
-                return result;
+            if (!result?.gateway_enabled) {
+                throw new Error("Print Gateway returned an invalid Sale Details response.");
             }
-            throw new Error("Print Gateway returned an invalid Sale Details response.");
+            this.env.services.notification.add(result.message || "Sale Details print job accepted.", { type: "success" });
+            return result;
         } catch (error) {
-            this.env.services.notification.add(error?.message || "Sale details printing failed.", { type: "danger" });
+            this.env.services.notification.add(error?.message || "Sale Details printing failed.", { type: "danger" });
             throw error;
         }
     },
