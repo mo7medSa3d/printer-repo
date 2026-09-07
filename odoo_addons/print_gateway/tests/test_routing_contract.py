@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import requests
 
+from odoo import api
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
@@ -17,19 +18,15 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
         with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
             with cls.env.registry.cursor() as cr:
-                env = cls.env.registry.enter_test_mode() if False else None
-                try:
-                    config_env = __import__('odoo').api.Environment(cr, cls.env.uid, dict(cls.env.context))
-                    config = config_env['print_gateway.gateway_config'].create({
-                        'company_id': cls.company.id,
-                        'gateway_url': 'https://gateway.example.com',
-                        'gateway_api_key': 'odoo_test_key',
-                        'enabled': True,
-                    })
-                    cls.config_id = config.id
-                    cr.commit()
-                finally:
-                    env = None
+                env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+                config = env['print_gateway.gateway_config'].create({
+                    'company_id': cls.company.id,
+                    'gateway_url': 'https://gateway.example.com',
+                    'gateway_api_key': 'odoo_test_key',
+                    'enabled': True,
+                })
+                cls.config_id = config.id
+                cr.commit()
         cls.config = cls.env['print_gateway.gateway_config'].browse(cls.config_id)
 
     @classmethod
@@ -37,9 +34,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         config_id = getattr(cls, 'config_id', False)
         if config_id:
             with cls.env.registry.cursor() as cr:
-                env = __import__('odoo').api.Environment(cr, cls.env.uid, dict(cls.env.context))
-                jobs = env['print_gateway.print_job'].search([('gateway_config_id', '=', config_id)])
-                jobs.unlink()
+                env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+                env['print_gateway.print_job'].search([('gateway_config_id', '=', config_id)]).unlink()
                 env['print_gateway.gateway_config'].browse(config_id).unlink()
                 cr.commit()
         super().tearDownClass()
@@ -161,7 +157,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_gateway_connection_test_is_authenticated(self):
         with self.env.registry.cursor() as cr:
-            env = __import__('odoo').api.Environment(cr, self.env.uid, dict(self.env.context))
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
             config = env['print_gateway.gateway_config'].browse(self.config_id)
             class Response:
                 status_code = 200
@@ -179,7 +175,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_gateway_timeout_persists_unknown_outcome(self):
         with self.env.registry.cursor() as cr:
-            env = __import__('odoo').api.Environment(cr, self.env.uid, dict(self.env.context))
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
             router = env['print_gateway.print_router']
             config = env['print_gateway.gateway_config'].browse(self.config_id)
             job = router._persist_durable_job({
