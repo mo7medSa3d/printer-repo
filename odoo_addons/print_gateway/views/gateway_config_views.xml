@@ -5,7 +5,6 @@
         <field name="model">print_gateway.gateway_config</field>
         <field name="arch" type="xml">
             <list string="Gateway Configuration" create="1" delete="0">
-                <field name="company_id"/>
                 <field name="enabled" widget="boolean_toggle"/>
                 <field name="gateway_url"/>
                 <field name="last_test_status" widget="badge"/>
@@ -23,19 +22,16 @@
                     <button name="action_test_connection" type="object" string="Test Connection" class="oe_highlight"/>
                 </header>
                 <sheet>
-                    <div class="o_form_label">Gateway Configuration</div>
-                    <div class="text-muted mb-3">
-                        Odoo owns business records and print intent. The Gateway owns runtime agents and printers.
-                    </div>
+                    <h2>Print Gateway</h2>
+                    <p class="text-muted">Odoo owns business context and print intent. Gateway owns runtime agents, printers, queueing, and execution.</p>
                     <group>
-                        <field name="company_id" readonly="1"/>
                         <field name="enabled" widget="boolean_toggle"/>
                     </group>
                     <group string="Connection">
                         <field name="gateway_url" placeholder="https://print.example.com"/>
-                        <field name="gateway_api_key" password="True" placeholder="Paste the Gateway API key"/>
+                        <field name="gateway_api_key" password="True" placeholder="Paste the installation API key"/>
                     </group>
-                    <group string="Last Test" col="4">
+                    <group string="Connection Test" col="4">
                         <field name="last_test_status" readonly="1" widget="badge"/>
                         <field name="last_test_at" readonly="1"/>
                         <field name="last_test_error" readonly="1" invisible="not last_test_error" colspan="2"/>
