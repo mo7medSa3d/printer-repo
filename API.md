@@ -1,6 +1,6 @@
 # Gateway API
 
-The Odoo integration contract is intentionally small. Odoo owns business/routing intent; Gateway owns runtime agents, printers, queues, and physical execution.
+The Odoo integration contract is intentionally small. Odoo owns business records, destination/report context, bindings and print intent. Gateway owns runtime agents, printers, queues and physical execution.
 
 ## Authentication
 
@@ -13,23 +13,23 @@ The Odoo integration contract is intentionally small. Odoo owns business/routing
 ### Odoo
 `Authorization: Bearer odoo_<key>` or `X-Api-Key: odoo_<key>` plus `X-Odoo-Database: <configured database>`.
 
-The raw Odoo key is returned only at creation time. Gateway stores a cryptographic hash and revoke timestamp; list endpoints never return the secret.
+The raw Odoo key is returned only when generated. Gateway persists only its cryptographic hash and a revoke timestamp.
 
-## Health / Test Connection
+## `GET /api/odoo/health`
 
-### `GET /api/odoo/health`
+Authenticated with the Odoo installation key and configured database name. Returns `{ "ok": true }` only for a valid, non-revoked key. This endpoint is used by the Odoo **Test Connection** button.
 
-Requires the Odoo installation API key and the configured `X-Odoo-Database` header. Returns `{ "ok": true }` only when authentication succeeds. This is the endpoint used by Odoo's **Test Connection** action.
+## `GET /api/odoo/printers`
 
-## Odoo → Gateway
+Authenticated with the same Odoo installation key. Returns a sanitized list of non-retired runtime printers and agent display information. This is read-only runtime discovery for the Odoo Print Binding selector; the endpoint never creates or changes printers and does not return agent secrets.
 
-### `POST /api/print/jobs`
+## `POST /api/print/jobs`
 
 Request:
 
 ```json
 {
-  "printerId": "printer_abc",
+  "printerId": "runtime-printer-id",
   "documentType": "receipt",
   "destination": "Main POS",
   "payload": {
@@ -37,42 +37,27 @@ Request:
     "encoding": "base64",
     "data": "JVBERi0xLjQK..."
   },
-  "idempotencyKey": "uuid-for-one-logical-print"
+  "expiresAt": "2026-09-07T15:00:00Z",
+  "idempotencyKey": "stable-for-one-logical-print"
 }
 ```
 
-The contract has no Gateway branch identifier, branch synchronization, destination/document-type catalog, or Odoo runtime provisioning fields.
+No Gateway branch ID, Gateway destination ID, Gateway document-type ID, agent provisioning data, or printer-creation data is accepted.
 
-`201` means the Gateway accepted the durable runtime job. A repeated request with the same idempotency key is deduplicated instead of creating a second logical job.
+The Gateway validates the Odoo key, database binding, payload, expiration and idempotency before queueing the runtime job.
 
-Errors include `400` invalid request/payload, `401` authentication/database rejection, `404` unknown printer, `409` idempotency conflict, `422` capability mismatch, `429` rate limiting, `503` runtime unavailable, and `500` internal failure.
+`201` means a new job was accepted. `200` means an idempotent retry matched an existing job and returns that job identity. A reused key with different routing/payload data returns `409 IDEMPOTENCY_CONFLICT`.
 
-### `GET /api/print/jobs?id=<job-id>`
+Typical failures include `400` invalid input, `401` authentication failure, `404` unknown runtime printer, `422` capability mismatch, `429` rate limit, `503` runtime/queue availability failure and `500` internal failure. Gateway-enabled Odoo printing never converts these failures into browser/native printing.
 
-Returns Gateway runtime status. Branch parameters are not part of the Odoo contract.
+## `GET /api/print/jobs?id=<jobId>`
 
-## API key lifecycle
+Authenticated with the Odoo installation key. Returns the runtime status and routing identifiers for the requested job. This endpoint is for Odoo print-job reconciliation and status display.
 
-### `GET /api/odoo/keys`
-Manager-authenticated metadata only.
+## Runtime ownership boundary
 
-### `POST /api/odoo/keys`
-Manager-authenticated. The response contains the raw `apiKey` once and explicitly instructs the user to copy it.
+Gateway APIs for Branches, business destinations, business document catalogs and Odoo-to-Gateway business synchronization are intentionally absent. Agents register runtime resources with Gateway; Odoo references those runtime printers only when creating bindings.
 
-### `DELETE /api/odoo/keys`
-Manager-authenticated. Revokes the key by ID; subsequent authenticated requests fail.
+## Reliability contract
 
-## Agent runtime APIs
-
-Agent registration, heartbeat, polling, WebSocket delivery, and job progress are runtime endpoints owned by Gateway. Runtime agent/printer records are never created by Odoo configuration APIs.
-
-## Removed contracts
-
-The following Odoo-facing APIs were removed from the architecture:
-
-- `POST /api/odoo/sync`
-- `GET /api/odoo/agents`
-- `GET /api/odoo/printers`
-- branch-scoped Odoo API-key authorization
-- Gateway-branch routing payloads
-- Odoo synchronization of Gateway branches, destinations, document types, agents, or printers
+The Odoo addon commits a durable outbox row before making the HTTP submission. The same idempotency key is reused for retry attempts of that logical operation. Network timeouts are recorded as an unknown physical outcome instead of a definite failure. Gateway-side idempotency ensures reconciliation does not create a second logical job.
