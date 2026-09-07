@@ -124,6 +124,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_router_fails_when_gateway_enabled_and_binding_missing(self):
         self._make_config(True)
+        self.env['print_gateway.binding'].search([('company_id', '=', self.company.id)]).unlink()
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
         with self.assertRaises(ValidationError):
             self.env['print_gateway.print_router'].resolve_binding(report=report, record=self.env['sale.order'])
@@ -187,6 +188,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
                 'idempotency_key': 'timeout-contract-key',
             })
+            job = env['print_gateway.print_job'].browse(job.id)
             with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
                 'odoo.addons.print_gateway.models.print_job.requests.post',
                 side_effect=requests.exceptions.Timeout('simulated'),
@@ -213,6 +215,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
                 'idempotency_key': 'retry-safety-%s' % status,
             })
+            job = self.env['print_gateway.print_job'].browse(job.id)
             job.write({'status': status})
             job.action_retry()
             job.invalidate_recordset(['status'])
