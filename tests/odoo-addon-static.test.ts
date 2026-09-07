@@ -5,93 +5,91 @@ import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ADDON = path.join(ROOT, "odoo_addons", "print_gateway");
+const read = (file: string) => readFileSync(path.join(ADDON, file), "utf8");
 
 describe("Odoo addon static contracts", () => {
-  it("discovers every test_*.py module from tests/__init__.py", () => {
-    const testsInit = readFileSync(path.join(ADDON, "tests", "__init__.py"), "utf8");
+  it("discovers every test module from tests/__init__.py", () => {
+    const testsInit = read("tests/__init__.py");
     expect(testsInit).toMatch(/from\s+\.\s+import\s+\w+/);
   });
 
-  it("never routes a single-record report without an explicit destination", () => {
-    const src = readFileSync(path.join(ADDON, "models/ir_actions_report.py"), "utf8");
-    expect(src).toContain("No print destination is configured");
-    expect(src).toContain("for record in records:");
-    expect(src).toContain("self._determine_destination");
+  it("routes backend reports through the central router and stays native only when Gateway is disabled", () => {
+    const src = read("models/ir_actions_report.py");
+    expect(src).toContain("def report_action");
+    expect(src).toContain("_gateway_config(company)");
+    expect(src).toContain("router.route_report");
+    expect(src).toContain("super().report_action");
+    expect(src).not.toContain("async_report");
   });
 
-  it("persists the operation id before the Gateway HTTP call", () => {
-    const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
-    const createFn = src.indexOf("def create_print_job");
-    expect(createFn).toBeGreaterThan(-1);
-
-    const createSection = src.slice(createFn);
-    const persistenceMatches = ["Job.create", "existing = Job.create"]
-      .map((needle) => createSection.indexOf(needle))
-      .filter((index) => index >= 0);
-    expect(persistenceMatches.length).toBeGreaterThan(0);
-    const persistenceIndex = Math.min(...persistenceMatches);
-    const httpIndex = createSection.indexOf("requests.post");
-
-    expect(httpIndex).toBeGreaterThan(-1);
-    expect(persistenceIndex).toBeLessThan(httpIndex);
-    expect(src).toContain("idempotency_key");
-    expect(src).toContain("for attempt in (1, 2)");
-    expect(src).toContain("idempotency_key = uuid.uuid4().hex");
-    expect(src).toContain("with self.env.cr.savepoint()");
-
-    const jobModel = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
-    expect(jobModel).toContain("models.Constraint");
-    expect(jobModel).toContain("UNIQUE(branch_id, idempotency_key)");
+  it("persists the durable outbox row before the Gateway HTTP submission", () => {
+    const router = read("models/print_router.py");
+    const persist = router.indexOf("def _persist_durable_job");
+    const create = router.indexOf("create_operation", persist);
+    const commit = router.indexOf("cr.commit()", persist);
+    const submit = router.indexOf("job.action_submit", persist);
+    expect(persist).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(persist);
+    expect(commit).toBeGreaterThan(create);
+    expect(submit).toBeGreaterThan(commit);
+    expect(router).toContain("idempotency_key");
   });
 
-  it("records per-branch sync failure instead of claiming distributed atomicity", () => {
-    const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
-    expect(src).toContain("last_sync_status");
-    expect(src).toContain("last_sync_error");
-    expect(src).toMatch(/errors\.append\([^\n]*branch\.name/);
-    expect(src).toContain("Sync partially failed");
-    expect(src).toMatch(/last_sync_status['\"]\s*:\s*['\"]failed['\"]/);
+  it("keeps Odoo submission idempotent and marks transport ambiguity as unknown outcome", () => {
+    const jobs = read("models/print_job.py");
+    expect(jobs).toContain("UNIQUE(company_id, idempotency_key)");
+    expect(jobs).toContain("idempotency_key");
+    expect(jobs).toContain("UNKNOWN_SUBMISSION_OUTCOME");
+    expect(jobs).toContain('status": "unknown"');
+    expect(jobs).toContain("def action_submit");
+    expect(jobs).toContain("def action_sync_status");
   });
 
-  it("requires an affirmative JSON success response for gateway push sync", () => {
-    const src = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
-    expect(src).toContain("Gateway returned malformed JSON for sync response");
-    expect(src).toContain("result.get('success') is not True");
+  it("keeps bindings Odoo-native and resolves runtime printers without Gateway business ownership", () => {
+    const binding = read("models/binding.py");
+    expect(binding).toContain("destination_pos_config_id");
+    expect(binding).toContain("destination_pos_printer_id");
+    expect(binding).toContain("destination_picking_type_id");
+    expect(binding).toContain("destination_report_id");
+    expect(binding).toContain("def find_for");
+    expect(binding).toContain('("company_id", "=", company.id)');
+    expect(binding).toContain('("enabled", "=", True)');
+    expect(binding).toContain('("destination_ref", "=",');
   });
 
-  it("keeps printer branch derived from agent and terminal lifecycle enforced", () => {
-    const printer = readFileSync(path.join(ADDON, "models/printer.py"), "utf8");
-    const agent = readFileSync(path.join(ADDON, "models/agent.py"), "utf8");
-    expect(printer).toContain("related='agent_id.branch_id'");
-    expect(printer).toContain("Retired printers are terminal");
-    expect(agent).toContain("Retired agents are terminal");
+  it("validates runtime printer ownership at the Odoo binding boundary", () => {
+    const binding = read("models/binding.py");
+    const router = read("models/print_router.py");
+    expect(binding).toContain("A runtime Gateway printer must be selected.");
+    expect(binding).toContain("Destination belongs to another Odoo company.");
+    expect(router).toContain("The selected records resolve to different Print Bindings");
+    expect(router).toContain("printer_id");
   });
 
-  it("persists logical-operation identity and retries it after restart", () => {
-    const report = readFileSync(path.join(ADDON, "models/async_report.py"), "utf8");
-    const job = readFileSync(path.join(ADDON, "models/print_job.py"), "utf8");
-    expect(report).not.toContain("current_minute");
-    expect(report).toMatch(/['\"]idempotency_key['\"]\s*:\s*uuid\.uuid4\(\)\.hex/);
-    expect(job).toContain("def action_submit_pending");
-    expect(job).toContain("idempotency_key=job.idempotency_key");
-    expect(job).toContain("json.loads(payload_raw)");
-    expect(readFileSync(path.join(ADDON, "models/branch.py"), "utf8")).toContain("self.env.cr.postcommit.add(_submit_after_commit)");
+  it("keeps POS receipt, Kitchen, and Sale Details paths fail-closed under Gateway mode", () => {
+    const order = read("models/pos_order.py");
+    const session = read("models/pos_session.py");
+    const posController = read("controllers/pos.py");
+    expect(order).toContain("action_print_gateway_receipt");
+    expect(order).toContain("action_print_gateway_kitchen");
+    expect(order).toContain("is_gateway_printing_enabled");
+    expect(session).toContain("action_print_gateway_sale_details");
+    expect(posController).toContain("/pos/sale_details_report");
+    expect(posController).toContain("if not gateway");
+    expect(posController).toContain("route_render_target");
   });
 
-  it("syncs canonical payloadHint and removes unsupported PCL", () => {
-    const branch = readFileSync(path.join(ADDON, "models/branch.py"), "utf8");
-    const documentType = readFileSync(path.join(ADDON, "models/document_type.py"), "utf8");
-    const printer = readFileSync(path.join(ADDON, "models/printer.py"), "utf8");
-    expect(branch).toContain("'payloadHint': dt.payload_hint or False");
-    expect(documentType).not.toContain("('pcl', 'PCL')");
-    expect(printer).not.toContain("('pcl', 'PCL')");
-  });
-
-  it("keeps Odoo-native contextual routing scopes explicit", () => {
-    const mapping = readFileSync(path.join(ADDON, "models/report_mapping.py"), "utf8");
-    expect(mapping).toContain("pos_config_id");
-    expect(mapping).toContain("picking_type_id");
-    expect(mapping).toContain("UNIQUE(report_id, priority, branch_id, pos_config_id, picking_type_id)");
-    expect(mapping).toContain("0 if (mapping.pos_config_id or mapping.picking_type_id) else 1");
+  it("keeps payload representations canonical and bounded", () => {
+    const router = read("models/print_router.py");
+    const jobs = read("models/print_job.py");
+    expect(router).toContain('"type": "pdf"');
+    expect(router).toContain('"type": "image"');
+    expect(router).toContain("_validate_pdf");
+    expect(router).toContain("_validate_jpeg_base64");
+    expect(router).toContain("MAX_IMAGE_BYTES = 5 * 1024 * 1024");
+    expect(jobs).toContain('"printerId": self.printer_id');
+    expect(jobs).toContain('"documentType": self.document_type');
+    expect(jobs).toContain('"idempotencyKey": self.idempotency_key');
+    expect(jobs).not.toContain("pcl");
   });
 });
