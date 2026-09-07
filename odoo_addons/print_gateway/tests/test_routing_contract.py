@@ -30,9 +30,9 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     {"company_id": self.company.id, **values}
                 )
 
-        # Any fixture created through res.company mutates shared multi-company
-        # user/group state. Create it on one independent cursor so both durable
-        # fixtures share the same transaction and cannot contend with each other.
+        # Durable fixtures are created and committed on one independent cursor.
+        # They are only accessed from fresh cursors afterwards because Odoo test
+        # transactions use a snapshot which does not see later commits.
         durable_company_name = "Gateway Durable Test %s" % uuid.uuid4().hex
         other_company_name = "Gateway Contract Other Company %s" % uuid.uuid4().hex
         with self.env.registry.cursor() as cr:
@@ -51,28 +51,21 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.other_company_id = other_company.id
             cr.commit()
 
-        # Do not commit, rollback, or close the TransactionCase cursor. Odoo 19
-        # owns this cursor for the duration of the test. Fresh cursors are used
-        # below whenever a durable transaction needs to be observed.
-        self.other_company = self.env["res.company"].browse(self.other_company_id).exists()
-
     def _make_config(self, enabled=True):
         self.config.write({"enabled": enabled})
         return self.config
 
     def _job(self, key):
-        """Create a durable job and return only its scalar id.
-
-        The production outbox deliberately commits through an independent cursor.
-        The Odoo TransactionCase cursor must never be committed or rolled back
-        manually, so both creation and observation stay on fresh cursors.
-        """
+        """Create a durable job and return only its scalar id."""
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            company = env["res.company"].browse(self.durable_company_id)
-            env = env.with_company(company)
-            config = env["print_gateway.gateway_config"].browse(self.durable_config_id)
-            router = env["print_gateway.print_router"]
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            if not company:
+                raise AssertionError("Durable test company is not visible on fresh cursor")
+            router = env["print_gateway.print_router"].with_company(company)
+            config = env["print_gateway.gateway_config"].browse(self.durable_config_id).exists()
+            if not config:
+                raise AssertionError("Durable test gateway config is not visible on fresh cursor")
             job_id = router._persist_durable_job(
                 {
                     "company": company,
@@ -139,27 +132,34 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         self.assertEqual(binding.destination_ref.id, report.id)
 
     def test_cross_company_destination_is_rejected(self):
-        picking_type = self.env["stock.picking.type"].search(
-            [("company_id", "=", self.company.id)], limit=1
-        )
-        self.assertTrue(
-            picking_type,
-            "Expected at least one company-scoped stock operation type in the Odoo test database.",
-        )
-        report = self.env["ir.actions.report"].search(
-            [("model", "=", "stock.picking")], limit=1
-        )
-        self.assertTrue(report, "Expected a stock picking report in the Odoo test database.")
-        with self.assertRaises(ValidationError):
-            self.env["print_gateway.binding"].create(
-                {
-                    "company_id": self.other_company.id,
-                    "destination_type": "picking_type",
-                    "destination_picking_type_id": picking_type.id,
-                    "report_id": report.id,
-                    "printer_id": "printer_runtime_1",
-                }
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.company.id).exists()
+            other_company = env["res.company"].browse(self.other_company_id).exists()
+            self.assertTrue(company)
+            self.assertTrue(other_company)
+            model_env = env["stock.picking.type"].with_company(company).env
+            picking_type = model_env["stock.picking.type"].search(
+                [("company_id", "=", company.id)], limit=1
             )
+            self.assertTrue(
+                picking_type,
+                "Expected at least one company-scoped stock operation type in the Odoo test database.",
+            )
+            report = model_env["ir.actions.report"].search(
+                [("model", "=", "stock.picking")], limit=1
+            )
+            self.assertTrue(report, "Expected a stock picking report in the Odoo test database.")
+            with self.assertRaises(ValidationError):
+                model_env["print_gateway.binding"].create(
+                    {
+                        "company_id": other_company.id,
+                        "destination_type": "picking_type",
+                        "destination_picking_type_id": picking_type.id,
+                        "report_id": report.id,
+                        "printer_id": "printer_runtime_1",
+                    }
+                )
 
     def test_document_type_is_deterministic_for_supported_business_models(self):
         router = self.env["print_gateway.print_router"]
@@ -197,28 +197,44 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             )
 
     def test_router_rejects_company_argument_that_is_not_active(self):
-        report = self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
-        with self.assertRaises(ValidationError):
-            self.env["print_gateway.print_router"].resolve_binding(
-                report=report,
-                company=self.other_company,
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            report = env["ir.actions.report"].search(
+                [("model", "=", "sale.order")], limit=1
             )
+            other_company = env["res.company"].browse(self.other_company_id).exists()
+            self.assertTrue(report)
+            self.assertTrue(other_company)
+            with self.assertRaises(ValidationError):
+                env["print_gateway.print_router"].resolve_binding(
+                    report=report,
+                    company=other_company,
+                )
 
     def test_router_rejects_document_from_another_company_context(self):
-        partner = self.env["res.partner"].create(
-            {
-                "name": "Other Company Print Context",
-                "company_id": self.other_company.id,
-            }
-        )
-        report = self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
-        with self.assertRaises(ValidationError):
-            self.env["print_gateway.print_router"].resolve_binding(
-                report=report,
-                record=partner,
-                document_type="order",
-                company=self.company,
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.company.id).exists()
+            other_company = env["res.company"].browse(self.other_company_id).exists()
+            self.assertTrue(company)
+            self.assertTrue(other_company)
+            model_env = env["res.partner"].with_company(company).env
+            partner = model_env["res.partner"].create(
+                {
+                    "name": "Other Company Print Context",
+                    "company_id": other_company.id,
+                }
             )
+            report = model_env["ir.actions.report"].search(
+                [("model", "=", "sale.order")], limit=1
+            )
+            with self.assertRaises(ValidationError):
+                model_env["print_gateway.print_router"].resolve_binding(
+                    report=report,
+                    record=partner,
+                    document_type="order",
+                    company=company,
+                )
 
     def test_native_print_is_only_allowed_when_gateway_is_disabled(self):
         self._make_config(False)
@@ -249,9 +265,10 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         job_id = self._job("timeout-contract-key")
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            company = env["res.company"].browse(self.durable_company_id)
-            env = env.with_company(company)
-            job = env["print_gateway.print_job"].browse(job_id).exists()
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            self.assertTrue(company)
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
             self.assertTrue(job)
             with patch.object(PrintGatewayConfig, "_validate_gateway_host"), patch(
                 "odoo.addons.print_gateway.models.print_job.requests.post",
@@ -262,9 +279,9 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            company = env["res.company"].browse(self.durable_company_id)
-            env = env.with_company(company)
-            job = env["print_gateway.print_job"].browse(job_id).exists()
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
             self.assertEqual(job.status, "unknown")
             self.assertIn("UNKNOWN_SUBMISSION_OUTCOME", job.last_error)
 
@@ -273,9 +290,9 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             job_id = self._job("retry-safety-%s" % status)
             with self.env.registry.cursor() as cr:
                 env = api.Environment(cr, self.env.uid, dict(self.env.context))
-                company = env["res.company"].browse(self.durable_company_id)
-                env = env.with_company(company)
-                job = env["print_gateway.print_job"].browse(job_id).exists()
+                company = env["res.company"].browse(self.durable_company_id).exists()
+                model_env = env["print_gateway.print_job"].with_company(company).env
+                job = model_env["print_gateway.print_job"].browse(job_id).exists()
                 job.write({"status": status})
                 job.action_retry()
                 self.assertEqual(job.status, status)
@@ -284,13 +301,13 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         job_id = self._job("retry-failed-original")
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            company = env["res.company"].browse(self.durable_company_id)
-            env = env.with_company(company)
-            job = env["print_gateway.print_job"].browse(job_id).exists()
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
             job.write({"status": "failed", "last_error": "GATEWAY_HTTP_503"})
             with patch.object(type(job), "action_submit", autospec=True, return_value=True) as submit:
                 job.action_retry()
-            retries = env["print_gateway.print_job"].search(
+            retries = model_env["print_gateway.print_job"].search(
                 [
                     ("id", "!=", job.id),
                     ("source_record_id", "=", False),
