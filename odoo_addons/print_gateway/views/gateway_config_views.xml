@@ -5,8 +5,10 @@
         <field name="model">print_gateway.gateway_config</field>
         <field name="arch" type="xml">
             <list string="Gateway Configuration" create="1" delete="0">
+                <field name="company_id"/>
                 <field name="enabled" widget="boolean_toggle"/>
                 <field name="gateway_url"/>
+                <field name="runtime_agent_id" string="Runtime Agent"/>
                 <field name="last_test_status" widget="badge"/>
                 <field name="last_test_at" optional="show"/>
             </list>
@@ -23,13 +25,19 @@
                 </header>
                 <sheet>
                     <h2>Print Gateway</h2>
-                    <p class="text-muted">Odoo owns business context and print intent. Gateway owns runtime agents, printers, queueing, and execution.</p>
+                    <p class="text-muted">Odoo owns the company/branch and print intent. Gateway owns runtime agents, printers, queueing, and execution.</p>
                     <group>
+                        <field name="company_id"/>
                         <field name="enabled" widget="boolean_toggle"/>
                     </group>
                     <group string="Connection">
                         <field name="gateway_url" placeholder="https://print.example.com"/>
                         <field name="gateway_api_key" password="True" placeholder="Paste the installation API key"/>
+                    </group>
+                    <group string="Runtime Assignment">
+                        <field name="runtime_agent_id" widget="gateway_runtime_agent"/>
+                        <label for="runtime_agent_id" string="Agent for this Odoo company/branch"/>
+                        <div class="text-muted">Select the Gateway runtime Agent serving this Odoo company/branch. The Agent remains owned by the Gateway.</div>
                     </group>
                     <group string="Connection Test" col="4">
                         <field name="last_test_status" readonly="1" widget="badge"/>

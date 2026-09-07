@@ -5,9 +5,10 @@ import { describe, expect, it } from "vitest";
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
 
 describe("production fixes contracts (2026-09)", () => {
-  it("keeps the removed Odoo business-sync surface absent", () => {
+  it("keeps the removed Odoo branch/business-sync surface absent while retaining runtime-agent discovery", () => {
     expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/sync/route.ts"))).toBe(false);
-    expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/agents/route.ts"))).toBe(false);
+    expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/agents/route.ts"))).toBe(true);
+    expect(read("src/app/api/odoo/agents/route.ts")).toContain("validateOdooKey");
     expect(read("src/app/api/odoo/printers/route.ts")).toContain("validateOdooKey");
     expect(read("src/app/api/print/jobs/route.ts")).toContain("printerId");
     expect(read("src/app/api/print/jobs/route.ts")).not.toContain("branchId");

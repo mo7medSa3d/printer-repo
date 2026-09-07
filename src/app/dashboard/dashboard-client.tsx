@@ -4,7 +4,9 @@ import { useState } from "react";
 import { createAgent, createTestPrintJob, setAgentLifecycle, setPrinterLifecycle } from "../actions";
 import {
   Activity,
+  Check,
   CheckCircle2,
+  Copy,
   PauseCircle,
   PlayCircle,
   Printer as PrinterIcon,
@@ -58,6 +60,8 @@ export default function DashboardClient({
   const [agentName, setAgentName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const run = async (operation: () => Promise<unknown>, success: string) => {
     setBusy(true);
@@ -70,6 +74,34 @@ export default function DashboardClient({
       setMessage(error instanceof Error ? error.message : "Operation failed");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleCreateAgent = async (name: string) => {
+    setBusy(true);
+    setMessage(null);
+    setPairingCode(null);
+    setCopied(false);
+    try {
+      const result = await createAgent(name);
+      setPairingCode(result.pairingCode);
+      setAgentName("");
+      setMessage("Agent created. Enter this code in the Windows Agent application within 30 minutes.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Agent creation failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyPairingCode = async () => {
+    if (!pairingCode) return;
+    try {
+      await navigator.clipboard.writeText(pairingCode);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setMessage("Pairing code is ready; copy it manually.");
     }
   };
 
@@ -87,7 +119,7 @@ export default function DashboardClient({
             onSubmit={(event) => {
               event.preventDefault();
               if (!agentName.trim()) return;
-              void run(() => createAgent(agentName.trim()), "Agent created. Pair it from the Agent application.");
+              void handleCreateAgent(agentName.trim());
             }}
           >
             <Field label="Add runtime agent">
@@ -99,6 +131,19 @@ export default function DashboardClient({
               </div>
             </Field>
           </form>
+
+          {pairingCode ? (
+            <div className="rounded-xl border border-brand/30 bg-brand-subtle p-4" role="status" aria-live="polite">
+              <div className="text-xs font-semibold uppercase tracking-[0.08em] text-brand">Pairing code</div>
+              <div className="mt-2 flex items-center gap-2">
+                <code className="rounded-lg bg-white px-3 py-2 text-2xl font-bold tracking-[0.3em] text-ink shadow-xs">{pairingCode}</code>
+                <Button type="button" size="sm" variant="secondary" onClick={() => void copyPairingCode()} icon={copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}>
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-ink-3">Use this one-time code in the Windows Agent. It expires after 30 minutes.</p>
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             {initialAgents.length === 0 ? (

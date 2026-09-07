@@ -125,10 +125,10 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertNotIn("branch_id", source)
         self.assertIn('"binding"', source)
 
-    def test_gateway_config_exposes_only_url_and_api_key_for_normal_connection(self):
+    def test_gateway_config_exposes_url_api_key_and_opaque_runtime_agent_for_assignment(self):
         source = (MODELS / "gateway_config.py").read_text(encoding="utf-8")
         self.assertIn("gateway_url", source)
         self.assertIn("gateway_api_key", source)
+        self.assertIn("runtime_agent_id", source)
         self.assertNotIn("gateway_branch_id", source)
-        self.assertNotIn("agent_id", source)
         self.assertNotIn("printer_id", source)

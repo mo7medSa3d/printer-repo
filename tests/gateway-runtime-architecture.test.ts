@@ -35,10 +35,10 @@ describe("gateway runtime ownership contract", () => {
     ]) expect(source).not.toContain(token);
   });
 
-  it("does not expose the removed Gateway branch or business-sync APIs", () => {
+  it("does not expose removed Gateway branch or business-sync APIs while retaining runtime-agent discovery", () => {
     expect(existsSync(join(root, "src/app/api/branches"))).toBe(false);
     expect(existsSync(join(root, "src/app/api/odoo/sync"))).toBe(false);
-    expect(existsSync(join(root, "src/app/api/odoo/agents"))).toBe(false);
+    expect(existsSync(join(root, "src/app/api/odoo/agents/route.ts"))).toBe(true);
   });
 
   it("keeps print submission free of branch or destination entity IDs", () => {
@@ -55,6 +55,15 @@ describe("gateway runtime ownership contract", () => {
     expect(route).not.toContain("branchId");
     expect(route).not.toContain("create");
     expect(route).not.toContain("secret");
+  });
+
+  it("exposes authenticated runtime-agent discovery without Gateway business ownership", () => {
+    const route = readFileSync(join(root, "src/app/api/odoo/agents/route.ts"), "utf8");
+    expect(route).toContain("validateOdooKey");
+    expect(route).toContain("agents");
+    expect(route).toContain("Cache-Control");
+    expect(route).not.toContain("branchId");
+    expect(route).not.toContain("businessId");
   });
 
   it("keeps Gateway-enabled report printing fail-closed", () => {
