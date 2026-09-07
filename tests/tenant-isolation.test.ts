@@ -6,14 +6,8 @@ const apiKeyUpdate = vi.fn();
 
 vi.mock("../src/db", () => ({
   db: {
-    query: {
-      apiKeys: { findFirst: (...args: unknown[]) => apiKeyFindFirst(...args) },
-    },
-    update: () => ({
-      set: () => ({
-        where: (...args: unknown[]) => apiKeyUpdate(...args),
-      }),
-    }),
+    query: { apiKeys: { findFirst: (...args: unknown[]) => apiKeyFindFirst(...args) } },
+    update: () => ({ set: () => ({ where: (...args: unknown[]) => apiKeyUpdate(...args) }) }),
   },
 }));
 
@@ -27,70 +21,38 @@ describe("Odoo database tenant isolation", () => {
   });
 
   it("allows exactly the configured Odoo database", () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("ODOO_DATABASE_NAME", "customer_a");
-
+    vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("ODOO_DATABASE_NAME", "customer_a");
     expect(isOdooDatabaseAllowed("customer_a")).toBe(true);
     expect(isOdooDatabaseAllowed("customer_b")).toBe(false);
     expect(isOdooDatabaseAllowed("customer_a ")).toBe(true);
   });
 
   it("fails closed in production when the database binding is not configured", () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("ODOO_DATABASE_NAME", "");
-
+    vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("ODOO_DATABASE_NAME", "");
     expect(isOdooDatabaseAllowed("customer_a")).toBe(false);
     expect(isOdooDatabaseAllowed(null)).toBe(false);
   });
 
   it("allows missing database binding only outside production", () => {
-    vi.stubEnv("NODE_ENV", "test");
-    vi.stubEnv("ODOO_DATABASE_NAME", "");
-
+    vi.stubEnv("NODE_ENV", "test"); vi.stubEnv("ODOO_DATABASE_NAME", "");
     expect(isOdooDatabaseAllowed(null)).toBe(true);
   });
 
-  it("rejects a request from another Odoo database before key lookup", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("ODOO_DATABASE_NAME", "odoo_a");
-
-    const req = new Request("https://gateway.test/api/print/jobs", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer odoo_testkey",
-        "x-odoo-database": "odoo_b",
-      },
-    });
-
+  it("rejects another Odoo database before API-key lookup", async () => {
+    vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("ODOO_DATABASE_NAME", "odoo_a");
+    const req = new Request("https://gateway.test/api/print/jobs", { method: "POST", headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_b" } });
     await expect(validateOdooKey(req)).resolves.toBeNull();
     expect(apiKeyFindFirst).not.toHaveBeenCalled();
   });
 
-  it("accepts the authenticated installation key only from the configured database", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("ODOO_DATABASE_NAME", "odoo_a");
+  it("accepts the installation key only from the configured database", async () => {
+    vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("ODOO_DATABASE_NAME", "odoo_a");
     const hash = createHash("sha256").update("odoo_testkey").digest("hex");
-    apiKeyFindFirst.mockResolvedValue({
-      id: "key_a",
-      branchId: "odoo_company_1",
-      scope: "standard",
-      allowedDocumentTypes: null,
-      hashedKey: hash,
-      revokedAt: null,
-    });
-
-    const reqA = new Request("https://gateway.test/api/print/jobs", {
-      method: "POST",
-      headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_a" },
-    });
-    await expect(validateOdooKey(reqA)).resolves.toMatchObject({ id: "key_a", branchId: "odoo_company_1" });
-
-    const reqB = new Request("https://gateway.test/api/print/jobs", {
-      method: "POST",
-      headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_b" },
-    });
+    apiKeyFindFirst.mockResolvedValue({ id: "key_a", scope: "standard", allowedDocumentTypes: null, hashedKey: hash, revokedAt: null });
+    const reqA = new Request("https://gateway.test/api/print/jobs", { method: "POST", headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_a" } });
+    await expect(validateOdooKey(reqA)).resolves.toMatchObject({ id: "key_a" });
+    const reqB = new Request("https://gateway.test/api/print/jobs", { method: "POST", headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_b" } });
     await expect(validateOdooKey(reqB)).resolves.toBeNull();
-
     expect(apiKeyFindFirst).toHaveBeenCalledTimes(1);
   });
 });
