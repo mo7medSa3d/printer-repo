@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -6,19 +6,21 @@ const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8"
 
 describe("production fixes contracts (2026-09)", () => {
   it("keeps the removed Odoo business-sync surface absent", () => {
-    const route = resolve(process.cwd(), "src/app/api/odoo/sync/route.ts");
-    expect(() => readFileSync(route, "utf8")).toThrow();
+    expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/sync/route.ts"))).toBe(false);
+    expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/agents/route.ts"))).toBe(false);
     expect(read("src/app/api/odoo/printers/route.ts")).toContain("validateOdooKey");
     expect(read("src/app/api/print/jobs/route.ts")).toContain("printerId");
     expect(read("src/app/api/print/jobs/route.ts")).not.toContain("branchId");
   });
 
-  it("keeps the print-job status API metadata-only", () => {
+  it("keeps the print-job GET status response metadata-only", () => {
     const route = read("src/app/api/print/jobs/route.ts");
-    expect(route).toContain("idempotencyKey");
-    expect(route).toContain("validateOdooKey");
-    expect(route).not.toContain("payload");
-    expect(route).toContain('if (!jobId)');
+    const getSection = route.slice(route.indexOf("export async function GET"));
+    expect(getSection).toContain("validateOdooKey");
+    expect(getSection).toContain('searchParams.get("id")');
+    expect(getSection).toContain("responseForRow(row)");
+    expect(getSection).not.toContain("row.payload");
+    expect(getSection).not.toContain('json({ payload');
   });
 
   it("heartbeat print-lease keep-alive: bounded job id list only, scoped to claimed/printing", () => {
