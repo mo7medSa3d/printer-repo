@@ -25,28 +25,16 @@ class PrintGatewayJob(models.Model):
     printer_id = fields.Char(string="Printer", required=True, index=True, readonly=True)
     destination = fields.Char(required=True, readonly=True)
     document_type = fields.Char(required=True, readonly=True)
-    status = fields.Selection(
-        [
-            ("queued", "Queued"),
-            ("submitted", "Submitted"),
-            ("claimed", "Claimed"),
-            ("printing", "Printing"),
-            ("success", "Success"),
-            ("failed", "Failed"),
-            ("unknown", "Unknown Outcome"),
-        ],
-        default="queued",
-        required=True,
-        index=True,
-    )
-    physical_outcome = fields.Selection(
-        [
-            ("not_printed", "Definitely not printed"),
-            ("printed", "Definitely printed"),
-            ("unknown", "Possibly printed / unknown"),
-        ],
-        compute="_compute_physical_outcome",
-    )
+    status = fields.Selection([
+        ("queued", "Queued"), ("submitted", "Submitted"), ("claimed", "Claimed"),
+        ("printing", "Printing"), ("success", "Success"), ("failed", "Failed"),
+        ("unknown", "Unknown Outcome"),
+    ], default="queued", required=True, index=True)
+    physical_outcome = fields.Selection([
+        ("not_printed", "Definitely not printed"),
+        ("printed", "Definitely printed"),
+        ("unknown", "Possibly printed / unknown"),
+    ], compute="_compute_physical_outcome")
     payload = fields.Text(required=True, copy=False, readonly=True)
     idempotency_key = fields.Char(required=True, index=True, copy=False, readonly=True)
     attempts = fields.Integer(default=0, readonly=True)
@@ -63,7 +51,6 @@ class PrintGatewayJob(models.Model):
         "UNIQUE(company_id, idempotency_key)",
         "The same logical print operation may only be created once.",
     )
-
     _TERMINAL = frozenset(("success", "failed"))
 
     @api.depends("status", "last_error")
@@ -77,20 +64,9 @@ class PrintGatewayJob(models.Model):
                 job.physical_outcome = "not_printed"
 
     @api.model
-    def create_operation(
-        self,
-        *,
-        company,
-        gateway_config,
-        printer_id,
-        destination,
-        document_type,
-        payload,
-        source_model=None,
-        source_record_id=None,
-        report=None,
-        idempotency_key=None,
-    ):
+    def create_operation(self, *, company, gateway_config, printer_id, destination, document_type,
+                         payload, source_model=None, source_record_id=None, report=None,
+                         idempotency_key=None):
         if not company or not gateway_config:
             raise ValidationError(_("Gateway configuration is missing."))
         if gateway_config.company_id != company:
@@ -109,29 +85,32 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Print payload exceeds the 8 MiB safety limit."))
 
         key = (idempotency_key or uuid.uuid4().hex).strip()
-        existing = self.search(
-            [("company_id", "=", company.id), ("idempotency_key", "=", key)],
-            limit=1,
-        )
+        existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
         if existing:
+            same = (
+                existing.printer_id == str(printer_id).strip()
+                and existing.destination == str(destination).strip()
+                and existing.document_type == str(document_type).strip().lower()
+                and existing.payload == payload_json
+            )
+            if not same:
+                raise ValidationError(_("The idempotency key is already used for a different print operation."))
             return existing
 
-        return self.create(
-            {
-                "company_id": company.id,
-                "gateway_config_id": gateway_config.id,
-                "printer_id": str(printer_id).strip(),
-                "destination": str(destination).strip(),
-                "document_type": str(document_type).strip().lower(),
-                "status": "queued",
-                "payload": payload_json,
-                "idempotency_key": key,
-                "next_retry_at": fields.Datetime.now(),
-                "source_model": source_model or False,
-                "source_record_id": source_record_id or False,
-                "report_id": report.id if report else False,
-            }
-        )
+        return self.create({
+            "company_id": company.id,
+            "gateway_config_id": gateway_config.id,
+            "printer_id": str(printer_id).strip(),
+            "destination": str(destination).strip(),
+            "document_type": str(document_type).strip().lower(),
+            "status": "queued",
+            "payload": payload_json,
+            "idempotency_key": key,
+            "next_retry_at": fields.Datetime.now(),
+            "source_model": source_model or False,
+            "source_record_id": source_record_id or False,
+            "report_id": report.id if report else False,
+        })
 
     def _submission_body(self):
         self.ensure_one()
@@ -147,7 +126,7 @@ class PrintGatewayJob(models.Model):
             "idempotencyKey": self.idempotency_key,
         }
 
-    def action_submit(self):
+    def action_submit(self, raise_on_failure=False):
         for job in self:
             if job.status in self._TERMINAL and job.gateway_job_id:
                 continue
@@ -156,8 +135,7 @@ class PrintGatewayJob(models.Model):
                     "%s/api/print/jobs" % job.gateway_config_id._gateway_base(),
                     json=job._submission_body(),
                     headers=job.gateway_config_id._gateway_headers(),
-                    timeout=(5, 20),
-                    allow_redirects=False,
+                    timeout=(5, 20), allow_redirects=False,
                 )
                 if response.status_code not in (200, 201):
                     raise RuntimeError("GATEWAY_HTTP_%s" % response.status_code)
@@ -170,37 +148,35 @@ class PrintGatewayJob(models.Model):
                     remote_status = "success"
                 if remote_status not in {"queued", "submitted", "claimed", "printing", "success", "failed", "unknown"}:
                     remote_status = "submitted"
-                job.write(
-                    {
-                        "gateway_job_id": str(remote_id),
-                        "status": "submitted" if remote_status == "queued" else remote_status,
-                        "attempts": job.attempts + 1,
-                        "last_error": False,
-                        "next_retry_at": False,
-                    }
-                )
+                job.write({
+                    "gateway_job_id": str(remote_id),
+                    "status": "submitted" if remote_status == "queued" else remote_status,
+                    "attempts": job.attempts + 1,
+                    "last_error": False,
+                    "next_retry_at": False,
+                })
             except requests.RequestException as exc:
-                job.write(
-                    {
-                        "status": "unknown",
-                        "attempts": job.attempts + 1,
-                        "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request timed out or failed",
-                        "next_retry_at": fields.Datetime.now(),
-                    }
-                )
-                _logger.warning("Gateway submission outcome is unknown for job %s: %s", job.idempotency_key[:8], exc)
+                job.write({
+                    "status": "unknown",
+                    "attempts": job.attempts + 1,
+                    "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request failed or timed out",
+                    "next_retry_at": fields.Datetime.now(),
+                })
+                _logger.warning("Gateway submission outcome is unknown for job %s", job.idempotency_key[:8])
+                if raise_on_failure:
+                    raise ValidationError(_("Gateway submission timed out or failed; the physical outcome is unknown. The durable job will be retried safely.")) from exc
             except (ValueError, RuntimeError, ValidationError) as exc:
                 next_attempt = job.attempts + 1
                 terminal = next_attempt >= 5
-                job.write(
-                    {
-                        "status": "failed" if terminal else "queued",
-                        "attempts": next_attempt,
-                        "last_error": str(exc)[:4000],
-                        "next_retry_at": False if terminal else fields.Datetime.now(),
-                        "completed_at": fields.Datetime.now() if terminal else False,
-                    }
-                )
+                job.write({
+                    "status": "failed" if terminal else "queued",
+                    "attempts": next_attempt,
+                    "last_error": str(exc)[:4000],
+                    "next_retry_at": False if terminal else fields.Datetime.now(),
+                    "completed_at": fields.Datetime.now() if terminal else False,
+                })
+                if raise_on_failure:
+                    raise ValidationError(_("Gateway submission failed: %s") % str(exc)[:500]) from exc
         return True
 
     def action_sync_status(self):
@@ -210,8 +186,7 @@ class PrintGatewayJob(models.Model):
                     "%s/api/print/jobs" % job.gateway_config_id._gateway_base(),
                     params={"id": job.gateway_job_id},
                     headers=job.gateway_config_id._gateway_headers(),
-                    timeout=(5, 10),
-                    allow_redirects=False,
+                    timeout=(5, 10), allow_redirects=False,
                 )
                 if response.status_code == 404:
                     continue
@@ -227,7 +202,7 @@ class PrintGatewayJob(models.Model):
                     values["completed_at"] = fields.Datetime.now()
                 job.write(values)
             except (requests.RequestException, ValueError) as exc:
-                _logger.warning("Gateway status sync failed for job %s: %s", job.idempotency_key[:8], exc)
+                _logger.warning("Gateway status sync failed for job %s", job.idempotency_key[:8])
         return True
 
     def action_retry(self):
@@ -238,16 +213,10 @@ class PrintGatewayJob(models.Model):
     @api.model
     def cron_submit_pending(self):
         now = fields.Datetime.now()
-        jobs = self.search(
-            [
-                ("status", "in", ["queued", "unknown"]),
-                "|",
-                ("next_retry_at", "=", False),
-                ("next_retry_at", "<=", now),
-            ],
-            order="id asc",
-            limit=50,
-        )
+        jobs = self.search([
+            ("status", "in", ["queued", "unknown"]), "|",
+            ("next_retry_at", "=", False), ("next_retry_at", "<=", now),
+        ], order="id asc", limit=50)
         started = time.monotonic()
         for job in jobs:
             if time.monotonic() - started > 20:
@@ -259,8 +228,7 @@ class PrintGatewayJob(models.Model):
     def cron_sync_status(self):
         jobs = self.search(
             [("gateway_job_id", "!=", False), ("status", "not in", ["success", "failed"])],
-            order="id asc",
-            limit=100,
+            order="id asc", limit=100,
         )
         for job in jobs:
             job.action_sync_status()
