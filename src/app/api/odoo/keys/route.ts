@@ -8,76 +8,58 @@ import { eq, desc } from "drizzle-orm";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
-  const m = await validateManager(req);
-  if (!m) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const rows = await db.select({
-    id: apiKeys.id,
-    name: apiKeys.name,
-    scope: apiKeys.scope,
-    createdAt: apiKeys.createdAt,
-    lastUsedAt: apiKeys.lastUsedAt,
-    revokedAt: apiKeys.revokedAt,
-  }).from(apiKeys).orderBy(desc(apiKeys.createdAt));
-
+  const manager = await validateManager(req);
+  if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const rows = await db
+    .select({
+      id: apiKeys.id,
+      name: apiKeys.name,
+      description: apiKeys.description,
+      createdAt: apiKeys.createdAt,
+      lastUsedAt: apiKeys.lastUsedAt,
+      revokedAt: apiKeys.revokedAt,
+    })
+    .from(apiKeys)
+    .orderBy(desc(apiKeys.createdAt));
   return NextResponse.json(rows);
 }
 
-/**
- * Odoo integration keys are Gateway-installation credentials, not branch
- * identities. Odoo owns company/destination/document routing; the Gateway
- * only authenticates the caller and executes the selected printer job.
- */
 export async function POST(req: Request) {
-  const m = await validateManager(req);
-  if (!m) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const manager = await validateManager(req);
+  if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { name?: unknown; description?: unknown } = {};
-  try { body = await req.json(); } catch { /* empty body is valid */ }
-
-  const name = typeof body.name === "string" && body.name.trim()
-    ? body.name.trim().slice(0, 120)
-    : "Odoo";
-  const description = typeof body.description === "string"
-    ? body.description.slice(0, 500)
-    : null;
-
+  let body: unknown = {};
+  try { body = await req.json(); } catch { /* empty body uses defaults */ }
+  const input = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 120) : "Odoo";
+  const description = typeof input.description === "string" ? input.description.trim().slice(0, 500) || null : null;
   const { raw, hashed, id } = generateOdooApiKey();
-  await db.insert(apiKeys).values({
-    id,
-    name,
-    branchId: null,
-    scope: "standard",
-    description,
-    hashedKey: hashed,
-    allowedDocumentTypes: null,
-  });
+
+  await db.insert(apiKeys).values({ id, name, description, hashedKey: hashed });
 
   return NextResponse.json({
     id,
     name,
+    description,
     apiKey: raw,
-    note: "Copy this key now. The raw secret is never shown again.",
+    note: "Copy this key now. The raw key will never be shown again.",
   }, { status: 201 });
 }
 
-/** Soft-revoke a key while preserving an audit record. */
 export async function DELETE(req: Request) {
-  const m = await validateManager(req);
-  if (!m) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  let body: { id?: unknown } = {};
-  try { body = await req.json(); } catch { /* handled below */ }
-
-  const id = typeof body.id === "string" ? body.id.trim() : "";
+  const manager = await validateManager(req);
+  if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let body: unknown = {};
+  try { body = await req.json(); } catch { /* invalid body handled below */ }
+  const id = body && typeof body === "object" && typeof (body as Record<string, unknown>).id === "string"
+    ? String((body as Record<string, unknown>).id).trim()
+    : "";
   if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
-  const now = new Date();
-  const updated = await db.update(apiKeys)
-    .set({ revokedAt: now })
+  const revoked = await db.update(apiKeys)
+    .set({ revokedAt: new Date() })
     .where(eq(apiKeys.id, id))
     .returning({ id: apiKeys.id, revokedAt: apiKeys.revokedAt });
-
-  if (!updated.length) return NextResponse.json({ error: "API key not found" }, { status: 404 });
-  return NextResponse.json(updated[0], { status: 200 });
+  if (!revoked.length) return NextResponse.json({ error: "API key not found" }, { status: 404 });
+  return NextResponse.json(revoked[0], { status: 200 });
 }
