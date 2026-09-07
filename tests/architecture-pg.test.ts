@@ -35,7 +35,6 @@ suite("real PostgreSQL runtime architecture gate", () => {
       WHERE table_schema=current_schema() AND table_name='printers'
     `);
     const names = new Set(cols.rows.map((r) => r.column_name));
-    expect(names).toEqual(expect.objectContaining({}));
     expect(names.has("agent_id")).toBe(true);
     expect(names.has("branch_id")).toBe(false);
     expect(names.has("enabled")).toBe(false);
@@ -57,10 +56,10 @@ suite("real PostgreSQL runtime architecture gate", () => {
     await pool().query(`INSERT INTO agents (id,name,lifecycle,status) VALUES ('agt_unique','Agent','active','online')`);
     await pool().query(`INSERT INTO printers (id,agent_id,name,printer_type,device_class,connection_type,protocol,status,lifecycle,config,capabilities)
       VALUES ('prn_unique','agt_unique','Printer','physical','other','spooler','spooler','online','active','{}'::jsonb,'{}'::jsonb)`);
-    const payload = '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb;
+    const payload = JSON.stringify({ type: "raw", encoding: "base64", data: "aA==" });
     await pool().query(`INSERT INTO print_jobs (id,destination,document_type,agent_id,printer_id,status,payload,expires_at,idempotency_key)
-      VALUES ('job_unique_1','POS','receipt','agt_unique','prn_unique','queued',$1,now()+interval '1 hour','same-key')`, [payload]);
+      VALUES ('job_unique_1','POS','receipt','agt_unique','prn_unique','queued',$1::jsonb,now()+interval '1 hour','same-key')`, [payload]);
     await expect(pool().query(`INSERT INTO print_jobs (id,destination,document_type,agent_id,printer_id,status,payload,expires_at,idempotency_key)
-      VALUES ('job_unique_2','POS','receipt','agt_unique','prn_unique','queued',$1,now()+interval '1 hour','same-key')`, [payload])).rejects.toThrow();
+      VALUES ('job_unique_2','POS','receipt','agt_unique','prn_unique','queued',$1::jsonb,now()+interval '1 hour','same-key')`, [payload])).rejects.toThrow();
   });
 });
