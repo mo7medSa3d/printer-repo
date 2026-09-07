@@ -1,4 +1,4 @@
-import { agents, apiKeys, printers, printJobs } from "../db/schema";
+import { agents, printJobs } from "../db/schema";
 import { db } from "../db";
 import { isVirtualPrinterRecord } from "./printer-virtual";
 import { validatePayloadForPrinter } from "./routing";
@@ -28,6 +28,12 @@ export class PrintJobRateLimitError extends Error {
   readonly code = "PRINT_JOB_RATE_LIMITED" as const;
   constructor(public readonly retryAfterSeconds: number) {
     super(`Print job rate limit exceeded; retry after ${retryAfterSeconds} seconds`);
+  }
+}
+export class PrintJobCapabilityError extends Error {
+  readonly code = "CAPABILITY_MISMATCH" as const;
+  constructor(reason: string) {
+    super(reason);
   }
 }
 
@@ -162,7 +168,7 @@ export async function createPrintJobForPrinter(
   const capability = validatePayloadForPrinter(validatedPayload.type, {
     protocol: printer.protocol, connectionType: printer.connectionType, capabilities: printer.capabilities,
   });
-  if (!capability.ok) throw new Error(capability.reason);
+  if (!capability.ok) throw new PrintJobCapabilityError(capability.reason);
 
   const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!ownerAgent) throw new Error("Printer owner agent not found");
