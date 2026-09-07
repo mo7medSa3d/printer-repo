@@ -32,9 +32,19 @@ describe("runtime routing capability and availability", () => {
   });
 
   it("treats lifecycle and online telemetry as hard availability gates", () => {
-    expect(isPrinterAvailableForJob({ id: "p1", agentId: "a1", name: "P", printerType: "physical", deviceClass: "thermal", connectionType: "network", protocol: "raw", lifecycle: "active", status: "online", capabilities: null, config: {} })).toBe(true);
-    expect(isPrinterAvailableForJob({ id: "p1", agentId: "a1", name: "P", printerType: "physical", deviceClass: "thermal", connectionType: "network", protocol: "raw", lifecycle: "active", status: "offline", capabilities: null, config: {} })).toBe(false);
-    expect(isPrinterAvailableForJob({ id: "p1", agentId: "a1", name: "P", printerType: "physical", deviceClass: "thermal", connectionType: "network", protocol: "raw", lifecycle: "disabled", status: "online", capabilities: null, config: {} })).toBe(false);
+    const base = {
+      agentId: "a1",
+      name: "P",
+      printerType: "physical" as const,
+      deviceClass: "thermal" as const,
+      connectionType: "network" as const,
+      protocol: "raw" as const,
+      capabilities: null,
+      config: {},
+    };
+    expect(isPrinterAvailableForJob({ ...base, lifecycle: "active", status: "online" })).toBe(true);
+    expect(isPrinterAvailableForJob({ ...base, lifecycle: "active", status: "offline" })).toBe(false);
+    expect(isPrinterAvailableForJob({ ...base, lifecycle: "disabled", status: "online" })).toBe(false);
   });
 
   it("requires a recently seen active agent", () => {
