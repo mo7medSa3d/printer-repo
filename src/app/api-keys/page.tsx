@@ -25,11 +25,23 @@ export default function ApiKeysPage() {
   async function load() {
     const response = await fetch("/api/odoo/keys", { cache: "no-store", credentials: "include" });
     if (!response.ok) throw new Error("Unable to load API keys.");
-    setKeys(await response.json());
+    return await response.json() as ApiKey[];
   }
 
   useEffect(() => {
-    load().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    let cancelled = false;
+    void fetch("/api/odoo/keys", { cache: "no-store", credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load API keys.");
+        const data = await response.json() as ApiKey[];
+        if (!cancelled) setKeys(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function generate() {
@@ -47,7 +59,7 @@ export default function ApiKeysPage() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Unable to generate API key.");
       setRawKey(body.apiKey);
-      await load();
+      setKeys(await load());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -69,7 +81,7 @@ export default function ApiKeysPage() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Unable to revoke API key.");
       setRawKey(null);
-      await load();
+      setKeys(await load());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
