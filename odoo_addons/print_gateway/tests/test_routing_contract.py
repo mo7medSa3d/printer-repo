@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import requests
 
+from odoo import api
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
@@ -13,13 +14,21 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         super().setUp()
         self.company = self.env.company
         self.other_company = self.env['res.company'].create({'name': 'Gateway Contract Other Company'})
-        with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
-            self.config = self.env['print_gateway.gateway_config'].create({
-                'company_id': self.company.id,
-                'gateway_url': 'https://gateway.example.com',
-                'gateway_api_key': 'odoo_test_key',
-                'enabled': True,
-            })
+        # The durable outbox intentionally writes through a separate transaction.
+        # Create the config in a committed transaction so _persist_durable_job can
+        # safely reference it without leaking/committing the caller transaction.
+        with self.env.registry.cursor() as cr:
+            setup_env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
+                config = setup_env['print_gateway.gateway_config'].create({
+                    'company_id': self.company.id,
+                    'gateway_url': 'https://gateway.example.com',
+                    'gateway_api_key': 'odoo_test_key',
+                    'enabled': True,
+                })
+            config_id = config.id
+            cr.commit()
+        self.config = self.env['print_gateway.gateway_config'].browse(config_id)
 
     def _make_config(self, enabled=True):
         self.env['print_gateway.gateway_config'].search([
