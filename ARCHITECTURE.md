@@ -6,21 +6,16 @@
 Odoo 19
   │
   │ Gateway URL + installation API key
-  │
   ▼
-Print Gateway addon
+Central Print Router (Odoo addon)
   │
-  │ central Print Router
-  │ durable Odoo print outbox
-  │ Destination + Document Type -> Printer binding
+  │ Binding + payload + durable outbox
   ▼
 Gateway (Next.js + PostgreSQL)
   │
-  │ runtime execution, queue, claim, delivery
   ▼
 Windows Agent (Go)
   │
-  │ local printer transport
   ▼
 Physical Printer
 ```
@@ -29,122 +24,119 @@ Physical Printer
 
 | Concern | Owner |
 |---|---|
-| Native Odoo companies/branches | Odoo |
+| Existing Odoo companies / branches | Odoo |
 | Business documents and report definitions | Odoo |
 | POS configurations / operation types | Odoo |
-| Print destinations and document context | Odoo |
+| Existing business destination/context | Odoo |
+| Print intent | Odoo |
 | Print bindings | Odoo Print Gateway addon |
-| Gateway URL and API key | Odoo Print Gateway addon |
+| Gateway URL / installation credential | Odoo Print Gateway addon |
 | Durable Odoo print outbox | Odoo Print Gateway addon |
 | Agents, pairing, heartbeats | Gateway |
 | Runtime printers and capabilities | Gateway / Agent |
-| Gateway queue, claiming, delivery, runtime status | Gateway |
-| Physical printing | Agent |
+| Queueing, claiming, delivery, runtime state | Gateway |
+| Physical execution | Agent |
 
-The addon does not create, synchronize, or mirror branches, agents, printers,
-destinations, or document types.
+The addon does not create or synchronize Branches, Gateway Branches, agents, printers,
+destinations, or document-type catalogs.
 
 ## Odoo integration layer
 
-The Odoo addon contains only:
+The addon contains only:
 
-- `print_gateway.gateway_config`: Gateway URL, installation API key, enable flag, connection test status.
-- `print_gateway.binding`: native Odoo destination/context + document type -> Gateway printer id.
-- `print_gateway.print_job`: durable logical print operation and retry state.
-- `print_gateway.print_router`: the single routing entry point.
-- `ir.actions.report.report_action`: backend report interception that delegates to the central router.
-- POS `PosStore.printReceipt`: frontend interception for receipt printing, reprint, and Restaurant bill printing.
+- `print_gateway.gateway_config`: URL, API key, enable flag, test status.
+- `print_gateway.binding`: existing Odoo company/context + existing report + runtime printer reference.
+- `print_gateway.print_job`: durable logical print operation and retry/unknown state.
+- `print_gateway.print_router`: the single authoritative routing entry point.
+- `ir.actions.report.report_action`: backend interception for report-driven print actions.
+- A targeted POS controller override for Odoo 19 direct `/pos/sale_details_report` PDF output.
+- POS `PosStore.printReceipt`: receipt/reprint/Restaurant Bill interception.
 
-Native Odoo printing is used only when Gateway printing is explicitly disabled.
-When Gateway printing is enabled, Gateway errors are surfaced and native printing is never attempted.
+Native Odoo printing is allowed only while the Gateway is explicitly disabled. Gateway-enabled errors are fail-closed.
 
-## Central router
+## Routing model
 
-`print_gateway.print_router` resolves:
+A binding is configured against native Odoo records. No duplicate destination/document entities are created.
+The destination reference is derived from the real Odoo context:
 
-1. The active Odoo company.
-2. The document type (explicit context or known model mapping).
-3. The native Odoo destination/context (POS, operation type, report, or company).
-4. The highest-priority enabled binding.
-5. A durable outbox row with a fresh idempotency key for the logical print action.
-6. Post-commit submission to the Gateway.
+- `pos.order` -> its existing `pos.config`.
+- `stock.picking` -> its existing `stock.picking.type`.
+- Report-driven printing -> the actual `ir.actions.report`.
 
-A multi-record report is rejected when its records resolve to different bindings.
+The document type is derived from the actual report/model and is stored for deterministic matching.
+Runtime printer choices are read from the Gateway's authenticated runtime-printer endpoint; Odoo does not provision printers.
 
-## POS path
+## Backend report paths
 
-Odoo 19 receipt printing, POS reprinting, and Restaurant "Print Bill" calls converge on
-`PosStore.printReceipt()`. The addon patches this method and calls the server-side
-`pos.order.action_print_gateway_receipt()` handler.
+Standard backend buttons in Sales, Invoices, Inventory/Delivery, Purchase, and custom report actions normally enter through
+`ir.actions.report.report_action()`. With Gateway enabled, the addon resolves the Odoo binding, renders the payload,
+persists a durable outbox operation, submits it to `POST /api/print/jobs`, and returns a client notification rather than a browser PDF.
 
-```text
-POS Print / Reprint / Print Bill
-  -> PosStore.printReceipt()
-  -> pos.order.action_print_gateway_receipt()
-  -> print_gateway.print_router.route_pos_receipt()
-  -> Print Binding
-  -> Odoo durable print_job
-  -> Gateway POST /api/print/jobs
-  -> Agent
-  -> physical printer
-```
+Low-level `_render_qweb_pdf()` is deliberately not globally intercepted because that method is also used for non-print concerns
+such as report generation for other services. Known direct user-facing print endpoints are intercepted at their controller boundary.
 
-The patched POS path does not call the original POS printer implementation when Gateway
-printing is enabled. Therefore browser print dialogs, report navigation, `window.print()`,
-and native fallback are outside the Gateway-enabled path.
+Odoo 19 POS also exposes `/pos/sale_details_report`, which directly renders a PDF. This repository overrides that specific route so
+Gateway-enabled requests become router jobs instead of PDF/browser output.
 
-## Gateway API contract
+## POS receipt paths
 
-The Odoo print API is intentionally small:
+Odoo 19 `PosStore.printReceipt()` passes `basic_receipt` to the `OrderReceipt` component and enables `webPrintFallback` in its print options.
+The addon patches `printReceipt()` so Gateway-enabled receipt printing never reaches the native POS printer service.
+Unsynced orders are synchronised first because the Gateway router requires an existing Odoo `pos.order` record.
+
+This covers the common receipt entry paths that converge on `printReceipt()`, including Full Receipt, Simplified Receipt rendering intent,
+reprint, automatic receipt printing, and Restaurant Print Bill. Exact visual parity of Simplified Receipt is a staging acceptance item because
+Odoo renders that option in the frontend `OrderReceipt` component; the addon must not claim parity without browser verification.
+
+## POS preparation / kitchen printing
+
+Odoo 19 preparation printing is a separate path: `sendOrderInPreparation()` calls `printChanges()`, which renders
+`OrderChangeReceipt` and invokes the POS printer service independently of `printReceipt()`.
+
+The addon therefore intercepts `printChanges()` when Gateway printing is enabled and fails closed with an explicit error.
+It does not silently invoke the native kitchen printer or browser printing. Kitchen/order-preparation printing is consequently
+an explicit unsupported Gateway path until a dedicated Gateway kitchen payload/binding contract is implemented and staged.
+
+## Gateway API
+
+Odoo sends only the runtime execution target and business context needed for the job:
 
 ```json
 {
-  "printerId": "printer_xxx",
+  "printerId": "runtime-printer-id",
   "documentType": "receipt",
-  "destination": "POS / Main Counter",
+  "destination": "Main POS",
   "payload": {
     "type": "pdf",
     "encoding": "base64",
     "data": "..."
   },
-  "idempotencyKey": "..."
+  "idempotencyKey": "stable-for-this-logical-operation"
 }
 ```
 
-The request contains no Gateway branch identifier and no Gateway business-routing object.
-Gateway resolves the owning Agent/Printer from runtime ownership.
+No Gateway branch identifier, destination entity ID, or document-type entity is sent.
 
-## API keys
+## API key lifecycle
 
-The manager console exposes a minimal API-key lifecycle:
-
-- Generate API Key.
-- Display raw key once.
-- Copy it.
-- Never display the raw key again.
-- Revoke the key.
-
-The database stores only the SHA-256 hash used for authentication. The key is bound to the configured
-Odoo database name through the `X-Odoo-Database` header.
+The Gateway manager supports generation, one-time display/copy, and revoke. Only a cryptographic hash remains at rest.
+Odoo stores the credential it must use to connect to the Gateway. Keys are installation-scoped and authenticated with the configured Odoo database name.
 
 ## Reliability
 
-The Odoo outbox creates one durable logical operation before the Gateway HTTP request.
-Transport retries reuse the same `idempotencyKey`. A timeout is recorded as an unknown physical outcome;
-status reconciliation can later establish the Gateway result. Gateway-side idempotency prevents a retry
-from becoming a second physical print.
+The Odoo outbox is committed before the network request. Retries reuse the same idempotency key. A timeout or transport interruption becomes
+`unknown` rather than a definitive physical failure. Gateway idempotency makes safe retries converge on one logical print job.
 
-## Security boundaries
+## Security
 
-- Odoo configuration is company-scoped and write-protected to system administrators.
-- API keys are never logged or returned by list endpoints.
-- Gateway URLs reject credentials, query/fragment data, and non-HTTP schemes.
-- Local/private targets require explicit deployment allow-listing.
-- Gateway-enabled failures are fail-closed; there is no silent browser/native fallback.
-- Gateway remains responsible for agent/printer authentication, runtime authorization, queue limits,
-  rate limiting, and physical execution safety.
+- Company-scoped Odoo configuration and ACLs.
+- No API key or complete print payload in logs.
+- HTTP/HTTPS-only Gateway URLs with credential/query/fragment restrictions and SSRF controls.
+- Authenticated Odoo Gateway endpoints.
+- Runtime queue and rate limits remain Gateway responsibilities.
+- No browser/native fallback when Gateway printing is enabled.
 
-## Explicit non-goals
+## Explicit support boundary
 
-The addon is not a second ERP. It does not manage companies, branches, agents, physical printers,
-Gateway discovery, Gateway runtime inventory, or duplicated business catalogs.
+The implementation claims Gateway routing only for print paths that are actually intercepted. POS preparation/kitchen printing is currently
+intercepted and fail-closed, but not claimed as Gateway-routed until its dedicated payload contract is implemented and validated.
