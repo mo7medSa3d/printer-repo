@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function sourceFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -17,26 +18,24 @@ function sourceFiles(dir: string): string[] {
 }
 
 const activeSource = sourceFiles(join(root, "src"));
-const odooSource = sourceFiles(join(root, "odoo_addons", "print_gateway")).filter((file) => !file.includes(`${join("odoo_addons", "print_gateway", "tests")}`));
-
+const odooSource = sourceFiles(join(root, "odoo_addons", "print_gateway")).filter((file) => !file.includes(join("odoo_addons", "print_gateway", "tests")));
 function readAll(files: string[]): string { return files.map((file) => `${relative(root, file)}\n${readFileSync(file, "utf8")}`).join("\n"); }
 
 describe("gateway runtime ownership contract", () => {
-  it("has no Gateway branch/destination/document-type ownership in active TypeScript", () => {
+  it("has no Gateway business-entity ownership in active TypeScript", () => {
     const source = readAll(activeSource);
-    const forbidden = [
+    for (const token of [
       "db.query.branches", "db.query.destinations", "db.query.documentTypes", "db.query.printerBindings",
       "pgTable(\"branches\"", "pgTable(\"destinations\"", "pgTable(\"document_types\"", "pgTable(\"printer_bindings\"",
-      "gateway_branch_id", "/api/odoo/sync", "normalizeLegacyPrinterInput",
-    ];
-    for (const token of forbidden) expect(source).not.toContain(token);
+      "gateway_branch_id", "/api/odoo/sync", "normalizeLegacyPrinterInput", "destinationId",
+    ]) expect(source).not.toContain(token);
   });
 
   it("does not expose the removed Gateway branch API", () => {
     expect(existsSync(join(root, "src/app/api/branches"))).toBe(false);
   });
 
-  it("keeps print submission contract free of branch fields", () => {
+  it("keeps print submission free of branch or destination entity IDs", () => {
     const route = readFileSync(join(root, "src/app/api/print/jobs/route.ts"), "utf8");
     expect(route).not.toMatch(/branchId|branch_id|destinationId|documentTypeId/);
     expect(route).toContain("printerId");
@@ -45,22 +44,37 @@ describe("gateway runtime ownership contract", () => {
 
   it("keeps Gateway-enabled report printing fail-closed", () => {
     const report = readFileSync(join(root, "odoo_addons/print_gateway/models/ir_actions_report.py"), "utf8");
-    expect(report).toContain("if not gateway:");
     expect(report).toContain("route_report");
+    expect(report).toContain("super().report_action");
     expect(report).not.toContain("async_report");
   });
 
-  it("never invokes native POS printing from the Gateway success branch", () => {
+  it("never invokes native POS printing from the Gateway-enabled branch", () => {
     const source = readFileSync(join(root, "odoo_addons/print_gateway/static/src/js/pos_print_router.js"), "utf8");
     const gatewayBlock = source.split("if (result?.gateway_enabled)", 2)[1]?.split("if (result?.native)", 2)[0] ?? "";
     expect(gatewayBlock).not.toContain("super.printReceipt");
     expect(gatewayBlock).not.toContain("window.print");
+    expect(source).toContain("is_gateway_printing_enabled");
   });
 
-  it("keeps only the three Odoo integration models", () => {
+  it("blocks native POS order-preparation printing while Gateway mode is enabled", () => {
+    const source = readFileSync(join(root, "odoo_addons/print_gateway/static/src/js/pos_print_router.js"), "utf8");
+    const kitchenBlock = source.split("async printChanges()", 2)[1]?.split("return super.printChanges", 2)[0] ?? "";
+    expect(kitchenBlock).toContain("is_gateway_printing_enabled");
+    expect(kitchenBlock).toContain("throw error");
+  });
+
+  it("keeps only the final Odoo integration model files", () => {
     const modelsDir = join(root, "odoo_addons/print_gateway/models");
     expect(readdirSync(modelsDir).filter((name) => name.endsWith(".py")).sort()).toEqual([
       "__init__.py", "binding.py", "gateway_config.py", "ir_actions_report.py", "pos_order.py", "print_job.py", "print_router.py",
     ]);
+  });
+
+  it("contains no legacy ownership terms in the addon production source", () => {
+    const source = readAll(odooSource);
+    for (const token of ["gateway_branch_id", "branch_sync", "report_mapping", "async_report", "destination_id", "document_type_id"]) {
+      expect(source).not.toContain(token);
+    }
   });
 });
