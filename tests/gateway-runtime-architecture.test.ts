@@ -19,7 +19,10 @@ function sourceFiles(dir: string): string[] {
 
 const activeSource = sourceFiles(join(root, "src"));
 const odooSource = sourceFiles(join(root, "odoo_addons", "print_gateway")).filter((file) => !file.includes(join("odoo_addons", "print_gateway", "tests")));
-const odooProductionFiles = odooSource.filter((file) => !file.includes("/tests/") && !file.includes("/migrations/"));
+const odooProductionFiles = odooSource.filter((file) => {
+  const normalized = relative(root, file).split(/[\\/]+/).join("/");
+  return !normalized.split("/").includes("tests") && !normalized.split("/").includes("migrations");
+});
 function readAll(files: string[]): string { return files.map((file) => `${relative(root, file)}\n${readFileSync(file, "utf8")}`).join("\n"); }
 
 describe("gateway runtime ownership contract", () => {
@@ -70,10 +73,13 @@ describe("gateway runtime ownership contract", () => {
 
   it("never invokes native POS receipt printing from the Gateway-enabled branch", () => {
     const source = readFileSync(join(root, "odoo_addons/print_gateway/static/src/js/pos_print_router.js"), "utf8");
-    const nativeFallback = source.indexOf("if (gatewayEnabled !== true) {\n            return super.printReceipt");
-    const syncStart = source.indexOf("if (!currentOrder.isSynced)", nativeFallback);
-    const gatewayBlock = syncStart >= 0 ? source.slice(syncStart) : "";
+    const nativeFallback = source.indexOf("if (gatewayEnabled !== true) {");
     expect(nativeFallback).toBeGreaterThanOrEqual(0);
+    const nativeReturn = source.indexOf("return super.printReceipt", nativeFallback);
+    const syncStart = source.indexOf("if (!currentOrder.isSynced)", nativeFallback);
+    const gatewayBlockEnd = source.indexOf("    },", syncStart);
+    const gatewayBlock = syncStart >= 0 ? source.slice(syncStart, gatewayBlockEnd >= 0 ? gatewayBlockEnd : source.length) : "";
+    expect(nativeReturn).toBeGreaterThanOrEqual(nativeFallback);
     expect(gatewayBlock).not.toContain("super.printReceipt");
     expect(gatewayBlock).not.toContain("window.print");
     expect(source).toContain("is_gateway_printing_enabled");
