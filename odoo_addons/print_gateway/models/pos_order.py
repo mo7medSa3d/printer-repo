@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
+"""Server-side POS integration for Gateway printing."""
+
 from odoo import models
 
 
-class PosOrderPrintGateway(models.Model):
+class PosOrderGatewayPrinting(models.Model):
     _inherit = "pos.order"
 
     def action_print_gateway_receipt(self):
-        """Return a silent Gateway-print result for the POS frontend."""
+        """Route the synchronized POS order through the central Odoo router."""
         self.ensure_one()
         return self.env["print_gateway.print_router"].route_pos_receipt(self)
