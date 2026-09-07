@@ -232,15 +232,26 @@ class PrintGatewayJob(models.Model):
         return True
 
     def action_retry(self):
-        """Retry only a definitely-not-printed submission.
+        """Create a new logical print operation only from a definitely failed job.
 
-        A job that is submitted/claimed/printing or has an unknown physical outcome
-        must never be reset by this action: doing so can cause a second physical print.
-        The Gateway's idempotency key is the safety boundary for queued/unknown
-        transport retries, which are handled by the scheduled submission path.
+        Reusing the old idempotency key would intentionally return the old Gateway
+        job instead of printing again. Mutating an in-flight or unknown job is also
+        unsafe because its physical outcome may already be printed.
         """
         for job in self.filtered(lambda row: row.status == "failed"):
-            job.write({"status": "queued", "next_retry_at": fields.Datetime.now(), "last_error": False})
+            retry = self.create_operation(
+                company=job.company_id,
+                gateway_config=job.gateway_config_id,
+                printer_id=job.printer_id,
+                destination=job.destination,
+                document_type=job.document_type,
+                payload=json.loads(job.payload),
+                source_model=job.source_model,
+                source_record_id=job.source_record_id,
+                report=job.report_id,
+                idempotency_key=uuid.uuid4().hex,
+            )
+            retry.action_submit()
         return True
 
     @api.model
