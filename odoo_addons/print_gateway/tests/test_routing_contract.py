@@ -47,11 +47,22 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             'destination_type': 'report',
             'destination_report_id': report.id,
             'report_id': report.id,
-            'destination_ref': 'res.company,%s' % self.company.id,
             'printer_id': 'printer_runtime_1',
         })
         self.assertEqual(binding.destination_ref._name, 'ir.actions.report')
         self.assertEqual(binding.destination_ref.id, report.id)
+
+    def test_binding_rejects_manual_unsupported_destination_reference(self):
+        report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
+        with self.assertRaises((ValueError, ValidationError)):
+            self.env['print_gateway.binding'].create({
+                'company_id': self.company.id,
+                'destination_type': 'report',
+                'destination_report_id': report.id,
+                'report_id': report.id,
+                'destination_ref': 'res.company,%s' % self.company.id,
+                'printer_id': 'printer_runtime_1',
+            })
 
     def test_cross_company_destination_is_rejected(self):
         picking_type = self.env['stock.picking.type'].search([('company_id', '=', self.company.id)], limit=1)
@@ -127,6 +138,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         ):
             with self.assertRaises(ValidationError):
                 job.action_submit(raise_on_failure=True)
+        job.invalidate_recordset(['status', 'last_error', 'attempts', 'next_retry_at'])
         persisted = self.env['print_gateway.print_job'].browse(job.id).exists()
+        persisted.invalidate_recordset(['status', 'last_error'])
         self.assertEqual(persisted.status, 'unknown')
         self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', persisted.last_error)
