@@ -35,9 +35,9 @@ suite("discovery trust and approval flow", () => {
 
   async function createDiscoverySession(id = `disc_${Date.now()}`) {
     await pool().query(
-      `INSERT INTO discovery_sessions (id, agent_id, branch_id, status, config, stats)
-       VALUES ($1, $2, $3, 'running', '{}'::jsonb, '{}'::jsonb)`,
-      [id, f.agentId, f.branchId],
+      `INSERT INTO discovery_sessions (id, agent_id, status, config, stats)
+       VALUES ($1, $2, 'running', '{}'::jsonb, '{}'::jsonb)`,
+      [id, f.agentId],
     );
     return id;
   }
@@ -45,10 +45,7 @@ suite("discovery trust and approval flow", () => {
   function agentRequest(discoveryId: string, devices: unknown[]) {
     return discoveryReportPOST(new Request("http://gateway.test/api/agent/discovery", {
       method: "POST",
-      headers: {
-        Authorization: f.agentAuth,
-        "content-type": "application/json",
-      },
+      headers: { Authorization: f.agentAuth, "content-type": "application/json" },
       body: JSON.stringify({ discoveryId, status: "completed", devices }),
     }));
   }
@@ -63,14 +60,8 @@ suite("discovery trust and approval flow", () => {
   it("treats agent verification/confidence as untrusted observation data", async () => {
     const discoveryId = await createDiscoverySession();
     const res = await agentRequest(discoveryId, [{
-      id: "device-trust-1",
-      source: ["ipp"],
-      protocol: "ipp",
-      ipAddress: "192.168.10.44",
-      port: 631,
-      verification: "verified",
-      confidence: "high",
-      capabilities: { supported_protocols: ["pdf"] },
+      id: "device-trust-1", source: ["ipp"], protocol: "ipp", ipAddress: "192.168.10.44", port: 631,
+      verification: "verified", confidence: "high", capabilities: { supported_protocols: ["pdf"] },
     }]);
 
     expect(res.status).toBe(200);
@@ -78,22 +69,12 @@ suite("discovery trust and approval flow", () => {
       `SELECT verification, confidence, candidate_status FROM discovered_devices WHERE id = $1`,
       ["device-trust-1"],
     );
-    expect(row.rows[0]).toEqual({
-      verification: "candidate",
-      confidence: "low",
-      candidate_status: "discovered",
-    });
+    expect(row.rows[0]).toEqual({ verification: "candidate", confidence: "low", candidate_status: "discovered" });
   });
 
   it("rejects public IPv6 discovery reports at the Gateway boundary", async () => {
     const discoveryId = await createDiscoverySession();
-    const res = await agentRequest(discoveryId, [{
-      id: "device-public-v6",
-      protocol: "ipp",
-      ipAddress: "2001:4860:4860::8888",
-      port: 631,
-    }]);
-
+    const res = await agentRequest(discoveryId, [{ id: "device-public-v6", protocol: "ipp", ipAddress: "2001:4860:4860::8888", port: 631 }]);
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain("private or link-local");
   });
@@ -101,13 +82,8 @@ suite("discovery trust and approval flow", () => {
   it("requires explicit manager approval before provisioning", async () => {
     const discoveryId = await createDiscoverySession();
     await agentRequest(discoveryId, [{
-      id: "device-provision-1",
-      source: ["ipp"],
-      protocol: "ipp",
-      ipAddress: "192.168.10.50",
-      port: 631,
-      uri: "ipp://192.168.10.50/ipp/print",
-      deviceName: "Approved Printer",
+      id: "device-provision-1", source: ["ipp"], protocol: "ipp", ipAddress: "192.168.10.50", port: 631,
+      uri: "ipp://192.168.10.50/ipp/print", deviceName: "Approved Printer",
     }]);
 
     const manager = await createManagerSession();
@@ -144,13 +120,8 @@ suite("discovery trust and approval flow", () => {
   it("serializes concurrent provisioning so one candidate cannot create two printers", async () => {
     const discoveryId = await createDiscoverySession();
     await agentRequest(discoveryId, [{
-      id: "device-concurrent-1",
-      source: ["ipp"],
-      protocol: "ipp",
-      ipAddress: "192.168.10.51",
-      port: 631,
-      uri: "ipp://192.168.10.51/ipp/print",
-      deviceName: "Concurrent Printer",
+      id: "device-concurrent-1", source: ["ipp"], protocol: "ipp", ipAddress: "192.168.10.51", port: 631,
+      uri: "ipp://192.168.10.51/ipp/print", deviceName: "Concurrent Printer",
     }]);
 
     const manager = await createManagerSession();

@@ -13,7 +13,7 @@ import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 
-suite("legacy direct-printer print authorization", () => {
+suite("installation API-key print authorization", () => {
   let f: Fixture;
 
   beforeAll(async () => {
@@ -29,7 +29,7 @@ suite("legacy direct-printer print authorization", () => {
     f = await seedFixture();
   });
 
-  function legacyCreate(body: unknown, key = f.odooKey) {
+  function create(body: unknown, key = f.odooKey) {
     return printJobsPOST(new Request("http://gateway.test/api/print/jobs", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
@@ -37,44 +37,43 @@ suite("legacy direct-printer print authorization", () => {
     }));
   }
 
-  it("rejects a global/unscoped Odoo key for legacy direct printing", async () => {
-    const globalKey = `odoo_global_${Date.now()}`;
-    await pool().query(
-      `INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, NULL, 'standard', 'global legacy test', $2)`,
-      [`key_global_${Date.now()}`, sha256(globalKey)],
-    );
-
-    const res = await legacyCreate({
+  it("accepts a valid installation-level Odoo key for an online printer", async () => {
+    const res = await create({
       printerId: f.printerId,
+      documentType: "receipt",
+      destination: "POS",
       payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
-    }, globalKey);
-
-    expect(res.status).toBe(403);
-  });
-
-  it("rejects a branch key when the target printer belongs to another branch", async () => {
-    const secondBranch = `branch_other_${Date.now()}`;
-    const secondAgent = `agt_other_${Date.now()}`;
-    const secondPrinter = `printer_other_${Date.now()}`;
-    await pool().query(`INSERT INTO branches (id, name, enabled) VALUES ($1, 'Other Branch', true)`, [secondBranch]);
-    await pool().query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, 'Other Agent', $3, 'online', 'active', now())`, [secondAgent, secondBranch, sha256("other-agent-secret")]);
-    await pool().query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
-       VALUES ($1, $2, 'Other Printer', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, '{"supported_protocols":["raw"]}'::jsonb)`,
-      [secondPrinter, secondAgent],
-    );
-
-    const res = await legacyCreate({
-      printerId: secondPrinter,
-      payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+      idempotencyKey: "installation-key-1",
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(201);
   });
 
-  it("validates the legacy payload with the same canonical payload contract", async () => {
-    const res = await legacyCreate({
+  it("rejects an invalid or revoked installation key", async () => {
+    const keyId = `key_revoked_${Date.now()}`;
+    const rawKey = `odoo_revoked_${Date.now()}`;
+    await pool().query(
+      `INSERT INTO api_keys (id, scope, name, hashed_key) VALUES ($1, 'standard', 'revoked', $2)`,
+      [keyId, sha256(rawKey)],
+    );
+    await pool().query(`UPDATE api_keys SET revoked_at = now() WHERE id = $1`, [keyId]);
+
+    const res = await create({
       printerId: f.printerId,
-      payload: { type: "pdf", encoding: "base64", data: Buffer.from("not a pdf").toString("base64") },
+      documentType: "receipt",
+      destination: "POS",
+      payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+    }, rawKey);
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects legacy branch/document authorization fields at the API boundary", async () => {
+    const res = await create({
+      printerId: f.printerId,
+      documentType: "receipt",
+      destination: "POS",
+      payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+      branchId: "legacy-branch-id",
+      allowedDocumentTypes: ["receipt"],
     });
     expect(res.status).toBe(400);
   });

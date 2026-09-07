@@ -138,10 +138,8 @@ export type JobDeliveryEnvelope = {
   type: "print_job";
   job: {
     id: string;
-    branchId: string;
     agentId: string;
     printerId: string;
-    destinationId: string | null;
     documentType: string | null;
     status: string;
     payload: unknown;
@@ -160,10 +158,8 @@ export function buildJobEnvelope(job: ClaimedJobRow): JobDeliveryEnvelope {
     type: "print_job",
     job: {
       id: job.id,
-      branchId: job.branchId,
       agentId: job.agentId,
       printerId: job.printerId,
-      destinationId: job.destinationId ?? null,
       documentType: job.documentType ?? null,
       status: job.status,
       payload: job.payload,

@@ -18,9 +18,8 @@ export async function GET(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
   if (!agent) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  await sweepPrintJobs({ agentId: agent.id, branchId: agent.branchId });
+  await sweepPrintJobs({ agentId: agent.id });
 
-  const branchFilter = agent.branchId ? sql`AND p.branch_id = ${agent.branchId}` : sql``;
   const claimJobs = async (tx: { execute: typeof db.execute }) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`}))`);
 
@@ -29,16 +28,13 @@ export async function GET(req: Request) {
       FROM print_jobs p
       JOIN agents a ON a.id = p.agent_id
       JOIN printers pr ON pr.id = p.printer_id
-      JOIN branches b ON b.id = p.branch_id
       WHERE p.agent_id = ${agent.id}
         AND p.status IN ('claimed', 'printing')
         AND p.expires_at > now()
-        AND b.enabled = true
         AND a.lifecycle = 'active'
         AND a.status = 'online'
         AND pr.lifecycle = 'active'
         AND pr.status = 'online'
-        ${branchFilter}
     `);
     const inFlight = Number((countResult.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
     const remainingSlots = Math.max(0, MAX_AGENT_IN_FLIGHT_JOBS - inFlight);
@@ -50,18 +46,15 @@ export async function GET(req: Request) {
         FROM print_jobs p
         JOIN agents a ON a.id = p.agent_id
         JOIN printers pr ON pr.id = p.printer_id
-        JOIN branches b ON b.id = p.branch_id
         WHERE p.agent_id = ${agent.id}
           AND p.expires_at > now()
           AND p.status = 'claimed'
           AND p.updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
           AND p.retries < ${MAX_RETRIES}
-          AND b.enabled = true
           AND a.lifecycle = 'active'
           AND a.status = 'online'
           AND pr.lifecycle = 'active'
           AND pr.status = 'online'
-          ${branchFilter}
         ORDER BY p.created_at ASC
         LIMIT ${MAX_CLAIM_BATCH}
       ),
@@ -70,17 +63,14 @@ export async function GET(req: Request) {
         FROM print_jobs p
         JOIN agents a ON a.id = p.agent_id
         JOIN printers pr ON pr.id = p.printer_id
-        JOIN branches b ON b.id = p.branch_id
         WHERE p.agent_id = ${agent.id}
           AND p.expires_at > now()
           AND p.status = 'queued'
           AND ${queuedLimit} > 0
-          AND b.enabled = true
           AND a.lifecycle = 'active'
           AND a.status = 'online'
           AND pr.lifecycle = 'active'
           AND pr.status = 'online'
-          ${branchFilter}
         ORDER BY p.created_at ASC
         LIMIT ${queuedLimit}
       ),
@@ -95,15 +85,13 @@ export async function GET(req: Request) {
         JOIN candidate_ids c ON c.id = p.id
         JOIN agents a ON a.id = p.agent_id
         JOIN printers pr ON pr.id = p.printer_id
-        JOIN branches b ON b.id = p.branch_id
-        WHERE b.enabled = true
-          AND a.lifecycle = 'active'
+        WHERE a.lifecycle = 'active'
           AND a.status = 'online'
           AND pr.lifecycle = 'active'
           AND pr.status = 'online'
         ORDER BY c.priority ASC, c.created_at ASC
         LIMIT ${MAX_CLAIM_BATCH}
-        FOR UPDATE OF p, a, pr, b SKIP LOCKED
+        FOR UPDATE OF p, a, pr SKIP LOCKED
       )
       UPDATE print_jobs
       SET
@@ -120,10 +108,9 @@ export async function GET(req: Request) {
       WHERE print_jobs.id = claimable.id
       RETURNING
         print_jobs.id AS id,
-        print_jobs.branch_id AS "branchId",
         print_jobs.agent_id AS "agentId",
         print_jobs.printer_id AS "printerId",
-        print_jobs.destination_id AS "destinationId",
+        print_jobs.destination AS destination,
         print_jobs.document_type AS "documentType",
         print_jobs.status AS status,
         print_jobs.payload AS payload,
@@ -164,18 +151,14 @@ export async function PATCH(req: Request) {
   const errorMessage = typeof rawError === "string" && rawError.length > 0 ? rawError.slice(0, MAX_ERROR_LENGTH) : null;
   const reason = typeof rawReason === "string" ? rawReason.trim() : "";
 
-  const whereClause = agent.branchId
-    ? and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id), eq(printJobs.branchId, agent.branchId))
-    : and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id));
+  const whereClause = and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id));
   const job = await db.query.printJobs.findFirst({ where: whereClause });
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
 
   const currentStatus = job.status as JobStatus;
 
   if (!isTerminal(currentStatus) && new Date(job.expiresAt).getTime() <= Date.now()) {
-    const expiryError = currentStatus === "printing"
-      ? "JOB_EXPIRED_DURING_PRINT: physical output is unknown"
-      : null;
+    const expiryError = currentStatus === "printing" ? "JOB_EXPIRED_DURING_PRINT: physical output is unknown" : null;
     const expired = await db.update(printJobs)
       .set({ status: "expired", error: expiryError, updatedAt: new Date() })
       .where(and(whereClause, eq(printJobs.status, currentStatus)))
@@ -184,22 +167,15 @@ export async function PATCH(req: Request) {
       incrementMetric("print_jobs_expired_total");
       if (expiryError) incrementMetric("print_jobs_unknown_total");
       logInfo("print.job.expired", { requestId, jobId, agentId: agent.id, physicalOutcome: expiryError ? "unknown" : "not_printed" });
-      return NextResponse.json({
-        error: "Job has expired",
-        status: "expired",
-        physicalOutcome: derivePhysicalOutcome("expired", expiryError),
-      }, { status: 409 });
+      return NextResponse.json({ error: "Job has expired", status: "expired", physicalOutcome: derivePhysicalOutcome("expired", expiryError) }, { status: 409 });
     }
     const winner = await db.query.printJobs.findFirst({ where: whereClause });
     const winnerStatus = winner?.status as JobStatus | undefined;
     return NextResponse.json({ error: `Job transition raced with another update${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
   }
 
-  // --- Agent rejection: hand a claimed job back to the queue.
   if (requestedStatus === "queued" && currentStatus === "claimed") {
-    if (reason !== "pending_full") {
-      return NextResponse.json({ error: "Invalid status transition: claimed -> queued requires reason 'pending_full'" }, { status: 409 });
-    }
+    if (reason !== "pending_full") return NextResponse.json({ error: "Invalid status transition: claimed -> queued requires reason 'pending_full'" }, { status: 409 });
     const updated = await db.update(printJobs)
       .set({ status: "queued", error: null, updatedAt: new Date() })
       .where(and(whereClause, eq(printJobs.status, "claimed")))
@@ -214,7 +190,6 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ success: true, status: "queued", physicalOutcome: "not_printed" });
   }
 
-  // --- Late physical-outcome override: failed -> success.
   let lateSuccess = false;
   if (currentStatus === "failed" && requestedStatus === "success") {
     if (!isLateSuccessAllowed({ status: currentStatus, error: job.error, updatedAt: job.updatedAt }, Date.now())) {

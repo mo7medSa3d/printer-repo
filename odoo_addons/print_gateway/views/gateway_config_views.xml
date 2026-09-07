@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_config_list" model="ir.ui.view">
+        <field name="name">print_gateway.gateway_config.list</field>
+        <field name="model">print_gateway.gateway_config</field>
+        <field name="arch" type="xml">
+            <list string="Gateway Configuration" create="1" delete="0">
+                <field name="enabled" widget="boolean_toggle"/>
+                <field name="gateway_url"/>
+                <field name="last_test_status" widget="badge"/>
+                <field name="last_test_at" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_config_form" model="ir.ui.view">
+        <field name="name">print_gateway.gateway_config.form</field>
+        <field name="model">print_gateway.gateway_config</field>
+        <field name="arch" type="xml">
+            <form string="Gateway Configuration" create="1" delete="0">
+                <header>
+                    <button name="action_test_connection" type="object" string="Test Connection" class="oe_highlight"/>
+                </header>
+                <sheet>
+                    <h2>Print Gateway</h2>
+                    <p class="text-muted">Odoo owns business context and print intent. Gateway owns runtime agents, printers, queueing, and execution.</p>
+                    <group>
+                        <field name="enabled" widget="boolean_toggle"/>
+                    </group>
+                    <group string="Connection">
+                        <field name="gateway_url" placeholder="https://print.example.com"/>
+                        <field name="gateway_api_key" password="True" placeholder="Paste the installation API key"/>
+                    </group>
+                    <group string="Connection Test" col="4">
+                        <field name="last_test_status" readonly="1" widget="badge"/>
+                        <field name="last_test_at" readonly="1"/>
+                        <field name="last_test_error" readonly="1" invisible="not last_test_error" colspan="2"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_print_gateway_config" model="ir.actions.act_window">
+        <field name="name">Gateway Configuration</field>
+        <field name="res_model">print_gateway.gateway_config</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

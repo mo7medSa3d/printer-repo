@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_binding_list" model="ir.ui.view">
+        <field name="name">print_gateway.binding.list</field>
+        <field name="model">print_gateway.binding</field>
+        <field name="arch" type="xml">
+            <list string="Print Bindings" create="1" delete="1">
+                <field name="company_id" string="Company / Branch"/>
+                <field name="destination_ref" string="Destination"/>
+                <field name="document_type" string="Document Type"/>
+                <field name="printer_id" string="Printer" widget="gateway_runtime_printer"/>
+                <field name="enabled" widget="boolean_toggle"/>
+                <field name="priority" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_binding_form" model="ir.ui.view">
+        <field name="name">print_gateway.binding.form</field>
+        <field name="model">print_gateway.binding</field>
+        <field name="arch" type="xml">
+            <form string="Print Binding">
+                <sheet>
+                    <group string="Where">
+                        <field name="company_id" string="Company / Branch"/>
+                        <field name="destination_type"/>
+                        <field name="destination_pos_config_id"
+                               string="POS Configuration"
+                               invisible="destination_type != 'pos'"
+                               required="destination_type == 'pos'"/>
+                        <field name="destination_pos_printer_id"
+                               string="POS / Kitchen Printer"
+                               invisible="destination_type != 'pos_printer'"
+                               required="destination_type == 'pos_printer'"/>
+                        <field name="destination_picking_type_id"
+                               string="Operation Type"
+                               invisible="destination_type != 'picking_type'"
+                               required="destination_type == 'picking_type'"/>
+                        <field name="destination_report_id"
+                               string="Report Destination"
+                               invisible="destination_type != 'report'"
+                               required="destination_type == 'report'"/>
+                    </group>
+                    <group string="What">
+                        <field name="report_id" string="Document / Report"
+                               invisible="destination_type == 'pos_printer'"
+                               required="destination_type != 'pos_printer'"/>
+                        <field name="document_type" string="Document Type" readonly="1"/>
+                    </group>
+                    <group string="Where to Print">
+                        <field name="printer_id" string="Printer" widget="gateway_runtime_printer"/>
+                        <field name="enabled" widget="boolean_toggle"/>
+                        <field name="priority"/>
+                    </group>
+                    <field name="destination_ref" invisible="1"/>
+                    <div class="alert alert-info" role="alert">
+                        Odoo owns companies, destinations, and reports. Gateway supplies the runtime printer list; this rule only connects existing Odoo print context to an execution target.
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_print_gateway_binding" model="ir.actions.act_window">
+        <field name="name">Print Bindings</field>
+        <field name="res_model">print_gateway.binding</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

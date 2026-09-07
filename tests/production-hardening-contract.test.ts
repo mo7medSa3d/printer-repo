@@ -83,18 +83,21 @@ describe("production hardening contracts", () => {
     expect(verify).toContain('candidateStatus: "verified"');
   });
 
-  it("keeps dashboard approval aligned with technical confidence semantics", () => {
+  it("keeps the dashboard focused on runtime agents, printers, and jobs", () => {
     const dashboard = read("src/app/dashboard/dashboard-client.tsx");
-    expect(dashboard).toContain('candidateStatus: "verified", verification: "verified"');
-    expect(dashboard).not.toContain('candidateStatus: "verified", verification: "verified", confidence: "high"');
-    expect(dashboard).toContain("Technical confidence remains unchanged");
+    expect(dashboard).toContain("Runtime Printers");
+    expect(dashboard).toContain("Recent Print Jobs");
+    expect(dashboard).not.toContain("candidateStatus");
+    expect(dashboard).not.toContain("Technical confidence remains unchanged");
   });
 
-  it("keeps the legacy direct-printer route branch-scoped and payload-validated", () => {
+  it("keeps direct print submission printer-scoped and payload-validated", () => {
     const route = read("src/app/api/print/jobs/route.ts");
-    expect(route).toContain("if (!odoo?.branchId)");
-    expect(route).toContain("validatePrintJobPayload(parsed.payload)");
-    expect(route).toContain("ownerAgent.branchId !== odoo.branchId");
+    expect(route).toContain("validatePrintJobPayload(parsed.data.payload)");
+    expect(route).toContain("printerId");
+    expect(route).not.toContain("branchId");
+    expect(route).not.toContain("branch_id");
+    expect(route).not.toContain("destinationId");
   });
 
   it("keeps the main governance workflow present and explicit about the external protection prerequisite", () => {

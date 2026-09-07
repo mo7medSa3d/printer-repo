@@ -31,10 +31,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "metadata exceeds 32KB" }, { status: 400 });
     }
 
-    if (body && typeof body === "object" && "branchId" in body) {
-      return NextResponse.json({ error: "branchId is not accepted during registration" }, { status: 400 });
-    }
-
     const parsed = registrationSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json({ error: "pairingCode must be exactly 6 characters from the approved alphabet" }, { status: 400 });
@@ -90,7 +86,7 @@ export async function POST(req: Request) {
     }
 
     try { await recordPairingSuccess(ip); } catch {}
-    return NextResponse.json({ agentId: agent.id, branchId: agent.branchId, secret }, { status: 200 });
+    return NextResponse.json({ agentId: agent.id, secret }, { status: 200 });
   } catch (error) {
     console.error("[agent/register] registration failed", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

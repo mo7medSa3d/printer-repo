@@ -64,15 +64,14 @@ export async function POST(req: Request) {
     parsedDevices.push(parsed.data);
   }
 
-  // Discovery is observation, not authorization. The gateway never accepts an
-  // agent-supplied "verified" value as proof of a production-ready printer.
+  // Discovery is observation, not authorization. Approval is handled by the
+  // manager endpoint before a discovered device can become a runtime printer.
   for (const d of parsedDevices) {
     const id = typeof d.id === "string" && d.id ? d.id : `dev_${nanoid(10)}`;
     await db.insert(discoveredDevices).values({
       id,
       discoveryId,
       agentId: agent.id,
-      branchId: agent.branchId,
       source: d.source ?? [],
       protocol: d.protocol ?? "unknown",
       ipAddress: d.ipAddress ?? null,

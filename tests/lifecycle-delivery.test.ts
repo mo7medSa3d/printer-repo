@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { claimJobForDelivery } from "../src/lib/job-delivery";
 import {
   hasTestDatabase,
@@ -33,9 +33,9 @@ suite("delivery lifecycle enforcement", () => {
   });
 
   async function setLifecycle(kind: "agent" | "printer", lifecycle: Lifecycle) {
-    const column = kind === "agent" ? "agents" : "printers";
+    const table = kind === "agent" ? "agents" : "printers";
     const id = kind === "agent" ? f.agentId : f.printerId;
-    await pool().query(`UPDATE ${column} SET lifecycle = $1 WHERE id = $2`, [lifecycle, id]);
+    await pool().query(`UPDATE ${table} SET lifecycle = $1 WHERE id = $2`, [lifecycle, id]);
   }
 
   it.each(["disabled", "retired"] as Lifecycle[])('does not claim a queued job for a %s printer', async (lifecycle) => {
@@ -54,15 +54,7 @@ suite("delivery lifecycle enforcement", () => {
     expect((await jobRow(`agent_${lifecycle}`)).status).toBe("queued");
   });
 
-  it("does not claim a queued job when its branch is disabled", async () => {
-    await insertQueuedJob(f, "branch_disabled");
-    await pool().query(`UPDATE branches SET enabled = false WHERE id = $1`, [f.branchId]);
-
-    expect(await claimJobForDelivery("branch_disabled", f.agentId)).toBeNull();
-    expect((await jobRow("branch_disabled")).status).toBe("queued");
-  });
-
-  it("linearizes a lifecycle update and a claim on the same owner rows", async () => {
+  it("linearizes a printer lifecycle update and a claim on the same owner row", async () => {
     await insertQueuedJob(f, "race_lifecycle");
     const client = await pool().connect();
     try {

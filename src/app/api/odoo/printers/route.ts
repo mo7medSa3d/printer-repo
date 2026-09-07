@@ -1,25 +1,44 @@
 import { NextResponse } from "next/server";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "../../../../db";
 import { agents, printers } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
-import { isVirtualPrinterRecord } from "../../../../lib/printer-virtual";
-import { eq, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const requestedBranch = url.searchParams.get("branchId");
-  const odoo = await validateOdooKey(req, requestedBranch);
-  if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const filter = requestedBranch ?? odoo.branchId ?? null;
-  try {
-    // Bounded: a branch with thousands of printers (plus 16KB configs) must
-    // not produce an unbounded response.
-    const query = db.select({ printer: printers, branchId: agents.branchId }).from(printers).innerJoin(agents, eq(agents.id, printers.agentId)).orderBy(desc(printers.updatedAt)).limit(500);
-    const rows = filter ? await query.where(eq(agents.branchId, filter)) : await query;
-    return NextResponse.json(rows.filter(({ printer }) => !isVirtualPrinterRecord(printer)).map(({ printer, branchId }) => ({ ...printer, branchId })));
-  } catch {
-    return NextResponse.json({ error: "database error while listing printers" }, { status: 500 });
-  }
+  const apiKey = await validateOdooKey(req);
+  if (!apiKey) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const rows = await db
+    .select({
+      id: printers.id,
+      name: printers.name,
+      status: printers.status,
+      lifecycle: printers.lifecycle,
+      printerType: printers.printerType,
+      deviceClass: printers.deviceClass,
+      connectionType: printers.connectionType,
+      protocol: printers.protocol,
+      agentId: agents.id,
+      agentName: agents.name,
+    })
+    .from(printers)
+    .innerJoin(agents, eq(printers.agentId, agents.id))
+    .where(and(ne(printers.lifecycle, "retired"), ne(agents.lifecycle, "retired")))
+    .orderBy(printers.name);
+
+  return NextResponse.json({
+    printers: rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      lifecycle: row.lifecycle,
+      printerType: row.printerType,
+      deviceClass: row.deviceClass,
+      connectionType: row.connectionType,
+      protocol: row.protocol,
+      agent: { id: row.agentId, name: row.agentName },
+    })),
+  }, { status: 200, headers: { "Cache-Control": "no-store" } });
 }

@@ -6,7 +6,6 @@ export default defineConfig({
   test: {
     include: [
       "tests/architecture-pg.test.ts",
-      "tests/odoo-sync-transaction.test.ts",
       "tests/routing-availability.test.ts",
       "tests/print-idempotency.test.ts",
       "tests/e2e-job-flow.test.ts",
@@ -20,6 +19,7 @@ export default defineConfig({
       "tests/multi-instance-gateway.test.ts",
     ],
     pool: "forks",
+    fileParallelism: false,
     sequence: { concurrent: false },
     testTimeout: 30000,
     hookTimeout: 30000,

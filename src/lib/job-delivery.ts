@@ -4,20 +4,18 @@ import { sql } from "drizzle-orm";
 /**
  * Ownership rules for handing a job to an agent.
  *
- * The gateway MUST own a job before an agent may execute it. Delivery claims
- * also lock and validate the branch, agent and printer lifecycle in the same
- * transaction so a job queued before an administrative disable/retire cannot
- * bypass the lifecycle boundary through WebSocket delivery.
+ * The Gateway owns runtime delivery state. A queued job is eligible only when
+ * its owning agent and runtime printer are still active and online at the
+ * delivery boundary. Odoo business entities are intentionally not part of
+ * this transaction.
  */
 export const CLAIM_LEASE_SECONDS = 90;
 export const MAX_DELIVERY_ATTEMPTS = 5;
 
 export type ClaimedJobRow = {
   id: string;
-  branchId: string;
   agentId: string;
   printerId: string;
-  destinationId: string | null;
   documentType: string | null;
   status: string;
   payload: unknown;
@@ -29,10 +27,8 @@ export type ClaimedJobRow = {
 
 const CLAIM_RETURNING = sql`
   print_jobs.id AS id,
-  print_jobs.branch_id AS "branchId",
   print_jobs.agent_id AS "agentId",
   print_jobs.printer_id AS "printerId",
-  print_jobs.destination_id AS "destinationId",
   print_jobs.document_type AS "documentType",
   print_jobs.status AS status,
   print_jobs.payload AS payload,
@@ -45,31 +41,26 @@ const CLAIM_RETURNING = sql`
 /**
  * Atomically take ownership of one queued job for `agentId`.
  *
- * Returns null when the job is not eligible. Eligibility is checked again at
- * the actual delivery boundary: branch enabled, agent active+online and
- * printer active+online must all hold while the owner rows are locked.
- * PostgreSQL's `FOR UPDATE SKIP LOCKED` queue pattern is used here; because
- * the query also locks the ownership rows explicitly, the concrete clause is
- * `FOR UPDATE OF p, b, a, pr SKIP LOCKED`.
+ * Eligibility is checked again at the delivery boundary while the runtime
+ * owner rows are locked. PostgreSQL's `FOR UPDATE SKIP LOCKED` pattern keeps
+ * concurrent agents from claiming the same job.
  */
 export async function claimJobForDelivery(jobId: string, agentId: string): Promise<ClaimedJobRow | null> {
   return db.transaction(async (tx) => {
     const locked = await tx.execute(sql`
       SELECT p.id
       FROM print_jobs p
-      JOIN branches b ON b.id = p.branch_id
       JOIN agents a ON a.id = p.agent_id
       JOIN printers pr ON pr.id = p.printer_id
       WHERE p.id = ${jobId}
         AND p.agent_id = ${agentId}
         AND p.status = 'queued'
         AND p.expires_at > now()
-        AND b.enabled = true
         AND a.lifecycle = 'active'
         AND a.status = 'online'
         AND pr.lifecycle = 'active'
         AND pr.status = 'online'
-      FOR UPDATE OF p, b, a, pr SKIP LOCKED
+      FOR UPDATE OF p, a, pr SKIP LOCKED
     `);
     if (locked.rows.length === 0) return null;
 

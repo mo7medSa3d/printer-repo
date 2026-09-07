@@ -1,38 +1,26 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
 
 describe("production fixes contracts (2026-09)", () => {
-  it("odoo sync wipe guard: an empty list cannot silently disable every row", () => {
-    const sync = read("src/app/api/odoo/sync/route.ts");
-    expect(sync).toContain("const wipeRequested = body.wipe === true;");
-    expect(sync).toContain(
-      "empty destinations list would disable all existing destinations in this branch; if intentional, re-run the sync with \\\"wipe\\\": true",
-    );
-    expect(sync).toContain(
-      "empty documentTypes list would disable all existing document types in this branch; if intentional, re-run the sync with \\\"wipe\\\": true",
-    );
-    expect(sync).toContain(
-      "empty bindings list would disable all existing printer bindings in this branch; if intentional, re-run the sync with \\\"wipe\\\": true",
-    );
-    expect(sync.split("!wipeRequested").length - 1).toBeGreaterThanOrEqual(3);
+  it("keeps the removed Odoo business-sync surface absent", () => {
+    expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/sync/route.ts"))).toBe(false);
+    expect(existsSync(resolve(process.cwd(), "src/app/api/odoo/agents/route.ts"))).toBe(false);
+    expect(read("src/app/api/odoo/printers/route.ts")).toContain("validateOdooKey");
+    expect(read("src/app/api/print/jobs/route.ts")).toContain("printerId");
+    expect(read("src/app/api/print/jobs/route.ts")).not.toContain("branchId");
   });
 
-  it("odoo sync GET is metadata-only and caps jobIds at 50", () => {
-    const sync = read("src/app/api/odoo/sync/route.ts");
-    expect(sync).toContain("const MAX_SYNC_JOB_IDS = 50;");
-    expect(sync).toContain("if (ids.length > MAX_SYNC_JOB_IDS) return null;");
-    expect(sync).toContain("jobIds accepts at most ${MAX_SYNC_JOB_IDS} ids");
-    const colsStart = sync.indexOf("const SYNC_JOB_COLUMNS = {");
-    const colsEnd = sync.indexOf("} as const;", colsStart);
-    expect(colsStart).toBeGreaterThan(-1);
-    const cols = sync.slice(colsStart, colsEnd);
-    expect(cols).toContain("status: printJobs.status");
-    expect(cols).toContain("error: printJobs.error");
-    expect(cols).not.toContain("payload");
-    expect(sync).toContain('return NextResponse.json({ branchId: branchFilter, agents: [], printers: [], jobs: jobRows, syncStatus: "success" });');
+  it("keeps the print-job GET status response metadata-only", () => {
+    const route = read("src/app/api/print/jobs/route.ts");
+    const getSection = route.slice(route.indexOf("export async function GET"));
+    expect(getSection).toContain("validateOdooKey");
+    expect(getSection).toContain('searchParams.get("id")');
+    expect(getSection).toContain("responseForRow(row)");
+    expect(getSection).not.toContain("row.payload");
+    expect(getSection).not.toContain('json({ payload');
   });
 
   it("heartbeat print-lease keep-alive: bounded job id list only, scoped to claimed/printing", () => {
@@ -60,8 +48,8 @@ describe("production fixes contracts (2026-09)", () => {
     expect(agent).toContain('"reason": "pending_full"');
     expect(agent).toContain("discoverySem: make(chan struct{}, 1)");
     const net = read("agent/internal/printer/network.go");
-    expect(net).toContain("dialTimeout = 10 * time.Second");
-    expect(net).toContain("writeStallTimeout = 60 * time.Second");
+    expect(net).toMatch(/dialTimeout\s*=\s*10\s*\*\s*time\.Second/);
+    expect(net).toMatch(/writeStallTimeout\s*=\s*60\s*\*\s*time\.Second/);
     expect(net).toContain("_ = conn.SetWriteDeadline(time.Now().Add(writeStallTimeout))");
     expect(net).not.toContain("conn.SetDeadline(");
   });
@@ -79,15 +67,14 @@ describe("production fixes contracts (2026-09)", () => {
     expect(jm).toContain("MAX_RETRIES");
   });
 
-  it("Odoo cron reconciliation is bounded and batched", () => {
+  it("Odoo cron reconciliation is bounded and uses the current runtime job API", () => {
     const jobs = read("odoo_addons/print_gateway/models/print_job.py");
-    expect(jobs).toContain("max_jobs = 100");
-    expect(jobs).toContain("max_branches = 20");
-    expect(jobs).toContain("max_runtime_seconds = 30");
-    expect(jobs).toContain("request_timeout_seconds = 5");
-    expect(jobs).toContain("batch_size = 50");
-    expect(jobs).toContain("/api/odoo/sync");
-    expect(jobs).toContain("jobIds");
+    expect(jobs).toContain("limit=50");
+    expect(jobs).toContain("limit=100");
+    expect(jobs).toContain("/api/print/jobs");
+    expect(jobs).toContain("job.gateway_job_id");
+    expect(jobs).not.toContain("/api/odoo/sync");
+    expect(jobs).not.toContain("max_branches");
     expect(jobs).not.toContain("pending.action_sync_status()");
   });
 

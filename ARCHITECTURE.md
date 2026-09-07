@@ -1,175 +1,168 @@
-# Architecture
+# Print Gateway Architecture
 
-> Source of truth: the code in this repository. Every statement below was checked against
-the implementation at the commit that introduced this document. Paths are given so any
-claim can be re-verified.
+## Final topology
 
-## 1. System overview
-
-```
-Odoo (ERP / POS)
-   │  user presses Print on a QWeb report
-   ▼
-print_gateway addon                      odoo_addons/print_gateway
-   │  report mapping → branch / destination / document type → PDF payload
-   │  HTTPS  POST /api/print/jobs        Authorization: Bearer odoo_<key>
-   ▼
-Cloud Gateway (Next.js 16 + custom HTTP/WS server)      server.ts, src/
-   │  authenticate → validate payload → resolve route → INSERT print_jobs (queued)
-   ▼
-PostgreSQL                                src/db/schema.ts, drizzle/*.sql
-   │  durable job queue + configuration + runtime state
-   ▼
-Routing                                   src/lib/routing.ts
-   │  branch + destination + documentType + payload type → printer + agent
-   ▼
-Claim (single transaction)                src/lib/job-delivery.ts
-   │  SELECT … FOR UPDATE SKIP LOCKED + UPDATE status='claimed'
-   ▼
-Delivery                                  src/server/ws.ts  |  src/app/api/agent/jobs/route.ts
-   │  WebSocket push {"type":"print_job"}  ─or─  poll response (HTTP GET)
-   ▼
-Agent (Go, Windows service)               agent/
-   │  job_ack → local SQLite queue → per-printer lock
-   ▼
-Printer backend                           agent/internal/printer/
-   │  RAW TCP · Windows spooler · PDF pipeline · IPP · USB
-   ▼
-Physical printer                          (hardware — NOT verified in CI)
-   │
-   ▼
-Job status                                PATCH /api/agent/jobs (printing → success/failed)
-   ▼
-Gateway (PostgreSQL print_jobs)
-   ├──► Odoo        GET /api/print/jobs?id=…      (cron every 2 min)
-   └──► Desktop Manager  GET /api/health, GET /api/jobs   (polling, no WebSocket)
+```text
+Odoo 19
+  │
+  │ Gateway URL + installation API key
+  ▼
+Central Print Router (Odoo addon)
+  │
+  │ Binding + payload + durable outbox
+  ▼
+Gateway (Next.js + PostgreSQL)
+  │
+  ▼
+Windows Agent (Go)
+  │
+  ▼
+Physical Printer
 ```
 
-## 2. Components and responsibilities
+## Ownership
 
-| Component | Location | Responsibility |
-|---|---|---|
-| **Gateway** | `server.ts`, `src/app/api/**`, `src/lib/**`, `src/server/ws.ts` | Authentication, payload validation, routing, durable job queue, claim/delivery protocol, status machine, manager dashboard |
-| **PostgreSQL** | `src/db/schema.ts`, `drizzle/*.sql` | The only durable store for configuration, agents, printers and jobs |
-| **Agent** | `agent/` (Go 1.21, built with the toolchain in CI) | Runs on the Windows PC next to the printers: registration, heartbeat, discovery, WebSocket + poll delivery, local SQLite queue, physical printing |
-| **Desktop Manager** | `src-tauri/` (Rust/Tauri 2) + `src/desktop/` (React) | Windows tray app that installs/controls the agent service, pairs it with the gateway, lists/tests printers, shows gateway health. Never prints directly |
-| **Odoo addon** | `odoo_addons/print_gateway/` | Business configuration (branches, destinations, document types, bindings, report mappings), report interception, job creation and status tracking |
-| **Gateway manager console** | `src/app/dashboard` | Browser UI for managers: agents, printers, discovery and recent jobs. Production surface; no browser agent simulator is shipped. |
+| Concern | Owner |
+|---|---|
+| Existing Odoo companies / branches | Odoo |
+| Business documents and report definitions | Odoo |
+| POS configurations / operation types | Odoo |
+| Existing business destination/context | Odoo |
+| Print intent | Odoo |
+| Print bindings | Odoo Print Gateway addon |
+| Gateway URL / installation credential | Odoo Print Gateway addon |
+| Durable Odoo print outbox | Odoo Print Gateway addon |
+| Agents, pairing, heartbeats | Gateway |
+| Runtime printers and capabilities | Gateway / Agent |
+| Queueing, claiming, delivery, runtime state | Gateway |
+| Physical execution | Agent |
 
-The gateway is the only component that talks to PostgreSQL. The agent never reaches the
-database, and the desktop app never talks to a printer directly — it always goes
-Desktop → Gateway → Agent → printer, or Desktop → local agent CLI over Tauri IPC for
-local discovery/registration.
+The addon does not create or synchronize Gateway-side branches, destinations, document-type catalogs, agents, or printers.
 
-## 3. Source of truth per entity
+## Odoo integration layer
 
-| Entity | Owner | Created by | Notes |
-|---|---|---|---|
-| Branch | **Odoo** | `POST /api/odoo/sync` (upsert) or manager `POST /api/branches` | Odoo is authoritative for business config |
-| Destination (POS, kitchen, warehouse…) | **Odoo** | `POST /api/odoo/sync`, manager `POST /api/branches/:id/destinations` | Must belong to exactly one branch |
-| Document type (receipt, invoice…) | **Odoo** | `POST /api/odoo/sync` | Matched case-insensitively during routing |
-| Printer binding (destination + document type → printer) | **Odoo** | `POST /api/odoo/sync`, manager `POST /api/branches/:id/printer-bindings` | Carries `priority` for fallback |
-| Agent | **Gateway** | Manager creates a pairing code → `POST /api/agent/register` | Odoo can only read agents |
-| Printer (runtime registration + status) | **Gateway/Agent** | `POST /api/agent/heartbeat` (discovery), manager `POST /api/printers` | **Never created by the Odoo sync** (`src/app/api/odoo/sync/route.ts`) |
-| Print job | **Gateway** | `POST /api/print/jobs`, manager test print | Odoo keeps a mirror record `print_gateway.print_job` |
+The addon contains only:
 
-The sync endpoint enforces this split: it upserts branches/destinations/document
-types/bindings and *validates* that referenced printers already exist, returning
-`SYNC_DEPENDENCY_MISSING` instead of inventing printer rows.
+- `print_gateway.gateway_config`: Gateway URL, API key, enable flag, test status.
+- `print_gateway.binding`: native Odoo company/context + native destination/report + runtime printer reference.
+- `print_gateway.print_job`: durable logical print operation and retry/unknown state.
+- `print_gateway.print_router`: the single authoritative routing entry point.
+- `ir.actions.report.report_action`: backend interception for report-driven print actions.
+- A targeted POS controller override for Odoo 19 direct `/pos/sale_details_report` output.
+- POS `PosStore.printReceipt`: receipt/reprint/Restaurant Bill interception.
+- POS preparation printing interception through the same server-side router and binding model.
 
-## 4. Data model and relationships
+Native Odoo printing is allowed only while the Gateway is explicitly disabled. Gateway-enabled errors are fail-closed.
 
-Ten tables (`src/db/schema.ts`):
+## Authoritative routing context
 
+The Print Gateway router never chooses a business company from arbitrary document state. For Gateway-enabled routing, the active Odoo company (`env.company`) is authoritative.
+
+A supplied company must equal the active company, and a printable record with `company_id` must belong to that same active company. Odoo's multi-company access rules still determine whether the caller may read the record; the Print Gateway layer additionally rejects stale or mismatched company context.
+
+The canonical route is:
+
+```text
+Current Company (`env.company`)
+        +
+Native Odoo destination (POS / operation type / report / kitchen printer)
+        +
+Document type derived from the actual report/model
+        +
+Selected runtime printer binding
+        ↓
+One resolved Print Gateway binding
+        ↓
+Durable Odoo print operation
+        ↓
+Gateway runtime job
+        ↓
+Agent
+        ↓
+Physical printer
 ```
-branches ─┬─< destinations ─┐
-          ├─< document_types │
-          ├─< local_networks │
-          ├─< agents ─< printers ──┐
-          ├─< api_keys             │
-          └─< printer_bindings >───┘   (branch, destination, documentType) → printer
-                 │
-                 └─ used by routing to pick the printer for a job
 
-print_jobs → branch, destination, agent, printer      (jobs are always branch-scoped)
-manager_sessions                                       (dashboard/JWT session rows)
+In this repository, a branch is represented by Odoo's native company hierarchy. The Gateway does not maintain a parallel branch model.
+
+## Routing model
+
+A binding is configured against native Odoo records. No duplicate Gateway business entities are created.
+The destination reference is derived from the real Odoo context:
+
+- `pos.order` → its existing `pos.config`.
+- `stock.picking` → its existing `stock.picking.type`.
+- Report-driven printing → the actual `ir.actions.report`.
+- POS preparation/kitchen printing → the existing Odoo `pos.printer`.
+
+The document type is derived from the actual report/model and stored for deterministic matching. Runtime printer choices are read from the Gateway's authenticated runtime-printer endpoint; Odoo does not provision printers.
+
+## Backend report paths
+
+Standard backend buttons in Sales, Invoices, Inventory/Delivery, Purchase, and custom report actions normally enter through `ir.actions.report.report_action()`. With Gateway enabled, the router validates the active company and document company, resolves the binding, renders the payload, persists a durable outbox operation, submits it to `POST /api/print/jobs`, and returns a client notification rather than a browser PDF.
+
+Low-level `_render_qweb_pdf()` is deliberately not globally intercepted because that method is also used for non-print concerns such as report generation for other services. Known direct user-facing print endpoints are intercepted at their controller boundary.
+
+Odoo 19 POS also exposes `/pos/sale_details_report`, which directly renders a PDF. This repository overrides that specific route so Gateway-enabled requests become router jobs instead of PDF/browser output.
+
+## POS receipt paths
+
+Odoo 19 `PosStore.printReceipt()` is patched so Gateway-enabled receipt/reprint/Restaurant Bill flows never reach the native POS printer service. Unsynced orders are synchronized first because the Gateway router requires a persisted `pos.order`.
+
+The server then validates that the POS order belongs to `env.company` and resolves exactly one Odoo binding before submitting the runtime job.
+
+## POS preparation / kitchen printing
+
+Odoo 19 preparation printing is a separate path from receipt printing. The addon intercepts the preparation output, renders `OrderChangeReceipt` as a JPEG, and sends it through `route_kitchen_print()`.
+
+The Odoo `pos.printer` remains the business destination. The binding maps that native destination plus the `kitchen` document type to a Gateway runtime printer. The server validates that the POS order, native kitchen printer, and active Odoo company agree before creating the durable operation. The client-generated operation identifier is reused for retries of the same preparation receipt, while physical delivery remains at-least-once.
+
+## Gateway boundary
+
+Odoo sends only the runtime execution target and the business context needed by the runtime queue:
+
+```json
+{
+  "printerId": "runtime-printer-id",
+  "documentType": "receipt",
+  "destination": "Main POS",
+  "payload": {
+    "type": "pdf",
+    "encoding": "base64",
+    "data": "..."
+  },
+  "idempotencyKey": "stable-for-this-logical-operation"
+}
 ```
 
-Routing walks the chain `branch → destination (+ document type) → printer_bindings
-ordered by priority → printer → agent`, skipping candidates that are missing,
-cross-branch, disabled, offline or capability-incompatible
-(`resolvePrinterForJob` in `src/lib/routing.ts`).
+No Gateway branch identifier, destination entity ID, or document-type entity is accepted by the current API contract. Runtime ownership is Gateway-side (`Agent → Printer`); business ownership remains Odoo-side.
 
-See [docs/DATABASE.md](docs/DATABASE.md) for the full column-level reference.
+## API key lifecycle
 
-## 5. Branch isolation
+The Gateway manager supports generation, one-time display/copy, and revoke. Only a cryptographic hash remains at rest.
+Odoo stores the credential it must use to connect to the Gateway. Keys are installation-scoped and authenticated with the configured Odoo database name.
 
-Branch scoping is enforced at every layer, not just in the UI:
+## Reliability
 
-* **Odoo API keys** may be branch-scoped (`api_keys.branch_id`). `validateOdooKey(req, branchId)`
-  rejects a key used for another branch (`src/lib/odoo-auth.ts`).
-* **Job creation** resolves the printer only inside the requested branch and refuses a
-  binding whose printer, or whose printer's agent, belongs to a different branch
-  (`src/lib/routing.ts`).
-* **Agent endpoints** filter by `agent.branchId` when the agent is scoped (`branchFilter` in
-  `src/app/api/agent/jobs/route.ts`); an agent cannot claim, read or update another branch's or
-  another agent's jobs (identical 404 for both cases).
-* **Odoo sync** accepts exactly one branch per payload and rejects cross-branch
-  destinations/printers (`src/app/api/odoo/sync/route.ts`).
-* **Manager bindings API** validates destination, printer and the printer's agent all
-  share the branch (`src/app/api/branches/[id]/printer-bindings/route.ts`).
+The Odoo outbox is committed before the network request. Retries reuse the same idempotency key. A timeout or transport interruption becomes `unknown` rather than a definitive physical failure.
 
-Manager sessions are **global**, not per-branch: a signed-in manager sees every branch.
+Odoo-side idempotency is protected by a database uniqueness constraint and handles concurrent create races by reconciling the committed winner. Gateway-side idempotency is protected by the PostgreSQL uniqueness constraint and transaction lock before queue insertion.
 
-## 6. Two queue layers
+Gateway delivery uses an atomic claim (`FOR UPDATE SKIP LOCKED`), bounded delivery attempts, WebSocket push when available, and polling as the recovery path. A queued print job contains the runtime printer and agent identifiers needed for later delivery; it does not depend on mutable `env.company` or client-side state after creation.
 
-| Layer | Store | States | Purpose |
-|---|---|---|---|
-| Gateway | PostgreSQL `print_jobs` | `queued → claimed → printing → success \| failed \| expired` | Ownership, delivery bookkeeping, retries, TTL |
-| Agent | SQLite WAL (`agent/internal/queue/queue.go`) | `queued → printing → success \| failed` | Crash-safe local record, duplicate suppression, terminal-result replay |
+## Security
 
-The local record id equals the gateway job id, which is what makes duplicate delivery
-detection and terminal-result replay possible. Details in
-[docs/JOB_LIFECYCLE.md](docs/JOB_LIFECYCLE.md).
+- Company-scoped Odoo configuration and ACLs.
+- Odoo Print Gateway routing requires the active company and rejects document/company mismatches.
+- Company-specific native destinations use Odoo `check_company` validation plus explicit server-side constraints.
+- No API key or complete print payload is written to logs.
+- HTTP/HTTPS-only Gateway URLs with credential/query/fragment restrictions and SSRF controls.
+- Authenticated Odoo Gateway endpoints.
+- Runtime queue and rate limits remain Gateway responsibilities.
+- No browser/native fallback when Gateway printing is enabled.
+- Agent WebSocket delivery is authenticated, bounded, and recoverable through polling.
 
-## 7. Delivery paths
+## Validation boundary
 
-* **WebSocket** (`/api/agent/ws`, attached in `server.ts` via `attachAgentWSS`): the gateway
-  claims the job in a transaction and only then writes the `print_job` envelope to a single
-  open socket; the agent answers `job_ack`. See [docs/WEBSOCKET_PROTOCOL.md](docs/WEBSOCKET_PROTOCOL.md).
-* **Polling** (`GET /api/agent/jobs`): the same claim happens inside the SQL statement that
-  returns the rows; the HTTP response *is* the delivery. The agent polls every 10 s when the
-  socket is down and every ~30 s as a safety net while it is up, which is what recovers a
-  claim whose WebSocket delivery was lost.
-* The desktop manager has **no** WebSocket; it polls `/api/health` and `/api/jobs`.
+The Gateway validates runtime printer lifecycle/status, capability compatibility, payload shape, expiration and idempotency. It does not reconstruct Odoo business routing decisions.
 
-## 8. Payload semantics
-
-`raw`, `escpos` and `pdf` are three distinct, non-interchangeable payload types shared by
-`src/lib/payload.ts` and `agent/internal/payload/payload.go` (both cap the decoded body at
-5 MiB). A PDF is never relabelled as raw bytes; a printer that cannot render a type causes
-`CAPABILITY_MISMATCH`. The full matrix is in [PRINTERS.md](PRINTERS.md).
-
-## 9. Technology stack
-
-* Next.js 16 (App Router) on Node ≥ 22, started through a custom `server.ts` so the
-  WebSocket server shares the HTTP port (default 3000).
-* PostgreSQL with Drizzle ORM; migrations are plain SQL files in `drizzle/`.
-* Go 1.21 agent (`kardianos/service`, `gorilla/websocket`, `mattn/go-sqlite3`,
-  `golang.org/x/sys`).
-* Tauri 2 desktop shell (Rust) bundling the agent executables as resources.
-* Odoo 16/17/18-compatible Python addon.
-* Vitest for gateway tests, `go test` for the agent, GitHub Actions
-  (`.github/workflows/build-windows.yml`) for the Windows build and installer.
-
-## Production Engineering Semantics
-
-- **Odoo print outbox:** report actions persist the logical operation and idempotency key inside the Odoo transaction. Gateway submission is registered as a post-commit job; a process crash before submission leaves the durable queued operation for the retry cron.
-- **Metrics:** manager-authenticated `GET /api/metrics` exposes process-local Prometheus counters; logs remain the authoritative event stream and never contain payload bytes or credentials.
-- **Idempotency:** one persisted Odoo `print_gateway.print_job` is one logical print operation. Its `idempotency_key` is generated once, persisted before the Gateway HTTP call, and reused for transport/worker retries. A new manual print creates a new operation and therefore a new key. Physical delivery remains potentially at-least-once.
-- **Agent availability:** routing requires `lifecycle=active`, `status=online`, and a fresh `lastSeenAt`. The default stale threshold is 90 seconds and is configurable with `STALE_AGENT_THRESHOLD_SECONDS` (10–3600 seconds). Administrative lifecycle and runtime availability are separate concepts.
-- **Routing precedence:** exact `documentType` bindings always outrank generic bindings. Within each class, lower `priority` wins and `id ASC` breaks ties. Unavailable agents/printers are skipped for fallback; cross-branch inconsistencies fail closed.
-- **Payloads:** canonical runtime payload types are `pdf`, `raw`, and `escpos`. PDF bytes must carry `%PDF-`; PDF is never relabeled as RAW/ESC/POS. **PCL is not supported end-to-end** and existing PCL configuration blocks migration until explicitly remediated.
-- **Ownership:** `Branch → Agent → Printer`; Gateway printers have no independent branch ownership.
-- **Lifecycle:** `active ↔ disabled`, `active/disabled → retired`; `retired` is terminal. A guarded manager-only hard delete is allowed only for an offline, unused Agent with no printers, jobs, or discovery records.
-- **Database:** PostgreSQL integration tests are a required CI gate; unit tests and integration tests are separate commands.
+The Odoo layer validates company context, native destination ownership, document type, binding selection, and durable operation identity before submission.

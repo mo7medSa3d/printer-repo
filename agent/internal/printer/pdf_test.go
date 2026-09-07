@@ -95,13 +95,13 @@ func (r *recordingPDFPath) fn(_ context.Context, printerName, pdfPath string) er
 // mockSpoolerPrinter is a test-only mock that records which methods are called
 // without depending on physical printers or OpenPrinterW.
 type mockSpoolerPrinter struct {
-	name              string
-	rawPrintCalls     int
-	pdfPrintCalls     int
-	pdfPrintFn        PDFPrintFunc
-	lastRawData       []byte
-	lastDocumentKind  string
-	supportedKinds    map[string]bool
+	name             string
+	rawPrintCalls    int
+	pdfPrintCalls    int
+	pdfPrintFn       PDFPrintFunc
+	lastRawData      []byte
+	lastDocumentKind string
+	supportedKinds   map[string]bool
 }
 
 func newMockSpoolerPrinter(name string) *mockSpoolerPrinter {
@@ -435,7 +435,7 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 		p     Printer
 		kinds []string
 	}{
-		{"raw tcp", &NetworkPrinter{Address: "127.0.0.1:9100"}, []string{KindRaw, KindESCPOS}},
+		{"raw tcp", &NetworkPrinter{Address: "127.0.0.1:9100"}, []string{KindRaw, KindESCPOS, KindImage}},
 		{"mock spooler", newMockSpoolerPrinter("Test"), []string{KindRaw, KindESCPOS, KindPDF}},
 		{"usb", &USBPrinter{ID: "u", Name: "USB"}, []string{KindRaw, KindESCPOS}},
 	}

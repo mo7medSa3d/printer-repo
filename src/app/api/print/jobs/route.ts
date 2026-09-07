@@ -1,227 +1,175 @@
 import { NextResponse } from "next/server";
 import { db } from "../../../../db";
-import { agents, branches, printJobs, printers } from "../../../../db/schema";
+import { printJobs } from "../../../../db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../lib/odoo-auth";
-import { validatePrintJobPayload } from "../../../../lib/payload";
-import { resolvePrinterForJob } from "../../../../lib/routing";
-import { requestIdFrom } from "../../../../lib/log";
-import { incrementMetric } from "../../../../lib/metrics";
-import { AgentQueueFullError, AgentQueuedJobsFullError, BranchQueuedJobsFullError, createPrintJobForPrinter, PrintJobRateLimitError, MAX_AGENT_IN_FLIGHT_JOBS, MAX_AGENT_QUEUED_JOBS, MAX_BRANCH_QUEUED_JOBS, PRINT_JOB_RATE_LIMIT_PER_HOUR, PRINT_JOB_RATE_LIMIT_PER_MINUTE } from "../../../../lib/print-job-service";
+import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
+import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
 
-const MAX_PRINT_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
-export const DEFAULT_PRINT_JOB_TTL_MS = 60 * 60 * 1000;
-export const MAX_PRINT_JOB_TTL_MS = 24 * 60 * 60 * 1000;
-const legacyBodySchema = z.object({ printerId: z.string().min(1).max(120), payload: z.unknown(), expiresAt: z.string().optional(), idempotencyKey: z.string().max(200).optional() });
-const branchBodySchema = z.object({ branchId: z.string().min(1).max(120), destinationId: z.string().min(1).max(120), documentType: z.string().min(1).max(120), payload: z.unknown(), expiresAt: z.string().optional(), idempotencyKey: z.string().max(200).optional() });
+const MAX_BODY = 8 * 1024 * 1024;
+const bodySchema = z.object({
+  printerId: z.string().trim().min(1).max(120),
+  documentType: z.string().trim().min(1).max(120),
+  destination: z.string().trim().min(1).max(255).optional(),
+  payload: z.unknown(),
+  expiresAt: z.string().optional(),
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
+}).strict();
 
-function parseExpiresAt(str?: string) {
+function parseExpiresAt(value?: string) {
   const now = Date.now();
-  if (!str) return new Date(now + DEFAULT_PRINT_JOB_TTL_MS);
-  const d = new Date(str);
-  if (Number.isNaN(d.getTime())) throw new Error("expiresAt must be ISO8601");
-  if (d.getTime() <= now) throw new Error("expiresAt must be in the future");
-  if (d.getTime() - now > MAX_PRINT_JOB_TTL_MS) throw new Error("expiresAt exceeds the maximum print job TTL of 24 hours");
-  return d;
+  if (!value) return new Date(now + 60 * 60 * 1000);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= now) throw new Error("expiresAt must be in the future");
+  if (parsed.getTime() - now > 24 * 60 * 60 * 1000) throw new Error("expiresAt exceeds the 24 hour maximum");
+  return parsed;
 }
 
-function errorStatus(message: string): number {
-  if (/rate limit/i.test(message) || /PRINT_JOB_RATE_LIMITED/i.test(message)) return 429;
-  if (/not online/i.test(message) || /QUEUE_FULL/i.test(message)) return 503;
-  if (/virtual|redirected|disabled|retired/i.test(message)) return 409;
-  if (/capability|cannot print/i.test(message)) return 422;
-  if (/not found/i.test(message)) return 404;
-  return 500;
+function responseForRow(row: typeof printJobs.$inferSelect) {
+  return {
+    jobId: row.id,
+    status: row.status,
+    printerId: row.printerId,
+    agentId: row.agentId,
+    destination: row.destination,
+    documentType: row.documentType,
+  };
 }
 
-function jobResponse(row: typeof printJobs.$inferSelect) {
-  return { jobId: row.id, status: row.status, printerId: row.printerId, agentId: row.agentId, branchId: row.branchId, destinationId: row.destinationId, documentType: row.documentType };
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    );
+  }
+  return value;
 }
 
-function samePayload(existing: unknown, incoming: ReturnType<typeof validatePrintJobPayload>): boolean {
-  if (!existing || typeof existing !== "object") return false;
-  const payload = existing as { type?: unknown; encoding?: unknown; data?: unknown };
-  return payload.type === incoming.type && payload.encoding === incoming.encoding && payload.data === incoming.data;
-}
-
-function sameBranchIdempotencyRequest(
-  existing: typeof printJobs.$inferSelect,
-  incoming: { destinationId: string; documentType: string; payload: ReturnType<typeof validatePrintJobPayload> },
-): boolean {
-  return existing.destinationId === incoming.destinationId && existing.documentType === incoming.documentType && samePayload(existing.payload, incoming.payload);
-}
-
-function sameLegacyIdempotencyRequest(
-  existing: typeof printJobs.$inferSelect,
-  incoming: { printerId: string; payload: ReturnType<typeof validatePrintJobPayload> },
-): boolean {
-  return existing.printerId === incoming.printerId && samePayload(existing.payload, incoming.payload);
-}
-
-function idempotencyConflictResponse() {
-  return NextResponse.json({ error: "IDEMPOTENCY_CONFLICT", code: "IDEMPOTENCY_CONFLICT", retryable: false }, { status: 409 });
-}
-
-function backpressureResponse(e: AgentQueueFullError | AgentQueuedJobsFullError | BranchQueuedJobsFullError) {
-  if (e instanceof AgentQueueFullError) return { error: e.code, code: e.code, agentId: e.agentId, inFlight: e.inFlight, limit: MAX_AGENT_IN_FLIGHT_JOBS, retryable: true };
-  if (e instanceof AgentQueuedJobsFullError) return { error: e.code, code: e.code, agentId: e.agentId, queued: e.queued, limit: MAX_AGENT_QUEUED_JOBS, retryable: true };
-  return { error: e.code, code: e.code, branchId: e.branchId, queued: e.queued, limit: MAX_BRANCH_QUEUED_JOBS, retryable: true };
-}
-
-function rateLimitResponse(e: PrintJobRateLimitError) {
-  return NextResponse.json({ error: e.code, code: e.code, retryable: true, retryAfterSeconds: e.retryAfterSeconds, limits: { perMinute: PRINT_JOB_RATE_LIMIT_PER_MINUTE, perHour: PRINT_JOB_RATE_LIMIT_PER_HOUR } }, {
-    status: 429,
-    headers: { "Retry-After": String(e.retryAfterSeconds), "Cache-Control": "no-store" },
+function idempotencyFingerprint(request: {
+  printerId: string;
+  documentType?: string | null;
+  destination?: string | null;
+  payload: unknown;
+}) {
+  return JSON.stringify({
+    printerId: request.printerId,
+    documentType: request.documentType?.trim().toLowerCase() || null,
+    destination: request.destination?.trim() || null,
+    payload: canonicalize(request.payload),
   });
 }
 
+function idempotencyMatches(row: typeof printJobs.$inferSelect, request: {
+  printerId: string;
+  documentType: string;
+  destination?: string;
+  payload: PrintJobPayload;
+}) {
+  return idempotencyFingerprint(row) === idempotencyFingerprint(request);
+}
+
+function idempotencyConflict() {
+  return NextResponse.json({ error: "IDEMPOTENCY_CONFLICT", code: "IDEMPOTENCY_CONFLICT", retryable: false }, { status: 409 });
+}
+
 export async function POST(req: Request) {
-  const requestId = requestIdFrom(req);
-  if (hasBodyOverLimit(req, MAX_PRINT_REQUEST_BODY_BYTES)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  if (hasBodyOverLimit(req, MAX_BODY)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  const odoo = await validateOdooKey(req);
+  if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let raw: unknown;
   try { raw = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+  const parsed = bodySchema.safeParse(raw);
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
 
-  const branchRoute = branchBodySchema.safeParse(raw);
-  const legacyRoute = legacyBodySchema.safeParse(raw);
+  if (!isOdooKeyAllowedForDocumentType(odoo, parsed.data.documentType, "write")) {
+    return NextResponse.json({
+      error: "API key is not allowed to create this document type",
+      code: "ODOO_KEY_NOT_ALLOWED",
+      retryable: false,
+    }, { status: 403 });
+  }
 
-  if (branchRoute.success) {
-    const parsed = branchRoute.data;
-    const odoo = await validateOdooKey(req, parsed.branchId);
-    if (!odoo) return NextResponse.json({ error: "Unauthorized (invalid branch-scoped Odoo API key)" }, { status: 401 });
-    if (!isOdooKeyAllowedForDocumentType(odoo, parsed.documentType, "write")) return NextResponse.json({ error: "API key is not allowed to create this document type" }, { status: 403 });
+  let payload: PrintJobPayload;
+  try { payload = validatePrintJobPayload(parsed.data.payload); }
+  catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid payload" }, { status: 400 }); }
 
-    let validatedPayload: ReturnType<typeof validatePrintJobPayload>;
-    try { validatedPayload = validatePrintJobPayload(parsed.payload); }
-    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "invalid payload" }, { status: 400 }); }
+  const request = { ...parsed.data, payload };
+  let expiresAt: Date;
+  try { expiresAt = parseExpiresAt(parsed.data.expiresAt); }
+  catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid expiresAt" }, { status: 400 }); }
 
-    let expiresAt: Date;
-    try { expiresAt = parseExpiresAt(parsed.expiresAt); }
-    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "Invalid expiresAt" }, { status: 400 }); }
-
-    if (parsed.idempotencyKey) {
-      const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-      if (existing) {
-        if (!sameBranchIdempotencyRequest(existing, { destinationId: parsed.destinationId, documentType: parsed.documentType, payload: validatedPayload })) return idempotencyConflictResponse();
-        return NextResponse.json(jobResponse(existing), { status: 200 });
-      }
-    }
-
-    const resolved = await resolvePrinterForJob({ branchId: parsed.branchId, destinationId: parsed.destinationId, documentType: parsed.documentType, payloadType: validatedPayload.type });
-    if (!resolved) return NextResponse.json({ error: "INTERNAL_ERROR: routing returned no result" }, { status: 500 });
-    if ("error" in resolved) {
-      incrementMetric("routing_failures_total");
-      const statusMap: Record<string, number> = { INVALID_BRANCH: 400, INVALID_DESTINATION: 400, NO_ROUTE: 404, NO_PRINTER_FOUND: 404, PRINTER_DISABLED: 409, PRINTER_VIRTUAL: 409, PRINTER_OFFLINE: 503, CAPABILITY_MISMATCH: 422, INTERNAL_ERROR: 500 };
-      return NextResponse.json({ error: `${resolved.error}: ${resolved.message}`, code: resolved.error }, { status: statusMap[resolved.error] ?? 400 });
-    }
-
-    try {
-      const result = await createPrintJobForPrinter(resolved.printer.id, validatedPayload, { requestedBy: "odoo", idempotencyKey: parsed.idempotencyKey ?? null, destinationId: parsed.destinationId, documentType: parsed.documentType, expiresAt, rateLimitKeyId: odoo.id });
-      incrementMetric("print_jobs_created_total");
-      return NextResponse.json({ jobId: result.id, status: result.status, printerId: result.printerId, agentId: result.agentId, branchId: result.branchId, destinationId: parsed.destinationId, documentType: parsed.documentType, ...(resolved.fallbackUsed ? { fallbackUsed: true, fallbackChain: resolved.fallbackChain } : {}) }, { status: 201 });
-    } catch (e: unknown) {
-      if (e instanceof PrintJobRateLimitError) {
-        incrementMetric("print_jobs_rate_limited_total");
-        return rateLimitResponse(e);
-      }
-      if (e instanceof AgentQueueFullError || e instanceof AgentQueuedJobsFullError || e instanceof BranchQueuedJobsFullError) {
-        incrementMetric("print_jobs_backpressure_total");
-        return NextResponse.json(backpressureResponse(e), { status: 503 });
-      }
-      if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
-        const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, parsed.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-        if (existing) {
-          if (!sameBranchIdempotencyRequest(existing, { destinationId: parsed.destinationId, documentType: parsed.documentType, payload: validatedPayload })) return idempotencyConflictResponse();
-          return NextResponse.json(jobResponse(existing), { status: 200 });
-        }
-      }
-      const message = e instanceof Error ? e.message : "print job creation failed";
-      console.warn(`[print/jobs] ${requestId}: ${message}`);
-      return NextResponse.json({ error: message }, { status: errorStatus(message) });
+  if (parsed.data.idempotencyKey) {
+    const existing = await db.query.printJobs.findFirst({
+      where: and(eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
+    });
+    if (existing) {
+      if (idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
+      return idempotencyConflict();
     }
   }
 
-  if (legacyRoute.success) {
-    const parsed = legacyRoute.data;
-    const odoo = await validateOdooKey(req);
-    if (!odoo?.branchId) return NextResponse.json({ error: "Legacy direct printing requires a branch-scoped Odoo API key; migrate to /api/print/jobs routing" }, { status: 403 });
-    if (!isOdooKeyAllowedForDocumentType(odoo, null, "write")) return NextResponse.json({ error: "API key is not allowed to create jobs" }, { status: 403 });
-
-    const branch = await db.query.branches.findFirst({ where: eq(branches.id, odoo.branchId) });
-    if (!branch || !branch.enabled) return NextResponse.json({ error: "Forbidden: key branch is disabled or missing" }, { status: 403 });
-
-    let expiresAt: Date;
-    try { expiresAt = parseExpiresAt(parsed.expiresAt); }
-    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "Invalid expiresAt" }, { status: 400 }); }
-
-    let validatedPayload: ReturnType<typeof validatePrintJobPayload>;
-    try { validatedPayload = validatePrintJobPayload(parsed.payload); }
-    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "invalid payload" }, { status: 400 }); }
-
-    const printer = await db.query.printers.findFirst({ where: eq(printers.id, parsed.printerId) });
-    if (!printer) return NextResponse.json({ error: "NO_PRINTER_FOUND: printerId not found" }, { status: 404 });
-    const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-    if (!ownerAgent) return NextResponse.json({ error: "INTERNAL_ERROR: printer owner agent missing" }, { status: 500 });
-    if (ownerAgent.branchId !== odoo.branchId) return NextResponse.json({ error: "Forbidden: printer belongs to another branch" }, { status: 403 });
-
-    if (parsed.idempotencyKey) {
-      const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, ownerAgent.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-      if (existing) {
-        if (!sameLegacyIdempotencyRequest(existing, { printerId: parsed.printerId, payload: validatedPayload })) return idempotencyConflictResponse();
-        return NextResponse.json(jobResponse(existing), { status: 200 });
-      }
+  try {
+    const result = await createPrintJobForPrinter(parsed.data.printerId, payload, {
+      requestedBy: "odoo",
+      idempotencyKey: parsed.data.idempotencyKey ?? null,
+      destination: parsed.data.destination ?? null,
+      documentType: parsed.data.documentType,
+      expiresAt,
+      rateLimitKeyId: odoo.id,
+    });
+    return NextResponse.json({
+      jobId: result.id,
+      status: result.status,
+      printerId: result.printerId,
+      agentId: result.agentId,
+      destination: parsed.data.destination ?? null,
+      documentType: parsed.data.documentType,
+    }, { status: 201 });
+  } catch (error) {
+    if (error instanceof PrintJobRateLimitError) {
+      return NextResponse.json({ error: error.code, retryable: true, retryAfterSeconds: error.retryAfterSeconds }, {
+        status: 429,
+        headers: { "Retry-After": String(error.retryAfterSeconds), "Cache-Control": "no-store" },
+      });
     }
-
-    try {
-      const result = await createPrintJobForPrinter(parsed.printerId, validatedPayload, { requestedBy: "odoo-legacy", idempotencyKey: parsed.idempotencyKey ?? null, expiresAt, rateLimitKeyId: odoo.id });
-      return NextResponse.json({ jobId: result.id, status: result.status, printerId: result.printerId, agentId: result.agentId, branchId: result.branchId }, { status: 201 });
-    } catch (e: unknown) {
-      if (e instanceof PrintJobRateLimitError) {
-        incrementMetric("print_jobs_rate_limited_total");
-        return rateLimitResponse(e);
-      }
-      if (e instanceof AgentQueueFullError || e instanceof AgentQueuedJobsFullError || e instanceof BranchQueuedJobsFullError) {
-        incrementMetric("print_jobs_backpressure_total");
-        return NextResponse.json(backpressureResponse(e), { status: 503 });
-      }
-      if (e instanceof Error && e.message === "DUPLICATE_JOB" && parsed.idempotencyKey) {
-        const existing = await db.query.printJobs.findFirst({ where: and(eq(printJobs.branchId, ownerAgent.branchId), eq(printJobs.idempotencyKey, parsed.idempotencyKey)) });
-        if (existing) {
-          if (!sameLegacyIdempotencyRequest(existing, { printerId: parsed.printerId, payload: validatedPayload })) return idempotencyConflictResponse();
-          return NextResponse.json(jobResponse(existing), { status: 200 });
-        }
-      }
-      const message = e instanceof Error ? e.message : "print job creation failed";
-      console.warn(`[print/jobs] ${requestId}: ${message}`);
-      return NextResponse.json({ error: message }, { status: errorStatus(message) });
+    if (error instanceof AgentQueueFullError || error instanceof AgentQueuedJobsFullError) {
+      return NextResponse.json({ error: error.code, code: error.code, retryable: true }, { status: 503 });
     }
+    if (error instanceof PrintJobCapabilityError) {
+      return NextResponse.json({ error: error.message, code: error.code, retryable: false }, { status: 422 });
+    }
+    if (error instanceof Error && (error as Error & { code?: string }).code === "DUPLICATE_JOB" && parsed.data.idempotencyKey) {
+      const existing = await db.query.printJobs.findFirst({
+        where: and(eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
+      });
+      if (existing && idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
+      return idempotencyConflict();
+    }
+    const message = error instanceof Error ? error.message : "print job creation failed";
+    const status = /not found/i.test(message) ? 404 : /not online|disabled|virtual|retired/i.test(message) ? 503 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
-
-  return NextResponse.json({ error: "Invalid body. Expected either legacy printerId or branch/destination/documentType request" }, { status: 400 });
 }
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const branchIdFromQuery = url.searchParams.get("branchId");
-  const odoo = await validateOdooKey(req, branchIdFromQuery);
+  const odoo = await validateOdooKey(req);
   if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const id = url.searchParams.get("id");
+  const id = new URL(req.url).searchParams.get("id")?.trim();
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 });
-  const row = await db.query.printJobs.findFirst({ where: eq(printJobs.id, id) });
+  const row = await db.query.printJobs.findFirst({
+    where: and(eq(printJobs.id, id), eq(printJobs.apiKeyId, odoo.id)),
+  });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  if (odoo.branchId) {
-    if (row.branchId !== odoo.branchId) return NextResponse.json({ error: "Forbidden: key is scoped to another branch" }, { status: 403 });
-  } else {
-    // Operator-level (unscoped) keys must still name the branch they are
-    // looking up; blind cross-branch job lookup by id is not allowed.
-    const wantedBranch = branchIdFromQuery?.trim();
-    if (!wantedBranch || row.branchId !== wantedBranch) {
-      return NextResponse.json({ error: "branchId query param is required and must match the job's branch for unscoped keys" }, { status: 403 });
-    }
+  if (!isOdooKeyAllowedForDocumentType(odoo, row.documentType, "read")) {
+    return NextResponse.json({ error: "API key is not allowed to read this document type", code: "ODOO_KEY_NOT_ALLOWED", retryable: false }, { status: 403 });
   }
-  return NextResponse.json({ jobId: row.id, status: row.status, printerId: row.printerId, agentId: row.agentId, branchId: row.branchId, destinationId: row.destinationId, documentType: row.documentType, error: row.error, retries: row.retries, expiresAt: row.expiresAt, updatedAt: row.updatedAt });
+  return NextResponse.json(responseForRow(row), { status: 200 });
 }

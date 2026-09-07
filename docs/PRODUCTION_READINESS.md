@@ -1,68 +1,74 @@
-# Production readiness
+# Production Readiness
 
 ## Verdict
 
-**NOT PRODUCTION-READY FROM THE VERIFIED SCOPE.**
+**FAIL / NOT PRODUCTION-READY** until every software, Odoo 19, Windows Agent, and physical-printer staging gate is executed and green.
 
-The software now has explicit discovery approval, server-side job expiry/recovery, early request-size checks, database discovery-state constraints, and deployment-safe migration semantics. Physical printing, live Odoo, Windows/Tauri, and real network printers still require environment-specific verification before a production claim.
+## Architecture gate
 
-## Current software gates
+Required topology:
 
-| Area | State |
-|---|---|
-| PostgreSQL migrations/invariants | CI gate; migrations are applied before integration tests |
-| Node typecheck/lint/build | CI gate |
-| Node unit/integration tests | CI gate |
-| Go vet/tests/race | CI gate |
-| Odoo 19 addon runtime tests | CI gate using Odoo 19 Community |
-| Windows/Tauri packaging | Windows CI gate |
-| Physical printer E2E | Requires real hardware and operator verification |
+`Odoo -> Gateway URL + API Key -> central Print Router -> Gateway -> Agent -> Physical Printer`
 
-## Discovery trust model
+The Odoo addon must contain only Gateway configuration, native Odoo print bindings, durable print outbox, report interception, and POS interception.
 
-Discovery reports are observations from an authenticated agent. The Gateway does **not** accept an agent-supplied `verification=verified` or confidence value as authorization evidence; incoming observations are persisted as `candidate/low`.
+The addon must not create or mirror branches, agents, printers, destinations, or document types.
 
-A manager must explicitly approve a candidate through the discovery verification endpoint before it can be provisioned into the operational `printers` table. Live document-format capability verification remains an agent/runtime concern and is not fabricated by the Gateway.
+## Software gates
 
-Only private IPv4 ranges (RFC1918 plus IPv4 link-local) and IPv6 unique-local/link-local addresses are accepted in discovery reports. Public, loopback, multicast, unspecified, malformed, and zone-indexed IPv6 addresses are rejected.
+- Node typecheck
+- lint
+- complete unit tests
+- PostgreSQL integration tests
+- production-like migration/upgrade tests
+- Gateway build
+- Go vet/tests/race tests
 
-## Job reliability
+## Odoo 19 gates
 
-Job TTL and stale-lease recovery no longer depend on an agent calling `/api/agent/jobs`. The custom server runs an independent maintenance loop every 30 seconds. Agent polling also invokes the same idempotent sweep, so recovery remains active during normal operation and when an individual agent is offline.
+- install `print_gateway` on Odoo 19
+- upgrade from an existing addon installation
+- execute backend report print paths for Sales, Invoices, Delivery/Inventory, Purchase, and custom reports
+- verify Gateway-enabled reports never invoke native/browser fallback
+- verify explicit Gateway-disabled mode still uses native Odoo printing
 
-Physical printing remains **at-least-once**. A crash after bytes reach a printer but before durable status recording can leave an ambiguous physical outcome. Exactly-once physical printing is not claimed.
+## POS gates
 
-## Deployment hardening
+- normal POS receipt print
+- POS reprint
+- Restaurant Print Bill
+- Gateway-enabled POS never opens browser print preview/dialog
+- Gateway failure surfaces an error and never falls back to native POS printing
 
-The Docker image no longer runs `db:migrate` during application startup. Migrations are a dedicated release/deployment step, allowing application replicas to run without requiring schema-write privileges.
+## Reliability gates
 
-Authentication-rate-limit and expired-manager-session retention cleanup run from server housekeeping rather than on the manager-login hot path.
+- durable outbox survives transaction/process failure
+- retry reuses the same idempotency key
+- duplicate submit returns the same Gateway job
+- transport timeout is represented as unknown physical outcome
+- runtime status reconciliation resolves unknown outcomes
 
-The legacy direct-printer print endpoint remains only for compatibility and now requires a branch-scoped Odoo key, a live/enabled branch, branch ownership of the target printer, and the same canonical payload validation used by routed printing. New integrations should use branch/destination/document-type routing.
+Exactly-once physical printing is not claimed. A device can accept bytes immediately before a network/process failure.
 
-HTTP endpoints now reject an oversized declared `Content-Length` before JSON parsing. Chunked request limits must still be enforced by the trusted reverse proxy/load balancer.
+## Security gates
 
-## Known production gates that remain open
+- API key raw secret appears only at creation
+- list/read endpoints never expose raw secrets
+- revoke immediately invalidates a key
+- Odoo database binding is enforced
+- Gateway URL validation blocks credentials, query/fragment, and unauthorized private targets
+- no secret/payload logging
+- Odoo company ACL and record-rule isolation
+- Gateway runtime authentication and rate limits remain active
 
-1. Real Windows spooler/USB printing and Tauri install/tray/service verification.
-2. Real IPP and RAW/ESC-POS printer tests on representative hardware.
-3. Live Odoo end-to-end validation from Odoo document creation to physical page output.
-4. Production TLS/proxy configuration, backups, monitoring, and incident/reprint policy.
-5. Windows code signing for production-distributed installers.
-6. GitHub `main` branch protection/ruleset configuration requiring PR review and successful CI/Windows checks. The current repository branch metadata reports `main` as unprotected.
+## Environment-dependent release gates
 
-## Go/no-go checklist
+1. Real PostgreSQL execution of all database integration tests.
+2. Real Odoo 19 module installation/upgrade and Python tests.
+3. Windows Agent installation and service/tray verification.
+4. Live Odoo -> Gateway -> Agent -> physical printer staging.
+5. Representative PDF, RAW and ESC/POS printer execution.
+6. Deliberate Gateway outage/auth failure/printer-unavailable tests.
+7. CI results observed after the final branch commit.
 
-- [ ] Production database migrations completed successfully before application rollout
-- [ ] `GATEWAY_JWT_SECRET` >= 32 random characters
-- [ ] `MANAGER_PASSWORD_HASH` configured; plaintext manager password disabled
-- [ ] TLS termination and WebSocket upgrade configured at the trusted proxy
-- [ ] Branch-scoped Odoo keys issued; document-type allow-lists configured where appropriate
-- [ ] Discovery candidates reviewed/approved before provisioning
-- [ ] Representative PDF/RAW/ESC-POS paths proven on required printer models
-- [ ] Windows physical E2E procedure completed, including deliberate-failure testing
-- [ ] Database backups, monitoring, and stuck-job alerts configured
-- [ ] Windows installers signed for the intended production distribution channel
-- [ ] `main` protected with required checks/review policy
-
-Until the environment-dependent items above are completed, the honest status remains **NOT PRODUCTION-READY FROM THE VERIFIED SCOPE**.
+This document must remain FAIL until those gates have evidence from the actual environment.

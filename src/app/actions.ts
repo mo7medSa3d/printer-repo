@@ -1,7 +1,7 @@
 "use server";
 
 import { db } from "../db";
-import { agents, branches, printers, printJobs, discoverySessions, discoveredDevices } from "../db/schema";
+import { agents, printers, printJobs, discoverySessions, discoveredDevices } from "../db/schema";
 import { eq, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
@@ -19,29 +19,16 @@ async function requireManager() {
   return claims;
 }
 
-export async function createAgent(name: string, branchId: string) {
+export async function createAgent(name: string) {
   await requireManager();
-  if (typeof name !== "string" || !name.trim() || name.trim().length > 200) {
-    throw new Error("invalid agent name");
-  }
-  if (typeof branchId !== "string" || !branchId.trim()) {
-    throw new Error("branchId is required");
-  }
-  const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId.trim()) });
-  if (!branch) throw new Error("branch not found");
-  if (!branch.enabled) throw new Error("branch is disabled");
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 200) throw new Error("invalid agent name");
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
   await db.insert(agents).values({
-    id,
-    branchId: branch.id,
-    name: name.trim(),
-    pairingCode,
+    id, name: name.trim(), pairingCode,
     pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 30),
-    status: "offline",
-    lifecycle: "active",
+    status: "offline", lifecycle: "active",
   });
-
   revalidatePath("/dashboard");
   return { id, pairingCode };
 }
@@ -49,32 +36,19 @@ export async function createAgent(name: string, branchId: string) {
 export async function deleteAgent(id: string) {
   await requireManager();
   if (typeof id !== "string" || !id.trim()) throw new Error("agent id is required");
-
   await db.transaction(async (tx) => {
     const agent = await tx.query.agents.findFirst({ where: eq(agents.id, id.trim()) });
     if (!agent) throw new Error("Agent not found");
-    if (agent.status === "online") {
-      throw new Error("Online agents cannot be deleted. Disable or retire the agent first.");
-    }
-    if (agent.lifecycle === "retired") {
-      throw new Error("Retired agents are kept for audit history and cannot be deleted.");
-    }
-
+    if (agent.status === "online") throw new Error("Online agents cannot be deleted. Disable or retire the agent first.");
+    if (agent.lifecycle === "retired") throw new Error("Retired agents are kept for audit history and cannot be deleted.");
     const [{ c: printerCount }] = await tx.select({ c: count() }).from(printers).where(eq(printers.agentId, agent.id));
-    if (Number(printerCount ?? 0) > 0) {
-      throw new Error("This agent still has printers. Retire the agent instead to preserve printer history.");
-    }
-
+    if (Number(printerCount ?? 0) > 0) throw new Error("This agent still has printers. Retire the agent instead to preserve printer history.");
     const [{ c: jobCount }] = await tx.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, agent.id));
-    if (Number(jobCount ?? 0) > 0) {
-      throw new Error("This agent has print history and cannot be deleted. Retire the agent to preserve audit history.");
-    }
-
+    if (Number(jobCount ?? 0) > 0) throw new Error("This agent has print history and cannot be deleted. Retire the agent to preserve audit history.");
     await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, agent.id));
     await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, agent.id));
     await tx.delete(agents).where(eq(agents.id, agent.id));
   });
-
   revalidatePath("/dashboard");
 }
 
@@ -87,16 +61,10 @@ export async function createPrintJob(printerId: string, payload: unknown) {
 
 export async function createTestPrintJob(printerId: string) {
   await requireManager();
-  const printer = await db.query.printers.findFirst({
-    where: eq(printers.id, printerId),
-  });
+  const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
   if (!printer) throw new Error("Printer not found");
-
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, printer.agentId),
-  });
+  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!agent) throw new Error("Printer owner agent not found");
-
   const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
   const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager-test" });
   revalidatePath("/dashboard");
@@ -112,9 +80,6 @@ export async function setPrinterLifecycle(id: string, lifecycle: "active" | "dis
     const owner = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
     if (!owner) throw new Error("Printer owner agent not found");
     if (owner.lifecycle !== "active") throw new Error(`cannot activate printer while agent is ${owner.lifecycle}`);
-    if (!owner.branchId) throw new Error("cannot activate printer without owner branch");
-    const branch = await db.query.branches.findFirst({ where: eq(branches.id, owner.branchId) });
-    if (!branch?.enabled) throw new Error("cannot activate printer while branch is disabled");
   }
   await db.update(printers).set({ lifecycle, updatedAt: new Date() }).where(eq(printers.id, id));
   revalidatePath("/dashboard");
@@ -125,23 +90,14 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
   if (!agent) throw new Error("Agent not found");
   if (agent.lifecycle === "retired" && lifecycle !== "retired") throw new Error("retired agent is terminal");
-  if (!canTransitionLifecycle(agent.lifecycle, lifecycle)) {
-    throw new Error(`invalid lifecycle transition: ${agent.lifecycle} -> ${lifecycle}`);
-  }
-  if (lifecycle === "active" && agent.branchId) {
-    const branch = await db.query.branches.findFirst({ where: eq(branches.id, agent.branchId) });
-    if (!branch?.enabled) throw new Error("cannot activate agent while branch is disabled");
-  }
+  if (!canTransitionLifecycle(agent.lifecycle, lifecycle)) throw new Error(`invalid lifecycle transition: ${agent.lifecycle} -> ${lifecycle}`);
   const reenable = agent.lifecycle === "disabled" && lifecycle === "active";
   const pairingCode = reenable ? generatePairingCode() : null;
   await db.transaction(async (tx) => {
     await tx.update(agents).set({
-      lifecycle,
-      secret: null,
-      pairingCode,
+      lifecycle, secret: null, pairingCode,
       pairingCodeExpiresAt: pairingCode ? new Date(Date.now() + 1000 * 60 * 30) : null,
-      status: "offline",
-      updatedAt: new Date(),
+      status: "offline", updatedAt: new Date(),
     }).where(eq(agents.id, id));
     if (lifecycle !== "active") {
       await tx.update(printers).set({ lifecycle: "disabled", updatedAt: new Date() }).where(eq(printers.agentId, id));

@@ -1,163 +1,73 @@
-# Security model
+# Security Model
 
-Verified against `src/lib/*.ts`, `src/app/api/**`, `agent/internal/**` and
-`odoo_addons/print_gateway/security/*`. Claims are limited to what the code actually does.
+## Authentication domains
 
-## 1. Three separate authentication domains
+| Domain | Credential | Purpose |
+|---|---|---|
+| Agent | `Bearer <agent-id>:<secret>` | Agent runtime APIs |
+| Manager | manager session cookie/bearer | Gateway administration |
+| Odoo | `Bearer odoo_<key>` or `X-Api-Key` + `X-Odoo-Database` | Odoo integration API |
 
-| Domain | Credential | Storage | Verification |
-|---|---|---|---|
-| Agent | `Authorization: Bearer <agentId>:<secret>` | `agents.secret` = SHA-256 of a 24-byte random secret; plaintext returned once at pairing | `src/lib/agent-auth.ts` — constant-time compare, equal-length dummy compare on length mismatch |
-| Manager | `mgr_session` httpOnly cookie (or `Authorization: Bearer <jwt>`) | HS256 JWT signed with `GATEWAY_JWT_SECRET`; `jti` row in `manager_sessions` | `src/lib/manager-auth.ts` — timing-safe HMAC, `exp` check, then the session row must exist, be unrevoked and unexpired |
-| Odoo | `Authorization: Bearer odoo_<key>` or `X-Api-Key` | `api_keys.hashed_key` = SHA-256; prefix `odoo_` required | `src/lib/odoo-auth.ts` — hash lookup, revocation check, branch scope, timing-safe compare |
+Raw Odoo API keys are returned only when generated. Gateway stores only the cryptographic hash and a revoke timestamp.
 
-A credential from one domain is never accepted by another. The only endpoint that accepts
-two domains on purpose is `POST /api/printers/:id/test-print` (manager session **or** a
-branch-scoped Odoo key, because the addon's Test Print button has no manager session).
+## Odoo API keys
 
-## 2. Manager sessions
+The key is installation-level, not branch-scoped and not document-type-scoped.
 
-* 8-hour lifetime (`MAX_AGE_SECONDS`), cookie is `httpOnly`.
-* Self-contained HS256 token **plus** a server-side `manager_sessions` row, so logout
-  (`POST /api/auth/manager/logout`) really revokes the token — a stolen cookie stops working.
-* `GATEWAY_JWT_SECRET` must be at least 32 characters; the code refuses to sign otherwise.
-* Password check (`verifyManagerPassword`): prefers `MANAGER_PASSWORD_HASH` in scrypt
-  `salt:derived-hex` form, falls back to `MANAGER_PASSWORD`; both paths run
-  timing-equalising work so a wrong username costs the same as a wrong password.
-* Login fails closed when manager auth is not configured (HTTP 500, never "allow all").
-* Login is rate-limited per IP and per account identifier in PostgreSQL
-  (`src/lib/auth-rate-limit.ts`, table `auth_rate_limits`) so multiple gateway
-  instances share the same counters. Repeated failures return HTTP 429 with
-  `Retry-After` and a generic message (no user enumeration). A successful login
-  clears the account bucket. If the limiter store is unreachable, login returns
-  HTTP 503 rather than verifying the password without a counter. Set
-  `TRUST_PROXY=1` when a reverse proxy forwards `X-Forwarded-For`.
-* Manager sessions are **global**, not branch-scoped — a manager sees every branch.
+- Generate from the Gateway manager.
+- Copy the raw key once.
+- Gateway list/read endpoints return metadata only.
+- Revoke by key id; revoked keys immediately fail authentication.
+- `X-Odoo-Database` binds the key to the configured Odoo database/installation.
 
-## 3. Odoo API keys
+No branch id is encoded in the Odoo key authorization model.
 
-* Created by a manager (`POST /api/odoo/keys`); the plaintext is shown exactly once.
-* Optional `branchId` scope: `isBranchScopedKeyAllowed` compares `String(keyBranch)` with
-  `String(requestedBranch)`, so Odoo integer ids and gateway text ids cannot drift apart.
-* Optional `allowedDocumentTypes`: `isOdooKeyAllowedForDocumentType` trims and lower-cases
-  both sides, matching the routing layer's normalisation (a key listing `invoice` accepts a
-  job for `Invoice`; a type that is genuinely absent is still rejected with 403).
-* `scope: "read_only"` blocks every write operation.
-* `lastUsedAt` is updated asynchronously; the raw key is never logged.
+## Gateway URL / SSRF protection
 
-## 4. Agent authentication and isolation
+Odoo Gateway URLs are validated before storage and before requests:
 
-* Pairing codes are 6 characters from an unambiguous alphabet, generated with
-  `crypto.randomBytes` (~31 bits), valid 30 minutes, single-use with a re-check on the
-  UPDATE so a racing second registration gets 409.
-* Every agent endpoint resolves the agent from the bearer token; job queries are filtered by
-  `agent_id` (and `branch_id` when the agent is branch-scoped).
-* `PATCH /api/agent/jobs` answers **404 "Job not found"** both for unknown ids and for
-  another agent's job, so job ids cannot be probed.
-* The heartbeat upsert refuses to touch a printer row owned by a different agent
-  (`skippedPrinters` in the response).
-* On the agent host the secret is sealed with DPAPI on Windows
-  (`CURRENT_USER` + `LOCAL_MACHINE` scope) and stored as an owner-only (0600) base64 file
-  elsewhere (`agent/internal/storage`).
+- HTTP or HTTPS only.
+- Host required.
+- No embedded credentials.
+- No query string or fragment.
+- Origin only; no API path.
+- Newlines and oversized values rejected.
+- Local/private/loopback/link-local/reserved targets rejected unless explicitly allow-listed by deployment configuration.
+- Requests use `allow_redirects=False` so the configured origin cannot silently redirect to another host.
 
-## 5. Branch isolation
+## Odoo permissions
 
-Enforced in routing (`src/lib/routing.ts`), job creation, the sync endpoint, the manager
-bindings endpoint and the agent endpoints. A binding can never connect resources across
-branches, and a cross-branch printer/destination is refused rather than silently skipped.
-See [../ARCHITECTURE.md](../ARCHITECTURE.md) §5.
+Gateway configuration and binding mutation are restricted to Odoo system administrators.
+Read access is company-scoped by Odoo record rules. Print-job history is company-scoped as well.
+The module has no custom ACL for branches, agents, printers, destinations, or document catalogs because those models are not part of the addon.
 
-## 6. Input validation
+## Print safety
 
-* **Payload**: `type ∈ raw|escpos|pdf`, `encoding = base64`, decoded size 1 B … 5 MiB, and a
-  canonical base64 round-trip check so the gateway can never accept something the Go agent's
-  strict decoder would reject (`src/lib/payload.ts`, `agent/internal/payload/payload.go`).
-* **PDF**: `%PDF-` header within the first 64 bytes and `%%EOF` within the last 4 KiB before
-  anything is written to disk or handed to a driver.
-* **Printer registration**: type/protocol/connection/status whitelists, `ip:port` validation,
-  spooler name requirement, id pattern `^[a-z0-9_][a-z0-9_-]*$`.
-* **Sync**: whole-payload validation before any mutation; ids normalised to strings.
-* **WebSocket**: 64 KiB frame cap, JSON-only, unknown message types ignored.
-* Job `error` strings from agents are truncated to 2000 characters.
+When Gateway printing is enabled, a routing/submission/rendering failure is fail-closed:
 
-## 7. Command execution and file handling on the agent
+```text
+Gateway enabled + error -> visible error
+Gateway disabled -> native Odoo printing
+```
 
-* **No shell is ever used for printing.** The PDF helper is executed with
-  `exec.CommandContext(argv[0], argv[1:]...)`; `{printer}` and `{file}` are substituted as
-  whole argv elements, so spaces, `&`, `;`, quotes or newlines in a printer name cannot
-  become commands. A unit test asserts the sources contain no `sh -c`, `cmd /C`, `bash` or
-  `powershell` invocation.
-* **Printer names** are validated (`ValidatePDFPrinterName`): no control characters, no
-  quote characters, ≤ 220 bytes. On Windows the name is passed as a single quoted parameter
-  to `ShellExecuteExW`, which is safe precisely because quotes are rejected.
-* **Temporary files**: `os.MkdirTemp` (0700) + `os.CreateTemp` (0600). Names come from the OS
-  random-name API — never from the job id, printer name or payload metadata — and the
-  directory is removed on every exit path (success, failure, panic). Tests assert the file
-  exists during the print and is gone afterwards in both outcomes.
-* Payload bytes are size-capped before they are written anywhere.
+There is no silent browser/native fallback in the Gateway-enabled path.
 
-## 8. Replay / duplicate protection
+## Secret and log handling
 
-* `(branch_id, idempotency_key)` partial unique index: a retried Odoo request returns the
-  existing job instead of creating a second one.
-* A reclaim or redelivery reuses the **same job id**; new ids are never minted for retries.
-* The agent's local SQLite queue is keyed by the gateway job id with `INSERT OR IGNORE`, and
-  a job that already succeeded locally is never printed twice.
-* Not protected: a job that was physically printing when the agent crashed. The outcome is
-  unknown and is reported as such (`AGENT_RESTART_DURING_PRINT`); `agent.reprint_after_crash`
-  decides whether it may be printed again. **No exactly-once printing guarantee is claimed.**
+The addon never logs API keys or payload contents. Gateway manager endpoints return only redacted runtime metadata. Agent secrets are protected according to the Agent host implementation.
 
-## 9. Secrets handling
+Errors should expose machine-readable failure categories but never credentials or payload bytes.
 
-* Agent secrets, Odoo keys and manager passwords are only ever stored hashed (or DPAPI-sealed
-  on the agent host). Plaintext appears once, in the response that creates them.
-* `GET /api/agents`, `/api/agents/:id`, `/api/odoo/agents` and `/api/odoo/sync` strip
-  `secret` and `pairingCode` before returning rows.
-* `.env` is git-ignored; `.env.example` contains placeholders only.
-* Logs never contain raw keys or payload bodies.
+## Replay and idempotency
 
-## 10. Odoo-side security
+One Odoo logical print operation gets one persisted idempotency key. Odoo retries reuse the same key. Gateway job creation uses its own unique idempotency constraint and returns the existing job on a duplicate request.
 
-* Write/create/unlink on branches, destinations, document types and bindings require
-  `base.group_system`; ordinary users get read-only access, which keeps the
-  `gateway_api_key` password field out of their reach.
-* `_check_company_access` prevents acting on another company's branch, including printing.
-* Record rules filter by company (`security/security.xml`).
-* Regression tests live in `odoo_addons/print_gateway/tests/test_security_regressions.py`
-  (**REQUIRES LIVE ODOO** to execute).
-  A historical, more detailed audit is kept in
-  `odoo_addons/print_gateway/SECURITY_AUDIT.md`.
+Physical printing is still subject to the fundamental unknown-outcome boundary: if the device receives bytes before the connection fails, the final physical state cannot be inferred solely from HTTP success/failure.
 
-## 11. Transport security
+## Rate limiting
 
-TLS is expected to be terminated in front of the gateway (reverse proxy or platform).
-Agents connect outbound only (HTTPS + WSS) — no inbound ports are opened on the shop-floor
-PC. The desktop app refuses gateway URLs with embedded credentials, query strings or
-fragments, and requires `http://` or `https://`.
+Gateway print submission continues to use distributed queue and rate limits. Odoo does not attempt to implement a second runtime queue or runtime printer scheduler.
 
-## 12. Known limitations
+## Runtime isolation
 
-* `Content-Length` is not checked before `req.json()`; the 5 MiB cap is enforced during
-  validation.
-* No audit log of manager actions beyond the job/printer rows themselves.
-* Manager authorization is coarse (one global role).
-* Auth rate-limit counters live in PostgreSQL. A limiter-table outage fails closed
-  (HTTP 503 on login) rather than failing open.
-* Print identity is a per-operation UUID persisted before the Gateway HTTP call and
-  reused on the in-process retry. A brand-new user click after both retries have
-  already failed mints a new UUID (intentional reprint). Agent crash mid-print is
-  at-least-once (`AGENT_RESTART_DURING_PRINT`); no exactly-once guarantee.
-
-## Security hardening in the current architecture
-
-Ownership is derived server-side. Agent registration cannot establish a Branch from client input; the existing paired Agent identity determines its authoritative Branch. Printer creation/update cannot write Branch ownership. Manager/API routes authenticate before resolving ownership and state.
-
-Authentication rate-limit buckets are PostgreSQL-backed and retained for a bounded period (24 hours), with an indexed cleanup path that does not alter active lock semantics.
-
-Production Next.js responses include `X-Content-Type-Options: nosniff`, strict-origin referrer policy, frame denial, restrictive permissions policy, and HSTS only for production HTTPS.
-
-## Security hardening
-
-Ownership is resolved server-side. Agent registration cannot establish a Branch from client input; the paired Agent identity determines its authoritative Branch. Printer creation/update cannot write Branch ownership. Authentication rate-limit buckets are PostgreSQL-backed with bounded 24-hour retention and indexed cleanup.
-
-Production Next.js responses include `X-Content-Type-Options: nosniff`, strict-origin referrer policy, frame denial, restrictive permissions policy, and HSTS only for production HTTPS.
+Gateway/Agent runtime state—agent ownership, printer status, queue claims, WebSocket delivery, and discovery—is owned and enforced by the Gateway. It is not synchronized into Odoo as duplicate runtime-management models.

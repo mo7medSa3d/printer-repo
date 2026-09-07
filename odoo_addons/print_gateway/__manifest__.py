@@ -1,32 +1,17 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '19.0.1.2.0',
-    'summary': 'Print routing for existing Odoo companies/branches with local Gateway agents',
+    'version': '19.0.2.0.0',
+    'summary': 'Silent Odoo 19 printing through an external Gateway and runtime Agent',
     'description': """
-Odoo Print Gateway — End-to-End Print Routing
+Odoo Print Gateway — Integration Only
 
-Ownership:
-  Odoo owns the existing company/branch hierarchy and all print configuration.
-  The Gateway mirrors that identity and owns runtime agents, physical printers,
-  heartbeats and print execution.
+Odoo owns business records and print intent. This module stores only the Gateway
+connection, native Odoo print bindings, and a durable print outbox. The Gateway
+owns agents, runtime printers, heartbeats, and execution state.
 
-Business configuration source for printing:
-  Existing Odoo Branch/Company -> Destination + Document Type -> Printer Binding
-
-Features:
-  - Discovers existing Odoo companies/branches; never creates Odoo branches
-  - Destination configuration (POS, Kitchen, Warehouse)
-  - Document type configuration (receipt, invoice, label, order)
-  - Printer records/status synced from Gateway
-  - Agent records/status synced from Gateway
-  - Printer bindings with priority fallback
-  - Gateway connection / API key configuration
-  - Synchronization with Gateway (cron + manual)
-  - Print job history/status
-  - Sale order / invoice print integration via Gateway routing
-    (no hardcoded physical printer IDs)
-  - Odoo 19-compatible list/form/kanban view definitions
+Gateway-enabled printing is silent: there is no browser print fallback. Native
+Odoo printing occurs only when Gateway printing is explicitly disabled.
     """,
     'author': 'Odoo Print Gateway',
     'website': 'https://github.com/mo7medSa3d/printer-repo',
@@ -35,22 +20,19 @@ Features:
     'data': [
         'security/ir.model.access.csv',
         'security/security.xml',
-        'views/branch_views.xml',
-        'views/destination_views.xml',
-        'views/document_type_views.xml',
-        'views/printer_views.xml',
-        'views/agent_views.xml',
-        'views/printer_binding_views.xml',
+        'views/gateway_config_views.xml',
+        'views/binding_views.xml',
         'views/print_job_views.xml',
-        'views/report_mapping_views.xml',
-        'views/ir_actions_report_views.xml',
+        'views/menu.xml',
         'data/cron.xml',
-        'data/report_mappings.xml',
     ],
     'assets': {
+        'point_of_sale._assets_pos': [
+            'print_gateway/static/src/js/pos_print_router.js',
+            'print_gateway/static/src/js/pos_sale_details_router.js',
+        ],
         'web.assets_backend': [
-            'print_gateway/static/src/scss/print_gateway_tokens.scss',
-            'print_gateway/static/src/scss/print_gateway_backend.scss',
+            'print_gateway/static/src/js/runtime_printer_field.js',
         ],
     },
     'installable': True,
