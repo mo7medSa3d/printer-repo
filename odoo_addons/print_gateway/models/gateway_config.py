@@ -27,9 +27,7 @@ class PrintGatewayConfig(models.Model):
         string="API Key", copy=False, groups="base.group_system", password=True,
     )
     last_test_at = fields.Datetime(readonly=True)
-    last_test_status = fields.Selection(
-        [("success", "Success"), ("failed", "Failed")], readonly=True
-    )
+    last_test_status = fields.Selection([("success", "Success"), ("failed", "Failed")], readonly=True)
     last_test_error = fields.Text(readonly=True)
 
     _company_unique = models.Constraint(
@@ -57,20 +55,10 @@ class PrintGatewayConfig(models.Model):
                 }
             except OSError as exc:
                 raise ValidationError(_("Gateway hostname cannot be resolved.")) from exc
-
         for address in addresses:
-            if (
-                address.is_private
-                or address.is_loopback
-                or address.is_link_local
-                or address.is_reserved
-                or address.is_multicast
-                or address.is_unspecified
-            ):
+            if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved or address.is_multicast or address.is_unspecified:
                 if not (allow_private and explicitly_allowed):
-                    raise ValidationError(_(
-                        "Private or local Gateway addresses require explicit deployment allow-listing."
-                    ))
+                    raise ValidationError(_("Private or local Gateway addresses require explicit deployment allow-listing."))
 
     @api.constrains("gateway_url")
     def _check_gateway_url(self):
@@ -131,31 +119,22 @@ class PrintGatewayConfig(models.Model):
         self._check_admin()
         try:
             response = requests.get(
-                "%s/api/health" % self._gateway_base(),
+                "%s/api/odoo/health" % self._gateway_base(),
                 headers=self._gateway_headers(),
-                timeout=10,
+                timeout=(5, 10),
                 allow_redirects=False,
             )
             body = response.json() if response.content else {}
             if response.status_code != 200 or not isinstance(body, dict) or body.get("ok") is not True:
-                raise ValidationError(_("Gateway health check failed (HTTP %s).") % response.status_code)
-            self.write({
-                "last_test_at": fields.Datetime.now(),
-                "last_test_status": "success",
-                "last_test_error": False,
-            })
+                raise ValidationError(_("Gateway connection test failed (HTTP %s).") % response.status_code)
+            self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "success", "last_test_error": False})
             return {
                 "type": "ir.actions.client",
                 "tag": "display_notification",
-                "params": {
-                    "title": _("Gateway Connection"),
-                    "message": _("Gateway is reachable and authenticated."),
-                    "type": "success",
-                    "sticky": False,
-                },
+                "params": {"title": _("Gateway Connection"), "message": _("Gateway is reachable and the installation API key is valid."), "type": "success", "sticky": False},
             }
-        except ValidationError:
-            self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "failed", "last_test_error": _("Gateway health check failed.")})
+        except ValidationError as exc:
+            self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "failed", "last_test_error": str(exc)[:4000]})
             raise
         except requests.RequestException as exc:
             self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "failed", "last_test_error": _("Gateway is unavailable or the connection timed out.")})
