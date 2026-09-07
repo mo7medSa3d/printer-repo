@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Native Odoo print binding: Destination + Document Type -> Printer."""
+"""Native Odoo print binding: Destination + Document Type -> Gateway Printer."""
 
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
@@ -9,7 +9,6 @@ DESTINATION_MODELS = [
     ("pos.config", "POS"),
     ("stock.picking.type", "Operation Type"),
     ("ir.actions.report", "Report"),
-    ("res.company", "Company"),
 ]
 
 
@@ -26,15 +25,12 @@ class PrintGatewayBinding(models.Model):
         selection=DESTINATION_MODELS,
         string="Destination",
         required=True,
-        help="Existing Odoo object representing the print destination/context.",
+        help="Existing Odoo object representing the deterministic print destination/context.",
     )
     document_type = fields.Char(required=True)
-    printer_id = fields.Char(
-        string="Printer", required=True, index=True,
-        help="Runtime printer identity owned by the Gateway.",
-    )
+    printer_id = fields.Char(string="Runtime Printer ID", required=True, index=True)
     enabled = fields.Boolean(default=True)
-    priority = fields.Integer(default=10, help="Lower value is tried first.")
+    priority = fields.Integer(default=10, help="Lower value is preferred when multiple bindings are valid.")
     name = fields.Char(compute="_compute_name", store=True)
 
     _priority_unique = models.Constraint(
@@ -47,9 +43,7 @@ class PrintGatewayBinding(models.Model):
         for record in self:
             destination = record.destination_ref.display_name if record.destination_ref else "Destination"
             record.name = "%s / %s -> %s" % (
-                destination,
-                (record.document_type or "").strip().lower(),
-                record.printer_id or "printer",
+                destination, self.normalize_document_type(record.document_type), record.printer_id or "printer",
             )
 
     @api.constrains("destination_ref", "document_type", "printer_id", "company_id")
@@ -57,59 +51,48 @@ class PrintGatewayBinding(models.Model):
         for record in self:
             if not record.destination_ref:
                 raise ValidationError(_("Destination is required."))
+            if record.destination_ref._name not in dict(DESTINATION_MODELS):
+                raise ValidationError(_("Unsupported destination model."))
             if not record.document_type or not record.document_type.strip():
                 raise ValidationError(_("Document Type is required."))
             if not record.printer_id or not record.printer_id.strip():
-                raise ValidationError(_("Printer is required."))
+                raise ValidationError(_("Runtime Printer ID is required."))
             destination_company = getattr(record.destination_ref, "company_id", False)
             if destination_company and destination_company.id != record.company_id.id:
-                raise ValidationError(
-                    _("Destination %s belongs to another Odoo company.")
-                    % record.destination_ref.display_name
-                )
-            if record.destination_ref._name == "res.company" and record.destination_ref.id != record.company_id.id:
-                raise ValidationError(_("Company destination must match the binding company."))
+                raise ValidationError(_("Destination belongs to another Odoo company."))
 
     @staticmethod
     def normalize_document_type(value):
         return (value or "").strip().lower()
 
     @api.model
-    def _candidate_values(self, report, record=None):
-        candidates = []
-        if record:
-            if record._name == "pos.order" and "config_id" in record._fields and record.config_id:
-                candidates.append(record.config_id)
-            if record._name == "stock.picking" and "picking_type_id" in record._fields and record.picking_type_id:
-                candidates.append(record.picking_type_id)
+    def destination_for(self, *, record=None, report=None):
+        if record and record._name == "pos.order":
+            config = getattr(record, "config_id", False)
+            if config:
+                return config
+            raise ValidationError(_("POS order has no POS configuration for print routing."))
+        if record and record._name == "stock.picking":
+            picking_type = getattr(record, "picking_type_id", False)
+            if picking_type:
+                return picking_type
+            raise ValidationError(_("Delivery has no operation type for print routing."))
         if report:
-            candidates.append(report)
-        if record and "company_id" in record._fields and record.company_id:
-            candidates.append(record.company_id)
-        return candidates
+            return report
+        raise ValidationError(_("A deterministic Odoo print destination is required."))
 
     @api.model
     def find_for(self, company, document_type, report=None, record=None):
-        document_type = self.normalize_document_type(document_type)
-        if not document_type:
-            return False
-        candidates = self._candidate_values(report, record=record)
+        normalized = self.normalize_document_type(document_type)
+        if not normalized:
+            raise ValidationError(_("Print document type is required."))
+        destination = self.destination_for(record=record, report=report)
+        if getattr(destination, "company_id", False) and destination.company_id != company:
+            raise ValidationError(_("Print destination belongs to another Odoo company."))
         rows = self.search([
             ("company_id", "=", company.id),
             ("enabled", "=", True),
-            ("document_type", "=", document_type),
-        ], order="priority asc, id asc")
-        candidate_keys = {
-            "%s,%s" % (value._name, value.id): index
-            for index, value in enumerate(candidates)
-        }
-        matching = rows.filtered(lambda binding: "%s,%s" % (
-            binding.destination_ref._name, binding.destination_ref.id
-        ) in candidate_keys)
-        return matching.sorted(key=lambda binding: (
-            candidate_keys.get(
-                "%s,%s" % (binding.destination_ref._name, binding.destination_ref.id), 999
-            ),
-            binding.priority,
-            binding.id,
-        ))[:1]
+            ("destination_ref", "=", "%s,%s" % (destination._name, destination.id)),
+            ("document_type", "=", normalized),
+        ], order="priority asc, id asc", limit=1)
+        return rows[:1]
