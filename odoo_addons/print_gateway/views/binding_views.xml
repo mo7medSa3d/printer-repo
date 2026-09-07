@@ -4,11 +4,13 @@
         <field name="name">print_gateway.binding.list</field>
         <field name="model">print_gateway.binding</field>
         <field name="arch" type="xml">
-            <list string="Print Bindings" create="1" delete="1">
-                <field name="company_id" string="Company / Branch"/>
-                <field name="destination_ref" string="Destination"/>
+            <list string="Print Gateway Bindings" create="1" delete="1">
+                <field name="company_id" string="Odoo Company"/>
+                <field name="branch_id" string="Odoo Branch"/>
+                <field name="runtime_agent_id" string="Gateway Runtime Agent"/>
+                <field name="printer_id" string="Gateway Runtime Printer" widget="gateway_runtime_printer"/>
+                <field name="destination_ref" string="Odoo Destination"/>
                 <field name="document_type" string="Document Type"/>
-                <field name="printer_id" string="Printer" widget="gateway_runtime_printer"/>
                 <field name="enabled" widget="boolean_toggle"/>
                 <field name="priority" optional="show"/>
             </list>
@@ -19,42 +21,38 @@
         <field name="name">print_gateway.binding.form</field>
         <field name="model">print_gateway.binding</field>
         <field name="arch" type="xml">
-            <form string="Print Binding">
+            <form string="Print Gateway Binding">
                 <sheet>
-                    <group string="Where">
-                        <field name="company_id" string="Company / Branch"/>
-                        <field name="destination_type"/>
-                        <field name="destination_pos_config_id"
-                               string="POS Configuration"
-                               invisible="destination_type != 'pos'"
-                               required="destination_type == 'pos'"/>
-                        <field name="destination_pos_printer_id"
-                               string="POS / Kitchen Printer"
-                               invisible="destination_type != 'pos_printer'"
-                               required="destination_type == 'pos_printer'"/>
-                        <field name="destination_picking_type_id"
-                               string="Operation Type"
-                               invisible="destination_type != 'picking_type'"
-                               required="destination_type == 'picking_type'"/>
-                        <field name="destination_report_id"
-                               string="Report Destination"
-                               invisible="destination_type != 'report'"
-                               required="destination_type == 'report'"/>
-                    </group>
-                    <group string="What">
+                    <group string="Business Context">
+                        <field name="company_id" string="Odoo Company"/>
+                        <field name="branch_id" string="Odoo Branch" domain="[('parent_id', '=', company_id)]"
+                               invisible="not company_id" required="1"/>
+                        <field name="destination_type" string="Odoo Destination Type"/>
+                        <field name="destination_pos_config_id" string="Odoo Destination"
+                               invisible="destination_type != 'pos'" required="destination_type == 'pos'"/>
+                        <field name="destination_pos_printer_id" string="Odoo Destination"
+                               invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"/>
+                        <field name="destination_picking_type_id" string="Odoo Destination"
+                               invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"/>
+                        <field name="destination_report_id" string="Odoo Destination"
+                               invisible="destination_type != 'report'" required="destination_type == 'report'"/>
                         <field name="report_id" string="Document / Report"
-                               invisible="destination_type == 'pos_printer'"
-                               required="destination_type != 'pos_printer'"/>
+                               invisible="destination_type == 'pos_printer'" required="destination_type != 'pos_printer'"/>
                         <field name="document_type" string="Document Type" readonly="1"/>
                     </group>
-                    <group string="Where to Print">
-                        <field name="printer_id" string="Printer" widget="gateway_runtime_printer"/>
+                    <group string="Runtime Target">
+                        <field name="runtime_agent_id" string="Gateway Runtime Agent"
+                               widget="gateway_runtime_agent"/>
+                        <field name="printer_id" string="Gateway Runtime Printer"
+                               widget="gateway_runtime_printer"/>
+                    </group>
+                    <group string="Routing">
                         <field name="enabled" widget="boolean_toggle"/>
                         <field name="priority"/>
                     </group>
                     <field name="destination_ref" invisible="1"/>
                     <div class="alert alert-info" role="alert">
-                        Odoo owns companies, destinations, and reports. Gateway supplies the runtime printer list; this rule only connects existing Odoo print context to an execution target.
+                        Odoo owns the Company, Branch, Destination and Document context. The Gateway owns Runtime Agents, Runtime Printers and physical execution. This binding only connects the two.
                     </div>
                 </sheet>
             </form>
@@ -62,7 +60,7 @@
     </record>
 
     <record id="action_print_gateway_binding" model="ir.actions.act_window">
-        <field name="name">Print Bindings</field>
+        <field name="name">Print Gateway Bindings</field>
         <field name="res_model">print_gateway.binding</field>
         <field name="view_mode">list,form</field>
     </record>
