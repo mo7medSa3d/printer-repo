@@ -199,3 +199,21 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.assertEqual(persisted.status, 'unknown')
             self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', persisted.last_error)
             cr.commit()
+
+    def test_manual_retry_does_not_reset_in_flight_or_unknown_jobs(self):
+        router = self.env['print_gateway.print_router']
+        config = self.env['print_gateway.gateway_config'].browse(self.config_id)
+        for status in ('submitted', 'claimed', 'printing', 'unknown'):
+            job = router._persist_durable_job({
+                'company': self.env.company,
+                'gateway_config': config,
+                'printer_id': 'printer_runtime_1',
+                'destination': 'Sales',
+                'document_type': 'order',
+                'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
+                'idempotency_key': 'retry-safety-%s' % status,
+            })
+            job.write({'status': status})
+            job.action_retry()
+            job.invalidate_recordset(['status'])
+            self.assertEqual(job.status, status)
