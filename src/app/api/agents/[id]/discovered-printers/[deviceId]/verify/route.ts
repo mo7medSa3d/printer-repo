@@ -7,9 +7,8 @@ import { and, eq } from "drizzle-orm";
 export const dynamic = "force-dynamic";
 
 /**
- * Manager approval is deliberately explicit. It is not a claim that a printer
- * was technically probed by the gateway; it is the authorization boundary that
- * permits a discovered observation to become provisionable.
+ * Manager approval is deliberately explicit. It is authorization to provision
+ * a runtime observation; it does not create an Odoo business entity.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string; deviceId: string }> }) {
   const claims = await validateManager(req);
@@ -21,11 +20,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
 
   const device = await db.query.discoveredDevices.findFirst({
-    where: and(
-      eq(discoveredDevices.id, deviceId),
-      eq(discoveredDevices.agentId, agentId),
-      eq(discoveredDevices.branchId, agent.branchId),
-    ),
+    where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId)),
   });
   if (!device) return NextResponse.json({ error: "Device not found" }, { status: 404 });
   if (device.candidateStatus === "provisioned") {
@@ -36,17 +31,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const updated = await db.update(discoveredDevices)
-    .set({
-      // Approval is authorization, not technical evidence. Preserve the
-      // discovery confidence score generated from actual device observations.
-      verification: "verified",
-      candidateStatus: "verified",
-      updatedAt: new Date(),
-    })
+    .set({ verification: "verified", candidateStatus: "verified", updatedAt: new Date() })
     .where(and(
       eq(discoveredDevices.id, deviceId),
       eq(discoveredDevices.agentId, agentId),
-      eq(discoveredDevices.branchId, agent.branchId),
       eq(discoveredDevices.candidateStatus, "discovered"),
     ))
     .returning({ id: discoveredDevices.id });
