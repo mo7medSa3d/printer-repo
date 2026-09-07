@@ -17,13 +17,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
 
   const result = await db.transaction(async (tx) => {
-    // Serialize approval/provisioning state transitions for this candidate.
     const locked = await tx.execute(sql`
       SELECT id, candidate_status, verification, provisioned_printer_id
       FROM discovered_devices
-      WHERE id = ${deviceId}
-        AND agent_id = ${agentId}
-        AND branch_id = ${agent.branchId}
+      WHERE id = ${deviceId} AND agent_id = ${agentId}
       FOR UPDATE
     `);
     const row = (locked as any).rows?.[0];
@@ -36,12 +33,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     const device = await tx.query.discoveredDevices.findFirst({
-      where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId), eq(discoveredDevices.branchId, agent.branchId)),
+      where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId)),
     });
     if (!device) return { kind: "not_found" as const };
 
-    // Discovery origins are not executable transports. Provision only when the
-    // Agent has reported an explicit print protocol that the Gateway understands.
     const protocolMap: Record<string, { protocol: string; connectionType: string }> = {
       ipp: { protocol: "ipp", connectionType: "ipp" },
       ipps: { protocol: "ipps", connectionType: "ipps" },
@@ -54,7 +49,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const rawProtocol = (device.protocol ?? "").toLowerCase();
     const transport = protocolMap[rawProtocol];
     if (!transport) return { kind: "unsupported_transport" as const, protocol: device.protocol ?? "unknown" };
-
     if (["ipp", "ipps", "raw"].includes(transport.protocol) && (!device.ipAddress || !device.port)) {
       return { kind: "missing_endpoint" as const };
     }
@@ -101,22 +95,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   if (result.kind === "not_found") return NextResponse.json({ error: "Device not found" }, { status: 404 });
   if (result.kind === "not_approved") {
-    return NextResponse.json({
-      error: "DEVICE_NOT_APPROVED: a discovery candidate must be explicitly approved before provisioning",
-      code: "DEVICE_NOT_APPROVED",
-    }, { status: 409 });
+    return NextResponse.json({ error: "DEVICE_NOT_APPROVED: a discovery candidate must be explicitly approved before provisioning", code: "DEVICE_NOT_APPROVED" }, { status: 409 });
   }
   if (result.kind === "unsupported_transport") {
-    return NextResponse.json({
-      error: `UNSUPPORTED_DISCOVERY_TRANSPORT: ${result.protocol}. The candidate must report an explicit executable print transport before provisioning.`,
-      code: "UNSUPPORTED_DISCOVERY_TRANSPORT",
-    }, { status: 422 });
+    return NextResponse.json({ error: `UNSUPPORTED_DISCOVERY_TRANSPORT: ${result.protocol}. The candidate must report an explicit executable print transport before provisioning.`, code: "UNSUPPORTED_DISCOVERY_TRANSPORT" }, { status: 422 });
   }
   if (result.kind === "missing_endpoint") {
-    return NextResponse.json({
-      error: "MISSING_PRINTER_ENDPOINT: network printer requires ipAddress and port",
-      code: "MISSING_PRINTER_ENDPOINT",
-    }, { status: 422 });
+    return NextResponse.json({ error: "MISSING_PRINTER_ENDPOINT: network printer requires ipAddress and port", code: "MISSING_PRINTER_ENDPOINT" }, { status: 422 });
   }
   if (result.kind === "already") return NextResponse.json({ printerId: result.printerId, already: true });
   return NextResponse.json({ printerId: result.printerId, already: false }, { status: 201 });
