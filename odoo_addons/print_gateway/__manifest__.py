@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '19.0.2.0.0',
+    'version': '19.0.2.1.0',
     'summary': 'Silent Odoo 19 printing through an external Gateway and runtime Agent',
     'description': """
 Odoo Print Gateway — Integration Only
 
-Odoo owns business records and print intent. This module stores only the Gateway
-connection, native Odoo print bindings, and a durable print outbox. The Gateway
-owns agents, runtime printers, heartbeats, and execution state.
+Odoo owns business records and print intent. This module stores the Gateway
+connection, Odoo-owned print bindings, branch-to-runtime-agent assignments,
+and a durable print outbox. The Gateway owns agents, runtime printers,
+heartbeats, and execution state.
 
 Gateway-enabled printing is silent: there is no browser print fallback. Native
 Odoo printing occurs only when Gateway printing is explicitly disabled.
