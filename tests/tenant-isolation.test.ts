@@ -66,12 +66,15 @@ describe("Odoo database tenant isolation", () => {
     expect(apiKeyFindFirst).not.toHaveBeenCalled();
   });
 
-  it("accepts an authenticated key only from the configured database", async () => {
+  it("accepts the authenticated installation key only from the configured database", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("ODOO_DATABASE_NAME", "odoo_a");
     const hash = createHash("sha256").update("odoo_testkey").digest("hex");
     apiKeyFindFirst.mockResolvedValue({
       id: "key_a",
+      branchId: "odoo_company_1",
+      scope: "standard",
+      allowedDocumentTypes: null,
       hashedKey: hash,
       revokedAt: null,
     });
@@ -80,7 +83,7 @@ describe("Odoo database tenant isolation", () => {
       method: "POST",
       headers: { authorization: "Bearer odoo_testkey", "x-odoo-database": "odoo_a" },
     });
-    await expect(validateOdooKey(reqA)).resolves.toMatchObject({ id: "key_a" });
+    await expect(validateOdooKey(reqA)).resolves.toMatchObject({ id: "key_a", branchId: "odoo_company_1" });
 
     const reqB = new Request("https://gateway.test/api/print/jobs", {
       method: "POST",
