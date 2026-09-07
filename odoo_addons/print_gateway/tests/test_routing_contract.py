@@ -52,17 +52,18 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         self.assertEqual(binding.destination_ref._name, 'ir.actions.report')
         self.assertEqual(binding.destination_ref.id, report.id)
 
-    def test_binding_rejects_manual_unsupported_destination_reference(self):
+    def test_manual_destination_reference_cannot_override_derived_native_destination(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
-        with self.assertRaises(ValidationError):
-            self.env['print_gateway.binding'].create({
-                'company_id': self.company.id,
-                'destination_type': 'report',
-                'destination_report_id': report.id,
-                'report_id': report.id,
-                'destination_ref': 'res.company,%s' % self.company.id,
-                'printer_id': 'printer_runtime_1',
-            })
+        binding = self.env['print_gateway.binding'].create({
+            'company_id': self.company.id,
+            'destination_type': 'report',
+            'destination_report_id': report.id,
+            'report_id': report.id,
+            'destination_ref': 'res.company,%s' % self.company.id,
+            'printer_id': 'printer_runtime_1',
+        })
+        self.assertEqual(binding.destination_ref._name, 'ir.actions.report')
+        self.assertEqual(binding.destination_ref.id, report.id)
 
     def test_cross_company_destination_is_rejected(self):
         picking_type = self.env['stock.picking.type'].search([('company_id', '=', self.company.id)], limit=1)
