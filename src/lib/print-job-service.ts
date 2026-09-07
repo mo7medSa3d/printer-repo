@@ -1,4 +1,4 @@
-import { agents, printJobs } from "../db/schema";
+import { agents, printJobs, printers } from "../db/schema";
 import { db } from "../db";
 import { isVirtualPrinterRecord } from "./printer-virtual";
 import { validatePayloadForPrinter } from "./routing";
