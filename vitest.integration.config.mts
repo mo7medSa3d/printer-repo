@@ -19,6 +19,7 @@ export default defineConfig({
       "tests/multi-instance-gateway.test.ts",
     ],
     pool: "forks",
+    fileParallelism: false,
     sequence: { concurrent: false },
     testTimeout: 30000,
     hookTimeout: 30000,
