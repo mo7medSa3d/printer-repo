@@ -31,6 +31,7 @@ class PrintGatewayBinding(models.Model):
     company_id = fields.Many2one(
         "res.company", required=True, default=lambda self: self.env.company,
         ondelete="restrict", index=True, string="Odoo Company",
+        domain="[('parent_id', '=', False)]",
     )
     branch_id = fields.Many2one(
         "res.company", string="Odoo Branch", ondelete="restrict", index=True,
@@ -44,15 +45,15 @@ class PrintGatewayBinding(models.Model):
         DESTINATION_MODELS, string="Destination Type", required=True, default="pos",
     )
     destination_pos_config_id = fields.Many2one(
-        "pos.config", string="POS Configuration", ondelete="restrict",
+        "pos.config", string="POS Configuration", ondelete="restrict", check_company=True,
         domain="[('company_id', '=', branch_id or company_id), ('active', '=', True)]",
     )
     destination_pos_printer_id = fields.Many2one(
-        "pos.printer", string="POS / Kitchen Printer", ondelete="restrict",
+        "pos.printer", string="POS / Kitchen Printer", ondelete="restrict", check_company=True,
         domain="[('company_id', '=', branch_id or company_id)]",
     )
     destination_picking_type_id = fields.Many2one(
-        "stock.picking.type", string="Operation Type", ondelete="restrict",
+        "stock.picking.type", string="Operation Type", ondelete="restrict", check_company=True,
         domain="[('company_id', '=', branch_id or company_id), ('active', '=', True)]",
     )
     destination_report_id = fields.Many2one(
@@ -87,10 +88,7 @@ class PrintGatewayBinding(models.Model):
         "Priority must be unique for the same Odoo company, branch, destination and document type.",
     )
 
-    @api.depends(
-        "destination_type", "destination_pos_config_id", "destination_pos_printer_id",
-        "destination_picking_type_id", "destination_report_id",
-    )
+    @api.depends("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id")
     def _compute_destination_ref(self):
         for record in self:
             destination = False
@@ -111,10 +109,7 @@ class PrintGatewayBinding(models.Model):
                 record.document_type = "kitchen"
             elif record.report_id:
                 report = record.report_id
-                record.document_type = DOCUMENT_TYPE_BY_MODEL.get(
-                    report.model,
-                    "report:%s" % (report.report_name or report.id).strip().lower(),
-                )
+                record.document_type = DOCUMENT_TYPE_BY_MODEL.get(report.model, "report:%s" % (report.report_name or report.id).strip().lower())
             else:
                 record.document_type = False
 
@@ -125,9 +120,7 @@ class PrintGatewayBinding(models.Model):
             scope = record.branch_id.display_name if record.branch_id else record.company_id.display_name
             agent = record.runtime_agent_id or "Agent"
             printer = record.printer_id or "Printer"
-            record.name = "%s / %s / %s → %s / %s" % (
-                scope or "Odoo Context", destination, record.document_type or "document", agent, printer,
-            )
+            record.name = "%s / %s / %s → %s / %s" % (scope or "Odoo Context", destination, record.document_type or "document", agent, printer)
 
     @api.onchange("destination_type")
     def _onchange_destination_type(self):
@@ -174,9 +167,7 @@ class PrintGatewayBinding(models.Model):
     def _get_gateway_config(self):
         self.ensure_one()
         root_company = self.company_id.parent_id if self.branch_id and self.company_id.parent_id else self.company_id
-        config = self.env["print_gateway.gateway_config"].search(
-            [("company_id", "=", root_company.id)], limit=1,
-        )
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
         if not config or not config.enabled:
             raise ValidationError(_("An enabled Print Gateway configuration is required for this Odoo Company."))
         return config
@@ -187,10 +178,7 @@ class PrintGatewayBinding(models.Model):
             return
         config = self._get_gateway_config()
         try:
-            response = requests.get(
-                "%s/api/odoo/agents" % config._gateway_base(for_request=True),
-                headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False,
-            )
+            response = requests.get("%s/api/odoo/agents" % config._gateway_base(for_request=True), headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False)
             if response.status_code != 200:
                 raise ValidationError(_("Gateway agent discovery failed (HTTP %s).") % response.status_code)
             body = response.json()
@@ -199,22 +187,11 @@ class PrintGatewayBinding(models.Model):
         except (requests.RequestException, ValueError) as exc:
             raise ValidationError(_("Gateway runtime agent discovery is unavailable.")) from exc
         agents = body.get("agents") if isinstance(body, dict) else None
-        selected_agent = next(
-            (
-                agent for agent in agents or []
-                if isinstance(agent, dict)
-                and agent.get("id") == self.runtime_agent_id
-                and agent.get("lifecycle", "active") != "retired"
-            ), None,
-        )
+        selected_agent = next((agent for agent in agents or [] if isinstance(agent, dict) and agent.get("id") == self.runtime_agent_id and agent.get("lifecycle", "active") != "retired"), None)
         if not isinstance(agents, list) or not selected_agent:
             raise ValidationError(_("The selected Gateway Runtime Agent is not an active runtime agent."))
-
         try:
-            response = requests.get(
-                "%s/api/odoo/printers" % config._gateway_base(for_request=True),
-                headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False,
-            )
+            response = requests.get("%s/api/odoo/printers" % config._gateway_base(for_request=True), headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False)
             if response.status_code != 200:
                 raise ValidationError(_("Gateway printer discovery failed (HTTP %s).") % response.status_code)
             body = response.json()
@@ -223,14 +200,7 @@ class PrintGatewayBinding(models.Model):
         except (requests.RequestException, ValueError) as exc:
             raise ValidationError(_("Gateway runtime printer discovery is unavailable.")) from exc
         printers = body.get("printers") if isinstance(body, dict) else None
-        selected_printer = next(
-            (
-                printer for printer in printers or []
-                if isinstance(printer, dict)
-                and printer.get("id") == self.printer_id
-                and printer.get("lifecycle", "active") != "retired"
-            ), None,
-        )
+        selected_printer = next((printer for printer in printers or [] if isinstance(printer, dict) and printer.get("id") == self.printer_id and printer.get("lifecycle", "active") != "retired"), None)
         if not isinstance(printers, list) or not selected_printer:
             raise ValidationError(_("The selected Gateway Runtime Printer is not an active runtime printer."))
         agent = selected_printer.get("agent") if isinstance(selected_printer.get("agent"), dict) else {}
@@ -242,21 +212,16 @@ class PrintGatewayBinding(models.Model):
         for record in self:
             if record.company_id not in self.env.companies:
                 raise ValidationError(_("The selected Odoo Company is not available to the current user."))
-            if not record.branch_id:
-                continue
-            if record.branch_id not in self.env.companies:
-                raise ValidationError(_("The selected Odoo Branch is not available to the current user."))
-            if record.branch_id.parent_id != record.company_id:
-                raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
-            if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
-                raise ValidationError(_("A Gateway Runtime Agent is required for a branch binding."))
-            record._validate_runtime_target()
+            if record.branch_id:
+                if record.company_id.parent_id:
+                    raise ValidationError(_("Odoo Company must be a parent Company, not a Branch."))
+                if record.branch_id not in self.env.companies or record.branch_id.parent_id != record.company_id:
+                    raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
+                if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
+                    raise ValidationError(_("A Gateway Runtime Agent is required for a branch binding."))
+                record._validate_runtime_target()
 
-    @api.constrains(
-        "destination_type", "destination_pos_config_id", "destination_pos_printer_id",
-        "destination_picking_type_id", "destination_report_id", "report_id", "printer_id",
-        "company_id", "branch_id",
-    )
+    @api.constrains("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id", "report_id", "printer_id", "company_id", "branch_id")
     def _check_binding(self):
         for record in self:
             destination = record.destination_ref
@@ -274,13 +239,12 @@ class PrintGatewayBinding(models.Model):
                     raise ValidationError(_("POS / Kitchen Printer is not available to the selected Odoo Branch."))
                 if record.report_id:
                     raise ValidationError(_("Kitchen bindings use the built-in Kitchen / Preparation document type."))
-            else:
-                if not record.report_id:
-                    raise ValidationError(_("A real Odoo report must be selected for this Destination Type."))
-                if record.report_id.model == "pos.order" and record.destination_type not in ("pos", "report"):
-                    raise ValidationError(_("POS receipts must use a POS or report destination."))
-                if record.report_id.model == "stock.picking" and record.destination_type not in ("picking_type", "report"):
-                    raise ValidationError(_("Stock reports must use an operation type or report destination."))
+            elif not record.report_id:
+                raise ValidationError(_("A real Odoo report must be selected for this Destination Type."))
+            if record.report_id and record.report_id.model == "pos.order" and record.destination_type not in ("pos", "report"):
+                raise ValidationError(_("POS receipts must use a POS or report destination."))
+            if record.report_id and record.report_id.model == "stock.picking" and record.destination_type not in ("picking_type", "report"):
+                raise ValidationError(_("Stock reports must use an operation type or report destination."))
             if not isinstance(record.printer_id, str) or not record.printer_id.strip():
                 raise ValidationError(_("A Gateway Runtime Printer must be selected."))
 
@@ -296,20 +260,18 @@ class PrintGatewayBinding(models.Model):
         if not self.branch_id or not self.runtime_agent_id:
             return
         assignment_model = self.env["print_gateway.runtime_agent_assignment"]
-        assignment = assignment_model.search([
-            ("company_id", "=", self.company_id.id),
-            ("branch_id", "=", self.branch_id.id),
-        ], limit=1)
+        assignment = assignment_model.search([("company_id", "=", self.company_id.id), ("branch_id", "=", self.branch_id.id)], limit=1)
         if assignment:
             if assignment.runtime_agent_id != self.runtime_agent_id:
-                raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
+                other_bindings = self.search([
+                    ("id", "!=", self.id), ("company_id", "=", self.company_id.id),
+                    ("branch_id", "=", self.branch_id.id), ("runtime_agent_id", "!=", self.runtime_agent_id),
+                ], limit=1)
+                if other_bindings:
+                    raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
+                assignment.write({"runtime_agent_id": self.runtime_agent_id, "enabled": True})
             return
-        assignment_model.create({
-            "company_id": self.company_id.id,
-            "branch_id": self.branch_id.id,
-            "runtime_agent_id": self.runtime_agent_id,
-            "enabled": True,
-        })
+        assignment_model.create({"company_id": self.company_id.id, "branch_id": self.branch_id.id, "runtime_agent_id": self.runtime_agent_id, "enabled": True})
 
     def write(self, vals):
         result = super().write(vals)
@@ -349,8 +311,7 @@ class PrintGatewayBinding(models.Model):
         domain = [
             ("company_id", "=", company.id), ("enabled", "=", True),
             ("destination_ref", "=", "%s,%s" % (destination._name, destination.id)),
-            ("document_type", "=", normalized),
-            ("branch_id", "=", branch.id if branch else False),
+            ("document_type", "=", normalized), ("branch_id", "=", branch.id if branch else False),
         ]
         binding = self.search(domain, order="priority asc, id asc", limit=1)
         if binding or not branch:
