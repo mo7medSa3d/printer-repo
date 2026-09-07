@@ -29,49 +29,16 @@ export const printerInputSchema = z.object({
 }).strict();
 
 export type CanonicalPrinterInput = z.infer<typeof printerInputSchema>;
-
 export const PRINTER_CONFIG_MAX_BYTES = 16 * 1024;
 export const PRINTER_CAPABILITIES_MAX_BYTES = 32 * 1024;
 
 export function assertPrinterMetadataLimits(input: Pick<CanonicalPrinterInput, "config" | "capabilities">): void {
-  if (JSON.stringify(input.config ?? {}).length > PRINTER_CONFIG_MAX_BYTES) {
-    throw new Error("printer config exceeds 16KB");
-  }
-  if (input.capabilities && JSON.stringify(input.capabilities).length > PRINTER_CAPABILITIES_MAX_BYTES) {
-    throw new Error("printer capabilities exceed 32KB");
-  }
+  if (JSON.stringify(input.config ?? {}).length > PRINTER_CONFIG_MAX_BYTES) throw new Error("printer config exceeds 16KB");
+  if (input.capabilities && JSON.stringify(input.capabilities).length > PRINTER_CAPABILITIES_MAX_BYTES) throw new Error("printer capabilities exceed 32KB");
 }
 
-export function normalizeLegacyPrinterInput(value: unknown): CanonicalPrinterInput {
-  const input = (value && typeof value === "object" ? { ...(value as Record<string, unknown>) } : {}) as Record<string, unknown>;
-  if ("branchId" in input || "branch_id" in input || "enabled" in input) {
-    throw new z.ZodError([{ code: "custom", path: [], message: "branchId/branch_id/enabled are not writable printer ownership fields" }]);
-  }
-  // Legacy clients used printerType for hardware class. Normalize that alias
-  // once at the input boundary instead of persisting two writable meanings.
-  const legacyPrinterType = typeof input.printerType === "string" ? input.printerType.toLowerCase().trim() : "";
-  if (legacyPrinterType && !(PRINTER_TYPES as readonly string[]).includes(legacyPrinterType) && (DEVICE_CLASSES as readonly string[]).includes(legacyPrinterType)) {
-    if (input.deviceClass === undefined) input.deviceClass = legacyPrinterType;
-    input.printerType = "physical";
-  }
-
-  const legacyConnection = typeof input.type === "string" ? input.type.toLowerCase().trim() : undefined;
-  const normalizedLegacyConnection = legacyConnection === "tcp" ? "network" : legacyConnection === "windows_spooler" ? "spooler" : legacyConnection;
-  if (normalizedLegacyConnection && input.connectionType !== undefined && input.connectionType !== normalizedLegacyConnection) {
-    throw new z.ZodError([{ code: "custom", path: ["connectionType"], message: "conflicting legacy type and canonical connectionType" }]);
-  }
-  if (input.connectionType === undefined && normalizedLegacyConnection) input.connectionType = normalizedLegacyConnection;
-  const cfg = input.config && typeof input.config === "object" ? { ...(input.config as Record<string, unknown>) } : {};
-  const legacyProtocol = typeof cfg.protocol === "string" ? (cfg.protocol === "windows_spooler" ? "spooler" : cfg.protocol) : undefined;
-  if (legacyProtocol && input.protocol !== undefined && input.protocol !== legacyProtocol) {
-    throw new z.ZodError([{ code: "custom", path: ["protocol"], message: "conflicting legacy config.protocol and canonical protocol" }]);
-  }
-  if (input.protocol === undefined && legacyProtocol) input.protocol = legacyProtocol;
-  delete input.type;
-  delete cfg.protocol;
-  input.config = cfg;
-  const parsed = printerInputSchema.parse(input);
+export function parsePrinterInput(value: unknown): CanonicalPrinterInput {
+  const parsed = printerInputSchema.parse(value);
   assertPrinterMetadataLimits(parsed);
   return parsed;
 }
-
