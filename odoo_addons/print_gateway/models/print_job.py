@@ -96,21 +96,22 @@ class PrintGatewayJob(models.Model):
             if not same:
                 raise ValidationError(_("The idempotency key is already used for a different print operation."))
             return existing
-
         return self.create({
-            "company_id": company.id,
-            "gateway_config_id": gateway_config.id,
-            "printer_id": str(printer_id).strip(),
-            "destination": str(destination).strip(),
-            "document_type": str(document_type).strip().lower(),
-            "status": "queued",
-            "payload": payload_json,
-            "idempotency_key": key,
-            "next_retry_at": fields.Datetime.now(),
-            "source_model": source_model or False,
-            "source_record_id": source_record_id or False,
-            "report_id": report.id if report else False,
+            "company_id": company.id, "gateway_config_id": gateway_config.id,
+            "printer_id": str(printer_id).strip(), "destination": str(destination).strip(),
+            "document_type": str(document_type).strip().lower(), "status": "queued",
+            "payload": payload_json, "idempotency_key": key,
+            "next_retry_at": fields.Datetime.now(), "source_model": source_model or False,
+            "source_record_id": source_record_id or False, "report_id": report.id if report else False,
         })
+
+    def _persist_state(self, values):
+        """Persist an authoritative failure state outside the current request transaction."""
+        self.ensure_one()
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            env["print_gateway.print_job"].browse(self.id).write(values)
+            cr.commit()
 
     def _submission_body(self):
         self.ensure_one()
@@ -118,13 +119,8 @@ class PrintGatewayJob(models.Model):
             payload = json.loads(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValidationError(_("Stored print payload is corrupted.")) from exc
-        return {
-            "printerId": self.printer_id,
-            "documentType": self.document_type,
-            "destination": self.destination,
-            "payload": payload,
-            "idempotencyKey": self.idempotency_key,
-        }
+        return {"printerId": self.printer_id, "documentType": self.document_type, "destination": self.destination,
+                "payload": payload, "idempotencyKey": self.idempotency_key}
 
     def action_submit(self, raise_on_failure=False):
         for job in self:
@@ -133,8 +129,7 @@ class PrintGatewayJob(models.Model):
             try:
                 response = requests.post(
                     "%s/api/print/jobs" % job.gateway_config_id._gateway_base(),
-                    json=job._submission_body(),
-                    headers=job.gateway_config_id._gateway_headers(),
+                    json=job._submission_body(), headers=job.gateway_config_id._gateway_headers(),
                     timeout=(5, 20), allow_redirects=False,
                 )
                 if response.status_code not in (200, 201):
@@ -144,37 +139,39 @@ class PrintGatewayJob(models.Model):
                 if not remote_id:
                     raise RuntimeError("GATEWAY_INVALID_RESPONSE")
                 remote_status = str(body.get("status") or "queued").strip().lower()
-                if remote_status == "completed":
-                    remote_status = "success"
-                if remote_status not in {"queued", "submitted", "claimed", "printing", "success", "failed", "unknown"}:
-                    remote_status = "submitted"
+                if remote_status == "completed": remote_status = "success"
+                if remote_status not in {"queued", "submitted", "claimed", "printing", "success", "failed", "unknown"}: remote_status = "submitted"
                 job.write({
                     "gateway_job_id": str(remote_id),
                     "status": "submitted" if remote_status == "queued" else remote_status,
-                    "attempts": job.attempts + 1,
-                    "last_error": False,
-                    "next_retry_at": False,
+                    "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
                 })
             except requests.RequestException as exc:
-                job.write({
-                    "status": "unknown",
-                    "attempts": job.attempts + 1,
+                values = {
+                    "status": "unknown", "attempts": job.attempts + 1,
                     "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request failed or timed out",
                     "next_retry_at": fields.Datetime.now(),
-                })
+                }
+                if raise_on_failure:
+                    job._persist_state(values)
+                else:
+                    job.write(values)
                 _logger.warning("Gateway submission outcome is unknown for job %s", job.idempotency_key[:8])
                 if raise_on_failure:
                     raise ValidationError(_("Gateway submission timed out or failed; the physical outcome is unknown. The durable job will be retried safely.")) from exc
             except (ValueError, RuntimeError, ValidationError) as exc:
                 next_attempt = job.attempts + 1
                 terminal = next_attempt >= 5
-                job.write({
-                    "status": "failed" if terminal else "queued",
-                    "attempts": next_attempt,
+                values = {
+                    "status": "failed" if terminal else "queued", "attempts": next_attempt,
                     "last_error": str(exc)[:4000],
                     "next_retry_at": False if terminal else fields.Datetime.now(),
                     "completed_at": fields.Datetime.now() if terminal else False,
-                })
+                }
+                if raise_on_failure:
+                    job._persist_state(values)
+                else:
+                    job.write(values)
                 if raise_on_failure:
                     raise ValidationError(_("Gateway submission failed: %s") % str(exc)[:500]) from exc
         return True
@@ -184,24 +181,18 @@ class PrintGatewayJob(models.Model):
             try:
                 response = requests.get(
                     "%s/api/print/jobs" % job.gateway_config_id._gateway_base(),
-                    params={"id": job.gateway_job_id},
-                    headers=job.gateway_config_id._gateway_headers(),
+                    params={"id": job.gateway_job_id}, headers=job.gateway_config_id._gateway_headers(),
                     timeout=(5, 10), allow_redirects=False,
                 )
-                if response.status_code == 404:
-                    continue
+                if response.status_code == 404: continue
                 response.raise_for_status()
-                body = response.json()
-                status = str(body.get("status") or "").strip().lower()
-                if status == "completed":
-                    status = "success"
-                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
-                    continue
+                body = response.json(); status = str(body.get("status") or "").strip().lower()
+                if status == "completed": status = "success"
+                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}: continue
                 values = {"status": status, "last_error": body.get("error") or False}
-                if status in self._TERMINAL:
-                    values["completed_at"] = fields.Datetime.now()
+                if status in self._TERMINAL: values["completed_at"] = fields.Datetime.now()
                 job.write(values)
-            except (requests.RequestException, ValueError) as exc:
+            except (requests.RequestException, ValueError):
                 _logger.warning("Gateway status sync failed for job %s", job.idempotency_key[:8])
         return True
 
@@ -213,23 +204,15 @@ class PrintGatewayJob(models.Model):
     @api.model
     def cron_submit_pending(self):
         now = fields.Datetime.now()
-        jobs = self.search([
-            ("status", "in", ["queued", "unknown"]), "|",
-            ("next_retry_at", "=", False), ("next_retry_at", "<=", now),
-        ], order="id asc", limit=50)
+        jobs = self.search([("status", "in", ["queued", "unknown"]), "|", ("next_retry_at", "=", False), ("next_retry_at", "<=", now)], order="id asc", limit=50)
         started = time.monotonic()
         for job in jobs:
-            if time.monotonic() - started > 20:
-                break
+            if time.monotonic() - started > 20: break
             job.action_submit()
         return len(jobs)
 
     @api.model
     def cron_sync_status(self):
-        jobs = self.search(
-            [("gateway_job_id", "!=", False), ("status", "not in", ["success", "failed"])],
-            order="id asc", limit=100,
-        )
-        for job in jobs:
-            job.action_sync_status()
+        jobs = self.search([("gateway_job_id", "!=", False), ("status", "not in", ["success", "failed"])], order="id asc", limit=100)
+        for job in jobs: job.action_sync_status()
         return len(jobs)
