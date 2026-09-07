@@ -30,14 +30,15 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     {"company_id": self.company.id, **values}
                 )
 
-        # Durable outbox operations intentionally commit through independent
-        # PostgreSQL cursors. Keep those tests on a separate committed company so
-        # the uncommitted TransactionCase configuration above can never contend on
-        # the gateway_config company uniqueness constraint.
+        # Any fixture created through res.company mutates shared multi-company
+        # user/group state. Create it on the same independent cursor used for
+        # the durable fixtures, then refresh the TransactionCase snapshot.
         durable_company_name = "Gateway Durable Test %s" % uuid.uuid4().hex
+        other_company_name = "Gateway Contract Other Company %s" % uuid.uuid4().hex
         with self.env.registry.cursor() as cr:
             setup_env = api.Environment(cr, self.env.uid, dict(self.env.context))
             durable_company = setup_env["res.company"].create({"name": durable_company_name})
+            other_company = setup_env["res.company"].create({"name": other_company_name})
             with patch.object(PrintGatewayConfig, "_validate_gateway_host"):
                 durable_config = setup_env["print_gateway.gateway_config"].create(
                     {
@@ -47,11 +48,16 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 )
             self.durable_company_id = durable_company.id
             self.durable_config_id = durable_config.id
+            self.other_company_id = other_company.id
             cr.commit()
 
-        self.other_company = self.env["res.company"].create(
-            {"name": "Gateway Contract Other Company"}
-        )
+        # The independent transaction committed rows that are intentionally not
+        # part of the TransactionCase transaction. Start a fresh snapshot before
+        # browsing them; do not create/commit/rollback test data on self.env.cr.
+        self.env.cr.rollback()
+        self.env.invalidate_all()
+        self.config = self.env["print_gateway.gateway_config"].browse(self.config.id).exists()
+        self.other_company = self.env["res.company"].browse(self.other_company_id).exists()
 
     def _make_config(self, enabled=True):
         self.config.write({"enabled": enabled})
