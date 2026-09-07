@@ -51,7 +51,6 @@ func (p *IPPPrinter) PrintDocument(ctx context.Context, doc Document) error {
 	kind := NormalizeKind(doc.Kind); format, ok := ippDocumentFormatFor(kind)
 	if !ok { return CapabilityMismatchf("IPP printer %s cannot render %s payloads", p.URL, kind) }
 	if kind == KindPDF { if err := ValidatePDF(doc.Data); err != nil { return err } }
-	if kind == KindImage && !isJPEG(doc.Data) { return fmt.Errorf("image payload is not JPEG") }
 	if len(doc.Data) == 0 { return fmt.Errorf("refusing to print empty payload") }
 	if len(doc.Data) > maxPrintBytes { return fmt.Errorf("payload %d exceeds %d limit", len(doc.Data), maxPrintBytes) }
 	return p.printDocument(ctx, doc.Data, format)
@@ -62,7 +61,6 @@ func (p *IPPPrinter) SupportsKind(kind string) bool { _, ok := ippDocumentFormat
 func ippDocumentFormatFor(kind string) (string, bool) {
 	switch kind {
 	case KindPDF: return ippFormatPDF, true
-	case KindImage: return ippFormatJPEG, true
 	case KindRaw, KindESCPOS: return ippFormatOctetStream, true
 	default: return "", false
 	}
@@ -95,7 +93,7 @@ func (p *IPPPrinter) getPrinterAttributes(ctx context.Context) (map[string]strin
 	req.Header.Set("Content-Type", "application/ipp"); client := &http.Client{Timeout: 5*time.Second}; resp, err := client.Do(req); if err != nil { return nil, err }; defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return nil, fmt.Errorf("HTTP %d", resp.StatusCode) }; body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024)); status, _ := parseIPPStatus(body); if status != 0x0000 { return nil, fmt.Errorf("IPP status 0x%04x", status) }; return parseIPPAttributes(body), nil
 }
-const ( ippFormatOctetStream = "application/octet-stream"; ippFormatPDF = "application/pdf"; ippFormatJPEG = "image/jpeg" )
+const ( ippFormatOctetStream = "application/octet-stream"; ippFormatPDF = "application/pdf" )
 func buildIPPPrintJob(printerURI string, document []byte) []byte { return buildIPPPrintJobWithFormat(printerURI, document, ippFormatOctetStream) }
 func buildIPPPrintJobWithFormat(printerURI string, document []byte, documentFormat string) []byte {
 	var buf bytes.Buffer; buf.Write([]byte{0x02,0x00}); binary.Write(&buf,binary.BigEndian,uint16(0x0002)); binary.Write(&buf,binary.BigEndian,uint32(1)); buf.WriteByte(0x01)
@@ -114,4 +112,3 @@ func parseIPPAttributes(data []byte)(out map[string]string){
 }
 func decodeIPPValue(tag byte, raw []byte) string { switch tag { case 0x10,0x12,0x13:return ""; case 0x21,0x23: if len(raw)!=4{return ""}; return fmt.Sprintf("%d",int32(binary.BigEndian.Uint32(raw))); case 0x22: if len(raw)!=1{return ""}; if raw[0]!=0{return "true"}; return "false"; case 0x30,0x41,0x42,0x44,0x45,0x46,0x47,0x48,0x49:return string(raw); default: for _,b:=range raw{if b<0x20||b>0x7e{return ""}}; return string(raw) } }
 func ippStatusText(status uint16) string { switch status { case 0x0000:return "successful-ok"; case 0x0001:return "successful-ok-ignored-or-substituted-attributes"; case 0x0400:return "client-error-bad-request"; case 0x0401:return "client-error-forbidden"; case 0x0402:return "client-error-not-authenticated"; case 0x0403:return "client-error-not-authorized"; case 0x0404:return "client-error-not-possible"; case 0x040A:return "client-error-document-format-not-supported"; case 0x0500:return "server-error-internal-error"; case 0x0501:return "server-error-operation-not-supported"; case 0x0503:return "server-error-service-unavailable"; default:return fmt.Sprintf("unknown-0x%04x",status) } }
-func isJPEG(data []byte) bool { return len(data)>=3 && data[0]==0xff && data[1]==0xd8 && data[2]==0xff }
