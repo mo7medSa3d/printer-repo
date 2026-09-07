@@ -2,6 +2,7 @@ package printer
 
 import (
 	"context"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -103,7 +104,7 @@ func TestNetworkPrinterPartialDelivery(t *testing.T) {
 			return
 		}
 		buf := make([]byte, 10)
-		_, _ = conn.Read(buf)
+		_, _ = io.ReadFull(conn, buf)
 		// Force immediate TCP RST on Windows and Linux by setting linger to 0
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			_ = tcpConn.SetLinger(0)

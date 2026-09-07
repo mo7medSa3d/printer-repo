@@ -11,8 +11,9 @@ import (
 const maxPrintBytes = 5 * 1024 * 1024
 
 const (
-	dialTimeout       = 10 * time.Second
-	writeStallTimeout = 60 * time.Second
+	dialTimeout           = 10 * time.Second
+	writeStallTimeout     = 60 * time.Second
+	networkWriteChunkSize = 16 * 1024
 )
 
 type NetworkPrinter struct {
@@ -44,8 +45,12 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 		default:
 		}
+		chunk := data[written:]
+		if len(chunk) > networkWriteChunkSize {
+			chunk = chunk[:networkWriteChunkSize]
+		}
 		_ = conn.SetWriteDeadline(time.Now().Add(writeStallTimeout))
-		n, err := conn.Write(data[written:])
+		n, err := conn.Write(chunk)
 		written += n
 		if err != nil {
 			if written > 0 {
