@@ -3,6 +3,7 @@
     <menuitem id="menu_print_gateway_main"
               name="Print Gateway"
               sequence="90"
+              action="action_print_gateway_config"
               web_icon="print_gateway,static/description/icon.png"
               groups="base.group_user"/>
     <menuitem id="menu_print_gateway_config"
