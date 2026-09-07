@@ -289,7 +289,7 @@ export const printJobs = pgTable("print_jobs", {
   claimedAtIdx: index("print_jobs_claimed_at_idx").on(table.status, table.claimedAt),
   destinationIdIdx: index("print_jobs_destination_id_idx").on(table.destinationId),
   branchIdempotencyIdx: index("print_jobs_branch_idempotency_idx").on(table.branchId, table.idempotencyKey),
-  branchIdempotencyUnique: uniqueIndex("print_jobs_branch_idempotency_unique").on(table.branchId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
+  idempotencyUnique: uniqueIndex("print_jobs_idempotency_unique").on(table.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
   statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
   retriesCheck: check("print_jobs_retries_check", sql`${table.retries} >= 0`),
   deliveryAttemptsCheck: check("print_jobs_delivery_attempts_check", sql`${table.deliveryAttempts} >= 0`),
