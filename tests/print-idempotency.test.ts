@@ -7,8 +7,9 @@ import {
   closePool,
   pool,
   type Fixture,
+  sha256,
 } from "./helpers/pg";
-import { POST as printJobsPOST } from "../src/app/api/print/jobs/route";
+import { POST as printJobsPOST, GET as printJobsGET } from "../src/app/api/print/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
 
@@ -168,6 +169,29 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const idA = (await a.json()).jobId;
     const idB = (await b.json()).jobId;
     expect(idA).not.toBe(idB);
+    expect(await jobCount()).toBe(2);
+  });
+
+  it("isolates job lookup and idempotency by Odoo installation key", async () => {
+    const otherKey = "odoo_other_installation";
+    await pool().query(
+      `INSERT INTO api_keys (id, scope, name, hashed_key) VALUES ($1, 'standard', 'other installation', $2)`,
+      ["key_other_installation", sha256(otherKey)],
+    );
+
+    const first = await create(jobBody("op-installation-scope"));
+    expect(first.status).toBe(201);
+    const created = await first.json();
+
+    const foreignRead = await printJobsGET(new Request(`http://gateway.test/api/print/jobs?id=${created.jobId}`, {
+      headers: { Authorization: `Bearer ${otherKey}` },
+    }));
+    expect(foreignRead.status).toBe(404);
+
+    const sameOperationFromOtherInstallation = await create(jobBody("op-installation-scope"), otherKey);
+    expect(sameOperationFromOtherInstallation.status).toBe(201);
+    const second = await sameOperationFromOtherInstallation.json();
+    expect(second.jobId).not.toBe(created.jobId);
     expect(await jobCount()).toBe(2);
   });
 });
