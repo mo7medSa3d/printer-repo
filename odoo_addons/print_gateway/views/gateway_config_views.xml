@@ -57,7 +57,7 @@
             <form string="Pair New Agent" class="o_pg_pairing_wizard">
                 <sheet>
                     <div class="o_pg_wizard_header text-center mb-4">
-                        <i class="fa fa-plug fa-3x text-primary mb-2"/>
+                        <i class="fa fa-plug fa-3x text-primary mb-2" title="Pair Agent" role="img" aria-label="Pair Agent"/>
                         <h3 class="fw-bold">Pair Hardware Print Agent</h3>
                         <p class="text-muted">Enter the 6-character pairing code shown on your Windows Print Agent application or Gateway dashboard to bind it to a branch.</p>
                     </div>

@@ -16,7 +16,7 @@
                 <filter name="filter_success" string="Success" domain="[('status', '=', 'success')]"/>
 
                 <separator/>
-                <group expand="0" string="Group By">
+                <group>
                     <filter name="group_status" string="Status" context="{'group_by': 'status'}"/>
                     <filter name="group_destination" string="Destination" context="{'group_by': 'destination'}"/>
                     <filter name="group_printer" string="Printer" context="{'group_by': 'printer_id'}"/>
