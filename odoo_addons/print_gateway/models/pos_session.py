@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""POS session entry points for print paths that are client-rendered."""
+"""POS session entry points for client/direct report printing."""
 
-from odoo import models
+from odoo import models, _
+from odoo.exceptions import ValidationError
 
 
 class PosSessionGatewayPrinting(models.Model):
@@ -16,13 +17,13 @@ class PosSessionGatewayPrinting(models.Model):
         self.ensure_one()
         report = self.env.ref("point_of_sale.sale_details_report", raise_if_not_found=False)
         if not report:
-            from odoo.exceptions import ValidationError
-            raise ValidationError("The POS sale details report is unavailable.")
+            raise ValidationError(_("The POS sale details report is unavailable."))
         render_target = self.env["report.point_of_sale.report_saledetails"]
         return self.env["print_gateway.print_router"].route_render_target(
-            report,
+            "point_of_sale.sale_details_report",
             render_target,
             company=self.company_id,
             document_type="report:point_of_sale.sale_details_report",
-            data={"date_start": date_start, "date_stop": date_stop, "config_ids": self.config_id.ids, "session_ids": self.ids},
+            explicit_destination=self.config_id,
+            context_values={"date_start": date_start, "date_stop": date_stop},
         )
