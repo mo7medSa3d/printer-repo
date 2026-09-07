@@ -60,9 +60,7 @@ class PrintGatewayRouter(models.AbstractModel):
             return {"gateway_enabled": False, "native": True}
         dtype = self._document_type(report=report, record=record, explicit=document_type)
         destination = self.destination_for(report=report, record=record, explicit_destination=explicit_destination)
-        binding = self.env["print_gateway.binding"].find_for(
-            company, dtype, report=report, record=record, explicit_destination=explicit_destination,
-        )
+        binding = self.env["print_gateway.binding"].find_for(company, dtype, report=report, record=record, explicit_destination=explicit_destination)
         if not binding:
             raise ValidationError(_("Gateway printing is enabled, but no Print Binding exists for %s (%s).") % (destination.display_name, dtype))
         return {"gateway_enabled": True, "native": False, "config": config, "binding": binding, "document_type": dtype, "destination": destination}
@@ -125,7 +123,7 @@ class PrintGatewayRouter(models.AbstractModel):
             cr.commit()
         return self.env["print_gateway.print_job"].browse(job_id)
 
-    def _submit_route(self, *, route, payload, company, report, source_model=None, source_record_id=None, idempotency_key=None):
+    def _submit_route(self, *, route, payload, company, report=None, source_model=None, source_record_id=None, idempotency_key=None):
         job = self._persist_durable_job({
             "company": company,
             "gateway_config": route["config"],
@@ -177,15 +175,25 @@ class PrintGatewayRouter(models.AbstractModel):
         return self._submit_route(route=route, payload=payload, company=company, report=report, source_model=report.model)
 
     @api.model
-    def route_pos_receipt(self, order):
+    def route_pos_receipt(self, order, image_base64):
+        """Route the exact client-rendered Odoo POS receipt representation."""
         order.ensure_one()
-        report = self.env.ref("point_of_sale.action_report_receipt", raise_if_not_found=False)
-        if not report:
-            raise ValidationError(_("The POS receipt report is unavailable."))
-        return self.route_report(report, order)
+        self._validate_jpeg_base64(image_base64)
+        route = self.resolve_binding(record=order, document_type="receipt")
+        if route.get("native"):
+            return route
+        return self._submit_route(
+            route=route,
+            payload={"type": "image", "encoding": "base64", "data": image_base64},
+            company=order.company_id,
+            report=None,
+            source_model=order._name,
+            source_record_id=order.id,
+        )
 
     @api.model
     def route_kitchen_print(self, order, native_printer, image_base64, *, reprint=False):
+        """Route an Odoo 19 rendered Kitchen/Preparation ticket through the normal outbox."""
         order.ensure_one(); native_printer.ensure_one(); company = order.company_id
         if native_printer.company_id != company:
             raise ValidationError(_("Kitchen printer belongs to another Odoo company."))
@@ -197,5 +205,27 @@ class PrintGatewayRouter(models.AbstractModel):
             route=route,
             payload={"type": "image", "encoding": "base64", "data": image_base64},
             company=company, report=None, source_model=order._name, source_record_id=order.id,
+            idempotency_key=uuid.uuid4().hex,
+        )
+
+    @api.model
+    def route_pos_sale_details(self, session, image_base64):
+        """Route the exact client-rendered Odoo Sale Details report image."""
+        session.ensure_one()
+        self._validate_jpeg_base64(image_base64)
+        route = self.resolve_binding(
+            company=session.company_id,
+            document_type="report:point_of_sale.sale_details_report",
+            explicit_destination=session.config_id,
+        )
+        if route.get("native"):
+            return route
+        return self._submit_route(
+            route=route,
+            payload={"type": "image", "encoding": "base64", "data": image_base64},
+            company=session.company_id,
+            report=None,
+            source_model=session._name,
+            source_record_id=session.id,
             idempotency_key=uuid.uuid4().hex,
         )
