@@ -14,7 +14,7 @@ class PosOrderGatewayPrinting(models.Model):
             raise ValidationError(_("The rendered POS receipt image is required."))
         return self.env["print_gateway.print_router"].route_pos_receipt(self, image)
 
-    def action_print_gateway_kitchen(self, printer_id, image, reprint=False):
+    def action_print_gateway_kitchen(self, printer_id, image, reprint=False, operation_id=None):
         self.ensure_one()
         if not printer_id:
             raise ValidationError(_("The Odoo Kitchen / Preparation printer is required."))
@@ -27,7 +27,7 @@ class PosOrderGatewayPrinting(models.Model):
         if printer.company_id != self.company_id:
             raise ValidationError(_("The selected Kitchen / Preparation printer belongs to another Odoo company."))
         return self.env["print_gateway.print_router"].route_kitchen_print(
-            self, printer, image, reprint=bool(reprint),
+            self, printer, image, reprint=bool(reprint), idempotency_key=operation_id,
         )
 
     def is_gateway_printing_enabled(self):
