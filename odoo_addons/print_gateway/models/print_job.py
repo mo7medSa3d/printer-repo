@@ -7,6 +7,7 @@ import time
 import uuid
 
 import requests
+from psycopg2 import IntegrityError
 
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
@@ -69,6 +70,8 @@ class PrintGatewayJob(models.Model):
                          idempotency_key=None):
         if not company or not gateway_config:
             raise ValidationError(_("Gateway configuration is missing."))
+        if company != self.env.company:
+            raise ValidationError(_("Print operations must be created in the active Odoo company."))
         if gateway_config.company_id != company:
             raise ValidationError(_("Gateway configuration does not belong to the active company."))
         if not printer_id or not str(printer_id).strip():
@@ -85,25 +88,45 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Print payload exceeds the 8 MiB safety limit."))
 
         key = (idempotency_key or uuid.uuid4().hex).strip()
-        existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
-        if existing:
-            same = (
+
+        def same_operation(existing):
+            return (
                 existing.printer_id == str(printer_id).strip()
                 and existing.destination == str(destination).strip()
                 and existing.document_type == str(document_type).strip().lower()
                 and existing.payload == payload_json
             )
-            if not same:
+
+        existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
+        if existing:
+            if not same_operation(existing):
                 raise ValidationError(_("The idempotency key is already used for a different print operation."))
             return existing
-        return self.create({
-            "company_id": company.id, "gateway_config_id": gateway_config.id,
-            "printer_id": str(printer_id).strip(), "destination": str(destination).strip(),
-            "document_type": str(document_type).strip().lower(), "status": "queued",
-            "payload": payload_json, "idempotency_key": key,
-            "next_retry_at": fields.Datetime.now(), "source_model": source_model or False,
-            "source_record_id": source_record_id or False, "report_id": report.id if report else False,
-        })
+
+        values = {
+            "company_id": company.id,
+            "gateway_config_id": gateway_config.id,
+            "printer_id": str(printer_id).strip(),
+            "destination": str(destination).strip(),
+            "document_type": str(document_type).strip().lower(),
+            "status": "queued",
+            "payload": payload_json,
+            "idempotency_key": key,
+            "next_retry_at": fields.Datetime.now(),
+            "source_model": source_model or False,
+            "source_record_id": source_record_id or False,
+            "report_id": report.id if report else False,
+        }
+        try:
+            with self.env.cr.savepoint():
+                return self.create(values)
+        except IntegrityError:
+            existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
+            if existing:
+                if not same_operation(existing):
+                    raise ValidationError(_("The idempotency key is already used for a different print operation."))
+                return existing
+            raise
 
     def _persist_state(self, values):
         self.ensure_one()
