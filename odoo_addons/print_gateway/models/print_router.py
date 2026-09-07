@@ -8,7 +8,6 @@ import uuid
 from odoo import api, models, _
 from odoo.exceptions import ValidationError
 
-
 REPORT_DOCUMENT_TYPES = {
     "sale.order": "order",
     "account.move": "invoice",
@@ -17,7 +16,6 @@ REPORT_DOCUMENT_TYPES = {
     "pos.order": "receipt",
 }
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
-
 
 class PrintGatewayRouter(models.AbstractModel):
     _name = "print_gateway.print_router"
@@ -87,22 +85,19 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def _render_pdf_payload(self, report, records, data=None):
-        report.ensure_one()
-        records = records.exists()
+        report.ensure_one(); records = records.exists()
         if not records:
             raise ValidationError(_("Cannot print an empty report."))
         try:
             pdf_content, _ = report._render_qweb_pdf(report, res_ids=records.ids, data=data)
         except Exception as exc:
             raise ValidationError(_("Failed to render %s for Gateway printing.") % report.display_name) from exc
-        pdf_content = self._validate_pdf(pdf_content, report)
-        return {"type": "pdf", "encoding": "base64", "data": base64.b64encode(pdf_content).decode("ascii")}
+        return {"type": "pdf", "encoding": "base64", "data": base64.b64encode(self._validate_pdf(pdf_content, report)).decode("ascii")}
 
     @api.model
     def _render_pdf_payload_from_target(self, report_ref, render_target, *, context_values=None):
-        action_report = self.env["ir.actions.report"]
         try:
-            renderer = action_report.with_context(**(context_values or {}))
+            renderer = self.env["ir.actions.report"].with_context(**(context_values or {}))
             pdf_content, _ = renderer._render_qweb_pdf(report_ref, render_target)
         except Exception as exc:
             report = self.env.ref(report_ref, raise_if_not_found=False)
@@ -111,29 +106,21 @@ class PrintGatewayRouter(models.AbstractModel):
         report = self.env.ref(report_ref, raise_if_not_found=False)
         if not report:
             raise ValidationError(_("The requested report is unavailable."))
-        pdf_content = self._validate_pdf(pdf_content, report)
-        return {"type": "pdf", "encoding": "base64", "data": base64.b64encode(pdf_content).decode("ascii")}
+        return {"type": "pdf", "encoding": "base64", "data": base64.b64encode(self._validate_pdf(pdf_content, report)).decode("ascii")}
 
     @api.model
     def _persist_durable_job(self, values):
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             job = env["print_gateway.print_job"].create_operation(**values)
-            job_id = job.id
-            cr.commit()
+            job_id = job.id; cr.commit()
         return self.env["print_gateway.print_job"].browse(job_id)
 
     def _submit_route(self, *, route, payload, company, report=None, source_model=None, source_record_id=None, idempotency_key=None):
         job = self._persist_durable_job({
-            "company": company,
-            "gateway_config": route["config"],
-            "printer_id": route["binding"].printer_id,
-            "destination": route["destination"].display_name,
-            "document_type": route["document_type"],
-            "payload": payload,
-            "source_model": source_model,
-            "source_record_id": source_record_id,
-            "report": report,
+            "company": company, "gateway_config": route["config"], "printer_id": route["binding"].printer_id,
+            "destination": route["destination"].display_name, "document_type": route["document_type"], "payload": payload,
+            "source_model": source_model, "source_record_id": source_record_id, "report": report,
             "idempotency_key": idempotency_key or uuid.uuid4().hex,
         })
         job.action_submit(raise_on_failure=True)
@@ -141,91 +128,49 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def route_report(self, report, records, data=None):
-        report.ensure_one()
-        records = records.exists()
+        report.ensure_one(); records = records.exists()
         if not records:
             if self._gateway_config(self.env.company):
                 raise ValidationError(_("Gateway printing requires at least one report record."))
             return {"gateway_enabled": False, "native": True}
         route = self.resolve_binding(report=report, record=records[0])
-        if route.get("native"):
-            return route
+        if route.get("native"): return route
         for record in records[1:]:
-            current = self.resolve_binding(report=report, record=record)
-            if current["binding"].id != route["binding"].id:
+            if self.resolve_binding(report=report, record=record)["binding"].id != route["binding"].id:
                 raise ValidationError(_("The selected records resolve to different Print Bindings. Print them separately."))
-        payload = self._render_pdf_payload(report, records, data=data)
-        return self._submit_route(route=route, payload=payload, company=self._company_for_record(records[0]), report=report, source_model=records[0]._name, source_record_id=records[0].id)
+        return self._submit_route(route=route, payload=self._render_pdf_payload(report, records, data=data), company=self._company_for_record(records[0]), report=report, source_model=records[0]._name, source_record_id=records[0].id)
 
     @api.model
     def route_render_target(self, report_ref, render_target, *, company=None, document_type=None, explicit_destination=None, context_values=None):
-        """Route a direct Odoo report endpoint through the same router."""
         report = self.env.ref(report_ref, raise_if_not_found=False) if isinstance(report_ref, str) else report_ref
-        if not report:
-            raise ValidationError(_("The requested report is unavailable."))
-        report.ensure_one()
-        company = company or self.env.company
+        if not report: raise ValidationError(_("The requested report is unavailable."))
+        report.ensure_one(); company = company or self.env.company
         route = self.resolve_binding(report=report, document_type=document_type, company=company, explicit_destination=explicit_destination)
-        if route.get("native"):
-            return route
-        payload = self._render_pdf_payload_from_target(
-            report.get_external_id().get(report.id, report.report_name), render_target,
-            context_values=context_values,
-        )
+        if route.get("native"): return route
+        payload = self._render_pdf_payload_from_target(report.get_external_id().get(report.id, report.report_name), render_target, context_values=context_values)
         return self._submit_route(route=route, payload=payload, company=company, report=report, source_model=report.model)
 
     @api.model
     def route_pos_receipt(self, order, image_base64):
-        """Route the exact client-rendered Odoo POS receipt representation."""
-        order.ensure_one()
-        self._validate_jpeg_base64(image_base64)
+        order.ensure_one(); self._validate_jpeg_base64(image_base64)
         route = self.resolve_binding(record=order, document_type="receipt")
-        if route.get("native"):
-            return route
-        return self._submit_route(
-            route=route,
-            payload={"type": "image", "encoding": "base64", "data": image_base64},
-            company=order.company_id,
-            report=None,
-            source_model=order._name,
-            source_record_id=order.id,
-        )
+        if route.get("native"): return route
+        return self._submit_route(route=route, payload={"type": "image", "encoding": "base64", "data": image_base64}, company=order.company_id, report=None, source_model=order._name, source_record_id=order.id)
 
     @api.model
-    def route_kitchen_print(self, order, native_printer, image_base64, *, reprint=False):
-        """Route an Odoo 19 rendered Kitchen/Preparation ticket through the normal outbox."""
+    def route_kitchen_print(self, order, native_printer, image_base64, *, reprint=False, idempotency_key=None):
         order.ensure_one(); native_printer.ensure_one(); company = order.company_id
         if native_printer.company_id != company:
             raise ValidationError(_("Kitchen printer belongs to another Odoo company."))
         self._validate_jpeg_base64(image_base64)
         route = self.resolve_binding(record=order, company=company, document_type="kitchen", explicit_destination=native_printer)
-        if route.get("native"):
-            return route
-        return self._submit_route(
-            route=route,
-            payload={"type": "image", "encoding": "base64", "data": image_base64},
-            company=company, report=None, source_model=order._name, source_record_id=order.id,
-            idempotency_key=uuid.uuid4().hex,
-        )
+        if route.get("native"): return route
+        stable_key = "%s:%s" % (idempotency_key or uuid.uuid4().hex, native_printer.id)
+        return self._submit_route(route=route, payload={"type": "image", "encoding": "base64", "data": image_base64}, company=company, report=None, source_model=order._name, source_record_id=order.id, idempotency_key=stable_key)
 
     @api.model
     def route_pos_sale_details(self, session, image_base64):
-        """Route the exact client-rendered Odoo Sale Details report image."""
-        session.ensure_one()
-        self._validate_jpeg_base64(image_base64)
-        route = self.resolve_binding(
-            company=session.company_id,
-            document_type="report:point_of_sale.sale_details_report",
-            explicit_destination=session.config_id,
-        )
-        if route.get("native"):
-            return route
-        return self._submit_route(
-            route=route,
-            payload={"type": "image", "encoding": "base64", "data": image_base64},
-            company=session.company_id,
-            report=None,
-            source_model=session._name,
-            source_record_id=session.id,
-            idempotency_key=uuid.uuid4().hex,
-        )
+        session.ensure_one(); self._validate_jpeg_base64(image_base64)
+        route = self.resolve_binding(company=session.company_id, document_type="report:point_of_sale.sale_details_report", explicit_destination=session.config_id)
+        if route.get("native"): return route
+        return self._submit_route(route=route, payload={"type": "image", "encoding": "base64", "data": image_base64}, company=session.company_id, report=None, source_model=session._name, source_record_id=session.id)
