@@ -24,9 +24,6 @@ patch(PosStore.prototype, {
             ? await this.data.call("pos.session", "is_gateway_printing_enabled", [[sessionId]], {}, true)
             : false;
 
-        // Preserve Odoo's native print path only when Gateway printing is disabled.
-        // Gateway-specific synchronization and server-id validation belong only to the
-        // Gateway path so offline/native POS behavior remains unchanged.
         if (gatewayEnabled !== true) {
             return super.printReceipt({ order: currentOrder, basic, printBillActionTriggered });
         }
@@ -87,7 +84,11 @@ patch(PosStore.prototype, {
         if (!orderChange.__gateway_print_id) {
             orderChange.__gateway_print_id = crypto.randomUUID();
         }
-        return super.generateOrderChange(order, orderChange, categories, reprint);
+        const result = super.generateOrderChange(order, orderChange, categories, reprint);
+        if (result?.orderData) {
+            result.orderData.__gateway_print_id = orderChange.__gateway_print_id;
+        }
+        return result;
     },
 
     async generateReceiptsDataToPrint(orderData, changes, orderChange) {
@@ -96,9 +97,6 @@ patch(PosStore.prototype, {
         if (!operationId) {
             return receiptsData;
         }
-        // One order change can produce multiple real kitchen tickets (NEW, CANCELLED,
-        // NOTE UPDATE, and/or note-only). Each physical ticket must have its own stable
-        // idempotency identity, while retries reuse the same derived identities.
         receiptsData.forEach((receiptData, index) => {
             receiptData.orderData.__gateway_print_id = `${operationId}:${index}`;
         });
