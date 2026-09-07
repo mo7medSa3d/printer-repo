@@ -20,9 +20,10 @@ class PrintGatewayPosController(PosController):
         if not gateway:
             return super().print_sale_details(date_start=date_start, date_stop=date_stop, **kw)
 
+        render_target = request.env['report.point_of_sale.report_saledetails']
         result = request.env['print_gateway.print_router'].route_render_target(
             'point_of_sale.sale_details_report',
-            'report.point_of_sale.report_saledetails',
+            render_target,
             company=request.env.company,
             document_type='report:point_of_sale.sale_details_report',
             context_values={'date_start': date_start, 'date_stop': date_stop},
