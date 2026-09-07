@@ -18,6 +18,25 @@ patch(PosStore.prototype, {
             this.notification.add(error.message, { type: "danger" });
             throw error;
         }
+
+        let gatewayEnabled = false;
+        const serverOrderId = currentOrder.id;
+        if (serverOrderId) {
+            gatewayEnabled = await this.data.call(
+                "pos.order",
+                "is_gateway_printing_enabled",
+                [[serverOrderId]],
+                {},
+                true
+            );
+        }
+
+        // Preserve Odoo's native print path exactly when Gateway printing is disabled.
+        // Gateway-specific synchronization/validation belongs only to the Gateway path.
+        if (gatewayEnabled !== true) {
+            return super.printReceipt({ order: currentOrder, basic, printBillActionTriggered });
+        }
+
         if (!currentOrder.isSynced) {
             try {
                 await this.syncAllOrders({ orders: [currentOrder], force: true, throw: true });
@@ -27,29 +46,33 @@ patch(PosStore.prototype, {
                 throw new Error(message, { cause: error });
             }
         }
+
         const orderId = currentOrder.id;
         if (!orderId) {
             const error = new Error("POS order has no server identifier; Gateway printing cannot continue.");
             this.notification.add(error.message, { type: "danger" });
             throw error;
         }
+
         try {
-            const gatewayEnabled = await this.data.call("pos.order", "is_gateway_printing_enabled", [[orderId]], {}, true);
-            if (gatewayEnabled === true) {
-                const receipt = renderToElement("point_of_sale.OrderReceipt", {
-                    order: currentOrder,
-                    basic_receipt: Boolean(basic),
-                });
-                const image = await elementToJpeg(receipt);
-                const result = await this.data.call("pos.order", "action_print_gateway_receipt", [[orderId]], { image }, true);
-                this.notification.add(result?.message || "Print job accepted.", { type: "success" });
-                if (!printBillActionTriggered) {
-                    const count = currentOrder.nb_print ? currentOrder.nb_print + 1 : 1;
-                    await this.data.write("pos.order", [orderId], { nb_print: count });
-                }
-                return result;
+            const receipt = renderToElement("point_of_sale.OrderReceipt", {
+                order: currentOrder,
+                basic_receipt: Boolean(basic),
+            });
+            const image = await elementToJpeg(receipt);
+            const result = await this.data.call(
+                "pos.order",
+                "action_print_gateway_receipt",
+                [[orderId]],
+                { image },
+                true
+            );
+            this.notification.add(result?.message || "Print job accepted.", { type: "success" });
+            if (!printBillActionTriggered) {
+                const count = currentOrder.nb_print ? currentOrder.nb_print + 1 : 1;
+                await this.data.write("pos.order", [orderId], { nb_print: count });
             }
-            return super.printReceipt({ order: currentOrder, basic, printBillActionTriggered });
+            return result;
         } catch (error) {
             this.notification.add(error?.message || "Print Gateway printing failed.", { type: "danger" });
             throw error;
@@ -65,9 +88,22 @@ patch(PosStore.prototype, {
         if (!orderChange.__gateway_print_id) {
             orderChange.__gateway_print_id = crypto.randomUUID();
         }
-        const result = super.generateOrderChange(order, orderChange, categories, reprint);
-        result.orderData.__gateway_print_id = orderChange.__gateway_print_id;
-        return result;
+        return super.generateOrderChange(order, orderChange, categories, reprint);
+    },
+
+    async generateReceiptsDataToPrint(orderData, changes, orderChange) {
+        const receiptsData = await super.generateReceiptsDataToPrint(orderData, changes, orderChange);
+        const operationId = orderData?.__gateway_print_id;
+        if (!operationId) {
+            return receiptsData;
+        }
+        // One order change can produce multiple real kitchen tickets (NEW, CANCELLED,
+        // NOTE UPDATE, and/or note-only). Each physical ticket must have its own stable
+        // idempotency identity, while retries reuse the same derived identities.
+        receiptsData.forEach((receiptData, index) => {
+            receiptData.orderData.__gateway_print_id = `${operationId}:${index}`;
+        });
+        return receiptsData;
     },
 
     async printOrderChanges(data, printer) {
