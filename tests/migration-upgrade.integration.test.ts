@@ -44,7 +44,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0009_runtime_invariant_guard.sql", "0010_discovery.sql", "0011_worker_schema_fk_hardening.sql",
       "0012_runtime_state_checks.sql", "0013_runtime_state_constraint_scope_fix.sql", "0014_discovery_state_checks.sql",
       "0015_metrics_and_agent_notifications.sql", "0016_print_job_rate_limits.sql", "0017_notify_requeued_jobs.sql",
-      "0018_global_print_job_idempotency.sql", "0019_drop_legacy_print_destination_fk.sql",
+      "0018_global_print_job_idempotency.sql", "0019_drop_legacy_print_destination_fk.sql", "0020_remove_gateway_business_ownership.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
@@ -58,20 +58,15 @@ suite("production-like PostgreSQL migration upgrade", () => {
   });
 
   afterAll(async () => {
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS "${tempDb}" WITH (FORCE)`);
-    } finally {
-      await admin.end();
-      if (workDir) await rm(workDir, { recursive: true, force: true });
-    }
+    try { await admin.query(`DROP DATABASE IF EXISTS "${tempDb}" WITH (FORCE)`); }
+    finally { await admin.end(); if (workDir) await rm(workDir, { recursive: true, force: true }); }
   });
 
-  it("applies current migrations over an existing populated 0016 database without data loss", async () => {
+  it("upgrades a populated legacy database to the runtime-only architecture without losing print history", async () => {
     const pool = new Pool({ connectionString: databaseUrlFor(tempDb), max: 4 });
     const db = drizzle(pool);
     try {
       await migrate(db, { migrationsFolder: oldDir });
-
       const branchId = "odoo_company_900001";
       const agentId = "agent_upgrade_fixture";
       const printerId = "printer_upgrade_fixture";
@@ -87,74 +82,37 @@ suite("production-like PostgreSQL migration upgrade", () => {
       await pool.query(`INSERT INTO destinations (id, branch_id, name, type, enabled) VALUES ($1, $2, 'Legacy POS', 'pos', true)`, [destinationId, branchId]);
       await pool.query(`INSERT INTO printer_bindings (id, branch_id, destination_id, printer_id, priority, enabled) VALUES ($1, $2, $3, $4, 1, true)`, [bindingId, branchId, destinationId, printerId]);
       await pool.query(`INSERT INTO api_keys (id, branch_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'Legacy API key', $3)`, [apiKeyId, branchId, hash]);
-      await pool.query(`INSERT INTO print_jobs (id, branch_id, destination_id, agent_id, printer_id, status, payload, expires_at, created_at, updated_at, idempotency_key, retries, delivery_attempts) VALUES ($1, $2, $3, $4, $5, 'queued', '{}'::jsonb, now() + interval '1 hour', now(), now(), 'legacy-upgrade-key', 0, 0)`, [jobId, branchId, destinationId, agentId, printerId]);
-
-      const before = await pool.query(`
-        SELECT b.id AS branch_id, a.id AS agent_id, a.name AS agent_name, p.id AS printer_id,
-               d.id AS destination_id, pb.id AS binding_id, k.id AS api_key_id,
-               j.id AS job_id, j.idempotency_key
-        FROM branches b
-        JOIN agents a ON a.branch_id = b.id
-        JOIN printers p ON p.agent_id = a.id
-        JOIN destinations d ON d.branch_id = b.id
-        JOIN printer_bindings pb ON pb.branch_id = b.id AND pb.destination_id = d.id AND pb.printer_id = p.id
-        JOIN api_keys k ON k.branch_id = b.id
-        JOIN print_jobs j ON j.printer_id = p.id
-        WHERE b.id = $1
-      `, [branchId]);
-      expect(before.rowCount).toBe(1);
-      expect(before.rows[0]).toMatchObject({
-        branch_id: branchId,
-        agent_id: agentId,
-        agent_name: "Legacy Agent",
-        printer_id: printerId,
-        destination_id: destinationId,
-        binding_id: bindingId,
-        api_key_id: apiKeyId,
-        job_id: jobId,
-        idempotency_key: "legacy-upgrade-key",
-      });
+      await pool.query(`INSERT INTO print_jobs (id, branch_id, destination_id, agent_id, printer_id, status, payload, expires_at, created_at, updated_at, idempotency_key, retries, delivery_attempts) VALUES ($1, $2, $3, $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour', now(), now(), 'legacy-upgrade-key', 0, 0)`, [jobId, branchId, destinationId, agentId, printerId]);
 
       await migrate(db, { migrationsFolder: currentDir });
 
-      const after = await pool.query(`
-        SELECT b.id AS branch_id, a.id AS agent_id, a.name AS agent_name, p.id AS printer_id,
-               d.id AS destination_id, pb.id AS binding_id, k.id AS api_key_id,
-               j.id AS job_id, j.idempotency_key
-        FROM branches b
-        JOIN agents a ON a.branch_id = b.id
-        JOIN printers p ON p.agent_id = a.id
-        JOIN destinations d ON d.branch_id = b.id
-        JOIN printer_bindings pb ON pb.branch_id = b.id AND pb.destination_id = d.id AND pb.printer_id = p.id
-        JOIN api_keys k ON k.branch_id = b.id
-        JOIN print_jobs j ON j.printer_id = p.id
-        WHERE b.id = $1
-      `, [branchId]);
-      expect(after.rowCount).toBe(1);
-      expect(after.rows[0]).toMatchObject({
-        branch_id: branchId,
-        agent_id: agentId,
-        agent_name: "Legacy Agent",
-        printer_id: printerId,
-        destination_id: destinationId,
-        binding_id: bindingId,
-        api_key_id: apiKeyId,
-        job_id: jobId,
-        idempotency_key: "legacy-upgrade-key",
-      });
-
-      const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid = 'print_jobs'::regclass AND tgname = 'print_jobs_notify_agent_job_available'`);
-      expect(trigger.rowCount).toBe(1);
-      const uniqueIndex = await pool.query(`SELECT indexname FROM pg_indexes WHERE tablename = 'print_jobs' AND indexname = 'print_jobs_idempotency_unique'`);
-      expect(uniqueIndex.rowCount).toBe(1);
-      const destinationFk = await pool.query(`
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'print_jobs'::regclass
-          AND conname = 'print_jobs_destination_id_destinations_id_fk'
+      const legacy = await pool.query(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema='public' AND table_name IN ('branches','destinations','document_types','local_networks','printer_bindings')
       `);
-      expect(destinationFk.rowCount).toBe(0);
-    } finally {
-      await pool.end();
-    }
+      expect(legacy.rows).toEqual([]);
+
+      const legacyColumns = await pool.query(`
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name IN ('agents','printers','print_jobs','api_keys','discovery_sessions','discovered_devices')
+          AND column_name IN ('branch_id','destination_id','local_network_id')
+      `);
+      expect(legacyColumns.rows).toEqual([]);
+
+      const job = await pool.query(`SELECT id, agent_id, printer_id, destination, idempotency_key FROM print_jobs WHERE id=$1`, [jobId]);
+      expect(job.rows).toEqual([{
+        id: jobId,
+        agent_id: agentId,
+        printer_id: printerId,
+        destination: "Legacy POS",
+        idempotency_key: "legacy-upgrade-key",
+      }]);
+
+      const uniqueIndex = await pool.query(`SELECT indexname FROM pg_indexes WHERE tablename='print_jobs' AND indexname='print_jobs_idempotency_unique'`);
+      expect(uniqueIndex.rowCount).toBe(1);
+      const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid='print_jobs'::regclass AND tgname='print_jobs_notify_agent_job_available'`);
+      expect(trigger.rowCount).toBe(1);
+    } finally { await pool.end(); }
   });
 });
