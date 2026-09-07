@@ -118,8 +118,15 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_router_fails_when_gateway_enabled_and_binding_missing(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
+        config = self.env['print_gateway.gateway_config'].create({
+            'company_id': self.company.id,
+            'gateway_url': 'https://gateway.example.com',
+            'gateway_api_key': 'odoo_test_key',
+            'enabled': True,
+        })
         with self.assertRaises(ValidationError):
             self.env['print_gateway.print_router'].resolve_binding(report=report, record=self.env['sale.order'])
+        config.unlink()
 
     def test_router_rejects_company_argument_that_is_not_active(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
