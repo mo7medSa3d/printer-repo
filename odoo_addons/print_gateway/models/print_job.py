@@ -12,6 +12,7 @@ from psycopg2 import IntegrityError
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
 
+
 _logger = logging.getLogger(__name__)
 
 
@@ -231,7 +232,14 @@ class PrintGatewayJob(models.Model):
         return True
 
     def action_retry(self):
-        for job in self.filtered(lambda row: row.status not in self._TERMINAL):
+        """Retry only a definitely-not-printed submission.
+
+        A job that is submitted/claimed/printing or has an unknown physical outcome
+        must never be reset by this action: doing so can cause a second physical print.
+        The Gateway's idempotency key is the safety boundary for queued/unknown
+        transport retries, which are handled by the scheduled submission path.
+        """
+        for job in self.filtered(lambda row: row.status == "failed"):
             job.write({"status": "queued", "next_retry_at": fields.Datetime.now(), "last_error": False})
         return True
 
