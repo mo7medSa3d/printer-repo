@@ -107,7 +107,7 @@ Only outbound HTTPS/WSS is needed; no inbound firewall rules.
 Recommended per-site checklist:
 
 1. Install and start the service (`-service install` + `-service start`).
-2. Pair with a branch-scoped numeric six-digit pairing code.
+2. Pair with the six-character agent pairing code issued by the dashboard.
 3. Run discovery and verify capabilities in the dashboard.
 4. The crash policy is safe-by-default: `agent.reprint_after_crash: false` refuses automatic
    reprint after an interrupted physical print because the previous output is unknown. Set it
@@ -118,11 +118,11 @@ Recommended per-site checklist:
 
 ## 3. Odoo
 
-Install the addon on the Odoo server, configure one branch per physical location with its
-own API key, and let the crons keep both sides in sync. Gateway URLs must be HTTPS in production.
-The addon automatically sends the current Odoo database name as `X-Odoo-Database`. Pointing two
-independent Odoo databases at the same Gateway is unsupported and must be treated as a deployment
-error, even when their native company ids happen to overlap.
+Install the addon on the Odoo server, configure one `print_gateway.gateway_config` per Odoo
+company with that installation's own API key, and let the crons keep both sides in sync. Gateway
+URLs must be HTTPS in production. The addon automatically sends the current Odoo database name as
+`X-Odoo-Database`. Pointing two independent Odoo databases at the same Gateway is unsupported and
+must be treated as a deployment error, even when their native company ids happen to overlap.
 
 ## 4. CI/CD
 

@@ -132,9 +132,21 @@ jobs:
       - name: Build Tauri Windows installer (MSI + NSIS EXE)
         shell: pwsh
         run: |
-          cargo tauri build `
-            --target x86_64-pc-windows-msvc `
-            --bundles nsis,msi
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Tauri installer build attempt $attempt/$maxAttempts"
+            & cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Tauri installer build succeeded on attempt $attempt."
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Tauri installer build failed after $maxAttempts attempts."
+            }
+            $delay = 15 * $attempt
+            Write-Warning "Tauri bundling failed (exit code $LASTEXITCODE). Retrying in $delay seconds; transient tool downloads such as WiX may have failed."
+            Start-Sleep -Seconds $delay
+          }
       - name: Verify installer artifacts exist
         shell: pwsh
         run: |

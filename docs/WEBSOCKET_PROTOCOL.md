@@ -30,10 +30,8 @@ Sent only after the job has been claimed (`status='claimed'` committed). Exact s
   "type": "print_job",
   "job": {
     "id": "job_V1StGXR8Z5jd",
-    "branchId": "branch_cairo",
     "agentId": "agt_7f3c",
     "printerId": "printer_spooler_9ab1",
-    "destinationId": "dest_pos_1",
     "documentType": "receipt",
     "status": "claimed",
     "payload": { "type": "pdf", "encoding": "base64", "data": "JVBERi0xLjQK…" },

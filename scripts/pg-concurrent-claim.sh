@@ -2,7 +2,7 @@
 # Real PostgreSQL concurrency verification — NOT simulation/code inspection.
 # Must be run against a real PG with DATABASE_URL set (constraint: 2-3 concurrent claimers prove each job claimed at most once).
 # Usage: DATABASE_URL=postgresql://... AGENT_ID=agt_xxx bash scripts/pg-concurrent-claim.sh
-# Prerequisite: agents row exists, at least 1 printer, Node 22, DATABASE_URL reachable.
+# Prerequisite: agents row exists, at least 1 printer, Node >=24.20.0, DATABASE_URL reachable.
 set -euo pipefail
 : "${DATABASE_URL:?set DATABASE_URL}"
 AGENT_ID="${AGENT_ID:-agt_concurrent_test}"
@@ -31,4 +31,4 @@ cat <<'STEPS'
 STEPS
 
 echo "If run via Node harness, see tests/pg-concurrent-claim.mjs (requires DATABASE_URL)."
-echo "Mark docs/VERIFICATION.md #19 as VERIFIED only after this script shows 0 duplicates on real PG."
+echo "The maintained concurrency proof is tests/job-status-postgres-concurrency.test.ts (npm run test:integration)."

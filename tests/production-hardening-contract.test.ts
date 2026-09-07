@@ -65,6 +65,7 @@ describe("production hardening contracts", () => {
     expect(tags).toContain("0015_metrics_and_agent_notifications");
     expect(tags).toContain("0016_print_job_rate_limits");
     expect(tags).toContain("0017_notify_requeued_jobs");
+    expect(tags).toContain("0021_scope_print_jobs_to_api_key");
     expect(read("drizzle/0013_runtime_state_constraint_scope_fix.sql")).toContain("current_schema()");
     expect(read("drizzle/0014_discovery_state_checks.sql")).toContain("discovered_devices_candidate_status_check");
   });

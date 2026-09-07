@@ -14,8 +14,7 @@ const PRINTER_ID = process.env.PRINTER_ID ?? "printer_concurrent";
 
 async function ensureFixture() {
   // ensure agent and printer exist for FK
-  await pool.query(`INSERT INTO branches (id, name) VALUES ('branch_concurrent', 'Concurrent Test') ON CONFLICT (id) DO NOTHING`);
-  await pool.query(`INSERT INTO agents (id, branch_id, name, status, lifecycle) VALUES ($1, 'branch_concurrent', 'concurrent-test', 'online', 'active') ON CONFLICT (id) DO NOTHING`, [AGENT_ID]);
+  await pool.query(`INSERT INTO agents (id, name, status, lifecycle) VALUES ($1, 'concurrent-test', 'online', 'active') ON CONFLICT (id) DO NOTHING`, [AGENT_ID]);
   await pool.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config) VALUES ($1, $2, 'concurrent', 'physical', 'other', 'network', 'raw', 'online', 'active', '{"ip":"127.0.0.1","port":9100}'::jsonb) ON CONFLICT (id) DO NOTHING`, [PRINTER_ID, AGENT_ID]);
   await pool.query(`DELETE FROM print_jobs WHERE agent_id=$1 AND id LIKE 'job_cc_%'`, [AGENT_ID]);
   for (let i = 0; i < 20; i++) {
@@ -28,7 +27,9 @@ async function ensureFixture() {
 }
 
 async function claim() {
-  // This is the exact Gateway claim transaction from src/app/api/agent/jobs/route.ts:49
+  // Simplified SKIP LOCKED claim probe. The authoritative claim transaction is
+  // `claimJobForDelivery` (src/lib/job-delivery.ts) / `src/app/api/agent/jobs/route.ts`;
+  // `tests/job-status-postgres-concurrency.test.ts` is the maintained concurrency proof.
   const res = await pool.query(`
     WITH claimable AS (
       SELECT id FROM print_jobs

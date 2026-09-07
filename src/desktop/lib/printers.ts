@@ -147,6 +147,9 @@ export function jobDocType(j: Record<string, unknown>): string {
 export function jobPrinterId(j: Record<string, unknown>): string {
   return String(j.printerId ?? "");
 }
+export function jobDestination(j: Record<string, unknown>): string {
+  return String(j.destination ?? "");
+}
 export function jobStatus(j: Record<string, unknown>): string {
   return String(j.status ?? "");
 }

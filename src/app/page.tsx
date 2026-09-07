@@ -50,7 +50,7 @@ export default async function Home() {
             <FeatureCard
               icon={<ShieldCheck className="h-5 w-5" />}
               title="Secure pairing"
-              description="One-time pairing codes and scoped credentials ensure only authorized agents can print."
+              description="One-time pairing codes and installation-scoped API keys ensure only authorized agents and Odoo installations can print."
             />
             <FeatureCard
               icon={<Zap className="h-5 w-5" />}

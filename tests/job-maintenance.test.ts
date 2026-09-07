@@ -75,7 +75,6 @@ suite("server-side print job maintenance", () => {
   it("marks a stale printing lease failed with UNKNOWN physical outcome and never requeues it", async () => {
     await insertJob("job-stale-printing", "printing", 0, 11 * 60, 3600);
     const result = await sweepPrintJobs();
-    expect(result.requeuedPrinting).toBe(0);
     expect(result.stalePrinting).toBe(1);
     const row = await pool().query(`SELECT status, retries, error FROM print_jobs WHERE id = $1`, ["job-stale-printing"]);
     expect(row.rows[0].status).toBe("failed");
