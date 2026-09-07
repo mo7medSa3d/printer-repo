@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Copy, KeyRound, RefreshCw, Shield, Trash2 } from "lucide-react";
+import { Copy, KeyRound, Shield, Trash2 } from "lucide-react";
 import { Button, Card, CardHeader, Input, Field, StatusBadge } from "../../components/ui";
 
 type ApiKey = {
