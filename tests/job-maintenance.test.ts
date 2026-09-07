@@ -31,9 +31,9 @@ suite("server-side print job maintenance", () => {
 
   async function insertJob(id: string, status: string, retries = 0, ageSeconds = 120, expiresOffsetSeconds = 3600) {
     await pool().query(
-      `INSERT INTO print_jobs (id, branch_id, destination_id, agent_id, printer_id, status, payload, retries, claimed_at, delivered_at, acked_at, expires_at, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, $7, now() - make_interval(secs => $8), NULL, NULL, now() + make_interval(secs => $9), now() - make_interval(secs => $8), now() - make_interval(secs => $8))`,
-      [id, f.branchId, f.destinationId, f.agentId, f.printerId, status, retries, ageSeconds, expiresOffsetSeconds],
+      `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, retries, claimed_at, delivered_at, acked_at, expires_at, created_at, updated_at)
+       VALUES ($1, $2, 'receipt', $3, $4, $5, '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, $6, now() - make_interval(secs => $7), NULL, NULL, now() + make_interval(secs => $8), now() - make_interval(secs => $7), now() - make_interval(secs => $7))`,
+      [id, f.destination, f.agentId, f.printerId, status, retries, ageSeconds, expiresOffsetSeconds],
     );
   }
 
@@ -48,7 +48,7 @@ suite("server-side print job maintenance", () => {
 
   it("requeues stale claims and the Agent can claim the recovered job", async () => {
     await insertJob("job-stale-claim", "claimed", 2, 120, 3600);
-    const result = await sweepPrintJobs({ agentId: f.agentId, branchId: f.branchId });
+    const result = await sweepPrintJobs({ agentId: f.agentId });
     expect(result.requeuedClaims).toBe(1);
 
     const row = await pool().query(`SELECT status, retries, claimed_at, delivered_at, acked_at FROM print_jobs WHERE id = $1`, ["job-stale-claim"]);
@@ -86,8 +86,6 @@ suite("server-side print job maintenance", () => {
 
   it("marks a printing job that expires during execution as UNKNOWN", async () => {
     await insertJob("job-expired-printing", "printing", 0, 120, -60);
-    // The expiry pass runs first, so this is a terminal expiry with an
-    // explicit ambiguous physical outcome marker.
     const result = await sweepPrintJobs();
     expect(result.expired).toBe(1);
     const row = await pool().query(`SELECT status, error FROM print_jobs WHERE id = $1`, ["job-expired-printing"]);
