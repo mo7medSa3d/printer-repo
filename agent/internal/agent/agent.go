@@ -1221,15 +1221,21 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	// Capability gate BEFORE anything is written anywhere: a printer that
 	// cannot render this document kind (e.g. a PDF sent to an ESC/POS byte
 	// stream) fails the job with CAPABILITY_MISMATCH instead of emitting
-	// unrenderable bytes. The gateway routing layer performs the same check;
-	// this is the authoritative, device-side enforcement.
-	kind := string(pl.Type)
-	if !printer.SupportsKind(p, kind) {
-		reason := fmt.Sprintf("CAPABILITY_MISMATCH: printer %s cannot print %s payloads", printerID, kind)
+	// unrenderable bytes. Image payloads are converted here to the backend's
+	// native representation (PDF / ESC/POS / JPEG) so POS receipts can print
+	// on spooler and thermal devices that do not natively accept JPEG.
+	adapted, err := printer.AdaptDocument(p, printer.Document{Kind: string(pl.Type), Data: pl.Data, JobID: jobID})
+	if err != nil {
+		reason := err.Error()
+		if !printer.IsCapabilityMismatch(err) {
+			reason = fmt.Sprintf("CAPABILITY_MISMATCH: printer %s cannot print %s payloads: %v", printerID, pl.Type, err)
+		}
 		log.Printf("Job %s rejected: %s", jobID, reason)
 		a.updateJobStatus(jobID, "failed", reason)
 		return
 	}
+	kind := adapted.Kind
+	pl.Data = adapted.Data
 
 	// Per-printer serialization: two jobs for the same printer never run concurrently.
 	// The lock is held ONLY around the physical print call and local queue

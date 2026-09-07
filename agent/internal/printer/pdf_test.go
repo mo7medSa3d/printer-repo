@@ -450,7 +450,7 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewIPPPrinter: %v", err)
 	}
-	if got := SupportedKinds(ipp); fmt.Sprint(got) != fmt.Sprint([]string{KindRaw, KindESCPOS, KindPDF}) {
+	if got := SupportedKinds(ipp); fmt.Sprint(got) != fmt.Sprint([]string{KindRaw, KindESCPOS, KindPDF, KindImage}) {
 		t.Fatalf("ipp: supported kinds = %v", got)
 	}
 	if format, ok := ippDocumentFormatFor(KindPDF); !ok || format != ippFormatPDF {

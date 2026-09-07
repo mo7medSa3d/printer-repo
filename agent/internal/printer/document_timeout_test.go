@@ -32,3 +32,19 @@ func TestDocumentContextUsesKindSpecificTimeout(t *testing.T) {
 		t.Fatalf("RAW timeout should be about 20s, got %s", rawRemaining)
 	}
 }
+
+func TestDocumentContextDoesNotShortenCallerDeadline(t *testing.T) {
+	parent, parentCancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer parentCancel()
+
+	rawCtx, rawCancel := documentContext(parent, KindRaw)
+	defer rawCancel()
+	rawDeadline, ok := rawCtx.Deadline()
+	if !ok {
+		t.Fatal("RAW context must keep the caller deadline")
+	}
+	rawRemaining := time.Until(rawDeadline)
+	if rawRemaining < 3*time.Minute {
+		t.Fatalf("size-aware RAW timeout must not be shortened to 20s, got %s", rawRemaining)
+	}
+}

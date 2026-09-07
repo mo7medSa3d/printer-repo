@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	_ "image/jpeg"
 	"image/color"
 	"image/jpeg"
 	"math"

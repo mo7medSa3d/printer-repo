@@ -10,11 +10,24 @@ describe("runtime routing capability and availability", () => {
     }).ok).toBe(true);
   });
 
-  it("rejects image payloads when the printer explicitly lacks image support", () => {
-    const result = validatePayloadForPrinter("image", {
+  it("converts image payloads when the printer can print PDF or ESC/POS", () => {
+    expect(validatePayloadForPrinter("image", {
       protocol: "ipp",
       connectionType: "ipp",
       capabilities: { supported_protocols: ["pdf"] },
+    }).ok).toBe(true);
+    expect(validatePayloadForPrinter("image", {
+      protocol: "raw",
+      connectionType: "network",
+      capabilities: { supported_protocols: ["raw", "escpos"] },
+    }).ok).toBe(true);
+  });
+
+  it("rejects image payloads when the printer cannot convert or render them", () => {
+    const result = validatePayloadForPrinter("image", {
+      protocol: "ipp",
+      connectionType: "ipp",
+      capabilities: { supported_protocols: ["unknown"] },
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain("CAPABILITY_MISMATCH");

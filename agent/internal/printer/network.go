@@ -9,10 +9,8 @@ import (
 
 const maxPrintBytes = 5 * 1024 * 1024
 
-const (
-	dialTimeout      = 10 * time.Second
-	writeStallTimeout = 60 * time.Second
-)
+const dialTimeout = 10 * time.Second
+const writeStallTimeout = 60 * time.Second
 
 type NetworkPrinter struct{ Address string }
 

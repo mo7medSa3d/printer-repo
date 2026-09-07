@@ -26,16 +26,37 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	if err:=os.WriteFile(fpath,data,0644);err!=nil{log.Printf("Spooler stub write failed for %s: %v",p.SpoolerName,err);return fmt.Errorf("spooler stub write failed: %w",err)}
 	log.Printf("Spooler stub printed %d bytes for %s to %s",len(data),p.SpoolerName,fpath);return nil
 }
-func (p *SpoolerPrinter) SupportsKind(kind string) bool { switch NormalizeKind(kind){case KindRaw,KindESCPOS,KindPDF,KindImage:return true;default:return false} }
+func (p *SpoolerPrinter) SupportsKind(kind string) bool {
+	switch NormalizeKind(kind) {
+	case KindRaw, KindESCPOS, KindPDF:
+		return true
+	default:
+		return false
+	}
+}
 func (p *SpoolerPrinter) PrintDocument(ctx context.Context, doc Document) error {
-	switch NormalizeKind(doc.Kind){
+	switch NormalizeKind(doc.Kind) {
 	case KindPDF:
-		if p.PDFPrint!=nil{return PrintPDF(ctx,p.SpoolerName,doc,p.PDFPrint)}; if err:=ValidatePDF(doc.Data);err!=nil{return err}; if err:=ValidatePDFPrinterName(p.SpoolerName);err!=nil{return fmt.Errorf("refusing to print PDF: %w",err)}
-		fpath:=filepath.Join(os.TempDir(),fmt.Sprintf("spooler_%s_%d.pdf",sanitizeFilename(p.SpoolerName),time.Now().UnixNano())); if err:=os.WriteFile(fpath,doc.Data,0600);err!=nil{return fmt.Errorf("spooler stub PDF write failed: %w",err)}; log.Printf("Spooler stub SIMULATED a PDF print of %d bytes for %s to %s (no Windows print subsystem on this OS)",len(doc.Data),p.SpoolerName,fpath); return nil
-	case KindImage:
-		pdf,err:=JPEGToPDF(doc.Data); if err!=nil{return err}; return p.PrintDocument(ctx,Document{Kind:KindPDF,Data:pdf,JobID:doc.JobID})
-	case KindRaw,KindESCPOS:return p.Print(ctx,doc.Data)
-	default:return CapabilityMismatchf("spooler printer %q cannot render %s payloads",p.SpoolerName,NormalizeKind(doc.Kind)) }
+		if p.PDFPrint != nil {
+			return PrintPDF(ctx, p.SpoolerName, doc, p.PDFPrint)
+		}
+		if err := ValidatePDF(doc.Data); err != nil {
+			return err
+		}
+		if err := ValidatePDFPrinterName(p.SpoolerName); err != nil {
+			return fmt.Errorf("refusing to print PDF: %w", err)
+		}
+		fpath := filepath.Join(os.TempDir(), fmt.Sprintf("spooler_%s_%d.pdf", sanitizeFilename(p.SpoolerName), time.Now().UnixNano()))
+		if err := os.WriteFile(fpath, doc.Data, 0600); err != nil {
+			return fmt.Errorf("spooler stub PDF write failed: %w", err)
+		}
+		log.Printf("Spooler stub SIMULATED a PDF print of %d bytes for %s to %s (no Windows print subsystem on this OS)", len(doc.Data), p.SpoolerName, fpath)
+		return nil
+	case KindRaw, KindESCPOS:
+		return p.Print(ctx, doc.Data)
+	default:
+		return CapabilityMismatchf("spooler printer %q cannot render %s payloads", p.SpoolerName, NormalizeKind(doc.Kind))
+	}
 }
 func (p *SpoolerPrinter) Test(ctx context.Context) error{return p.Print(ctx,[]byte("\x1b\x40Spooler Test Print from Odoo Agent\nPrinter: "+p.SpoolerName+"\n\n\x1d\x56\x01"))}
 func (p *SpoolerPrinter) Status() string{return "online"}

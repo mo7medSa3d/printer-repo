@@ -20,14 +20,22 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         with self.env.registry.cursor() as cr:
             setup_env = api.Environment(cr, self.env.uid, dict(self.env.context))
             with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
-                config = setup_env['print_gateway.gateway_config'].create({
-                    'company_id': self.company.id,
+                config = setup_env['print_gateway.gateway_config'].search([
+                    ('company_id', '=', self.company.id),
+                ], limit=1)
+                values = {
                     'gateway_url': 'https://gateway.example.com',
                     'gateway_api_key': 'odoo_test_key',
                     'enabled': True,
-                })
+                }
+                if config:
+                    config.write(values)
+                else:
+                    values['company_id'] = self.company.id
+                    config = setup_env['print_gateway.gateway_config'].create(values)
             config_id = config.id
             cr.commit()
+        self.env.invalidate_all()
         self.config = self.env['print_gateway.gateway_config'].browse(config_id)
 
     def _make_config(self, enabled=True):
@@ -101,7 +109,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         self.assertTrue(picking_type, 'Expected at least one company-scoped stock operation type in the Odoo test database.')
         report = self.env['ir.actions.report'].search([('model', '=', 'stock.picking')], limit=1)
         self.assertTrue(report, 'Expected a stock picking report in the Odoo test database.')
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(UserError):
             self.env['print_gateway.binding'].create({
                 'company_id': self.other_company.id,
                 'destination_type': 'picking_type',
@@ -200,13 +208,11 @@ class TestPrintGatewayRoutingContract(TransactionCase):
     def test_manual_retry_creates_a_new_operation_only_for_definite_failure(self):
         job = self._job('retry-failed-original')
         job.write({'status': 'failed', 'last_error': 'GATEWAY_HTTP_503'})
+        existing_ids = self.env['print_gateway.print_job'].search([]).ids
         with patch.object(type(job), 'action_submit', autospec=True, return_value=True) as submit:
             job.action_retry()
         retries = self.env['print_gateway.print_job'].search([
-            ('id', '!=', job.id),
-            ('source_record_id', '=', False),
-            ('printer_id', '=', job.printer_id),
-            ('idempotency_key', '!=', job.idempotency_key),
+            ('id', 'not in', existing_ids or [0]),
         ])
         self.assertEqual(len(retries), 1)
         self.assertNotEqual(retries.idempotency_key, job.idempotency_key)

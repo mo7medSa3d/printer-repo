@@ -9,11 +9,18 @@ from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 class TestPrintGatewayURLTransport(TransactionCase):
     def _config(self, url):
         with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
-            return self.env['print_gateway.gateway_config'].create({
-                'company_id': self.env.company.id,
+            values = {
                 'gateway_url': url,
                 'gateway_api_key': 'test-key',
-            })
+            }
+            existing = self.env['print_gateway.gateway_config'].search([
+                ('company_id', '=', self.env.company.id),
+            ], limit=1)
+            if existing:
+                existing.write(values)
+                return existing
+            values['company_id'] = self.env.company.id
+            return self.env['print_gateway.gateway_config'].create(values)
 
     def test_https_gateway_url_is_accepted(self):
         config = self._config('https://gateway.example.com')

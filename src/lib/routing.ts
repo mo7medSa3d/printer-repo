@@ -21,10 +21,15 @@ export function validatePayloadForPrinter(
   if (supported?.length) {
     if (supported.includes(pt)) return { ok: true };
     if ((pt === "raw" || pt === "escpos") && (supported.includes("raw") || supported.includes("escpos") || conn === "spooler" || proto === "spooler")) return { ok: true };
+    // The Agent converts JPEG (POS/Kitchen) to PDF or ESC/POS raster when the
+    // backend does not natively accept image/jpeg.
+    if (pt === "image" && (supported.includes("pdf") || supported.includes("raw") || supported.includes("escpos") || supported.includes("image"))) {
+      return { ok: true };
+    }
     return { ok: false, reason: `CAPABILITY_MISMATCH: payload type ${pt} not supported by printer` };
   }
   if (["ipp", "ipps"].includes(proto) || ["ipp", "ipps"].includes(conn)) {
-    return ["raw", "escpos", "pdf"].includes(pt) ? { ok: true } : { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} is not supported by IPP transport` };
+    return ["raw", "escpos", "pdf", "image"].includes(pt) ? { ok: true } : { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} is not supported by IPP transport` };
   }
   if (pt === "raw" || pt === "escpos") {
     return ["raw", "escpos", "spooler", ""].includes(proto) || conn === "spooler"
@@ -35,6 +40,11 @@ export function validatePayloadForPrinter(
     return proto === "spooler" || conn === "spooler"
       ? { ok: true }
       : { ok: false, reason: `CAPABILITY_MISMATCH: pdf requires spooler or IPP transport` };
+  }
+  if (pt === "image") {
+    return proto === "spooler" || conn === "spooler" || conn === "network" || conn === "usb" || ["raw", "escpos", ""].includes(proto)
+      ? { ok: true }
+      : { ok: false, reason: `CAPABILITY_MISMATCH: unsupported payload type ${pt}` };
   }
   return { ok: false, reason: `CAPABILITY_MISMATCH: unsupported payload type ${pt}` };
 }

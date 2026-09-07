@@ -24,12 +24,21 @@ describe("runtime printer routing regressions", () => {
     expect(isPrinterAvailableForJob(printer({ lifecycle: "disabled" }))).toBe(false);
   });
 
-  it("does not silently accept a payload capability the printer does not advertise", () => {
-    const result = validatePayloadForPrinter("image", {
+  it("does not silently accept a payload capability the printer cannot convert or render", () => {
+    const result = validatePayloadForPrinter("pdf", {
       protocol: "raw",
       connectionType: "network",
       capabilities: { supported_protocols: ["raw", "escpos"] },
     });
     expect(result.ok).toBe(false);
+  });
+
+  it("accepts POS JPEG payloads for thermal printers the Agent can rasterize", () => {
+    const result = validatePayloadForPrinter("image", {
+      protocol: "raw",
+      connectionType: "network",
+      capabilities: { supported_protocols: ["raw", "escpos"] },
+    });
+    expect(result.ok).toBe(true);
   });
 });
