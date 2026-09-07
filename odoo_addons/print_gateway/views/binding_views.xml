@@ -29,11 +29,14 @@
                                invisible="not company_id" required="1"/>
                         <field name="destination_type" string="Odoo Destination Type"/>
                         <field name="destination_pos_config_id" string="Odoo Destination"
-                               invisible="destination_type != 'pos'" required="destination_type == 'pos'"/>
+                               invisible="destination_type != 'pos'" required="destination_type == 'pos'"
+                               domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]"/>
                         <field name="destination_pos_printer_id" string="Odoo Destination"
-                               invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"/>
+                               invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"
+                               domain="['|', ('company_id', '=', False), ('company_id', '=', branch_id)]"/>
                         <field name="destination_picking_type_id" string="Odoo Destination"
-                               invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"/>
+                               invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"
+                               domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]"/>
                         <field name="destination_report_id" string="Odoo Destination"
                                invisible="destination_type != 'report'" required="destination_type == 'report'"/>
                         <field name="report_id" string="Document / Report"

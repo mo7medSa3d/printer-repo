@@ -46,15 +46,15 @@ class PrintGatewayBinding(models.Model):
     )
     destination_pos_config_id = fields.Many2one(
         "pos.config", string="POS Configuration", ondelete="restrict", check_company=True,
-        domain="[('company_id', '=', branch_id or company_id), ('active', '=', True)]",
+        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]",
     )
     destination_pos_printer_id = fields.Many2one(
         "pos.printer", string="POS / Kitchen Printer", ondelete="restrict", check_company=True,
-        domain="[('company_id', '=', branch_id or company_id)]",
+        domain="['|', ('company_id', '=', False), ('company_id', '=', branch_id)]",
     )
     destination_picking_type_id = fields.Many2one(
         "stock.picking.type", string="Operation Type", ondelete="restrict", check_company=True,
-        domain="[('company_id', '=', branch_id or company_id), ('active', '=', True)]",
+        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]",
     )
     destination_report_id = fields.Many2one(
         "ir.actions.report", string="Report Destination", ondelete="restrict",
