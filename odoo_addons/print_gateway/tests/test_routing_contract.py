@@ -102,6 +102,28 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         with self.assertRaises(ValidationError):
             self.env['print_gateway.print_router'].resolve_binding(report=report, record=self.env['sale.order'])
 
+    def test_router_rejects_company_argument_that_is_not_active(self):
+        report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
+        with self.assertRaises(ValidationError):
+            self.env['print_gateway.print_router'].resolve_binding(
+                report=report,
+                company=self.other_company,
+            )
+
+    def test_router_rejects_document_from_another_company_context(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Other Company Print Context',
+            'company_id': self.other_company.id,
+        })
+        report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
+        with self.assertRaises(ValidationError):
+            self.env['print_gateway.print_router'].resolve_binding(
+                report=report,
+                record=partner,
+                document_type='order',
+                company=self.company,
+            )
+
     def test_native_print_is_only_allowed_when_gateway_is_disabled(self):
         config = self._make_config(False)
         result = self.env['print_gateway.print_router'].resolve_binding(record=self.env.company)
