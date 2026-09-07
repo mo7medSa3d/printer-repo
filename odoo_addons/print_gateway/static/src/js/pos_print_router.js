@@ -52,7 +52,8 @@ patch(PosStore.prototype, {
     },
 
     async printOrderChanges(data, printer) {
-        const orderId = data?.__gateway_order_id;
+        const orderId = data?.orderData?.__gateway_order_id;
+        const reprint = Boolean(data?.orderData?.__gateway_reprint);
         if (!orderId) {
             return super.printOrderChanges(data, printer);
         }
@@ -68,7 +69,7 @@ patch(PosStore.prototype, {
                 "pos.order",
                 "action_print_gateway_kitchen",
                 [[orderId]],
-                { printer_id: printer.config.id, image, reprint: Boolean(data.__gateway_reprint) },
+                { printer_id: printer.config.id, image, reprint },
                 true
             );
             return { successful: Boolean(result?.gateway_enabled), warningCode: undefined };
