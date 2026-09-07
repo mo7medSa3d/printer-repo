@@ -7,7 +7,6 @@ ADDON = Path(__file__).resolve().parents[1]
 MODELS = ADDON / "models"
 VIEWS = ADDON / "views"
 CONTROLLERS = ADDON / "controllers"
-GATEWAY_SCHEMA = ADDON.parents[1] / "src" / "db" / "schema.ts"
 
 
 class TestPrintGatewayArchitectureContract(TransactionCase):
@@ -53,14 +52,17 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn('"print_gateway.gateway_config"', binding)
         self.assertNotIn("gateway_branch_id", binding)
 
-    def test_gateway_schema_has_no_business_context_tables(self):
-        source = (GATEWAY_SCHEMA).read_text(encoding="utf-8")
-        self.assertNotIn('pgTable("branches"', source)
-        self.assertNotIn('pgTable("destinations"', source)
-        self.assertNotIn('pgTable("odoo_companies"', source)
-        self.assertNotIn('pgTable("odoo_bindings"', source)
-        self.assertIn('pgTable("agents"', source)
-        self.assertIn('pgTable("printers"', source)
+    def test_odoo_addon_does_not_define_gateway_business_catalog_models(self):
+        source = "\n".join(path.read_text(encoding="utf-8") for path in MODELS.glob("*.py"))
+        forbidden = (
+            '"print_gateway.branch"',
+            '"print_gateway.destination"',
+            '"print_gateway.document_type"',
+            '"print_gateway.printer_binding"',
+            '"print_gateway.odoo_company"',
+        )
+        for token in forbidden:
+            self.assertNotIn(token, source)
 
     def test_gateway_config_remains_connection_only_in_ui(self):
         source = (VIEWS / "gateway_config_views.xml").read_text(encoding="utf-8")
