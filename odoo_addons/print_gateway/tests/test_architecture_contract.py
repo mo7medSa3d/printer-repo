@@ -54,9 +54,12 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         }
         self.assertTrue(forbidden.isdisjoint({path.name for path in VIEWS.glob("*.xml")}))
 
-    def test_legacy_pos_controller_override_is_gone_and_runtime_printer_controller_is_loaded(self):
-        self.assertFalse((CONTROLLERS / "pos.py").exists())
+    def test_direct_pos_controller_is_loaded_and_runtime_printer_controller_is_loaded(self):
+        pos_controller = (CONTROLLERS / "pos.py").read_text(encoding="utf-8")
         init_source = (CONTROLLERS / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn("/pos/sale_details_report", pos_controller)
+        self.assertIn("route_render_target", pos_controller)
+        self.assertIn("from . import pos", init_source)
         self.assertIn("from . import runtime_printers", init_source)
 
     def test_runtime_printer_controller_uses_odoo_19_jsonrpc_route(self):
@@ -82,12 +85,14 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
     def test_pos_router_never_calls_native_print_when_gateway_is_enabled(self):
         source = (ADDON / "static" / "src" / "js" / "pos_print_router.js").read_text(encoding="utf-8")
         self.assertIn('"pos.session", "is_gateway_printing_enabled"', source)
+        self.assertIn("basic_receipt: Boolean(basic)", source)
         gateway_call = source.index("action_print_gateway_receipt")
         native_call = source.index("return super.printReceipt")
         self.assertLess(native_call, gateway_call)
-        self.assertIn("basic_receipt", source[gateway_call:])
-        self.assertIn("POS order has no server identifier", source[gateway_call:])
-        self.assertNotIn("return super.printReceipt", source[gateway_call:])
+        gateway_suffix = source[gateway_call:]
+        self.assertNotIn("return super.printReceipt", gateway_suffix)
+        self.assertNotIn("window.print", gateway_suffix)
+        self.assertIn("syncAllOrders", gateway_suffix)
 
     def test_kitchen_router_uses_stable_per_receipt_operation_identity(self):
         source = (ADDON / "static" / "src" / "js" / "pos_print_router.js").read_text(encoding="utf-8")
