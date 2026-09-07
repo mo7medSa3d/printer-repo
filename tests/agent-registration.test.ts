@@ -22,7 +22,7 @@ suite("agent registration contract", () => {
     await truncateAll();
   });
 
-  it("pairs using only the one-time pairing code and derives branch from the pre-provisioned agent", async () => {
+  it("pairs using only the one-time pairing code and preserves runtime-only agent ownership", async () => {
     const f = await seedFixture();
     const pairingCode = "AB22CD";
     await pool().query(
@@ -32,83 +32,51 @@ suite("agent registration contract", () => {
 
     const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-real-ip": "127.0.0.50",
-      },
-      body: JSON.stringify({
-        pairingCode: pairingCode.toLowerCase(),
-        metadata: { hostname: "pos-01", os: "windows" },
-      }),
+      headers: { "content-type": "application/json", "x-real-ip": "127.0.0.50" },
+      body: JSON.stringify({ pairingCode: pairingCode.toLowerCase(), metadata: { hostname: "pos-01", os: "windows" } }),
     }));
 
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.agentId).toBe(f.agentId);
-    expect(body.branchId).toBe(f.branchId);
-    expect(typeof body.secret).toBe("string");
-    expect(body.secret.length).toBeGreaterThan(20);
+    expect(body.secret).toMatch(/.+/);
+    expect(body.branchId).toBeUndefined();
 
     const row = (await pool().query(
-      `SELECT branch_id, pairing_code, secret, status FROM agents WHERE id = $1`,
+      `SELECT pairing_code, secret, status, metadata FROM agents WHERE id = $1`,
       [f.agentId],
     )).rows[0];
-    expect(row.branch_id).toBe(f.branchId);
     expect(row.pairing_code).toBeNull();
     expect(row.secret).toBeTruthy();
     expect(row.secret).not.toBe(body.secret);
     expect(row.status).toBe("online");
+    expect(row.metadata).toMatchObject({ hostname: "pos-01", os: "windows" });
   });
 
-  it("rejects a client-supplied branchId before any ownership lookup", async () => {
-    const f = await seedFixture();
-    const pairingCode = "AB22CD";
-    await pool().query(
-      `UPDATE agents SET pairing_code = $1, pairing_code_expires_at = now() + interval '30 minutes' WHERE id = $2`,
-      [pairingCode, f.agentId],
-    );
-
-    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pairingCode, branchId: "attacker-branch" }),
-    }));
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "branchId is not accepted during registration" });
-  });
-
-  it("rejects branchId deterministically even when pairingCode is missing", async () => {
-    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ branchId: "attacker-branch" }),
-    }));
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "branchId is not accepted during registration" });
-  });
-
-  it("invalid pairing attempts are rate-limited", async () => {
+  it("rejects a client-supplied legacy branchId at the registration boundary", async () => {
     await seedFixture();
-    const headers = {
-      "content-type": "application/json",
-      "x-real-ip": "127.0.0.60",
-    };
+    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pairingCode: "AB22CD", branchId: "legacy-branch" }),
+    }));
+
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects invalid pairing attempts and rate-limits repeated failures", async () => {
+    await seedFixture();
+    const headers = { "content-type": "application/json", "x-real-ip": "127.0.0.60" };
 
     for (let i = 0; i < 5; i++) {
       const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ pairingCode: "AAAAAA" }),
+        method: "POST", headers, body: JSON.stringify({ pairingCode: "AAAAAA" }),
       }));
       expect(response.status).toBe(400);
     }
 
     const limited = await registerPOST(new Request("http://gateway.test/api/agent/register", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ pairingCode: "BBBBBB" }),
+      method: "POST", headers, body: JSON.stringify({ pairingCode: "BBBBBB" }),
     }));
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBeTruthy();
