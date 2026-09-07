@@ -94,7 +94,38 @@ jobs:
         run: npm run db:migrate
       - name: Verify schema invariants
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM information_schema.tables WHERE table_name='branches';"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.tables
+              WHERE table_schema = 'public' AND table_name = 'branches'
+            ) THEN
+              RAISE EXCEPTION 'branches table is missing';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_indexes
+              WHERE schemaname = 'public' AND tablename = 'print_jobs'
+                AND indexname = 'print_jobs_idempotency_unique'
+            ) THEN
+              RAISE EXCEPTION 'global print job idempotency index is missing';
+            END IF;
+            IF EXISTS (
+              SELECT 1 FROM pg_constraint
+              WHERE conrelid = 'print_jobs'::regclass
+                AND conname = 'print_jobs_branch_idempotency_unique'
+            ) THEN
+              RAISE EXCEPTION 'legacy branch-scoped idempotency constraint is still present';
+            END IF;
+            IF EXISTS (
+              SELECT 1 FROM pg_constraint
+              WHERE conrelid = 'print_jobs'::regclass
+                AND conname = 'print_jobs_destination_id_destinations_id_fk'
+            ) THEN
+              RAISE EXCEPTION 'destination label must not be constrained as a foreign key';
+            END IF;
+          END $$;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f drizzle/0009_runtime_invariant_guard.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 'schema ok';"
       - name: Run integration tests (PostgreSQL)
