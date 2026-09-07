@@ -1,11 +1,9 @@
 /** @odoo-module */
 
 import { patch } from "@web/core/utils/patch";
-import { formatDateTime } from "@web/core/l10n/dates";
 import { PosStore } from "@point_of_sale/app/services/pos_store";
 import { renderToElement } from "@web/core/utils/render";
 import { htmlToCanvas } from "@point_of_sale/app/services/render_service";
-import { SaleDetailsButton } from "@point_of_sale/app/components/navbar/sale_details_button/sale_details_button";
 
 async function elementToJpeg(element) {
     const canvas = await htmlToCanvas(element, { addClass: "pos-receipt-print" });
@@ -43,13 +41,7 @@ patch(PosStore.prototype, {
                     basic_receipt: Boolean(basic),
                 });
                 const image = await elementToJpeg(receipt);
-                const result = await this.data.call(
-                    "pos.order",
-                    "action_print_gateway_receipt",
-                    [[orderId]],
-                    { image },
-                    true
-                );
+                const result = await this.data.call("pos.order", "action_print_gateway_receipt", [[orderId]], { image }, true);
                 this.notification.add(result?.message || "Print job accepted.", { type: "success" });
                 if (!printBillActionTriggered) {
                     const count = currentOrder.nb_print ? currentOrder.nb_print + 1 : 1;
@@ -110,55 +102,6 @@ patch(PosStore.prototype, {
                 canRetry: true,
                 message: { title: "Print Gateway", body: error?.message || "Kitchen / Preparation printing failed." },
             };
-        }
-    },
-});
-
-patch(SaleDetailsButton.prototype, {
-    async onClick() {
-        const sessionId = this.pos.session?.id;
-        if (!sessionId) {
-            return super.onClick();
-        }
-
-        const gatewayEnabled = await this.pos.data.call(
-            "pos.session",
-            "is_gateway_printing_enabled",
-            [[sessionId]],
-            {},
-            true
-        );
-        if (gatewayEnabled !== true) {
-            return super.onClick();
-        }
-
-        try {
-            const saleDetails = await this.pos.data.call(
-                "report.point_of_sale.report_saledetails",
-                "get_sale_details",
-                [false, false, false, [sessionId]]
-            );
-            const report = renderToElement(
-                "point_of_sale.SaleDetailsReport",
-                Object.assign({}, saleDetails, {
-                    date: formatDateTime(luxon.DateTime.now()),
-                    pos: this.pos,
-                    formatCurrency: this.pos.env.utils.formatCurrency,
-                })
-            );
-            const image = await elementToJpeg(report);
-            const result = await this.pos.data.call(
-                "pos.session",
-                "action_print_gateway_sale_details",
-                [[sessionId]],
-                { image },
-                true
-            );
-            this.pos.notification.add(result?.message || "Sale Details print job accepted.", { type: "success" });
-            return result;
-        } catch (error) {
-            this.pos.notification.add(error?.message || "Sale Details printing failed.", { type: "danger" });
-            throw error;
         }
     },
 });
