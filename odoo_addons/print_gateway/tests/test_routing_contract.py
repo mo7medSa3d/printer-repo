@@ -15,17 +15,26 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         self.company = self.env.company
         self.other_company = self.env['res.company'].create({'name': 'Gateway Contract Other Company'})
         # The durable outbox intentionally writes through a separate transaction.
-        # Create the config in a committed transaction so _persist_durable_job can
-        # safely reference it without leaking/committing the caller transaction.
+        # Reuse an already committed company config when another TransactionCase
+        # execution has created it, otherwise create it exactly once.
+        values = {
+            'gateway_url': 'https://gateway.example.com',
+            'gateway_api_key': 'odoo_test_key',
+            'enabled': True,
+        }
         with self.env.registry.cursor() as cr:
             setup_env = api.Environment(cr, self.env.uid, dict(self.env.context))
             with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
-                config = setup_env['print_gateway.gateway_config'].create({
-                    'company_id': self.company.id,
-                    'gateway_url': 'https://gateway.example.com',
-                    'gateway_api_key': 'odoo_test_key',
-                    'enabled': True,
-                })
+                config = setup_env['print_gateway.gateway_config'].search([
+                    ('company_id', '=', self.company.id),
+                ], limit=1)
+                if config:
+                    config.write(values)
+                else:
+                    config = setup_env['print_gateway.gateway_config'].create({
+                        'company_id': self.company.id,
+                        **values,
+                    })
             config_id = config.id
             cr.commit()
         self.config = self.env['print_gateway.gateway_config'].browse(config_id)
