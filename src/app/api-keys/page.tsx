@@ -128,7 +128,7 @@ export default function ApiKeysPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="truncate font-semibold text-ink">{item.name}</span>
-                  <StatusBadge tone={item.revokedAt ? "error" : "ok"} label={item.revokedAt ? "Revoked" : "Active"} />
+                  <StatusBadge tone={item.revokedAt ? "bad" : "ok"} label={item.revokedAt ? "Revoked" : "Active"} />
                 </div>
                 <div className="mt-1 text-xs text-ink-3">Created {new Date(item.createdAt).toLocaleString()} · Last used {item.lastUsedAt ? new Date(item.lastUsedAt).toLocaleString() : "Never"}</div>
                 <div className="mt-1 font-mono text-[11px] text-ink-3">{item.id}</div>
