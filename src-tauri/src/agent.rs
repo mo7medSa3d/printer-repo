@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(debug_assertions)]
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use tauri::Manager;
