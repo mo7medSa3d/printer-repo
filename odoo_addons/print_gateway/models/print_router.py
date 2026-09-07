@@ -157,9 +157,31 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def _persist_durable_job(self, values):
+        # The durable outbox intentionally uses an independent transaction. Never
+        # pass recordsets from the caller's transaction into that cursor: a record
+        # may be uncommitted or bound to a different transaction snapshot. Convert
+        # all ORM records to stable primitive IDs before crossing the boundary.
+        durable_values = dict(values)
+        for key, model_name in (
+            ("company", "res.company"),
+            ("gateway_config", "print_gateway.gateway_config"),
+            ("report", "ir.actions.report"),
+        ):
+            record = durable_values.get(key)
+            durable_values[key] = record.id if record else False
+
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            job = env["print_gateway.print_job"].create_operation(**values)
+            for key, model_name in (
+                ("company", "res.company"),
+                ("gateway_config", "print_gateway.gateway_config"),
+                ("report", "ir.actions.report"),
+            ):
+                record_id = durable_values.get(key)
+                durable_values[key] = env[model_name].browse(record_id).exists() if record_id else env[model_name]
+                if record_id and not durable_values[key]:
+                    raise ValidationError(_("The durable print operation references a record that is no longer available."))
+            job = env["print_gateway.print_job"].create_operation(**durable_values)
             job_id = job.id
             cr.commit()
         return self.env["print_gateway.print_job"].browse(job_id)
