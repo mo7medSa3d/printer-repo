@@ -16,33 +16,24 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         cls.company = cls.env.company
         cls.other_company = cls.env['res.company'].create({'name': 'Gateway Contract Other Company'})
 
-        # The production durable-job path intentionally uses a new database cursor.
-        # Persist only the shared Gateway fixture through a dedicated cursor so the
-        # test suite itself keeps Odoo's TransactionCase transaction semantics intact.
-        with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
-            with cls.env.registry.cursor() as cr:
-                env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
-                config = env['print_gateway.gateway_config'].create({
-                    'company_id': cls.company.id,
-                    'gateway_url': 'https://gateway.example.com',
-                    'gateway_api_key': 'odoo_test_key',
-                    'enabled': True,
-                })
-                config_id = config.id
-                cr.commit()
-        cls.config = cls.env['print_gateway.gateway_config'].browse(config_id)
+    def _create_committed_config(self):
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            config = env['print_gateway.gateway_config'].create({
+                'company_id': self.company.id,
+                'gateway_url': 'https://gateway.example.com',
+                'gateway_api_key': 'odoo_test_key',
+                'enabled': True,
+            })
+            config_id = config.id
+            cr.commit()
+        return config_id
 
-    @classmethod
-    def tearDownClass(cls):
-        # Remove the externally committed class fixture explicitly; the current
-        # TransactionCase cursor cannot roll it back because it belongs to another
-        # cursor/transaction.
-        config_id = getattr(cls, 'config', cls.env['print_gateway.gateway_config']).id
-        with cls.env.registry.cursor() as cr:
-            env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+    def _cleanup_committed_config(self, config_id):
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
             env['print_gateway.gateway_config'].browse(config_id).unlink()
             cr.commit()
-        super().tearDownClass()
 
     def _make_config(self, enabled=True):
         config = self.env['print_gateway.gateway_config'].search([('company_id', '=', self.company.id)], limit=1)
@@ -153,45 +144,64 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             )
 
     def test_native_print_is_only_allowed_when_gateway_is_disabled(self):
-        config = self._make_config(False)
+        config = self.env['print_gateway.gateway_config'].create({
+            'company_id': self.company.id,
+            'gateway_url': 'https://gateway.example.com',
+            'gateway_api_key': 'odoo_test_key',
+            'enabled': False,
+        })
         result = self.env['print_gateway.print_router'].resolve_binding(record=self.env.company)
         self.assertTrue(result['native'])
-        config.enabled = True
+        config.unlink()
 
     def test_gateway_connection_test_is_authenticated(self):
-        class Response:
-            status_code = 200
-            content = b'{"ok": true}'
-            def json(self):
-                return {'ok': True}
-
-        with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
-            'odoo.addons.print_gateway.models.gateway_config.requests.get', return_value=Response()
-        ) as mocked:
-            self.config.action_test_connection()
-            self.assertEqual(mocked.call_args.args[0], 'https://gateway.example.com/api/odoo/health')
-            self.assertIn('Authorization', mocked.call_args.kwargs['headers'])
-            self.assertEqual(mocked.call_args.kwargs['allow_redirects'], False)
+        config_id = self._create_committed_config()
+        try:
+            with self.env.registry.cursor() as cr:
+                env = api.Environment(cr, self.env.uid, dict(self.env.context))
+                config = env['print_gateway.gateway_config'].browse(config_id)
+                class Response:
+                    status_code = 200
+                    content = b'{"ok": true}'
+                    def json(self):
+                        return {'ok': True}
+                with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
+                    'odoo.addons.print_gateway.models.gateway_config.requests.get', return_value=Response()
+                ) as mocked:
+                    config.action_test_connection()
+                    self.assertEqual(mocked.call_args.args[0], 'https://gateway.example.com/api/odoo/health')
+                    self.assertIn('Authorization', mocked.call_args.kwargs['headers'])
+                    self.assertEqual(mocked.call_args.kwargs['allow_redirects'], False)
+                cr.commit()
+        finally:
+            self._cleanup_committed_config(config_id)
 
     def test_gateway_timeout_persists_unknown_outcome(self):
-        router = self.env['print_gateway.print_router']
-        job = router._persist_durable_job({
-            'company': self.company,
-            'gateway_config': self.config,
-            'printer_id': 'printer_runtime_1',
-            'destination': 'Sales',
-            'document_type': 'order',
-            'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
-            'idempotency_key': 'timeout-contract-key',
-        })
-        with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
-            'odoo.addons.print_gateway.models.print_job.requests.post',
-            side_effect=requests.exceptions.Timeout('simulated'),
-        ):
-            with self.assertRaises(ValidationError):
-                job.action_submit(raise_on_failure=True)
-        job.invalidate_recordset(['status', 'last_error', 'attempts', 'next_retry_at'])
-        persisted = self.env['print_gateway.print_job'].browse(job.id).exists()
-        persisted.invalidate_recordset(['status', 'last_error'])
-        self.assertEqual(persisted.status, 'unknown')
-        self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', persisted.last_error)
+        config_id = self._create_committed_config()
+        try:
+            with self.env.registry.cursor() as cr:
+                env = api.Environment(cr, self.env.uid, dict(self.env.context))
+                router = env['print_gateway.print_router']
+                config = env['print_gateway.gateway_config'].browse(config_id)
+                job = router._persist_durable_job({
+                    'company': env.company,
+                    'gateway_config': config,
+                    'printer_id': 'printer_runtime_1',
+                    'destination': 'Sales',
+                    'document_type': 'order',
+                    'payload': {'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
+                    'idempotency_key': 'timeout-contract-key',
+                })
+                with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
+                    'odoo.addons.print_gateway.models.print_job.requests.post',
+                    side_effect=requests.exceptions.Timeout('simulated'),
+                ):
+                    with self.assertRaises(ValidationError):
+                        job.action_submit(raise_on_failure=True)
+                job.invalidate_recordset(['status', 'last_error', 'attempts', 'next_retry_at'])
+                persisted = env['print_gateway.print_job'].browse(job.id).exists()
+                persisted.invalidate_recordset(['status', 'last_error'])
+                self.assertEqual(persisted.status, 'unknown')
+                self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', persisted.last_error)
+        finally:
+            self._cleanup_committed_config(config_id)
