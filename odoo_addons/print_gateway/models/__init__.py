@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from . import gateway_config
+from . import runtime_assignment
 from . import binding
 from . import print_job
 from . import print_router
