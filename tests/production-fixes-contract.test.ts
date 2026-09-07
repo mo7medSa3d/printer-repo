@@ -48,8 +48,8 @@ describe("production fixes contracts (2026-09)", () => {
     expect(agent).toContain('"reason": "pending_full"');
     expect(agent).toContain("discoverySem: make(chan struct{}, 1)");
     const net = read("agent/internal/printer/network.go");
-    expect(net).toContain("dialTimeout = 10 * time.Second");
-    expect(net).toContain("writeStallTimeout = 60 * time.Second");
+    expect(net).toMatch(/dialTimeout\s*=\s*10\s*\*\s*time\.Second/);
+    expect(net).toMatch(/writeStallTimeout\s*=\s*60\s*\*\s*time\.Second/);
     expect(net).toContain("_ = conn.SetWriteDeadline(time.Now().Add(writeStallTimeout))");
     expect(net).not.toContain("conn.SetDeadline(");
   });
