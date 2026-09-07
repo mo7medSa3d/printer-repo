@@ -24,7 +24,7 @@
         <field name="arch" type="xml">
             <form string="Print Job" create="0" delete="0">
                 <header>
-                    <button name="action_retry" type="object" string="Retry" class="oe_highlight" invisible="status in ['success','failed']"/>
+                    <button name="action_retry" type="object" string="Retry" class="oe_highlight" invisible="status != 'failed'"/>
                     <button name="action_sync_status" type="object" string="Refresh Status" invisible="not gateway_job_id"/>
                 </header>
                 <sheet>
