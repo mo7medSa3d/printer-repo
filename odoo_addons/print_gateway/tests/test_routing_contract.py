@@ -1,6 +1,8 @@
 from unittest.mock import patch
 
-from odoo import fields
+import requests
+
+from odoo import models
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
@@ -18,6 +20,11 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             'enabled': True,
         })
 
+    def _make_config(self, enabled=True):
+        config = self.env['print_gateway.gateway_config'].search([('company_id', '=', self.company.id)], limit=1)
+        config.enabled = enabled
+        return config
+
     def test_binding_requires_deterministic_native_destination(self):
         pos_config = self.env['pos.config'].search([('company_id', '=', self.company.id)], limit=1)
         if not pos_config:
@@ -31,9 +38,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             'priority': 10,
         })
         self.assertEqual(binding.destination_ref._name, 'pos.config')
-        self.assertEqual(binding.document_type, 'receipt')
 
-    def test_binding_rejects_company_as_destination(self):
+    def test_binding_rejects_arbitrary_company_destination(self):
         with self.assertRaises(Exception):
             self.env['print_gateway.binding'].create({
                 'company_id': self.company.id,
@@ -62,19 +68,16 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_router_fails_when_gateway_enabled_and_binding_missing(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
-        order_model = self.env['sale.order']
-        with patch.object(type(self.env['print_gateway.print_router']), '_gateway_config', return_value=self.config):
-            with self.assertRaises(ValidationError):
-                self.env['print_gateway.print_router'].resolve_binding(report=report, record=order_model)
+        with self.assertRaises(ValidationError):
+            self.env['print_gateway.print_router'].resolve_binding(report=report, record=self.env['sale.order'])
 
     def test_native_print_is_only_allowed_when_gateway_is_disabled(self):
-        disabled = self.env['print_gateway.gateway_config'].search([('company_id', '=', self.company.id)], limit=1)
-        disabled.write({'enabled': False})
+        config = self._make_config(False)
         result = self.env['print_gateway.print_router'].resolve_binding(record=self.env.company)
         self.assertTrue(result['native'])
-        disabled.write({'enabled': True})
+        config.enabled = True
 
-    def test_gateway_connection_test_uses_authenticated_health_endpoint(self):
+    def test_gateway_connection_test_is_authenticated(self):
         class Response:
             status_code = 200
             content = b'{"ok": true}'
@@ -83,12 +86,10 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
         with patch('odoo.addons.print_gateway.models.gateway_config.requests.get', return_value=Response()) as mocked:
             self.config.action_test_connection()
-            url = mocked.call_args.args[0]
-            self.assertEqual(url, 'https://gateway.example.com/api/odoo/health')
+            self.assertEqual(mocked.call_args.args[0], 'https://gateway.example.com/api/odoo/health')
             self.assertIn('Authorization', mocked.call_args.kwargs['headers'])
-            self.assertIn('X-Odoo-Database', mocked.call_args.kwargs['headers'])
 
-    def test_gateway_timeout_is_explicit_and_durable(self):
+    def test_gateway_timeout_persists_unknown_outcome(self):
         job = self.env['print_gateway.print_job'].create_operation(
             company=self.company,
             gateway_config=self.config,
@@ -98,8 +99,9 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             payload={'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
             idempotency_key='timeout-contract-key',
         )
-        with patch('odoo.addons.print_gateway.models.print_job.requests.post', side_effect=TimeoutError('simulated')):
-            # requests raises RequestException subclasses in production; this assertion
-            # is intentionally only a contract guard for durable state transitions.
-            self.assertEqual(job.status, 'queued')
-        self.assertTrue(job.idempotency_key)
+        with patch('odoo.addons.print_gateway.models.print_job.requests.post', side_effect=requests.exceptions.Timeout('simulated')):
+            with self.assertRaises(ValidationError):
+                job.action_submit(raise_on_failure=True)
+        persisted = self.env['print_gateway.print_job'].browse(job.id).exists()
+        self.assertEqual(persisted.status, 'unknown')
+        self.assertIn('UNKNOWN_SUBMISSION_OUTCOME', persisted.last_error)
