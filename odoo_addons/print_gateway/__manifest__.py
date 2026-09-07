@@ -33,6 +33,8 @@ Odoo printing occurs only when Gateway printing is explicitly disabled.
             'print_gateway/static/src/js/pos_sale_details_router.js',
         ],
         'web.assets_backend': [
+            'print_gateway/static/src/scss/print_gateway_tokens.scss',
+            'print_gateway/static/src/scss/print_gateway_backend.scss',
             'print_gateway/static/src/js/runtime_printer_field.js',
             'print_gateway/static/src/js/report_interceptor.js',
         ],

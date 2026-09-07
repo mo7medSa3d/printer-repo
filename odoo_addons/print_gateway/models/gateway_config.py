@@ -144,3 +144,89 @@ class PrintGatewayConfig(models.Model):
         except ValueError as exc:
             self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "failed", "last_test_error": _("Gateway returned an invalid health response.")})
             raise ValidationError(_("Gateway returned an invalid health response.")) from exc
+
+    def action_open_pairing_wizard(self):
+        self.ensure_one()
+        self._check_admin()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Pair New Agent"),
+            "res_model": "print_gateway.pair_agent_wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_config_id": self.id},
+        }
+
+
+class PrintGatewayPairAgentWizard(models.TransientModel):
+    _name = "print_gateway.pair_agent_wizard"
+    _description = "Pair New Agent Wizard"
+
+    config_id = fields.Many2one("print_gateway.gateway_config", string="Gateway Configuration", required=True)
+    company_id = fields.Many2one("res.company", related="config_id.company_id", readonly=True)
+    branch_id = fields.Many2one(
+        "res.company", string="Target Branch",
+        domain="[('parent_id', '=', company_id)]",
+        required=True,
+    )
+    pairing_code = fields.Char(
+        string="6-Digit Pairing Code",
+        required=True,
+        size=6,
+        help="Enter the 6-character code displayed on the Windows Print Agent application or Central Gateway.",
+    )
+
+    def action_confirm_pairing(self):
+        self.ensure_one()
+        code = (self.pairing_code or "").strip().upper()
+        if len(code) != 6:
+            raise ValidationError(_("The pairing code must be exactly 6 characters."))
+        config = self.config_id
+        try:
+            response = requests.post(
+                "%s/api/pair" % config._gateway_base(for_request=True),
+                json={"pairingCode": code},
+                headers={"Accept": "application/json"},
+                timeout=(5, 10),
+                allow_redirects=False,
+            )
+            if response.status_code == 429:
+                raise ValidationError(_("Too many pairing attempts. Please wait a few moments before trying again."))
+            if response.status_code != 200:
+                body = response.json() if response.content else {}
+                err = body.get("error") or ("HTTP %s" % response.status_code)
+                raise ValidationError(_("Pairing failed: %s") % err)
+            data = response.json()
+            agent_id = data.get("agentId")
+            if not agent_id:
+                raise ValidationError(_("Gateway did not return an agent identifier."))
+
+            assignment_model = self.env["print_gateway.runtime_agent_assignment"]
+            existing = assignment_model.search([
+                ("company_id", "=", config.company_id.id),
+                ("branch_id", "=", self.branch_id.id),
+            ], limit=1)
+            if existing:
+                existing.write({"runtime_agent_id": agent_id, "enabled": True})
+            else:
+                assignment_model.create({
+                    "company_id": config.company_id.id,
+                    "branch_id": self.branch_id.id,
+                    "runtime_agent_id": agent_id,
+                    "enabled": True,
+                })
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": _("Agent Paired Successfully"),
+                    "message": _("Agent %s paired and assigned to %s.") % (agent_id, self.branch_id.name),
+                    "type": "success",
+                    "sticky": False,
+                },
+            }
+        except ValidationError:
+            raise
+        except requests.RequestException as exc:
+            raise ValidationError(_("Gateway connection timed out during pairing.")) from exc
+

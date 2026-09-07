@@ -1,15 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <record id="view_print_gateway_job_search" model="ir.ui.view">
+        <field name="name">print_gateway.print_job.search</field>
+        <field name="model">print_gateway.print_job</field>
+        <field name="arch" type="xml">
+            <search string="Search Print Jobs">
+                <field name="idempotency_key" string="Job / Idempotency Key"/>
+                <field name="printer_id" string="Printer"/>
+                <field name="destination" string="Destination"/>
+                <field name="gateway_job_id" string="Gateway Job ID"/>
+
+                <filter name="filter_attention" string="Attention Needed (Partial Delivery)" domain="['|', ('status', '=', 'partial'), ('status', '=', 'unknown')]"/>
+                <filter name="filter_failed" string="Failed" domain="[('status', '=', 'failed')]"/>
+                <filter name="filter_active" string="In-Flight" domain="[('status', 'in', ['claimed', 'printing', 'submitted'])]"/>
+                <filter name="filter_success" string="Success" domain="[('status', '=', 'success')]"/>
+
+                <separator/>
+                <group expand="0" string="Group By">
+                    <filter name="group_status" string="Status" context="{'group_by': 'status'}"/>
+                    <filter name="group_destination" string="Destination" context="{'group_by': 'destination'}"/>
+                    <filter name="group_printer" string="Printer" context="{'group_by': 'printer_id'}"/>
+                    <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
     <record id="view_print_gateway_job_list" model="ir.ui.view">
         <field name="name">print_gateway.print_job.list</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <list string="Print Jobs" create="0" delete="0">
-                <field name="create_date"/>
+            <list string="Print Jobs" create="0" delete="0" class="o_pg_list">
+                <field name="create_date" string="Queued At"/>
                 <field name="company_id" optional="hide"/>
-                <field name="document_type"/>
-                <field name="destination"/>
-                <field name="printer_id"/>
+                <field name="destination" string="Destination"/>
+                <field name="document_type" string="Format" optional="show"/>
+                <field name="printer_id" string="Target Printer"/>
                 <field name="status" widget="badge" decoration-danger="status == 'failed'" decoration-warning="status in ('partial', 'unknown')" decoration-success="status == 'success'" decoration-info="status in ('queued', 'submitted', 'claimed', 'printing')"/>
                 <field name="physical_outcome" widget="badge" decoration-danger="physical_outcome == 'not_printed'" decoration-warning="physical_outcome == 'unknown'" decoration-success="physical_outcome == 'printed'"/>
                 <field name="attempts" optional="show"/>
@@ -22,29 +48,55 @@
         <field name="name">print_gateway.print_job.form</field>
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
-            <form string="Print Job" create="0" delete="0">
+            <form string="Print Job" create="0" delete="0" class="o_pg_view o_pg_form">
                 <header>
+                    <button name="action_force_reprint" type="object" string="Force Reprint" class="btn-warning"
+                            confirm="Are you sure you want to force a reprint? A partial delivery was recorded for this job. Confirming will dispatch a fresh print job to the physical printer."
+                            invisible="status not in ('partial', 'unknown') and physical_outcome != 'unknown'"/>
                     <button name="action_retry" type="object" string="Retry" class="oe_highlight" invisible="status != 'failed' or physical_outcome != 'not_printed'"/>
-                    <button name="action_force_reprint" type="object" string="Force Reprint" class="btn-warning" invisible="status not in ('partial', 'unknown') and physical_outcome != 'unknown'"/>
                     <button name="action_sync_status" type="object" string="Refresh Status" invisible="not gateway_job_id"/>
+                    <field name="status" widget="statusbar" statusbar_visible="queued,submitted,claimed,printing,success"/>
                 </header>
                 <sheet>
+                    <!-- Amber Callout for UNKNOWN_PARTIAL_DELIVERY -->
+                    <div class="o_pg_partial_alert" invisible="status not in ('partial', 'unknown') and physical_outcome != 'unknown'">
+                        <div class="o_pg_partial_content">
+                            <span class="o_pg_partial_icon">⚠️</span>
+                            <div>
+                                <h4>Attention: Partial Delivery Detected</h4>
+                                <p>Transmission was interrupted after data began transmitting to the printer hardware. The physical paper may be partially printed. Automated retry is halted to avoid duplicates. Check the physical printer tray before clicking Force Reprint.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="o_pg_record_header">
+                        <span class="o_pg_record_icon">📄</span>
+                        <div>
+                            <h1><field name="destination" readonly="1"/></h1>
+                            <p class="text-muted mb-0"><field name="idempotency_key" readonly="1" class="o_pg_mono"/></p>
+                        </div>
+                    </div>
+
                     <group>
-                        <field name="company_id" readonly="1"/>
-                        <field name="document_type" readonly="1"/>
-                        <field name="destination" readonly="1"/>
-                        <field name="printer_id" readonly="1"/>
-                        <field name="status" readonly="1" widget="badge" decoration-danger="status == 'failed'" decoration-warning="status in ('partial', 'unknown')" decoration-success="status == 'success'" decoration-info="status in ('queued', 'submitted', 'claimed', 'printing')"/>
-                        <field name="physical_outcome" readonly="1" widget="badge" decoration-danger="physical_outcome == 'not_printed'" decoration-warning="physical_outcome == 'unknown'" decoration-success="physical_outcome == 'printed'"/>
+                        <group string="Job Context">
+                            <field name="company_id" readonly="1"/>
+                            <field name="document_type" readonly="1"/>
+                            <field name="printer_id" readonly="1"/>
+                            <field name="physical_outcome" readonly="1" widget="badge" decoration-danger="physical_outcome == 'not_printed'" decoration-warning="physical_outcome == 'unknown'" decoration-success="physical_outcome == 'printed'"/>
+                        </group>
+                        <group string="Gateway Execution">
+                            <field name="gateway_job_id" readonly="1"/>
+                            <field name="attempts" readonly="1"/>
+                            <field name="next_retry_at" readonly="1"/>
+                            <field name="completed_at" readonly="1" invisible="not completed_at"/>
+                        </group>
                     </group>
-                    <group string="Gateway">
-                        <field name="gateway_job_id" readonly="1"/>
-                        <field name="idempotency_key" readonly="1"/>
-                        <field name="attempts" readonly="1"/>
-                        <field name="next_retry_at" readonly="1"/>
-                        <field name="last_error" readonly="1" invisible="not last_error"/>
+
+                    <group string="Error Trace" invisible="not last_error">
+                        <field name="last_error" readonly="1" nolabel="1" class="o_pg_mono text-danger"/>
                     </group>
-                    <group string="Source">
+
+                    <group string="Origin Record" invisible="not source_model">
                         <field name="source_model" readonly="1"/>
                         <field name="source_record_id" readonly="1"/>
                         <field name="report_id" readonly="1"/>
@@ -58,5 +110,7 @@
         <field name="name">Print Jobs</field>
         <field name="res_model">print_gateway.print_job</field>
         <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_print_gateway_job_search"/>
+        <field name="context">{'search_default_filter_active': 0}</field>
     </record>
 </odoo>
