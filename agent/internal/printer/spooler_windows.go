@@ -105,6 +105,9 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	for written < len(data) {
 		select {
 		case <-ctx.Done():
+			if written > 0 {
+				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
+			}
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 		default:
 		}
@@ -118,9 +121,15 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 			uintptr(unsafe.Pointer(&bytesWritten)),
 		)
 		if ret == 0 {
+			if written > 0 {
+				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), err)
+			}
 			return fmt.Errorf("WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), err)
 		}
 		if bytesWritten == 0 {
+			if written > 0 {
+				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) wrote 0 bytes after %d/%d bytes", p.SpoolerName, written, len(data))
+			}
 			return fmt.Errorf("WritePrinter(%q) wrote 0 bytes", p.SpoolerName)
 		}
 		written += int(bytesWritten)
