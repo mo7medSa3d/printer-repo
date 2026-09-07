@@ -35,6 +35,25 @@ export function hashOdooKey(raw: string): string {
   return hashKey(raw);
 }
 
+function normalizeDocumentType(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+export function isOdooKeyAllowedForDocumentType(
+  key: { allowedDocumentTypes?: string[] | null; scope?: string | null },
+  documentType?: string | null,
+  operation: "read" | "write" = "read",
+): boolean {
+  if (operation === "write" && String(key.scope ?? "standard").trim().toLowerCase() === "read_only") {
+    return false;
+  }
+  const allowed = key.allowedDocumentTypes;
+  if (!allowed || allowed.length === 0) return true;
+  const normalized = normalizeDocumentType(documentType);
+  if (!normalized) return false;
+  return allowed.some((value) => normalizeDocumentType(value) === normalized);
+}
+
 export async function validateOdooKey(req: Request) {
   const requestDatabase = req.headers.get("x-odoo-database");
   if (!isOdooDatabaseAllowed(requestDatabase)) return null;
