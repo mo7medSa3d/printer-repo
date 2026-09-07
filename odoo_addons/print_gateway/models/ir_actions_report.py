@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Backend report interception for the single Print Gateway router."""
+"""Backend report interception through the single Print Gateway router."""
 
-from odoo import models, _
-from odoo.exceptions import ValidationError
+from odoo import models
 
 
 class IrActionsReportGateway(models.Model):
@@ -14,27 +13,16 @@ class IrActionsReportGateway(models.Model):
         records = self.env[self.model].browse(normalized_ids).exists() if normalized_ids else self.env[self.model]
         router = self.env["print_gateway.print_router"]
 
-        record_company = False
-        if records and hasattr(records, "company_id"):
-            record_company = records[:1].company_id
-        company = record_company or self.env.company
-        gateway = router._gateway_config(company)
-        if not gateway:
-            return super().report_action(docids, data=data, config=config)
-        if not records:
-            raise ValidationError(_("Gateway printing is enabled, but the report has no printable records."))
-
         route = router.route_report(self, records, data=data)
-        if route.get("native"):
-            # The router is the authority on the enabled/disabled decision.
-            return super().report_action(docids, data=data, config=config)
-        return {
-            "type": "ir.actions.client",
-            "tag": "display_notification",
-            "params": {
-                "title": _("Print Job Accepted"),
-                "message": route["message"],
-                "type": "success",
-                "sticky": False,
-            },
-        }
+        if not route.get("native"):
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": "Print Job Accepted",
+                    "message": route["message"],
+                    "type": "success",
+                    "sticky": False,
+                },
+            }
+        return super().report_action(docids, data=data, config=config)
