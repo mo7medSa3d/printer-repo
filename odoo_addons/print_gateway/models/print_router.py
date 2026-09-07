@@ -157,16 +157,16 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def _persist_durable_job(self, values):
-        # The durable outbox intentionally uses an independent transaction. Never
-        # pass recordsets from the caller's transaction into that cursor: a record
-        # may be uncommitted or bound to a different transaction snapshot. Convert
-        # all ORM records to stable primitive IDs before crossing the boundary.
+        """Create the durable Odoo outbox row in an independent transaction.
+
+        The caller's Odoo transaction may already have an active PostgreSQL
+        snapshot. Returning an ORM recordset from the independent cursor would
+        therefore be unsafe: that snapshot may not see the newly committed row.
+        Return only the immutable database id and let the caller cross the
+        transaction boundary explicitly.
+        """
         durable_values = dict(values)
-        for key, model_name in (
-            ("company", "res.company"),
-            ("gateway_config", "print_gateway.gateway_config"),
-            ("report", "ir.actions.report"),
-        ):
+        for key in ("company", "gateway_config", "report"):
             record = durable_values.get(key)
             durable_values[key] = record.id if record else False
 
@@ -178,13 +178,34 @@ class PrintGatewayRouter(models.AbstractModel):
                 ("report", "ir.actions.report"),
             ):
                 record_id = durable_values.get(key)
-                durable_values[key] = env[model_name].browse(record_id).exists() if record_id else env[model_name]
-                if record_id and not durable_values[key]:
+                if not record_id:
+                    durable_values[key] = False
+                    continue
+                record = env[model_name].browse(record_id).exists()
+                if not record:
                     raise ValidationError(_("The durable print operation references a record that is no longer available."))
+                durable_values[key] = record
             job = env["print_gateway.print_job"].create_operation(**durable_values)
             job_id = job.id
             cr.commit()
-        return self.env["print_gateway.print_job"].browse(job_id)
+        return job_id
+
+    @api.model
+    def _submit_durable_job(self, job_id):
+        """Submit a durable job using a fresh PostgreSQL transaction."""
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            job = env["print_gateway.print_job"].browse(job_id).exists()
+            if not job:
+                raise ValidationError(_("The durable print job is no longer available."))
+            try:
+                job.action_submit(raise_on_failure=True)
+                status = job.status
+                cr.commit()
+                return status
+            except Exception:
+                cr.rollback()
+                raise
 
     def _submit_route(
         self,
@@ -198,7 +219,7 @@ class PrintGatewayRouter(models.AbstractModel):
         idempotency_key=None,
     ):
         self._assert_current_company(company)
-        job = self._persist_durable_job({
+        job_id = self._persist_durable_job({
             "company": company,
             "gateway_config": route["config"],
             "printer_id": route["binding"].printer_id,
@@ -210,13 +231,13 @@ class PrintGatewayRouter(models.AbstractModel):
             "report": report,
             "idempotency_key": idempotency_key or uuid.uuid4().hex,
         })
-        job.action_submit(raise_on_failure=True)
+        status = self._submit_durable_job(job_id)
         return {
             "gateway_enabled": True,
             "native": False,
-            "status": job.status,
-            "job_id": job.id,
-            "message": _("Print job %s accepted by the Gateway.") % job.id,
+            "status": status,
+            "job_id": job_id,
+            "message": _("Print job %s accepted by the Gateway.") % job_id,
         }
 
     @api.model
@@ -293,7 +314,6 @@ class PrintGatewayRouter(models.AbstractModel):
             route=route,
             payload={"type": "image", "encoding": "base64", "data": image_base64},
             company=self.env.company,
-            report=None,
             source_model=order._name,
             source_record_id=order.id,
         )
@@ -320,7 +340,6 @@ class PrintGatewayRouter(models.AbstractModel):
             route=route,
             payload={"type": "image", "encoding": "base64", "data": image_base64},
             company=company,
-            report=None,
             source_model=order._name,
             source_record_id=order.id,
             idempotency_key=stable_key,
@@ -342,7 +361,6 @@ class PrintGatewayRouter(models.AbstractModel):
             route=route,
             payload={"type": "image", "encoding": "base64", "data": image_base64},
             company=self.env.company,
-            report=None,
             source_model=session._name,
             source_record_id=session.id,
         )
