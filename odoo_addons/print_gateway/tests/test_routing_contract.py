@@ -2,9 +2,10 @@ from unittest.mock import patch
 
 import requests
 
-from odoo import models
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
+
+from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 
 
 class TestPrintGatewayRoutingContract(TransactionCase):
@@ -26,45 +27,60 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         return config
 
     def test_binding_requires_deterministic_native_destination(self):
-        pos_config = self.env['pos.config'].search([('company_id', '=', self.company.id)], limit=1)
-        if not pos_config:
-            pos_config = self.env['pos.config'].create({'name': 'Gateway Test POS', 'company_id': self.company.id})
+        report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
+        self.assertTrue(report)
         binding = self.env['print_gateway.binding'].create({
             'company_id': self.company.id,
-            'destination_ref': 'pos.config,%s' % pos_config.id,
-            'document_type': 'receipt',
+            'destination_type': 'report',
+            'destination_report_id': report.id,
+            'report_id': report.id,
             'printer_id': 'printer_runtime_1',
             'enabled': True,
             'priority': 10,
         })
-        self.assertEqual(binding.destination_ref._name, 'pos.config')
+        self.assertEqual(binding.destination_ref._name, 'ir.actions.report')
 
     def test_binding_rejects_arbitrary_company_destination(self):
         with self.assertRaises(Exception):
             self.env['print_gateway.binding'].create({
                 'company_id': self.company.id,
+                'destination_type': 'report',
+                'destination_report_id': self.env.ref('sale.action_report_saleorder').id,
+                'report_id': self.env.ref('sale.action_report_saleorder').id,
                 'destination_ref': 'res.company,%s' % self.company.id,
-                'document_type': 'invoice',
                 'printer_id': 'printer_runtime_1',
             })
 
     def test_cross_company_destination_is_rejected(self):
-        pos_other = self.env['pos.config'].create({'name': 'Other POS', 'company_id': self.other_company.id})
+        pos_config = self.env['pos.config'].search([('company_id', '=', self.company.id)], limit=1)
+        if not pos_config:
+            self.skipTest('Odoo test database has no POS configuration to use as a company-scoped destination.')
         with self.assertRaises(ValidationError):
             self.env['print_gateway.binding'].create({
-                'company_id': self.company.id,
-                'destination_ref': 'pos.config,%s' % pos_other.id,
-                'document_type': 'receipt',
+                'company_id': self.other_company.id,
+                'destination_type': 'pos',
+                'destination_pos_config_id': pos_config.id,
+                'report_id': self.env.ref('point_of_sale.action_report_pos_order').id,
                 'printer_id': 'printer_runtime_1',
             })
 
     def test_document_type_is_deterministic_for_supported_business_models(self):
         router = self.env['print_gateway.print_router']
-        report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
-        self.assertEqual(router._document_type(record=self.env['sale.order'], report=report), 'order')
-        self.assertEqual(router._document_type(record=self.env['account.move']), 'invoice')
-        self.assertEqual(router._document_type(record=self.env['stock.picking']), 'delivery')
-        self.assertEqual(router._document_type(record=self.env['purchase.order']), 'purchase_order')
+        report_by_model = {
+            'sale.order': self.env.ref('sale.action_report_saleorder', raise_if_not_found=False),
+            'account.move': self.env['ir.actions.report'].search([('model', '=', 'account.move')], limit=1),
+            'stock.picking': self.env['ir.actions.report'].search([('model', '=', 'stock.picking')], limit=1),
+            'purchase.order': self.env['ir.actions.report'].search([('model', '=', 'purchase.order')], limit=1),
+        }
+        expected = {
+            'sale.order': 'order',
+            'account.move': 'invoice',
+            'stock.picking': 'delivery',
+            'purchase.order': 'purchase_order',
+        }
+        for model_name, report in report_by_model.items():
+            self.assertTrue(report, 'No report available for %s' % model_name)
+            self.assertEqual(router._document_type(report=report), expected[model_name])
 
     def test_router_fails_when_gateway_enabled_and_binding_missing(self):
         report = self.env.ref('sale.action_report_saleorder', raise_if_not_found=False)
@@ -84,10 +100,13 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             def json(self):
                 return {'ok': True}
 
-        with patch('odoo.addons.print_gateway.models.gateway_config.requests.get', return_value=Response()) as mocked:
+        with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
+            'odoo.addons.print_gateway.models.gateway_config.requests.get', return_value=Response()
+        ) as mocked:
             self.config.action_test_connection()
             self.assertEqual(mocked.call_args.args[0], 'https://gateway.example.com/api/odoo/health')
             self.assertIn('Authorization', mocked.call_args.kwargs['headers'])
+            self.assertEqual(mocked.call_args.kwargs['allow_redirects'], False)
 
     def test_gateway_timeout_persists_unknown_outcome(self):
         job = self.env['print_gateway.print_job'].create_operation(
@@ -99,7 +118,10 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             payload={'type': 'raw', 'encoding': 'base64', 'data': 'aGVsbG8='},
             idempotency_key='timeout-contract-key',
         )
-        with patch('odoo.addons.print_gateway.models.print_job.requests.post', side_effect=requests.exceptions.Timeout('simulated')):
+        with patch.object(PrintGatewayConfig, '_validate_gateway_host'), patch(
+            'odoo.addons.print_gateway.models.print_job.requests.post',
+            side_effect=requests.exceptions.Timeout('simulated'),
+        ):
             with self.assertRaises(ValidationError):
                 job.action_submit(raise_on_failure=True)
         persisted = self.env['print_gateway.print_job'].browse(job.id).exists()
