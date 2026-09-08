@@ -178,5 +178,12 @@ describe("Odoo addon static contracts", () => {
     expect(controller).toContain("raise Forbidden");
     expect(controller).toContain('["print_gateway.gateway_config"].sudo().search');
   });
+
+  it("guards runtime assignment sync with savepoint and handles IntegrityError for concurrency safety", () => {
+    const binding = read("models/binding.py");
+    expect(binding).toContain("from psycopg2 import IntegrityError");
+    expect(binding).toContain("with self.env.cr.savepoint():");
+    expect(binding).toContain("except IntegrityError:");
+  });
 });
 

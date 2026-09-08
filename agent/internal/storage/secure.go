@@ -67,8 +67,12 @@ func (s *Store) SaveSecret(key, secret string) error {
 	if err != nil {
 		return fmt.Errorf("storage: encrypt %q: %w", key, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return fmt.Errorf("storage: create dir %s: %w", filepath.Dir(p), err)
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("storage: create dir %s: %w", dir, err)
+	}
+	if err := EnsureSecureDirectoryACL(dir); err != nil {
+		return fmt.Errorf("storage: secure dir %s: %w", dir, err)
 	}
 	entries, err := readEntries(p)
 	if err != nil {

@@ -147,6 +147,9 @@ func Ensure(path string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
+	if err := EnsureSecureDirectoryACL(dir); err != nil {
+		return fmt.Errorf("secure config dir %s: %w", dir, err)
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {

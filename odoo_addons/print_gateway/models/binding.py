@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Native Odoo print bindings: Odoo context -> Gateway runtime printer."""
 
+from psycopg2 import IntegrityError
 import requests
 
 from odoo import api, fields, models, _
@@ -296,7 +297,21 @@ class PrintGatewayBinding(models.Model):
                     raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
                 assignment.write({"runtime_agent_id": self.runtime_agent_id, "enabled": True})
             return
-        assignment_model.create({"company_id": self.company_id.id, "branch_id": self.branch_id.id, "runtime_agent_id": self.runtime_agent_id, "enabled": True})
+        try:
+            with self.env.cr.savepoint():
+                assignment_model.create({
+                    "company_id": self.company_id.id,
+                    "branch_id": self.branch_id.id,
+                    "runtime_agent_id": self.runtime_agent_id,
+                    "enabled": True,
+                })
+        except IntegrityError:
+            assignment = assignment_model.search([
+                ("company_id", "=", self.company_id.id),
+                ("branch_id", "=", self.branch_id.id),
+            ], limit=1)
+            if assignment:
+                assignment.write({"runtime_agent_id": self.runtime_agent_id, "enabled": True})
 
     def write(self, vals):
         result = super().write(vals)

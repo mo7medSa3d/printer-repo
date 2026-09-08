@@ -230,59 +230,6 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 			log.Printf("WARNING: failed to persist discovery registry: %v", err)
 		}
 	}
-	// 3. Full discovery (network+USB) asynchronously — additive, bounded, not blocking startup
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[discovery] async full discovery panic: %v", r)
-			}
-		}()
-		// Small delay to let gateway communication start first
-		time.Sleep(2 * time.Second)
-		log.Printf("[discovery] starting async full discovery (network+USB)")
-		full := printer.Discover(cfg, registryPath)
-		if len(full.Errors) > 0 {
-			for _, e := range full.Errors {
-				log.Printf("discovery warning: %s", e)
-			}
-		}
-		if len(full.Printers) > len(quick.Printers) {
-			log.Printf("[discovery] async discovery found %d printers (quick had %d), updating registry", len(full.Printers), len(quick.Printers))
-			if merged, err := printer.UpsertRegistry(registryPath, full.Printers); err == nil {
-				for _, di := range merged {
-					if _, exists := a.getPrinter(di.ID); exists {
-						continue
-					}
-					pc := config.PrinterConfig{
-						ID:           di.ID,
-						Name:         di.Name,
-						Type:         di.ConnectionType,
-						Endpoint:     di.Endpoint,
-						Protocol:     di.Protocol,
-						SpoolerName:  di.SpoolerName,
-						PrinterType:  di.PrinterType,
-						USBVID:       di.USBVID,
-						USBPID:       di.USBPID,
-						USBSerial:    di.USBSerial,
-						Capabilities: di.Capabilities,
-					}
-					if di.ConnectionType == "spooler" && pc.SpoolerName == "" {
-						pc.SpoolerName = di.SpoolerName
-					}
-					p, err := printer.New(pc)
-					if err != nil {
-						log.Printf("WARNING: async printer %q (%s) not initialized: %v", di.ID, di.Name, err)
-						continue
-					}
-					if a.addPrinter(di.ID, p, pc) {
-						log.Printf("[discovery] async added printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
-					}
-				}
-			}
-		} else {
-			log.Printf("[discovery] async discovery completed: %d printers (no new)", len(full.Printers))
-		}
-	}()
 
 	if a.printerCount() == 0 {
 		log.Printf("INFO: no printers configured yet; run discovery or add manually. Jobs will be queued until a printer is available.")
@@ -333,6 +280,81 @@ func (a *Agent) Discover() printer.DiscoveryResult {
 	}
 	log.Printf("Discovery completed: %d printers found", len(result.Printers))
 	return result
+}
+
+func (a *Agent) runInitialAsyncDiscovery(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[discovery] async full discovery panic: %v", r)
+		}
+	}()
+
+	// Small delay to let gateway communication start first
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
+	log.Printf("[discovery] starting async full discovery (network+USB)")
+	full := printer.Discover(a.cfg, a.registryPath)
+	if len(full.Errors) > 0 {
+		for _, e := range full.Errors {
+			log.Printf("discovery warning: %s", e)
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
+	if len(full.Printers) > 0 {
+		if merged, err := printer.UpsertRegistry(a.registryPath, full.Printers); err == nil {
+			for _, di := range merged {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				if _, exists := a.getPrinter(di.ID); exists {
+					continue
+				}
+				pc := config.PrinterConfig{
+					ID:           di.ID,
+					Name:         di.Name,
+					Type:         di.ConnectionType,
+					Endpoint:     di.Endpoint,
+					Protocol:     di.Protocol,
+					SpoolerName:  di.SpoolerName,
+					PrinterType:  di.PrinterType,
+					USBVID:       di.USBVID,
+					USBPID:       di.USBPID,
+					USBSerial:    di.USBSerial,
+					Capabilities: di.Capabilities,
+				}
+				if di.ConnectionType == "spooler" && pc.SpoolerName == "" {
+					pc.SpoolerName = di.SpoolerName
+				}
+				p, err := printer.New(pc)
+				if err != nil {
+					log.Printf("WARNING: async printer %q (%s) not initialized: %v", di.ID, di.Name, err)
+					continue
+				}
+				if a.addPrinter(di.ID, p, pc) {
+					log.Printf("[discovery] async added printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
+				}
+			}
+		}
+	}
+	log.Printf("[discovery] async discovery completed: %d printers", len(full.Printers))
 }
 
 // RegisterManual adds a manually configured printer (for when discovery cannot identify correctly).
@@ -412,6 +434,13 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	go a.connectWebSocket(ctx)
 
+	var discoveryWg sync.WaitGroup
+	discoveryWg.Add(1)
+	go func() {
+		defer discoveryWg.Done()
+		a.runInitialAsyncDiscovery(ctx)
+	}()
+
 	heartbeatTicker := time.NewTicker(30 * time.Second)
 	pollTicker := time.NewTicker(10 * time.Second) // Fallback poll
 	discoveryTicker := time.NewTicker(30 * time.Second)
@@ -435,6 +464,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			if c := a.getWSConn(); c != nil {
 				_ = c.Close()
 			}
+			discoveryWg.Wait()
 			a.waitForJobs()
 			return nil
 		case <-heartbeatTicker.C:
@@ -876,6 +906,11 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 	}
 	a.printersMu.RUnlock()
 	sort.Strings(ids) // deterministic order aids gateway-side diffing
+
+	const maxReportedPrinters = 50
+	if len(ids) > maxReportedPrinters {
+		ids = ids[:maxReportedPrinters]
+	}
 
 	statuses := make([]string, len(ids))
 	var probeWg sync.WaitGroup

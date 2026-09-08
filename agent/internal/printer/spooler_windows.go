@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -236,21 +237,43 @@ func (p *SpoolerPrinter) Test(ctx context.Context) error {
 }
 
 func (p *SpoolerPrinter) Status() string {
-	printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
-	if err != nil {
-		return "error"
+	resCh := make(chan string, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Spooler status probe panic for %s: %v", p.SpoolerName, r)
+				resCh <- "error"
+			}
+		}()
+		printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
+		if err != nil {
+			resCh <- "error"
+			return
+		}
+		var hPrinter syscall.Handle
+		ret, _, _ := procOpenPrinterW.Call(
+			uintptr(unsafe.Pointer(printerNamePtr)),
+			uintptr(unsafe.Pointer(&hPrinter)),
+			0,
+		)
+		if ret == 0 {
+			resCh <- "offline"
+			return
+		}
+		procClosePrinter.Call(uintptr(hPrinter))
+		resCh <- "online"
+	}()
+
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case st := <-resCh:
+		return st
+	case <-timer.C:
+		log.Printf("WARNING: Spooler status probe timed out for %q", p.SpoolerName)
+		return "spooler_rpc_unresponsive"
 	}
-	var hPrinter syscall.Handle
-	ret, _, _ := procOpenPrinterW.Call(
-		uintptr(unsafe.Pointer(printerNamePtr)),
-		uintptr(unsafe.Pointer(&hPrinter)),
-		0,
-	)
-	if ret == 0 {
-		return "offline"
-	}
-	procClosePrinter.Call(uintptr(hPrinter))
-	return "online"
 }
 
 type printerInfo2 struct {

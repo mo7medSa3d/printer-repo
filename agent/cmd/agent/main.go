@@ -87,6 +87,9 @@ func setupLogging(configPath string) (*os.File, error) {
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("create log directory %s: %w", logDir, err)
 	}
+	if err := config.EnsureSecureDirectoryACL(logDir); err != nil {
+		return nil, fmt.Errorf("secure log directory %s: %w", logDir, err)
+	}
 	logPath := filepath.Join(logDir, "agent.log")
 	rotateLogIfFull(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -101,15 +104,66 @@ func setupLogging(configPath string) (*os.File, error) {
 	return f, nil
 }
 
+func handleServiceControl(rawAction, configPath string) error {
+	svcConfig := &service.Config{
+		Name:         "OdooPrintAgent",
+		DisplayName:  "Odoo Print Agent",
+		Description:  "Local print gateway for Odoo ERP — outbound HTTPS/WSS only, no inbound ports.",
+		Arguments:    []string{"-config", configPath},
+		Dependencies: []string{"Tcpip"},
+	}
+	prg := &program{}
+	s, err := service.New(prg, svcConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create service wrapper: %w", err)
+	}
+
+	action := strings.ToLower(strings.TrimSpace(rawAction))
+	switch action {
+	case "status":
+		status, err := s.Status()
+		if err != nil {
+			return fmt.Errorf("service status failed: %w", err)
+		}
+		switch status {
+		case service.StatusRunning:
+			log.Println("Service status: running")
+		case service.StatusStopped:
+			log.Println("Service status: stopped")
+		default:
+			log.Printf("Service status: %v", status)
+		}
+		return nil
+	case "install", "uninstall", "start", "stop", "restart":
+		if err := service.Control(s, action); err != nil {
+			if action == "install" || action == "uninstall" {
+				log.Printf("Hint: run the command from an elevated PowerShell (Run as Administrator).")
+			}
+			return fmt.Errorf("service control %q failed: %w", action, err)
+		}
+		log.Printf("Service control %q completed", action)
+		return nil
+	default:
+		return fmt.Errorf("unknown service action %q. Valid actions: install, uninstall, start, stop, restart, status", action)
+	}
+}
+
 func main() {
 	configPath := flag.String("config", config.DefaultConfigPath(), "Path to config file")
-	svcFlag := flag.String("service", "", "Control the system service: install, uninstall, start, stop, restart")
+	svcFlag := flag.String("service", "", "Control the system service: install, uninstall, start, stop, restart, status")
 	flag.Parse()
 
+	// 1. Service control path: dispatch immediately without reading config or initializing agent
+	if *svcFlag != "" {
+		if err := handleServiceControl(*svcFlag, *configPath); err != nil {
+			log.Fatalf("Service action %q failed: %v", *svcFlag, err)
+		}
+		os.Exit(0)
+	}
+
+	// 2. Normal runtime path
 	// Ensure the writable runtime directory and a safe default config exist
 	// before anything else opens a database or connects to the network.
-	// If the default ProgramData path is not writable for a non-elevated user,
-	// fall back to a per-user AppData path so a clean install still starts.
 	effectiveConfigPath := *configPath
 	if err := config.Ensure(effectiveConfigPath); err != nil {
 		if *configPath == config.DefaultConfigPath() {
@@ -159,25 +213,6 @@ func main() {
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
 		log.Fatalf("Failed to create service wrapper: %v", err)
-	}
-
-	if *svcFlag != "" {
-		action := strings.ToLower(strings.TrimSpace(*svcFlag))
-		switch action {
-		case "install", "uninstall", "start", "stop", "restart":
-			if err := service.Control(s, action); err != nil {
-				if action == "install" || action == "uninstall" {
-					// kardianos/service surfaces "access is denied" when the
-					// shell is not elevated; make the recovery path explicit.
-					log.Printf("Hint: run the command from an elevated PowerShell (Run as Administrator).")
-				}
-				log.Fatalf("Service control %q failed: %v", action, err)
-			}
-			log.Printf("Service control %q completed", action)
-			return
-		default:
-			log.Fatalf("Unknown service action %q. Valid actions: install, uninstall, start, stop, restart", action)
-		}
 	}
 
 	logger, err := s.Logger(nil)
