@@ -73,6 +73,7 @@ class TestControlPlane(TransactionCase):
             "runtime_agent_id": "agent-cp-01",
             "printer_id": "printer-backup",
             "enabled": True,
+            "priority": 20,
         })
 
         cls.primary_binding.fallback_binding_id = cls.backup_binding.id
