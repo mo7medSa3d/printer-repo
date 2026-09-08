@@ -1,10 +1,12 @@
 package printer
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/odoo-print-agent/agent/internal/config"
 )
@@ -282,4 +284,23 @@ func contains(s, substr string) bool {
 		}
 		return false
 	})()
+}
+
+func TestDiscoverWithContext_Cancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := &config.Config{}
+	registryPath := config.RegistryPath(cfgPath)
+
+	start := time.Now()
+	res := DiscoverWithContext(ctx, cfg, registryPath)
+	elapsed := time.Since(start)
+
+	if elapsed > 1*time.Second {
+		t.Fatalf("expected cancelled DiscoverWithContext to return immediately, took %v", elapsed)
+	}
+	_ = res
 }

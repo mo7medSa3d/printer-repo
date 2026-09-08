@@ -181,6 +181,8 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case spoolerWorkerSem <- struct{}{}:
+	default:
+		return fmt.Errorf("ERR_SPOOLER_POOL_SATURATED: all spooler worker slots occupied (%d/%d)", maxSpoolerWorkers, maxSpoolerWorkers)
 	}
 
 	resultCh := make(chan spoolerTaskResult, 1)

@@ -234,6 +234,10 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 //   - USB (SetupDi enumeration, Windows only)
 // It deduplicates by stable ID and returns idempotent results.
 func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
+	return DiscoverWithContext(context.Background(), cfg, registryPath)
+}
+
+func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath string) DiscoveryResult {
 	var (
 		mu     sync.Mutex
 		all    []DeviceInfo
@@ -328,6 +332,9 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				addErr(fmt.Sprintf("config discovery panic: %v", r))
@@ -341,6 +348,9 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				addErr(fmt.Sprintf("spooler discovery panic: %v", r))
@@ -358,6 +368,9 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				addErr(fmt.Sprintf("registry discovery panic: %v", r))
@@ -377,15 +390,18 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				addErr(fmt.Sprintf("network discovery panic: %v", r))
 			}
 		}()
 		log.Printf("[discovery] starting network discovery (TCP 9100 scan)")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		subCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		infos, err := discoverNetworkPrinters(ctx)
+		infos, err := discoverNetworkPrinters(subCtx)
 		if err != nil {
 			addErr(fmt.Sprintf("network discovery: %v", err))
 			return
@@ -400,6 +416,9 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				addErr(fmt.Sprintf("usb discovery panic: %v", r))
@@ -423,15 +442,18 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				addErr(fmt.Sprintf("ipp discovery panic: %v", r))
 			}
 		}()
 		log.Printf("[discovery] starting IPP discovery")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		subCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		infos, err := discoverIPPPrinters(ctx)
+		infos, err := discoverIPPPrinters(subCtx)
 		if err != nil {
 			addErr(fmt.Sprintf("ipp discovery: %v", err))
 			return
@@ -448,9 +470,12 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("lpr discovery panic: %v", r)) } }()
 		log.Printf("[discovery] starting LPR discovery")
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 		// reuse network targets for 515
 		var lprTargets []string
@@ -475,7 +500,7 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 		if len(lprTargets) > 254 {
 			lprTargets = lprTargets[:254]
 		}
-		infos := discoverLPRPrinters(ctx, lprTargets)
+		infos := discoverLPRPrinters(subCtx, lprTargets)
 		if len(infos) > 0 {
 			log.Printf("[discovery] LPR found %d printers", len(infos))
 		}
@@ -486,9 +511,12 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("snmp discovery panic: %v", r)) } }()
 		log.Printf("[discovery] starting SNMP discovery")
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 		var snmpTargets []string
 		if ifaces, err := net.Interfaces(); err == nil {
@@ -512,7 +540,7 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 		if len(snmpTargets) > 100 {
 			snmpTargets = snmpTargets[:100]
 		}
-		infos := discoverSNMPPrinters(ctx, snmpTargets)
+		infos := discoverSNMPPrinters(subCtx, snmpTargets)
 		if len(infos) > 0 {
 			log.Printf("[discovery] SNMP found %d printers", len(infos))
 		}
@@ -523,11 +551,14 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("wsd discovery panic: %v", r)) } }()
 		log.Printf("[discovery] starting WSD discovery")
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
-		infos := discoverWSDPrinters(ctx)
+		infos := discoverWSDPrinters(subCtx)
 		add(infos)
 	}()
 
@@ -535,11 +566,14 @@ func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("mdns discovery panic: %v", r)) } }()
 		log.Printf("[discovery] starting mDNS discovery")
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
-		infos := discoverFullMDNS(ctx)
+		infos := discoverFullMDNS(subCtx)
 		add(infos)
 	}()
 

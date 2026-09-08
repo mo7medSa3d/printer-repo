@@ -117,7 +117,7 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 				conn, err := d.DialContext(connCtx, "tcp", target)
 				cancel()
 				if err != nil {
-					return
+					continue
 				}
 				conn.Close()
 				// Found printer

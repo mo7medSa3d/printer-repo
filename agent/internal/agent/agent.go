@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -112,6 +113,30 @@ type Agent struct {
 	// at most one concurrent writer, and job acknowledgements are written from
 	// the read loop while pings/other frames may be written elsewhere.
 	wsWriteMu sync.Mutex
+
+	// Single-flight probe state per printer: prevents unbounded goroutine accumulation
+	// when Win32 Spooler or network RPC calls block.
+	probeStateMu sync.Mutex
+	probeStates  map[string]*printerProbeState
+}
+
+type printerProbeState struct {
+	running    atomic.Bool
+	lastStatus string
+}
+
+func (a *Agent) getProbeState(printerID string) *printerProbeState {
+	a.probeStateMu.Lock()
+	defer a.probeStateMu.Unlock()
+	if a.probeStates == nil {
+		a.probeStates = make(map[string]*printerProbeState)
+	}
+	st, exists := a.probeStates[printerID]
+	if !exists {
+		st = &printerProbeState{lastStatus: "unknown"}
+		a.probeStates[printerID] = st
+	}
+	return st
 }
 
 // Printer map accessors. The printer map is mutated by the async discovery
@@ -303,7 +328,7 @@ func (a *Agent) runInitialAsyncDiscovery(ctx context.Context) {
 	}
 
 	log.Printf("[discovery] starting async full discovery (network+USB)")
-	full := printer.Discover(a.cfg, a.registryPath)
+	full := printer.DiscoverWithContext(ctx, a.cfg, a.registryPath)
 	if len(full.Errors) > 0 {
 		for _, e := range full.Errors {
 			log.Printf("discovery warning: %s", e)
@@ -914,18 +939,30 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 
 	statuses := make([]string, len(ids))
 	var probeWg sync.WaitGroup
-	probeWg.Add(len(ids))
 	for i, id := range ids {
-		go func(i int, pid string, p printer.Printer) {
+		state := a.getProbeState(id)
+		if !state.running.CompareAndSwap(false, true) {
+			// A previous probe is still running in the OS/RPC driver!
+			// Do NOT spawn another goroutine. Reuse the last known status.
+			statuses[i] = state.lastStatus
+			continue
+		}
+
+		probeWg.Add(1)
+		go func(i int, pid string, p printer.Printer, s *printerProbeState) {
 			defer probeWg.Done()
+			defer s.running.Store(false)
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("Status probe panic for %s: %v", pid, r)
 					statuses[i] = "error"
+					s.lastStatus = "error"
 				}
 			}()
-			statuses[i] = p.Status()
-		}(i, id, printerByID[id])
+			st := p.Status()
+			statuses[i] = st
+			s.lastStatus = st
+		}(i, id, printerByID[id], state)
 	}
 
 	probeDone := make(chan struct{})
@@ -938,9 +975,10 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 	case <-probeDone:
 	case <-time.After(2 * time.Second):
 		log.Printf("WARNING: Printer status probe batch timed out after 2s; proceeding with available statuses")
-		for i := range statuses {
+		for i, id := range ids {
 			if statuses[i] == "" {
 				statuses[i] = "spooler_rpc_unresponsive"
+				a.getProbeState(id).lastStatus = "spooler_rpc_unresponsive"
 			}
 		}
 	}

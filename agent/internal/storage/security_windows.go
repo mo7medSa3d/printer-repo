@@ -4,17 +4,54 @@ package storage
 
 import (
 	"fmt"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
 
+func getCurrentUserSID() (string, error) {
+	tok, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return "", err
+	}
+	defer tok.Close()
+
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	return u.User.Sid.String(), nil
+}
+
+// IsUserDirectory checks if a path resides inside a user profile / local app data directory.
+func IsUserDirectory(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.Contains(lower, "appdata") || strings.Contains(lower, "users") || strings.Contains(lower, "userprofile")
+}
+
+// BuildSecureSDDL returns the appropriate SDDL depending on whether the directory is
+// a per-user directory (%LOCALAPPDATA% / %USERPROFILE%) or a system-wide service directory (%ProgramData%).
+func BuildSecureSDDL(path string) (string, error) {
+	if IsUserDirectory(path) {
+		userSID, err := getCurrentUserSID()
+		if err != nil {
+			return "", fmt.Errorf("failed to get current user SID: %w", err)
+		}
+		return fmt.Sprintf("D:P(A;OICI;GA;;;%s)(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", userSID), nil
+	}
+	return "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", nil
+}
+
 // EnsureSecureDirectoryACL enforces strict NTFS permissions on the target directory.
 // It removes inherited permissions and grants Full Control strictly to:
+// - Current User (if under LocalAppData / UserProfile)
 // - NT AUTHORITY\SYSTEM (SY)
 // - BUILTIN\Administrators (BA)
-// SDDL: D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)
 func EnsureSecureDirectoryACL(path string) error {
-	sddl := "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)"
+	sddl, err := BuildSecureSDDL(path)
+	if err != nil {
+		return err
+	}
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("failed to parse SDDL %q: %w", sddl, err)

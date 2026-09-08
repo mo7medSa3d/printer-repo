@@ -64,3 +64,24 @@ func TestEmptyDirRejected(t *testing.T) {
 		t.Fatal("expected error for empty Dir")
 	}
 }
+
+func TestIsUserDirectory(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{`C:\ProgramData\OdooPrintAgent`, false},
+		{`C:\Program Files\OdooPrintAgent`, false},
+		{`C:\Users\JohnDoe\AppData\Local\OdooPrintAgent`, true},
+		{`C:\users\admin\config.yaml`, true},
+		{`/home/user/.local/share`, true},
+		{`/var/lib/odoo-print-agent`, false},
+	}
+
+	for _, tc := range cases {
+		got := IsUserDirectory(tc.path)
+		if got != tc.want {
+			t.Errorf("IsUserDirectory(%q) = %v; want %v", tc.path, got, tc.want)
+		}
+	}
+}
