@@ -7,8 +7,11 @@ import { _t } from "@web/core/l10n/translation";
  * OWL 3 silent report interceptor.
  * Catches ir.actions.report execution in the web client and silently dispatches
  * through the Print Gateway if a binding exists for the current branch/company context.
- * Returning true tells Odoo the report was completely handled, stopping default
- * PDF download / browser print dialogs.
+ *
+ * Strict Fail-Closed Policy:
+ * - If NO binding exists: returns false to allow standard Odoo report download.
+ * - If a binding DOES exist and dispatch fails: displays an error notification and
+ *   returns true to cancel native browser PDF download, preventing hardware bypass.
  */
 async function silentPrintReportHandler(action, options, env) {
     if (action.type !== "ir.actions.report") {
@@ -30,7 +33,15 @@ async function silentPrintReportHandler(action, options, env) {
             }
         );
 
-        if (res && res.dispatched) {
+        if (res && res.has_binding && (res.success === false || !res.dispatched)) {
+            notification.add(
+                res.error || _t("Gateway print failed for bound printer. Native download cancelled."),
+                { type: "danger" }
+            );
+            return true; // FAIL-CLOSED: Bound printer failed, do not bypass to browser PDF
+        }
+
+        if (res && (res.dispatched || res.success)) {
             notification.add(
                 res.message || _t("Sent silently to Gateway printer: %s", res.printer_name || "Printer"),
                 { type: "success" }
@@ -38,10 +49,15 @@ async function silentPrintReportHandler(action, options, env) {
             return true; // Cancel default browser PDF dialog
         }
     } catch (err) {
-        console.warn("[print_gateway] Silent dispatch failed or bypassed:", err);
+        console.warn("[print_gateway] Silent dispatch error:", err);
+        notification.add(
+            _t("Gateway print dispatch error: %s", err?.message || err),
+            { type: "danger" }
+        );
+        return true; // FAIL-CLOSED: Dispatch call failed, cancel native PDF dialog
     }
 
-    return false; // Fallback to standard Odoo report action
+    return false; // Fallback to standard Odoo report action only when no binding exists
 }
 
 registry.category("ir.actions.report handlers").add("silent_gateway_handler", silentPrintReportHandler, { sequence: 5 });

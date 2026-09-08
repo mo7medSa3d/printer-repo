@@ -13,10 +13,7 @@ class PrintGatewayPosController(PosController):
 
     @http.route('/pos/sale_details_report', type='http', auth='user')
     def print_sale_details(self, date_start=False, date_stop=False, **kw):
-        config = request.env['print_gateway.gateway_config'].search(
-            [('company_id', '=', request.env.company.id)], limit=1,
-        )
-        gateway = config if config and config.enabled else False
+        gateway = request.env['print_gateway.print_router']._gateway_config(request.env.company)
         if not gateway:
             return super().print_sale_details(date_start=date_start, date_stop=date_stop, **kw)
 

@@ -93,4 +93,112 @@ describe("Odoo addon static contracts", () => {
     expect(jobs).toContain('"idempotencyKey": self.idempotency_key');
     expect(jobs).not.toContain("pcl");
   });
+
+  it("enforces root-company invariant and fail-closed report interceptor", () => {
+    const binding = read("models/binding.py");
+    const interceptor = read("static/src/js/report_interceptor.js");
+
+    // Invariant: Company must be root and branch must belong to company
+    expect(binding).toContain('@api.constrains("company_id", "branch_id")');
+    expect(binding).toContain("def _check_company_hierarchy");
+    expect(binding).toContain("record.company_id.parent_id");
+    expect(binding).toContain("Odoo Company must be a root Company, not a Branch.");
+
+    // Fail-Closed: binding pre-resolution and interceptor handling
+    expect(binding).toContain('"fail_closed": True');
+    expect(binding).toContain('"has_binding": True');
+    expect(interceptor).toContain("res.has_binding && (res.success === false || !res.dispatched)");
+    expect(interceptor).toContain("return true; // FAIL-CLOSED");
+    expect(interceptor).toContain("return false; // Fallback to standard Odoo report action only when no binding exists");
+  });
+
+  it("uses root-aware resolver for POS gateway enablement instead of direct config queries", () => {
+    const order = read("models/pos_order.py");
+    const session = read("models/pos_session.py");
+    const posCtrl = read("controllers/pos.py");
+
+    // Must NOT contain direct gateway_config searches by self.env.company.id
+    for (const src of [order, session]) {
+      expect(src).not.toContain('("company_id", "=", self.env.company.id)');
+    }
+    expect(posCtrl).not.toContain("('company_id', '=', request.env.company.id)");
+
+    // Must use the router's root-aware resolver
+    expect(order).toContain("_gateway_config");
+    expect(session).toContain("_gateway_config");
+    expect(posCtrl).toContain("_gateway_config");
+  });
+
+  it("persists outbox jobs under the active branch company, not the root gateway company", () => {
+    const router = read("models/print_router.py");
+    const submitIdx = router.indexOf("def _submit_route");
+    const submitBlock = router.slice(submitIdx, submitIdx + 600);
+    // The company passed to _persist_durable_job must be the caller's company, not route["company"]
+    expect(submitBlock).toContain('"company": company');
+    expect(submitBlock).not.toContain('"company": route["company"]');
+  });
+
+  it("validates gateway config ownership through company hierarchy, not strict equality", () => {
+    const jobs = read("models/print_job.py");
+    expect(jobs).toContain("expected_config_owner = company.parent_id or company");
+    expect(jobs).toContain("gateway_config.company_id != expected_config_owner");
+    expect(jobs).not.toContain("gateway_config.company_id != company");
+  });
+
+  it("secures gateway config and binding resolution for branch users using sudo in router and job", () => {
+    const router = read("models/print_router.py");
+    const jobs = read("models/print_job.py");
+    const security = read("security/security.xml");
+
+    expect(router).toContain('self.env["print_gateway.gateway_config"].sudo().search');
+    expect(router).toContain('self.env["print_gateway.binding"].sudo().find_for');
+    expect(jobs).toContain("job.gateway_config_id.sudo()");
+    expect(security).toContain("('company_id.child_ids', 'in', company_ids)");
+    expect(security).toContain("('branch_id', 'in', company_ids)");
+  });
+
+  it("decouples network I/O from @api.constrains in binding and provides action button", () => {
+    const binding = read("models/binding.py");
+    const views = read("views/binding_views.xml");
+
+    const scopeIdx = binding.indexOf("def _check_runtime_scope");
+    const bindingIdx = binding.indexOf("def _check_binding");
+    const constraintBody = binding.slice(scopeIdx, bindingIdx);
+
+    expect(constraintBody).not.toContain("_validate_runtime_target");
+    expect(constraintBody).not.toContain("requests.");
+    expect(binding).toContain("def action_verify_remote_hardware(self):");
+    expect(views).toContain('name="action_verify_remote_hardware"');
+  });
+
+  it("hardens runtime printer controller against cross-branch IDOR with Forbidden", () => {
+    const controller = read("controllers/runtime_printers.py");
+
+    expect(controller).toContain("from werkzeug.exceptions import Forbidden");
+    expect(controller).toContain("raise Forbidden");
+    expect(controller).toContain('["print_gateway.gateway_config"].sudo().search');
+  });
+
+  it("guards runtime assignment sync with savepoint and handles IntegrityError for concurrency safety", () => {
+    const binding = read("models/binding.py");
+    expect(binding).toContain("from psycopg2 import IntegrityError");
+    expect(binding).toContain("with self.env.cr.savepoint():");
+    expect(binding).toContain("except IntegrityError:");
+  });
+
+  it("stops automatic retry of unknown submission outcomes in outbox and restricts cron to queued jobs", () => {
+    const jobs = read("models/print_job.py");
+    expect(jobs).toContain('("status", "=", "queued")');
+    expect(jobs).not.toContain('("status", "in", ["queued", "unknown"])');
+    expect(jobs).toContain('"next_retry_at": False');
+    expect(jobs).toContain("def action_force_reprint");
+  });
+
+  it("reconciles stale runtime agent assignments on binding write and unlink", () => {
+    const binding = read("models/binding.py");
+    expect(binding).toContain("def _reconcile_assignments(self, company_branch_pairs):");
+    expect(binding).toContain("def unlink(self):");
+    expect(binding).toContain("assignment.unlink()");
+  });
 });
+

@@ -59,7 +59,7 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryID string)
 
 	resultCh := make(chan printer.DiscoveryResult, 1)
 	go func() {
-		resultCh <- printer.Discover(a.cfg, a.registryPath)
+		resultCh <- printer.DiscoverWithContext(discoveryCtx, a.cfg, a.registryPath)
 	}()
 
 	var result printer.DiscoveryResult

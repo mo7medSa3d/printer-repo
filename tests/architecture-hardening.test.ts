@@ -48,9 +48,10 @@ describe("architecture hardening", () => {
   it("uses pairing code as the registration credential without Odoo business ownership", () => {
     const src = readFileSync("src/app/api/agent/register/route.ts", "utf8");
     expect(src).toContain("pairingCode");
+    expect(src).toContain("hashPairingCode");
     expect(src).toContain("agentId: z.string().trim().min(1).max(120).optional()");
     expect(src).not.toContain("branchId");
-    expect(src).toContain("eq(agents.pairingCode, normalizedCode)");
+    expect(src).toContain("eq(agents.pairingCodeHash, hashedCode)");
     expect(src).toContain("inspectPairingRateLimit");
     expect(src).toContain("return NextResponse.json({ agentId: agent.id, secret }, { status: 200 });");
   });
@@ -73,5 +74,18 @@ describe("architecture hardening", () => {
     expect(block).toContain("db.transaction");
     expect(block).toContain("tx.update(agents)");
     expect(block).toContain("tx.update(printers)");
+  });
+
+  it("keeps permanent agent deletion transactional with row-level locking and audit protection", () => {
+    const src = readFileSync("src/app/actions.ts", "utf8");
+    const start = src.indexOf("export async function deleteAgent");
+    const end = src.indexOf("export async function createPrintJob", start);
+    const block = src.slice(start, end);
+    expect(block).toContain("requireManager()");
+    expect(block).toContain("db.transaction");
+    expect(block).toContain("FOR UPDATE");
+    expect(block).toContain("tx.delete(agents)");
+    expect(block).toContain("closeAgentSockets");
+    expect(block).toContain("publishAgentSessionClose");
   });
 });

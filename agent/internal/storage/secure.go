@@ -21,6 +21,12 @@ import (
 
 const secretFile = "agent-secrets.dat"
 
+// IsUserDirectory checks if a path resides inside a user profile / local app data directory.
+func IsUserDirectory(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.Contains(lower, "appdata") || strings.Contains(lower, "users") || strings.Contains(lower, "userprofile") || strings.Contains(lower, "/home/")
+}
+
 // Store saves key/value secrets under Dir (the agent data directory, e.g.
 // C:\ProgramData\OdooPrintAgent).
 type Store struct {
@@ -67,8 +73,12 @@ func (s *Store) SaveSecret(key, secret string) error {
 	if err != nil {
 		return fmt.Errorf("storage: encrypt %q: %w", key, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return fmt.Errorf("storage: create dir %s: %w", filepath.Dir(p), err)
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("storage: create dir %s: %w", dir, err)
+	}
+	if err := EnsureSecureDirectoryACL(dir); err != nil {
+		return fmt.Errorf("storage: secure dir %s: %w", dir, err)
 	}
 	entries, err := readEntries(p)
 	if err != nil {

@@ -1,6 +1,6 @@
 import { db } from "../../db";
 import { agents, printers, printJobs } from "../../db/schema";
-import { count, desc, eq } from "drizzle-orm";
+import { count, desc, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../../lib/manager-auth";
@@ -35,7 +35,7 @@ export default async function DashboardPage() {
       .select({
         id: agents.id,
         name: agents.name,
-        pairingCode: agents.pairingCode,
+        pairingCode: sql<string | null>`NULL`,
         pairingCodeExpiresAt: agents.pairingCodeExpiresAt,
         status: agents.status,
         lifecycle: agents.lifecycle,

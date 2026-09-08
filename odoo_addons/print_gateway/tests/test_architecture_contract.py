@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from odoo.tests.common import TransactionCase
 
@@ -120,3 +121,83 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("runtime_agent_id", source)
         self.assertIn("New branch bindings do not use this field as their source of truth.", source)
         self.assertNotIn("printer_id", source)
+
+    def test_binding_model_enforces_root_company_invariant(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        self.assertIn('@api.constrains("company_id", "branch_id")', source)
+        self.assertIn("def _check_company_hierarchy(self):", source)
+        self.assertIn("record.company_id.parent_id", source)
+        self.assertIn("Odoo Company must be a root Company, not a Branch.", source)
+        self.assertIn("Odoo Branch must belong directly to the selected Odoo Company.", source)
+
+    def test_branch_restricted_user_can_query_gateway_config_and_route(self):
+        """Test that a user restricted strictly to Branch B (company_ids=[branch.id])
+        can read gateway config and execute routing without AccessError.
+        """
+        root_company = self.env.company
+        branch = self.env["res.company"].create({
+            "name": "Branch Test Context",
+            "parent_id": root_company.id,
+        })
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
+        if not config:
+            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+                config = self.env["print_gateway.gateway_config"].create({
+                    "company_id": root_company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                })
+
+        branch_user = self.env["res.users"].create({
+            "name": "Branch Restricted Cashier",
+            "login": "branch_cashier_%s" % branch.id,
+            "company_id": branch.id,
+            "company_ids": [(6, 0, [branch.id])],
+        })
+
+        router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
+        cfg = router._gateway_config(branch)
+        self.assertTrue(cfg)
+        self.assertEqual(cfg.id, config.id)
+
+    def test_runtime_controller_cross_branch_idor_forbidden(self):
+        """Test that user in Branch A requesting Branch B receives Forbidden (403)."""
+        from werkzeug.exceptions import Forbidden
+        from odoo.addons.print_gateway.controllers.runtime_printers import PrintGatewayRuntimePrinterController
+
+        root_company = self.env.company
+        branch_a = self.env["res.company"].create({
+            "name": "Branch Alpha",
+            "parent_id": root_company.id,
+        })
+        branch_b = self.env["res.company"].create({
+            "name": "Branch Beta",
+            "parent_id": root_company.id,
+        })
+
+        controller = PrintGatewayRuntimePrinterController()
+
+        env_a = self.env(context=dict(self.env.context, allowed_company_ids=[branch_a.id]))
+        with self.assertRaises(Forbidden):
+            controller._scope(company_id=root_company.id, branch_id=branch_b.id, env=env_a)
+
+    def test_binding_constraints_do_not_contain_network_calls(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        scope_idx = source.find("def _check_runtime_scope")
+        binding_idx = source.find("def _check_binding")
+        runtime_scope_code = source[scope_idx:binding_idx]
+        self.assertNotIn("_validate_runtime_target", runtime_scope_code)
+        self.assertNotIn("requests.", runtime_scope_code)
+        self.assertIn("def action_verify_remote_hardware(self):", source)
+
+    def test_runtime_printer_controller_guards_sudo_with_forbidden(self):
+        source = (CONTROLLERS / "runtime_printers.py").read_text(encoding="utf-8")
+        self.assertIn("from werkzeug.exceptions import Forbidden", source)
+        self.assertIn("raise Forbidden", source)
+        self.assertIn(".sudo().search", source)
+
+    def test_binding_model_defines_effective_company_id(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        self.assertIn("effective_company_id = fields.Many2one(", source)
+        self.assertIn("def _compute_effective_company_id(self):", source)
+        self.assertIn("record.effective_company_id = record.branch_id or record.company_id", source)

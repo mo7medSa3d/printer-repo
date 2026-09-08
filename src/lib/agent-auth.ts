@@ -15,6 +15,10 @@ export function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
 }
 
+export function hashPairingCode(code: string): string {
+  return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
+}
+
 export function generateSecret(): string {
   return randomBytes(24).toString("base64url");
 }

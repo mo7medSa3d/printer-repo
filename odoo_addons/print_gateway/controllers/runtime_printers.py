@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
+from werkzeug.exceptions import Forbidden
 
 from odoo import http
 from odoo.http import request
@@ -7,23 +8,38 @@ from odoo.exceptions import ValidationError
 
 
 class PrintGatewayRuntimePrinterController(http.Controller):
-    def _scope(self, company_id=None, branch_id=None):
-        env = request.env
-        company = env["res.company"].browse(company_id or env.company.id).exists()
-        if not company or company not in env.companies:
-            raise ValidationError("The selected Odoo Company is not available to the current user.")
+    def _scope(self, company_id=None, branch_id=None, env=None):
+        env = env or request.env
+        if company_id:
+            try:
+                company = env["res.company"].browse(int(company_id)).exists()
+            except (TypeError, ValueError):
+                raise Forbidden("Access Denied: Invalid Odoo Company.")
+            if not company or company not in env.companies:
+                raise Forbidden("Access Denied: The selected Odoo Company is not available to the current user.")
+        else:
+            company = env.company
+            if not company or company not in env.companies:
+                raise Forbidden("Access Denied: The active Odoo Company is not available to the current user.")
+
         if company.parent_id:
             raise ValidationError("The selected Odoo Company must be a parent Company, not a Branch.")
-        branch = env["res.company"].browse(branch_id).exists() if branch_id else False
-        if branch:
-            if branch not in env.companies:
-                raise ValidationError("The selected Odoo Branch is not available to the current user.")
+
+        branch = False
+        if branch_id:
+            try:
+                branch = env["res.company"].browse(int(branch_id)).exists()
+            except (TypeError, ValueError):
+                raise Forbidden("Access Denied: Invalid Odoo Branch.")
+            if not branch or branch not in env.companies:
+                raise Forbidden("Access Denied: The selected Odoo Branch is not available to the current user.")
             if branch.parent_id != company:
                 raise ValidationError("Odoo Branch must belong directly to the selected Odoo Company.")
         return company, branch
 
-    def _get_config(self, company):
-        config = request.env["print_gateway.gateway_config"].search(
+    def _get_config(self, company, env=None):
+        env = env or request.env
+        config = env["print_gateway.gateway_config"].sudo().search(
             [("company_id", "=", company.id)], limit=1,
         )
         return config, company
@@ -31,8 +47,6 @@ class PrintGatewayRuntimePrinterController(http.Controller):
     @http.route('/print_gateway/runtime-agents', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_agents(self, company_id=None, branch_id=None):
         company, branch = self._scope(company_id, branch_id)
-        if not branch:
-            raise ValidationError("An Odoo Branch is required for runtime-agent assignment.")
         config, root_company = self._get_config(company)
         if not config or not config.enabled:
             return {'enabled': False, 'selectedAgentId': False, 'agents': []}
@@ -72,8 +86,6 @@ class PrintGatewayRuntimePrinterController(http.Controller):
     @http.route('/print_gateway/runtime-printers', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_printers(self, company_id=None, branch_id=None, agent_id=None):
         company, branch = self._scope(company_id, branch_id)
-        if not branch:
-            raise ValidationError("An Odoo Branch is required for runtime-printer selection.")
         if not isinstance(agent_id, str) or not agent_id.strip():
             return {'enabled': True, 'selectedAgentId': False, 'printers': []}
         config, _root_company = self._get_config(company)

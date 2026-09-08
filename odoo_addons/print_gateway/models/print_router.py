@@ -33,7 +33,7 @@ class PrintGatewayRouter(models.AbstractModel):
     @api.model
     def _gateway_config(self, company):
         gateway_company, _branch = self._binding_scope(company)
-        config = self.env["print_gateway.gateway_config"].search(
+        config = self.env["print_gateway.gateway_config"].sudo().search(
             [("company_id", "=", gateway_company.id)], limit=1,
         )
         return config if config and config.enabled else False
@@ -91,7 +91,7 @@ class PrintGatewayRouter(models.AbstractModel):
             record=record,
             explicit_destination=explicit_destination,
         )
-        binding = self.env["print_gateway.binding"].find_for(
+        binding = self.env["print_gateway.binding"].sudo().find_for(
             gateway_company,
             dtype,
             report=report,
@@ -220,7 +220,7 @@ class PrintGatewayRouter(models.AbstractModel):
     ):
         self._assert_current_company(company)
         job_id = self._persist_durable_job({
-            "company": route["company"],
+            "company": company,
             "gateway_config": route["config"],
             "printer_id": route["binding"].printer_id,
             "destination": route["destination"].display_name,

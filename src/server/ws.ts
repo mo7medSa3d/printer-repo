@@ -39,7 +39,7 @@ export function closeAgentSockets(agentId: string): void {
 export async function publishAgentSessionClose(agentId: string): Promise<void> {
   const client = await pool.connect();
   try {
-    await client.query(`SELECT pg_notify(${PG_SESSIONS_CHANNEL}, $1)`, [JSON.stringify({ agentId })]);
+    await client.query("SELECT pg_notify($1, $2)", [PG_SESSIONS_CHANNEL, JSON.stringify({ agentId })]);
   } finally {
     try { client.release(); } catch {}
   }

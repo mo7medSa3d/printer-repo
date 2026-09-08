@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { hashPairingCode } from "../src/lib/agent-auth";
 
 const hasDatabase = Boolean(process.env.DATABASE_URL);
 const suite = describe.skipIf(!hasDatabase);
@@ -45,7 +46,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0012_runtime_state_checks.sql", "0013_runtime_state_constraint_scope_fix.sql", "0014_discovery_state_checks.sql",
       "0015_metrics_and_agent_notifications.sql", "0016_print_job_rate_limits.sql", "0017_notify_requeued_jobs.sql",
       "0018_global_print_job_idempotency.sql", "0019_drop_legacy_print_destination_fk.sql", "0020_remove_gateway_business_ownership.sql",
-      "0021_scope_print_jobs_to_api_key.sql",
+      "0021_scope_print_jobs_to_api_key.sql", "0022_pairing_code_hash.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
@@ -79,6 +80,11 @@ suite("production-like PostgreSQL migration upgrade", () => {
 
       await pool.query(`INSERT INTO branches (id, company_id, name, enabled) VALUES ($1, $2, 'Legacy Branch', true)`, [branchId, "legacy-company"]);
       await pool.query(`INSERT INTO agents (id, branch_id, name, secret, status, lifecycle) VALUES ($1, $2, 'Legacy Agent', $3, 'online', 'active')`, [agentId, branchId, "upgrade-secret-hash"]);
+      const pairingAgentId = "agent_upgrade_pairing_fixture";
+      await pool.query(
+        `INSERT INTO agents (id, branch_id, name, secret, status, lifecycle, pairing_code, pairing_code_expires_at) VALUES ($1, $2, 'Pairing Agent', NULL, 'offline', 'active', '  ab22cd  ', now() + interval '1 hour')`,
+        [pairingAgentId, branchId],
+      );
       await pool.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle) VALUES ($1, $2, 'Legacy Printer', 'physical', 'thermal', 'network', 'raw', 'online', 'active')`, [printerId, agentId]);
       await pool.query(`INSERT INTO destinations (id, branch_id, name, type, enabled) VALUES ($1, $2, 'Legacy POS', 'pos', true)`, [destinationId, branchId]);
       await pool.query(`INSERT INTO printer_bindings (id, branch_id, destination_id, printer_id, priority, enabled) VALUES ($1, $2, $3, $4, 1, true)`, [bindingId, branchId, destinationId, printerId]);
@@ -108,6 +114,12 @@ suite("production-like PostgreSQL migration upgrade", () => {
         printer_id: printerId,
         destination: "Legacy POS",
         idempotency_key: "legacy-upgrade-key",
+      }]);
+
+      const pairingAgent = await pool.query(`SELECT id, pairing_code_hash FROM agents WHERE id=$1`, [pairingAgentId]);
+      expect(pairingAgent.rows).toEqual([{
+        id: pairingAgentId,
+        pairing_code_hash: hashPairingCode("AB22CD"),
       }]);
 
       const uniqueIndex = await pool.query(`SELECT indexname FROM pg_indexes WHERE tablename='print_jobs' AND indexname='print_jobs_idempotency_unique'`);

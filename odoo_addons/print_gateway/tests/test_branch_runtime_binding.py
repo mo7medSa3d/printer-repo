@@ -56,10 +56,20 @@ class TestBranchRuntimeBinding(TransactionCase):
         vals.update(extra)
         return vals
 
+    def test_non_root_company_is_rejected(self):
+        record = self.env["print_gateway.binding"].new({
+            "company_id": self.branch.id,
+            "branch_id": False,
+            "runtime_agent_id": "agent-a",
+            "printer_id": "printer-a",
+        })
+        with self.assertRaises(ValidationError):
+            record._check_company_hierarchy()
+
     def test_branch_from_another_company_is_rejected(self):
         record = self.env["print_gateway.binding"].new({"company_id": self.company.id, "branch_id": self.other_branch.id, "runtime_agent_id": "agent-a", "printer_id": "printer-a"})
         with self.assertRaises(ValidationError):
-            record._check_runtime_scope()
+            record._check_company_hierarchy()
 
     def test_unauthorized_company_is_rejected(self):
         restricted = self.env(context=dict(self.env.context, allowed_company_ids=[self.company.id]))
@@ -67,10 +77,23 @@ class TestBranchRuntimeBinding(TransactionCase):
         with self.assertRaises(ValidationError):
             record._check_runtime_scope()
 
-    def test_retired_agent_is_rejected(self):
+    def test_retired_agent_is_rejected_on_hardware_verification(self):
+        binding = self.env["print_gateway.binding"].create(self._values(runtime_agent_id="agent-old"))
         with patch("odoo.addons.print_gateway.models.binding.requests.get", return_value=Response({"agents": self.agents})), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
             with self.assertRaises(ValidationError):
-                self.env["print_gateway.binding"].create(self._values(runtime_agent_id="agent-old"))
+                binding.action_verify_remote_hardware()
+
+    def test_binding_creation_succeeds_without_network_io(self):
+        # Database persistence does not block on synchronous network requests
+        binding = self.env["print_gateway.binding"].create(self._values(priority=99))
+        self.assertTrue(binding.id)
+
+    def test_action_verify_remote_hardware_success(self):
+        binding = self.env["print_gateway.binding"].create(self._values(priority=98))
+        with patch("odoo.addons.print_gateway.models.binding.requests.get", side_effect=self._gets()), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+            res = binding.action_verify_remote_hardware()
+            self.assertEqual(res.get("type"), "ir.actions.client")
+            self.assertEqual(res.get("params", {}).get("type"), "success")
 
     def test_printer_from_another_agent_is_rejected(self):
         record = self.env["print_gateway.binding"].new({"company_id": self.company.id, "branch_id": self.branch.id, "runtime_agent_id": "agent-a", "printer_id": "printer-b"})
@@ -115,3 +138,50 @@ class TestBranchRuntimeBinding(TransactionCase):
         self.assertFalse(record.runtime_agent_id)
         self.assertFalse(record.printer_id)
         self.assertFalse(record.report_id)
+
+    def test_binding_unlink_reconciles_and_removes_orphaned_assignment(self):
+        with patch("odoo.addons.print_gateway.models.binding.requests.get", side_effect=self._gets()), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+            binding = self.env["print_gateway.binding"].create(self._values(priority=40))
+        assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertTrue(assignment)
+        binding.unlink()
+        remaining_assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertFalse(remaining_assignment)
+
+    def test_binding_disable_reconciles_and_removes_orphaned_assignment(self):
+        with patch("odoo.addons.print_gateway.models.binding.requests.get", side_effect=self._gets()), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+            binding = self.env["print_gateway.binding"].create(self._values(priority=50))
+        assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertTrue(assignment)
+        binding.write({"enabled": False})
+        remaining_assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertFalse(remaining_assignment)
+        binding.write({"enabled": True})
+        restored_assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertTrue(restored_assignment)
+        self.assertEqual(restored_assignment.runtime_agent_id, "agent-a")
+
+    def test_effective_company_id_computation(self):
+        binding_branch = self.env["print_gateway.binding"].new({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+        })
+        binding_branch._compute_effective_company_id()
+        self.assertEqual(binding_branch.effective_company_id, self.branch)
+
+        binding_root = self.env["print_gateway.binding"].new({
+            "company_id": self.company.id,
+            "branch_id": False,
+        })
+        binding_root._compute_effective_company_id()
+        self.assertEqual(binding_root.effective_company_id, self.company)

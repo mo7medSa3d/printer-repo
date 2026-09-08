@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Durable Odoo-side print outbox and retry state."""
 
+import datetime
 import json
 import logging
 import time
@@ -79,8 +80,9 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Gateway configuration is missing."))
         if company != self.env.company:
             raise ValidationError(_("Print operations must be created in the active Odoo company."))
-        if gateway_config.company_id != company:
-            raise ValidationError(_("Gateway configuration does not belong to the active company."))
+        expected_config_owner = company.parent_id or company
+        if gateway_config.company_id != expected_config_owner:
+            raise ValidationError(_("Gateway configuration does not belong to the company hierarchy of the active Odoo company."))
         if not printer_id or not str(printer_id).strip():
             raise ValidationError(_("Printer is required."))
         if not destination or not str(destination).strip():
@@ -160,10 +162,11 @@ class PrintGatewayJob(models.Model):
         for job in self:
             if job.status in self._TERMINAL and job.gateway_job_id:
                 continue
+            gateway_config = job.gateway_config_id.sudo()
             try:
                 response = requests.post(
-                    "%s/api/print/jobs" % job.gateway_config_id._gateway_base(for_request=True),
-                    json=job._submission_body(), headers=job.gateway_config_id._gateway_headers(),
+                    "%s/api/print/jobs" % gateway_config._gateway_base(for_request=True),
+                    json=job._submission_body(), headers=gateway_config._gateway_headers(),
                     timeout=(5, 20), allow_redirects=False,
                 )
                 if response.status_code not in (200, 201):
@@ -182,19 +185,55 @@ class PrintGatewayJob(models.Model):
                     "status": "submitted" if remote_status == "queued" else remote_status,
                     "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
                 })
-            except requests.RequestException as exc:
+            except requests.exceptions.Timeout as exc:
                 values = {
-                    "status": "unknown", "attempts": job.attempts + 1,
-                    "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request failed or timed out",
-                    "next_retry_at": fields.Datetime.now(),
+                    "status": "unknown",
+                    "attempts": job.attempts + 1,
+                    "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request timed out (ambiguous dispatch)",
+                    "next_retry_at": False,
                 }
                 if raise_on_failure:
                     job._persist_state(values)
                 else:
                     job.write(values)
-                _logger.warning("Gateway submission outcome is unknown for job %s", job.idempotency_key[:8])
+                _logger.warning("Gateway submission timed out; outcome is unknown for job %s", job.idempotency_key[:8])
                 if raise_on_failure:
-                    raise ValidationError(_("Gateway submission timed out or failed; the physical outcome is unknown. The durable job will be retried safely.")) from exc
+                    raise ValidationError(_("Gateway submission timed out; physical outcome is unknown. Automated retries are paused to prevent duplicate prints. Operator reprint required.")) from exc
+            except requests.exceptions.ConnectionError as exc:
+                next_attempt = job.attempts + 1
+                terminal = next_attempt >= 5
+                retry_delay = min(300, 10 * (2 ** min(next_attempt - 1, 5)))
+                next_retry = False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=retry_delay)
+                values = {
+                    "status": "failed" if terminal else "queued",
+                    "attempts": next_attempt,
+                    "last_error": "CONNECTION_ERROR: %s" % str(exc)[:4000],
+                    "next_retry_at": next_retry,
+                    "completed_at": fields.Datetime.now() if terminal else False,
+                }
+                if raise_on_failure:
+                    job._persist_state(values)
+                else:
+                    job.write(values)
+                _logger.warning("Gateway connection failed for job %s (attempt %s/5)", job.idempotency_key[:8], next_attempt)
+                if raise_on_failure:
+                    raise ValidationError(_("Gateway connection failed: %s") % str(exc)[:500]) from exc
+            except requests.RequestException as exc:
+                next_attempt = job.attempts + 1
+                terminal = next_attempt >= 5
+                values = {
+                    "status": "failed" if terminal else "queued",
+                    "attempts": next_attempt,
+                    "last_error": "GATEWAY_TRANSPORT_ERROR: %s" % str(exc)[:4000],
+                    "next_retry_at": False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=15),
+                    "completed_at": fields.Datetime.now() if terminal else False,
+                }
+                if raise_on_failure:
+                    job._persist_state(values)
+                else:
+                    job.write(values)
+                if raise_on_failure:
+                    raise ValidationError(_("Gateway request failed: %s") % str(exc)[:500]) from exc
             except (ValueError, RuntimeError, ValidationError) as exc:
                 next_attempt = job.attempts + 1
                 terminal = next_attempt >= 5
@@ -214,10 +253,11 @@ class PrintGatewayJob(models.Model):
 
     def action_sync_status(self):
         for job in self.filtered(lambda row: row.gateway_job_id and row.status not in self._TERMINAL):
+            gateway_config = job.gateway_config_id.sudo()
             try:
                 response = requests.get(
-                    "%s/api/print/jobs" % job.gateway_config_id._gateway_base(for_request=True),
-                    params={"id": job.gateway_job_id}, headers=job.gateway_config_id._gateway_headers(),
+                    "%s/api/print/jobs" % gateway_config._gateway_base(for_request=True),
+                    params={"id": job.gateway_job_id}, headers=gateway_config._gateway_headers(),
                     timeout=(5, 10), allow_redirects=False,
                 )
                 if response.status_code == 404:
@@ -296,7 +336,7 @@ class PrintGatewayJob(models.Model):
     def cron_submit_pending(self):
         now = fields.Datetime.now()
         jobs = self.search([
-            ("status", "in", ["queued", "unknown"]), "|",
+            ("status", "=", "queued"), "|",
             ("next_retry_at", "=", False), ("next_retry_at", "<=", now),
         ], order="id asc", limit=50)
         started = time.monotonic()

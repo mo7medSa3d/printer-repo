@@ -12,9 +12,11 @@ import (
 )
 
 type SpoolerPrinter struct {
-	Name string
+	Name        string
 	SpoolerName string
-	PDFPrint PDFPrintFunc
+	PDFPrint    PDFPrintFunc
+	ProbeFunc   func(spoolerName string) string
+	Timeout     time.Duration
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter { name:=spoolerName; if displayName!="" {name=displayName}; return &SpoolerPrinter{Name:name,SpoolerName:spoolerName} }
@@ -35,6 +37,34 @@ func (p *SpoolerPrinter) PrintDocument(ctx context.Context, doc Document) error 
 	case KindRaw,KindESCPOS:return p.Print(ctx,doc.Data)
 	default:return CapabilityMismatchf("spooler printer %q cannot render %s payloads",p.SpoolerName,NormalizeKind(doc.Kind)) }
 }
-func (p *SpoolerPrinter) Test(ctx context.Context) error{return p.Print(ctx,[]byte("\x1b\x40Spooler Test Print from Odoo Agent\nPrinter: "+p.SpoolerName+"\n\n\x1d\x56\x01"))}
-func (p *SpoolerPrinter) Status() string{return "online"}
+func (p *SpoolerPrinter) Test(ctx context.Context) error {
+	return p.Print(ctx, []byte("\x1b\x40Spooler Test Print from Odoo Agent\nPrinter: "+p.SpoolerName+"\n\n\x1d\x56\x01"))
+}
+
+func (p *SpoolerPrinter) Status() string {
+	if p.ProbeFunc != nil {
+		timeout := p.Timeout
+		if timeout <= 0 {
+			timeout = 1500 * time.Millisecond
+		}
+		resCh := make(chan string, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					resCh <- "error"
+				}
+			}()
+			resCh <- p.ProbeFunc(p.SpoolerName)
+		}()
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case st := <-resCh:
+			return st
+		case <-timer.C:
+			return "spooler_rpc_unresponsive"
+		}
+	}
+	return "online"
+}
 func sanitizeFilename(s string) string {out:="";for _,r:=range s{if(r>='a'&&r<='z')||(r>='A'&&r<='Z')||(r>='0'&&r<='9')||r=='_'||r=='-'{out+=string(r)}};if out==""{return "printer"};return out}

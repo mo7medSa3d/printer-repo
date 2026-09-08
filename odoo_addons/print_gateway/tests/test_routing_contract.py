@@ -35,7 +35,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         # transactions use a snapshot which does not see later commits.
         durable_company_name = "Gateway Durable Test %s" % uuid.uuid4().hex
         other_company_name = "Gateway Contract Other Company %s" % uuid.uuid4().hex
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             setup_env = api.Environment(cr, self.env.uid, dict(self.env.context))
             durable_company = setup_env["res.company"].create({"name": durable_company_name})
             other_company = setup_env["res.company"].create({"name": other_company_name})
@@ -50,6 +51,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.durable_config_id = durable_config.id
             self.other_company_id = other_company.id
             cr.commit()
+        finally:
+            cr.close()
 
     def _make_config(self, enabled=True):
         self.config.write({"enabled": enabled})
@@ -57,7 +60,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def _job(self, key):
         """Create a durable job and return only its scalar id."""
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.durable_company_id).exists()
             if not company:
@@ -77,7 +81,9 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     "idempotency_key": key,
                 }
             )
-        return job_id
+            return job_id
+        finally:
+            cr.close()
 
     def test_binding_requires_deterministic_native_destination(self):
         report = self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
@@ -132,7 +138,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
         self.assertEqual(binding.destination_ref.id, report.id)
 
     def test_cross_company_destination_is_rejected(self):
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.company.id).exists()
             other_company = env["res.company"].browse(self.other_company_id).exists()
@@ -160,6 +167,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                         "printer_id": "printer_runtime_1",
                     }
                 )
+        finally:
+            cr.close()
 
     def test_document_type_is_deterministic_for_supported_business_models(self):
         router = self.env["print_gateway.print_router"]
@@ -197,7 +206,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             )
 
     def test_router_rejects_company_argument_that_is_not_active(self):
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             report = env["ir.actions.report"].search(
                 [("model", "=", "sale.order")], limit=1
@@ -210,9 +220,12 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     report=report,
                     company=other_company,
                 )
+        finally:
+            cr.close()
 
     def test_router_rejects_document_from_another_company_context(self):
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.company.id).exists()
             other_company = env["res.company"].browse(self.other_company_id).exists()
@@ -235,6 +248,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     document_type="order",
                     company=company,
                 )
+        finally:
+            cr.close()
 
     def test_native_print_is_only_allowed_when_gateway_is_disabled(self):
         self._make_config(False)
@@ -263,7 +278,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_gateway_timeout_persists_unknown_outcome(self):
         job_id = self._job("timeout-contract-key")
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.durable_company_id).exists()
             self.assertTrue(company)
@@ -276,19 +292,63 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             ):
                 with self.assertRaises(ValidationError):
                     job.action_submit(raise_on_failure=True)
+        finally:
+            cr.close()
 
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.durable_company_id).exists()
             model_env = env["print_gateway.print_job"].with_company(company).env
             job = model_env["print_gateway.print_job"].browse(job_id).exists()
             self.assertEqual(job.status, "unknown")
             self.assertIn("UNKNOWN_SUBMISSION_OUTCOME", job.last_error)
+            self.assertFalse(job.next_retry_at)
+        finally:
+            cr.close()
+
+    def test_cron_submit_pending_ignores_unknown_jobs(self):
+        job_id = self._job("cron-safety-unknown")
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
+            job.write({"status": "unknown", "next_retry_at": False})
+
+            with patch.object(type(job), "action_submit", autospec=True) as mocked_submit:
+                model_env["print_gateway.print_job"].cron_submit_pending()
+                mocked_submit.assert_not_called()
+        finally:
+            cr.close()
+
+    def test_force_reprint_from_unknown_generates_derived_key(self):
+        job_id = self._job("reprint-unknown-origin")
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
+            job.write({"status": "unknown", "next_retry_at": False})
+
+            with patch.object(type(job), "action_submit", autospec=True, return_value=True) as mocked_submit:
+                job.action_force_reprint()
+                self.assertEqual(job.reprint_attempt_count, 1)
+                derived_jobs = model_env["print_gateway.print_job"].search([
+                    ("idempotency_key", "=", "%s-reprint-1" % job.idempotency_key),
+                ])
+                self.assertEqual(len(derived_jobs), 1)
+                mocked_submit.assert_called_once()
+        finally:
+            cr.close()
 
     def test_manual_retry_does_not_reset_in_flight_or_unknown_jobs(self):
         for status in ("submitted", "claimed", "printing", "unknown"):
             job_id = self._job("retry-safety-%s" % status)
-            with self.env.registry.cursor() as cr:
+            cr = self.env.registry.cursor()
+            try:
                 env = api.Environment(cr, self.env.uid, dict(self.env.context))
                 company = env["res.company"].browse(self.durable_company_id).exists()
                 model_env = env["print_gateway.print_job"].with_company(company).env
@@ -296,10 +356,13 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 job.write({"status": status})
                 job.action_retry()
                 self.assertEqual(job.status, status)
+            finally:
+                cr.close()
 
     def test_manual_retry_creates_a_new_operation_only_for_definite_failure(self):
         job_id = self._job("retry-failed-original")
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.durable_company_id).exists()
             model_env = env["print_gateway.print_job"].with_company(company).env
@@ -318,3 +381,5 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.assertEqual(len(retries), 1)
             self.assertNotEqual(retries.idempotency_key, job.idempotency_key)
             submit.assert_called_once()
+        finally:
+            cr.close()

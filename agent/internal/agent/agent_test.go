@@ -535,3 +535,22 @@ func TestDuplicateSkippedAfterSuccess(t *testing.T) {
 	}
 	assertNoInFlight(t, ag)
 }
+
+func TestSingleFlightProbeGuard(t *testing.T) {
+	ag := &Agent{}
+	state := ag.getProbeState("p1")
+	if !state.running.CompareAndSwap(false, true) {
+		t.Fatal("first CAS should succeed")
+	}
+
+	// While running, second CAS must fail (single-flight active)
+	if state.running.CompareAndSwap(false, true) {
+		t.Fatal("second CAS while running must fail")
+	}
+
+	// Release
+	state.running.Store(false)
+	if !state.running.CompareAndSwap(false, true) {
+		t.Fatal("CAS after store(false) must succeed")
+	}
+}

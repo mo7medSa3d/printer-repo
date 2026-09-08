@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Native Odoo print bindings: Odoo context -> Gateway runtime printer."""
 
+from psycopg2 import IntegrityError
 import requests
 
 from odoo import api, fields, models, _
@@ -37,6 +38,13 @@ class PrintGatewayBinding(models.Model):
         "res.company", string="Odoo Branch", ondelete="restrict", index=True,
         domain="[('parent_id', '=', company_id)]",
     )
+    effective_company_id = fields.Many2one(
+        "res.company",
+        string="Effective Company",
+        compute="_compute_effective_company_id",
+        store=True,
+        index=True,
+    )
     runtime_agent_id = fields.Char(
         string="Gateway Runtime Agent", copy=False, index=True,
         help="Opaque Gateway runtime-agent ID. Runtime ownership remains in the Gateway.",
@@ -46,15 +54,15 @@ class PrintGatewayBinding(models.Model):
     )
     destination_pos_config_id = fields.Many2one(
         "pos.config", string="POS Configuration", ondelete="restrict", check_company=True,
-        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]",
+        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]",
     )
     destination_pos_printer_id = fields.Many2one(
         "pos.printer", string="POS / Kitchen Printer", ondelete="restrict", check_company=True,
-        domain="['|', ('company_id', '=', False), ('company_id', '=', branch_id)]",
+        domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]",
     )
     destination_picking_type_id = fields.Many2one(
         "stock.picking.type", string="Operation Type", ondelete="restrict", check_company=True,
-        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]",
+        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]",
     )
     destination_report_id = fields.Many2one(
         "ir.actions.report", string="Report Destination", ondelete="restrict",
@@ -87,6 +95,11 @@ class PrintGatewayBinding(models.Model):
         "UNIQUE(company_id, branch_id, destination_ref, document_type, priority)",
         "Priority must be unique for the same Odoo company, branch, destination and document type.",
     )
+
+    @api.depends("company_id", "branch_id")
+    def _compute_effective_company_id(self):
+        for record in self:
+            record.effective_company_id = record.branch_id or record.company_id
 
     @api.depends("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id")
     def _compute_destination_ref(self):
@@ -213,27 +226,32 @@ class PrintGatewayBinding(models.Model):
             raise ValidationError(_("Direct inventory/warehouse operations require a label or thermal printer."))
 
 
+    @api.constrains("company_id", "branch_id")
+    def _check_company_hierarchy(self):
+        for record in self:
+            if record.company_id.parent_id:
+                raise ValidationError(_("Odoo Company must be a root Company, not a Branch."))
+            if record.branch_id and record.branch_id.parent_id != record.company_id:
+                raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
+
     @api.constrains("company_id", "branch_id", "runtime_agent_id", "printer_id")
     def _check_runtime_scope(self):
         for record in self:
             if record.company_id not in self.env.companies:
                 raise ValidationError(_("The selected Odoo Company is not available to the current user."))
             if record.branch_id:
-                if record.company_id.parent_id:
-                    raise ValidationError(_("Odoo Company must be a parent Company, not a Branch."))
-                if record.branch_id not in self.env.companies or record.branch_id.parent_id != record.company_id:
-                    raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
+                if record.branch_id not in self.env.companies:
+                    raise ValidationError(_("Odoo Branch is not available to the current user."))
                 if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
                     raise ValidationError(_("A Gateway Runtime Agent is required for a branch binding."))
-                record._validate_runtime_target()
 
-    @api.constrains("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id", "report_id", "printer_id", "company_id", "branch_id")
+    @api.constrains("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id", "report_id", "printer_id", "company_id", "branch_id", "effective_company_id")
     def _check_binding(self):
         for record in self:
             destination = record.destination_ref
             if not destination:
                 raise ValidationError(_("A valid Odoo Destination is required."))
-            expected_company = record.branch_id or record.company_id
+            expected_company = record.effective_company_id
             destination_company = getattr(destination, "company_id", False)
             if destination_company and destination_company != expected_company:
                 raise ValidationError(_("Odoo Destination belongs to another company/branch context."))
@@ -254,36 +272,107 @@ class PrintGatewayBinding(models.Model):
             if not isinstance(record.printer_id, str) or not record.printer_id.strip():
                 raise ValidationError(_("A Gateway Runtime Printer must be selected."))
 
+    def action_verify_remote_hardware(self):
+        self.ensure_one()
+        self._validate_runtime_target()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Hardware Verification"),
+                "message": _("Gateway runtime agent (%s) and printer (%s) are reachable and verified active.") % (self.runtime_agent_id, self.printer_id),
+                "type": "success",
+                "sticky": False,
+            },
+        }
+
+    @api.model
+    def _reconcile_assignments(self, company_branch_pairs):
+        """Reconcile runtime_agent_assignment records as a projected cache of active bindings.
+
+        If no active/enabled binding with a runtime_agent_id remains for a (company_id, branch_id) tuple,
+        the orphaned assignment is removed. If active bindings remain, the assignment is synchronized.
+        """
+        assignment_model = self.env["print_gateway.runtime_agent_assignment"].sudo()
+        for company_id, branch_id in company_branch_pairs:
+            if not company_id or not branch_id:
+                continue
+            active_bindings = self.sudo().search([
+                ("company_id", "=", company_id),
+                ("branch_id", "=", branch_id),
+                ("enabled", "=", True),
+                ("runtime_agent_id", "!=", False),
+            ], order="priority asc, id asc")
+
+            assignment = assignment_model.search([
+                ("company_id", "=", company_id),
+                ("branch_id", "=", branch_id),
+            ], limit=1)
+
+            if not active_bindings:
+                if assignment:
+                    assignment.unlink()
+            else:
+                target_agent = (active_bindings[0].runtime_agent_id or "").strip()
+                if not target_agent:
+                    continue
+                conflict = active_bindings.filtered(lambda b: (b.runtime_agent_id or "").strip() != target_agent)
+                if conflict:
+                    raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
+
+                if not assignment:
+                    try:
+                        with self.env.cr.savepoint():
+                            assignment_model.create({
+                                "company_id": company_id,
+                                "branch_id": branch_id,
+                                "runtime_agent_id": target_agent,
+                                "enabled": True,
+                            })
+                    except IntegrityError:
+                        assignment = assignment_model.search([
+                            ("company_id", "=", company_id),
+                            ("branch_id", "=", branch_id),
+                        ], limit=1)
+                        if assignment:
+                            assignment.write({"runtime_agent_id": target_agent, "enabled": True})
+                elif assignment.runtime_agent_id != target_agent or not assignment.enabled:
+                    assignment.write({"runtime_agent_id": target_agent, "enabled": True})
+
+    def _sync_runtime_assignment(self):
+        pairs = {(r.company_id.id, r.branch_id.id) for r in self if r.branch_id}
+        if pairs:
+            self._reconcile_assignments(pairs)
+
     @api.model_create_multi
     def create(self, vals_list):
         records = super().create(vals_list)
-        for record in records:
-            record._sync_runtime_assignment()
+        pairs = {(r.company_id.id, r.branch_id.id) for r in records if r.branch_id}
+        if pairs:
+            self._reconcile_assignments(pairs)
         return records
 
-    def _sync_runtime_assignment(self):
-        self.ensure_one()
-        if not self.branch_id or not self.runtime_agent_id:
-            return
-        assignment_model = self.env["print_gateway.runtime_agent_assignment"]
-        assignment = assignment_model.search([("company_id", "=", self.company_id.id), ("branch_id", "=", self.branch_id.id)], limit=1)
-        if assignment:
-            if assignment.runtime_agent_id != self.runtime_agent_id:
-                other_bindings = self.search([
-                    ("id", "!=", self.id), ("company_id", "=", self.company_id.id),
-                    ("branch_id", "=", self.branch_id.id), ("runtime_agent_id", "!=", self.runtime_agent_id),
-                ], limit=1)
-                if other_bindings:
-                    raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
-                assignment.write({"runtime_agent_id": self.runtime_agent_id, "enabled": True})
-            return
-        assignment_model.create({"company_id": self.company_id.id, "branch_id": self.branch_id.id, "runtime_agent_id": self.runtime_agent_id, "enabled": True})
-
     def write(self, vals):
+        trigger_fields = {"company_id", "branch_id", "runtime_agent_id", "enabled"}
+        pairs = set()
+        if trigger_fields.intersection(vals):
+            for r in self:
+                if r.branch_id:
+                    pairs.add((r.company_id.id, r.branch_id.id))
         result = super().write(vals)
-        if set(vals).intersection({"company_id", "branch_id", "runtime_agent_id"}):
-            for record in self:
-                record._sync_runtime_assignment()
+        if trigger_fields.intersection(vals):
+            for r in self:
+                if r.branch_id:
+                    pairs.add((r.company_id.id, r.branch_id.id))
+            if pairs:
+                self._reconcile_assignments(pairs)
+        return result
+
+    def unlink(self):
+        pairs = {(r.company_id.id, r.branch_id.id) for r in self if r.branch_id}
+        result = super().unlink()
+        if pairs:
+            self._reconcile_assignments(pairs)
         return result
 
     @api.model
@@ -333,17 +422,55 @@ class PrintGatewayBinding(models.Model):
         context = dict(context or self.env.context)
         report = self.env["ir.actions.report"].search([("report_name", "=", report_name)], limit=1)
         if not report:
-            return {"dispatched": False}
+            return {"dispatched": False, "has_binding": False}
 
         records = self.env[report.model].browse(res_ids or []).exists()
         router = self.env["print_gateway.print_router"]
-        route = router.route_report(report, records)
-        if route.get("native"):
-            return {"dispatched": False}
+        config = router._gateway_config(self.env.company)
+        if not config:
+            return {"dispatched": False, "has_binding": False}
 
-        return {
-            "dispatched": True,
-            "printer_name": route.get("printer_id"),
-            "message": route.get("message") or _("Sent silently to printer."),
-        }
+        try:
+            gateway_company, branch = router._binding_scope(self.env.company)
+            dtype = router._document_type(report=report, record=records[0] if records else None)
+            destination = router.destination_for(report=report, record=records[0] if records else None)
+            binding = self.find_for(
+                gateway_company,
+                dtype,
+                report=report,
+                record=records[0] if records else None,
+                branch=branch,
+            )
+        except Exception as exc:
+            return {
+                "has_binding": True,
+                "success": False,
+                "dispatched": False,
+                "error": str(exc),
+                "fail_closed": True,
+            }
+
+        if not binding:
+            return {"dispatched": False, "has_binding": False, "success": False}
+
+        try:
+            route = router.route_report(report, records)
+            if route.get("native"):
+                return {"dispatched": False, "has_binding": False, "success": False}
+
+            return {
+                "dispatched": True,
+                "success": True,
+                "has_binding": True,
+                "printer_name": route.get("printer_id") or binding.printer_id,
+                "message": route.get("message") or _("Sent silently to printer."),
+            }
+        except Exception as exc:
+            return {
+                "dispatched": False,
+                "success": False,
+                "has_binding": True,
+                "error": str(exc),
+                "fail_closed": True,
+            }
 

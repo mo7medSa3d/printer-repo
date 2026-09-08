@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -30,10 +31,17 @@ type docInfo1 struct {
 	pDatatype   *uint16
 }
 
+// SpoolerPrinter interacts with the Windows Spooler API (winspool.drv).
+//
+// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
+// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
+// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 type SpoolerPrinter struct {
-	Name       string
+	Name        string
 	SpoolerName string
-	PDFPrint   PDFPrintFunc
+	PDFPrint    PDFPrintFunc
+	ProbeFunc   func(spoolerName string) string
+	Timeout     time.Duration
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
@@ -44,6 +52,131 @@ func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
 	return &SpoolerPrinter{Name: name, SpoolerName: spoolerName}
 }
 
+// maxSpoolerWorkers bounds concurrent spooler operations.
+// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
+// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
+// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
+const maxSpoolerWorkers = 4
+
+var spoolerWorkerSem = make(chan struct{}, maxSpoolerWorkers)
+
+type spoolerTaskResult struct {
+	written uint32
+	jobID   uintptr
+	err     error
+}
+
+func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan struct{}) spoolerTaskResult {
+	printerNamePtr, err := syscall.UTF16PtrFromString(spoolerName)
+	if err != nil {
+		return spoolerTaskResult{err: fmt.Errorf("invalid spooler name %q: %w", spoolerName, err)}
+	}
+
+	var hPrinter syscall.Handle
+	ret, _, err := procOpenPrinterW.Call(
+		uintptr(unsafe.Pointer(printerNamePtr)),
+		uintptr(unsafe.Pointer(&hPrinter)),
+		0,
+	)
+	if ret == 0 {
+		return spoolerTaskResult{err: fmt.Errorf("OpenPrinterW(%q) failed: %w", spoolerName, err)}
+	}
+	defer procClosePrinter.Call(uintptr(hPrinter))
+
+	select {
+	case <-cancelNotice:
+		return spoolerTaskResult{err: fmt.Errorf("spooler job cancelled before doc start")}
+	default:
+	}
+
+	docName, err := syscall.UTF16PtrFromString("Odoo Print Job")
+	if err != nil {
+		return spoolerTaskResult{err: fmt.Errorf("invalid document name: %w", err)}
+	}
+	dataType, err := syscall.UTF16PtrFromString("RAW")
+	if err != nil {
+		return spoolerTaskResult{err: fmt.Errorf("invalid datatype: %w", err)}
+	}
+	di := docInfo1{pDocName: docName, pDatatype: dataType}
+	jobID, _, err := procStartDocPrinterW.Call(
+		uintptr(hPrinter),
+		1,
+		uintptr(unsafe.Pointer(&di)),
+	)
+	if jobID == 0 {
+		return spoolerTaskResult{err: fmt.Errorf("StartDocPrinterW(%q) failed: %w", spoolerName, err)}
+	}
+	defer func() {
+		if _, _, e := procEndDocPrinter.Call(uintptr(hPrinter)); e != nil && e != syscall.Errno(0) {
+			log.Printf("EndDocPrinter warning for %s: %v", spoolerName, e)
+		}
+	}()
+
+	select {
+	case <-cancelNotice:
+		return spoolerTaskResult{jobID: jobID, err: fmt.Errorf("spooler job cancelled before page start")}
+	default:
+	}
+
+	ret, _, err = procStartPagePrinter.Call(uintptr(hPrinter))
+	if ret == 0 {
+		return spoolerTaskResult{jobID: jobID, err: fmt.Errorf("StartPagePrinter(%q) failed: %w", spoolerName, err)}
+	}
+	defer procEndPagePrinter.Call(uintptr(hPrinter))
+
+	var written uint32
+	for int(written) < len(data) {
+		select {
+		case <-cancelNotice:
+			if written > 0 {
+				return spoolerTaskResult{
+					written: written,
+					jobID:   jobID,
+					err:     fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: print cancelled after %d/%d bytes", written, len(data)),
+				}
+			}
+			return spoolerTaskResult{jobID: jobID, err: fmt.Errorf("print cancelled")}
+		default:
+		}
+
+		var bytesWritten uint32
+		chunk := data[written:]
+		r, _, writeErr := procWritePrinter.Call(
+			uintptr(hPrinter),
+			uintptr(unsafe.Pointer(&chunk[0])),
+			uintptr(len(chunk)),
+			uintptr(unsafe.Pointer(&bytesWritten)),
+		)
+		if r == 0 {
+			if written > 0 {
+				return spoolerTaskResult{
+					written: written,
+					jobID:   jobID,
+					err:     fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) failed after %d/%d bytes: %w", spoolerName, written, len(data), writeErr),
+				}
+			}
+			return spoolerTaskResult{written: written, jobID: jobID, err: fmt.Errorf("WritePrinter(%q) failed after %d/%d bytes: %w", spoolerName, written, len(data), writeErr)}
+		}
+		if bytesWritten == 0 {
+			if written > 0 {
+				return spoolerTaskResult{
+					written: written,
+					jobID:   jobID,
+					err:     fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) wrote 0 bytes after %d/%d bytes", spoolerName, written, len(data)),
+				}
+			}
+			return spoolerTaskResult{written: written, jobID: jobID, err: fmt.Errorf("WritePrinter(%q) wrote 0 bytes", spoolerName)}
+		}
+		written += bytesWritten
+	}
+
+	return spoolerTaskResult{written: written, jobID: jobID, err: nil}
+}
+
+// Print writes raw byte data directly to the Windows Spooler.
+// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
+// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
+// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("refusing to print empty payload")
@@ -57,86 +190,37 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	default:
 	}
 
-	printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
-	if err != nil {
-		return fmt.Errorf("invalid spooler name %q: %w", p.SpoolerName, err)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case spoolerWorkerSem <- struct{}{}:
+	default:
+		return fmt.Errorf("ERR_SPOOLER_POOL_SATURATED: all spooler worker slots occupied (%d/%d)", maxSpoolerWorkers, maxSpoolerWorkers)
 	}
-	var hPrinter syscall.Handle
-	ret, _, err := procOpenPrinterW.Call(
-		uintptr(unsafe.Pointer(printerNamePtr)),
-		uintptr(unsafe.Pointer(&hPrinter)),
-		0,
-	)
-	if ret == 0 {
-		return fmt.Errorf("OpenPrinterW(%q) failed: %w", p.SpoolerName, err)
-	}
-	defer procClosePrinter.Call(uintptr(hPrinter))
 
-	docName, err := syscall.UTF16PtrFromString("Odoo Print Job")
-	if err != nil {
-		return fmt.Errorf("invalid document name: %w", err)
-	}
-	dataType, err := syscall.UTF16PtrFromString("RAW")
-	if err != nil {
-		return fmt.Errorf("invalid datatype: %w", err)
-	}
-	di := docInfo1{pDocName: docName, pDatatype: dataType}
-	jobID, _, err := procStartDocPrinterW.Call(
-		uintptr(hPrinter),
-		1,
-		uintptr(unsafe.Pointer(&di)),
-	)
-	if jobID == 0 {
-		return fmt.Errorf("StartDocPrinterW(%q) failed: %w", p.SpoolerName, err)
-	}
-	defer func() {
-		if _, _, e := procEndDocPrinter.Call(uintptr(hPrinter)); e != nil && e != syscall.Errno(0) {
-			log.Printf("EndDocPrinter warning for %s: %v", p.SpoolerName, e)
-		}
+	resultCh := make(chan spoolerTaskResult, 1)
+	cancelNotice := make(chan struct{})
+
+	go func() {
+		defer func() {
+			<-spoolerWorkerSem
+		}()
+		resultCh <- executeSpoolerSession(p.SpoolerName, data, cancelNotice)
 	}()
 
-	ret, _, err = procStartPagePrinter.Call(uintptr(hPrinter))
-	if ret == 0 {
-		return fmt.Errorf("StartPagePrinter(%q) failed: %w", p.SpoolerName, err)
+	select {
+	case <-ctx.Done():
+		close(cancelNotice)
+		// Return immediately without touching Win32 handle.
+		// Worker manages its own handle lifecycle and closes it safely upon return.
+		return fmt.Errorf("spooler print cancelled: %w", ctx.Err())
+	case res := <-resultCh:
+		if res.err != nil {
+			return res.err
+		}
+		log.Printf("Spooler printed %d bytes to %s (job %d)", res.written, p.SpoolerName, res.jobID)
+		return nil
 	}
-	defer procEndPagePrinter.Call(uintptr(hPrinter))
-
-	written := 0
-	for written < len(data) {
-		select {
-		case <-ctx.Done():
-			if written > 0 {
-				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
-			}
-			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
-		default:
-		}
-
-		var bytesWritten uint32
-		chunk := data[written:]
-		ret, _, err = procWritePrinter.Call(
-			uintptr(hPrinter),
-			uintptr(unsafe.Pointer(&chunk[0])),
-			uintptr(len(chunk)),
-			uintptr(unsafe.Pointer(&bytesWritten)),
-		)
-		if ret == 0 {
-			if written > 0 {
-				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), err)
-			}
-			return fmt.Errorf("WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), err)
-		}
-		if bytesWritten == 0 {
-			if written > 0 {
-				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) wrote 0 bytes after %d/%d bytes", p.SpoolerName, written, len(data))
-			}
-			return fmt.Errorf("WritePrinter(%q) wrote 0 bytes", p.SpoolerName)
-		}
-		written += int(bytesWritten)
-	}
-
-	log.Printf("Spooler printed %d bytes to %s (job %d)", written, p.SpoolerName, jobID)
-	return nil
 }
 
 func (p *SpoolerPrinter) SupportsKind(kind string) bool {
@@ -170,21 +254,51 @@ func (p *SpoolerPrinter) Test(ctx context.Context) error {
 }
 
 func (p *SpoolerPrinter) Status() string {
-	printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
-	if err != nil {
-		return "error"
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 1500 * time.Millisecond
 	}
-	var hPrinter syscall.Handle
-	ret, _, _ := procOpenPrinterW.Call(
-		uintptr(unsafe.Pointer(printerNamePtr)),
-		uintptr(unsafe.Pointer(&hPrinter)),
-		0,
-	)
-	if ret == 0 {
-		return "offline"
+	resCh := make(chan string, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Spooler status probe panic for %s: %v", p.SpoolerName, r)
+				resCh <- "error"
+			}
+		}()
+		if p.ProbeFunc != nil {
+			resCh <- p.ProbeFunc(p.SpoolerName)
+			return
+		}
+		printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
+		if err != nil {
+			resCh <- "error"
+			return
+		}
+		var hPrinter syscall.Handle
+		ret, _, _ := procOpenPrinterW.Call(
+			uintptr(unsafe.Pointer(printerNamePtr)),
+			uintptr(unsafe.Pointer(&hPrinter)),
+			0,
+		)
+		if ret == 0 {
+			resCh <- "offline"
+			return
+		}
+		procClosePrinter.Call(uintptr(hPrinter))
+		resCh <- "online"
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case st := <-resCh:
+		return st
+	case <-timer.C:
+		log.Printf("WARNING: Spooler status probe timed out for %q after %v", p.SpoolerName, timeout)
+		return "spooler_rpc_unresponsive"
 	}
-	procClosePrinter.Call(uintptr(hPrinter))
-	return "online"
 }
 
 type printerInfo2 struct {
