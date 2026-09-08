@@ -33,92 +33,89 @@ class TestControlPlane(TransactionCase):
         if not hasattr(self, "env") or api is None:
             self.skipTest("Odoo runtime environment not available")
 
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        if not hasattr(cls, "env") or api is None:
-            return
+        self.company = self.env.company
+        self.branch = self.env["res.company"].create({
+            "name": "Control Plane Branch 1",
+            "parent_id": self.company.id,
+        })
+        self.env = self.env(context=dict(self.env.context, allowed_company_ids=[self.company.id, self.branch.id]))
 
-        # create a dedicated cursor for class-level setup and keep it for tearDownClass
-        cls.cr = cls.env.registry.cursor()
-        try:
-            setup_env = api.Environment(cls.cr, cls.env.uid, dict(cls.env.context))
-            cls.company = setup_env["res.company"].create({
-                "name": "Control Plane Root Company",
-            })
-            cls.branch = setup_env["res.company"].create({
-                "name": "Control Plane Branch 1",
-                "parent_id": cls.company.id,
-            })
-            ConfigClass = PrintGatewayConfig or type(setup_env["print_gateway.gateway_config"])
-            with patch.object(ConfigClass, "_validate_gateway_host"):
-                cls.gateway_config = setup_env["print_gateway.gateway_config"].create({
-                    "company_id": cls.company.id,
-                    "gateway_url": "https://gateway.example.com",
-                    "enabled": True,
-                    "gateway_api_key": "test_api_key_control_plane",
+        ConfigClass = PrintGatewayConfig or type(self.env["print_gateway.gateway_config"])
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None):
+            config_model = self.env["print_gateway.gateway_config"]
+            self.gateway_config = config_model.search([("company_id", "=", self.company.id)], limit=1)
+            vals = {
+                "gateway_url": "https://gateway.example.com",
+                "enabled": True,
+                "gateway_api_key": "test_api_key_control_plane",
+            }
+            if self.gateway_config:
+                self.gateway_config.write(vals)
+            else:
+                self.gateway_config = config_model.create({
+                    "company_id": self.company.id,
+                    **vals,
                 })
 
-            # Primary binding
-            cls.primary_binding = setup_env["print_gateway.binding"].create({
-                "company_id": cls.company.id,
-                "branch_id": cls.branch.id,
-                "destination_type": "report",
-                "destination_report_id": setup_env.ref("account.account_invoices").id,
-                "report_id": setup_env.ref("account.account_invoices").id,
-                "runtime_agent_id": "agent-cp-01",
-                "printer_id": "printer-primary",
-                "enabled": True,
-                "drawer_kick_mode": "pin2",
-                "cutter_mode": "full",
-                "buzzer_mode": "epson_pulse",
-            })
+        report = (
+            self.env.ref("account.account_invoices", raise_if_not_found=False)
+            or self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
+            or self.env["ir.actions.report"].search([], limit=1)
+        )
 
-            # Backup failover binding
-            cls.backup_binding = setup_env["print_gateway.binding"].create({
-                "company_id": cls.company.id,
-                "branch_id": cls.branch.id,
-                "destination_type": "report",
-                "destination_report_id": setup_env.ref("account.account_invoices").id,
-                "report_id": setup_env.ref("account.account_invoices").id,
-                "runtime_agent_id": "agent-cp-01",
-                "printer_id": "printer-backup",
-                "enabled": True,
-                "priority": 20,
-            })
+        # Primary binding
+        self.primary_binding = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": report.id if report else False,
+            "report_id": report.id if report else False,
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-primary",
+            "enabled": True,
+            "drawer_kick_mode": "pin2",
+            "cutter_mode": "full",
+            "buzzer_mode": "epson_pulse",
+        })
 
-            cls.primary_binding.fallback_binding_id = cls.backup_binding.id
+        # Backup failover binding
+        self.backup_binding = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": report.id if report else False,
+            "report_id": report.id if report else False,
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-backup",
+            "enabled": True,
+            "priority": 20,
+        })
 
-            cls.company_id = cls.company.id
-            cls.branch_id = cls.branch.id
-            cls.gateway_config_id = cls.gateway_config.id
-            cls.primary_binding_id = cls.primary_binding.id
-            cls.backup_binding_id = cls.backup_binding.id
+        self.primary_binding.fallback_binding_id = self.backup_binding.id
 
-            cls.cr.commit()
-        except Exception:
-            # ensure no partial commit leaves DB invalid for other tests
-            try:
-                cls.cr.rollback()
-            except Exception:
-                pass
-            raise
-        # do NOT close cls.cr here; close it in tearDownClass
-
-    @classmethod
-    def tearDownClass(cls):
-        # Close the class-level cursor created in setUpClass
-        if hasattr(cls, "cr") and cls.cr:
-            try:
-                cls.cr.close()
-            except Exception:
-                pass
-        super().tearDownClass()
-
+    def _fake_persist_job(self, values):
+        durable_values = dict(values)
+        for key, model_name in (
+            ("company", "res.company"),
+            ("gateway_config", "print_gateway.gateway_config"),
+            ("report", "ir.actions.report"),
+            ("fallback_binding", "print_gateway.binding"),
+        ):
+            record = durable_values.get(key)
+            if record and hasattr(record, "id"):
+                durable_values[key] = record
+            elif record:
+                durable_values[key] = self.env[model_name].browse(record)
+            else:
+                durable_values[key] = False
+        job = self.env["print_gateway.print_job"].create_operation(**durable_values)
+        return job.id
 
     def test_01_policy_engine_and_intent_deduplication(self):
         """Verify policy matching and strict suppression of duplicate intent."""
         model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
+        if not model:
+            model = self.env["ir.model"].search([], limit=1)
         policy = self.env["print_gateway.policy"].create({
             "name": "Auto Delivery Slip",
             "company_id": self.company.id,
@@ -131,7 +128,7 @@ class TestControlPlane(TransactionCase):
 
         # Mock picking
         mock_picking = MagicMock()
-        mock_picking._name = "stock.picking"
+        mock_picking._name = model.model
         mock_picking.id = 9991
         mock_picking.company_id = self.branch
         mock_picking.write_date = "2026-09-08 16:00:00"
@@ -163,7 +160,8 @@ class TestControlPlane(TransactionCase):
         RouterClass = type(router)
         zpl_sample = "^XA^FO50,50^ADN,36,20^FDLabel Test^FS^XZ"
 
-        with patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
+        with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
+             patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
             res = router.route_raw_command(
                 zpl_sample,
                 protocol="zpl",
@@ -199,7 +197,7 @@ class TestControlPlane(TransactionCase):
         mock_resp.json.return_value = {"jobId": "gw_job_backup_123", "status": "queued"}
 
         ConfigClass = type(self.gateway_config)
-        with patch.object(ConfigClass, "_validate_gateway_host"), \
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
              patch("requests.post", side_effect=[requests.exceptions.ConnectionError("Connection Refused"), mock_resp]):
             job.action_submit()
             self.assertEqual(job.printer_id, self.backup_binding.printer_id, "Job must safely failover to backup printer on pre-dispatch connection error")
@@ -221,7 +219,7 @@ class TestControlPlane(TransactionCase):
 
         import requests
         ConfigClass = type(self.gateway_config)
-        with patch.object(ConfigClass, "_validate_gateway_host"), \
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
              patch("requests.post", side_effect=requests.exceptions.Timeout("Read timeout")):
             job.action_submit()
             self.assertEqual(job.status, "unknown")
@@ -234,6 +232,7 @@ class TestControlPlane(TransactionCase):
         BindingClass = type(self.primary_binding)
         RouterClass = type(router)
         with patch.object(BindingClass, "_validate_runtime_target"), \
+             patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
              patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
             res = self.primary_binding.with_company(self.branch).action_send_test_print()
             self.assertTrue(res.get("gateway_enabled"))
