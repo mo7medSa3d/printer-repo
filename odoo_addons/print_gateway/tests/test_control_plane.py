@@ -374,6 +374,10 @@ class TestControlPlane(TransactionCase):
         mock_picking._fields = {}
         with self.assertRaises(ValidationError):
             policy.render_raw_template(mock_picking)
+            
+        policy.raw_template = "Hello {name.__class__}"
+        with self.assertRaisesRegex(ValidationError, "forbidden in raw print templates"):
+            policy.render_raw_template(mock_picking)
 
     def test_10_protocol_mismatch_rejection(self):
         """Verify routing raw command with mismatched protocol raises ValidationError."""

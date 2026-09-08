@@ -505,11 +505,12 @@ class PrintGatewayBinding(models.Model):
                 branch=branch,
             )
         except Exception as exc:
+            _logger.warning("Failed to locate silent binding: %s", exc)
             return {
                 "has_binding": True,
                 "success": False,
                 "dispatched": False,
-                "error": str(exc),
+                "error": "Failed to evaluate print routing.",
                 "fail_closed": True,
             }
 
@@ -529,11 +530,12 @@ class PrintGatewayBinding(models.Model):
                 "message": route.get("message") or _("Sent silently to printer."),
             }
         except Exception as exc:
+            _logger.warning("Failed to execute silent print route: %s", exc)
             return {
                 "dispatched": False,
                 "success": False,
                 "has_binding": True,
-                "error": str(exc),
+                "error": "An error occurred during print dispatch.",
                 "fail_closed": True,
             }
 

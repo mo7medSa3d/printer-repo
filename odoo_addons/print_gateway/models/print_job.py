@@ -183,10 +183,13 @@ class PrintGatewayJob(models.Model):
 
     def _persist_state(self, values):
         self.ensure_one()
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             env["print_gateway.print_job"].browse(self.id).write(values)
             cr.commit()
+        finally:
+            cr.close()
 
     def _submission_body(self):
         self.ensure_one()
@@ -194,8 +197,7 @@ class PrintGatewayJob(models.Model):
             payload = json.loads(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValidationError(_("Stored print payload is corrupted.")) from exc
-        if isinstance(payload, dict) and payload.get("type") == "raw" and not payload.get("protocol"):
-            payload["protocol"] = self.protocol or "raw"
+        # Removed implicit protocol inference. Protocol must be provided by router.
         body = {
             "printerId": self.printer_id,
             "documentType": self.document_type,

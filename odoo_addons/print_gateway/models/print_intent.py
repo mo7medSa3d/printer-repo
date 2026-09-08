@@ -152,57 +152,59 @@ class PrintGatewayIntent(models.Model):
         """Execute network/gateway dispatch using an already acquired claim_token."""
         if not claim_token:
             return
+        cr = env.registry.cursor()
         try:
-            with env.registry.cursor() as cr:
-                new_env = api.Environment(cr, env.uid, dict(env.context))
-                intent = new_env["print_gateway.intent"].browse(intent_id).exists()
-                if not intent or intent.claim_token != claim_token:
-                    _logger.warning("Intent %s claim token mismatch before routing; skipping.", intent_id)
-                    return
-                record = new_env[res_model].browse(res_id).exists()
-                if not record:
+            new_env = api.Environment(cr, env.uid, dict(env.context))
+            intent = new_env["print_gateway.intent"].browse(intent_id).exists()
+            if not intent or intent.claim_token != claim_token:
+                _logger.warning("Intent %s claim token mismatch before routing; skipping.", intent_id)
+                return
+            record = new_env[res_model].browse(res_id).exists()
+            if not record:
+                cls._finalize_intent_state(
+                    env, intent_id, claim_token,
+                    status="skipped",
+                    last_error="Source record no longer exists",
+                )
+                return
+            router = new_env["print_gateway.print_router"]
+            try:
+                route_res = router.route_intent(intent, record)
+                if route_res and route_res.get("job_id"):
+                    cls._finalize_intent_state(
+                        env, intent_id, claim_token,
+                        status="dispatched",
+                        print_job_id=route_res["job_id"],
+                        last_error=False,
+                    )
+                elif route_res and route_res.get("status") in ("skipped", "no_action"):
                     cls._finalize_intent_state(
                         env, intent_id, claim_token,
                         status="skipped",
-                        last_error="Source record no longer exists",
                     )
-                    return
-                router = new_env["print_gateway.print_router"]
-                try:
-                    route_res = router.route_intent(intent, record)
-                    if route_res and route_res.get("job_id"):
-                        cls._finalize_intent_state(
-                            env, intent_id, claim_token,
-                            status="dispatched",
-                            print_job_id=route_res["job_id"],
-                            last_error=False,
-                        )
-                    elif route_res and route_res.get("status") in ("skipped", "no_action"):
-                        cls._finalize_intent_state(
-                            env, intent_id, claim_token,
-                            status="skipped",
-                        )
-                    else:
-                        cls._finalize_intent_state(
-                            env, intent_id, claim_token,
-                            status="dispatched",
-                            last_error=False,
-                        )
-                except Exception as exc:
-                    _logger.warning("Failed to route print intent %s for %s(%s): %s", intent.intent_key[:12], res_model, res_id, exc)
-                    next_retry = False
-                    if intent.attempts < intent.max_attempts:
-                        delay_sec = min(300, 15 * (2 ** max(0, intent.attempts - 1)))
-                        next_retry = fields.Datetime.now() + datetime.timedelta(seconds=delay_sec)
-                    target_status = "failed" if intent.attempts >= intent.max_attempts else "pending"
+                else:
                     cls._finalize_intent_state(
                         env, intent_id, claim_token,
-                        status=target_status,
-                        last_error=str(exc),
-                        next_retry_at=next_retry,
+                        status="dispatched",
+                        last_error=False,
                     )
+            except Exception as exc:
+                _logger.warning("Failed to route print intent %s for %s(%s): %s", intent.intent_key[:12], res_model, res_id, exc)
+                next_retry = False
+                if intent.attempts < intent.max_attempts:
+                    delay_sec = min(300, 15 * (2 ** max(0, intent.attempts - 1)))
+                    next_retry = fields.Datetime.now() + datetime.timedelta(seconds=delay_sec)
+                target_status = "failed" if intent.attempts >= intent.max_attempts else "pending"
+                cls._finalize_intent_state(
+                    env, intent_id, claim_token,
+                    status=target_status,
+                    last_error=str(exc),
+                    next_retry_at=next_retry,
+                )
         except Exception as exc:
             _logger.error("Error in dispatched route execution for intent %s: %s", intent_id, exc)
+        finally:
+            cr.close()
 
     @classmethod
     def _dispatch_intent_postcommit(cls, env, intent_id, res_model, res_id):

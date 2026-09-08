@@ -93,6 +93,12 @@ class PrintGatewayPolicy(models.Model):
                 values[field_name] = rel.display_name if rel else ""
                 values[f"{field_name}_id"] = rel.id if rel else ""
         try:
+            import string
+            formatter = string.Formatter()
+            for literal_text, field_name, format_spec, conversion in formatter.parse(template):
+                if field_name is not None:
+                    if "." in field_name or "[" in field_name or "__" in field_name:
+                        raise ValueError("Attribute and index access are strictly forbidden in raw print templates.")
             return template.format(**values)
         except Exception as exc:
             raise ValidationError(

@@ -178,7 +178,8 @@ class PrintGatewayRouter(models.AbstractModel):
             record = durable_values.get(key)
             durable_values[key] = record.id if record else False
 
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             for key, model_name in (
                 ("company", "res.company"),
@@ -201,12 +202,15 @@ class PrintGatewayRouter(models.AbstractModel):
             job = model.create_operation(**durable_values)
             job_id = job.id
             cr.commit()
+        finally:
+            cr.close()
         return job_id
 
     @api.model
     def _submit_durable_job(self, job_id):
         """Submit a durable job using a fresh PostgreSQL transaction."""
-        with self.env.registry.cursor() as cr:
+        cr = self.env.registry.cursor()
+        try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             job = env["print_gateway.print_job"].browse(job_id).exists()
             if not job:
@@ -220,6 +224,8 @@ class PrintGatewayRouter(models.AbstractModel):
             except Exception:
                 cr.rollback()
                 raise
+        finally:
+            cr.close()
 
     def _submit_route(
         self, *, route, payload, company, report=None, source_model=None,
@@ -391,7 +397,7 @@ class PrintGatewayRouter(models.AbstractModel):
             }
 
         # If policy specifies raw command (e.g. barcode label)
-        if getattr(policy, "action_type", False) == "raw_template" or (not policy.report_id and getattr(policy, "raw_template", False)):
+        if policy.action_type == "raw_template":
             raw_data = policy.render_raw_template(target_record)
             res = self.route_raw_command(
                 raw_data,

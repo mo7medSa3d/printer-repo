@@ -36,6 +36,16 @@ export const printJobPayloadSchema = z.object({
   if ((payload.type === "raw" || payload.type === "escpos") && looksLikePdf) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["data"], message: "PDF bytes cannot be labeled as raw/escpos; provide a real byte-stream payload or convert explicitly" });
   }
+
+  if (payload.type === "raw" && !payload.protocol) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["protocol"], message: "protocol is required for raw payloads" });
+  }
+  if ((payload.type === "pdf" || payload.type === "image") && payload.protocol) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["protocol"], message: "protocol is not applicable for pdf/image payloads" });
+  }
+  if (payload.peripherals && payload.protocol && payload.protocol !== "escpos") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["peripherals"], message: "peripherals are only supported for escpos protocol" });
+  }
 });
 
 export type PrintJobPayload = z.infer<typeof printJobPayloadSchema>;
@@ -57,5 +67,5 @@ export function buildTestPrintPayload(printerName: string, agentName: string): P
     "\x1d\x56\x01",
   ].join("");
 
-  return { type: "escpos", encoding: "base64", data: Buffer.from(lines, "binary").toString("base64") };
+  return { type: "escpos", protocol: "escpos", encoding: "base64", data: Buffer.from(lines, "binary").toString("base64") };
 }
