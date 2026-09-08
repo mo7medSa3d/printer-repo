@@ -323,7 +323,17 @@ class PrintGatewayBinding(models.Model):
         self.ensure_one()
         self._validate_runtime_target()
         router = self.env["print_gateway.print_router"]
-        return router.route_test_page(self)
+        res = router.route_test_page(self)
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Test Print Dispatched"),
+                "message": res.get("message") or _("Diagnostic test page sent to printer '%s'.") % self.printer_id,
+                "type": "success",
+                "sticky": False,
+            },
+        }
 
     def action_verify_remote_hardware(self):
         self.ensure_one()

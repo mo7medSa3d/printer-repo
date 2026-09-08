@@ -381,7 +381,16 @@ class PrintGatewayJob(models.Model):
                     job._post_source_audit(_("WARNING: Print Job #%s interrupted or ambiguous on '%s'. Manual check required.") % (job.gateway_job_id or job.id, job.printer_id))
             except (requests.RequestException, ValueError):
                 _logger.warning("Gateway status sync failed for job %s", job.idempotency_key[:8])
-        return True
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Status Synchronized"),
+                "message": _("Print job status has been synchronized with the Gateway."),
+                "type": "info",
+                "sticky": False,
+            },
+        }
 
     def action_retry(self):
         """Create a new logical print operation only from a definitely failed job.
@@ -390,6 +399,7 @@ class PrintGatewayJob(models.Model):
         is definitely not printed gets a fresh idempotency key so the new operation
         is not collapsed into the old Gateway job.
         """
+        retried_jobs = self.env["print_gateway.print_job"]
         for job in self.filtered(lambda row: row.status == "failed" and row.physical_outcome == "not_printed"):
             retry = self.create_operation(
                 company=job.company_id,
@@ -404,7 +414,18 @@ class PrintGatewayJob(models.Model):
                 idempotency_key=uuid.uuid4().hex,
             )
             retry.action_submit()
-        return True
+            retried_jobs |= retry
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Print Job Retried"),
+                "message": _("Retried %d print job(s) with new operation ID(s): %s")
+                % (len(retried_jobs), ", ".join(str(j.id) for j in retried_jobs)),
+                "type": "success",
+                "sticky": False,
+            },
+        }
 
     def action_force_reprint(self):
         """Explicitly re-issue print operation for jobs with partial delivery or unknown physical outcome.
@@ -412,6 +433,7 @@ class PrintGatewayJob(models.Model):
         This requires conscious operator action, preventing automated double printing of receipts/invoices.
         Generates a deterministic derived idempotency key: ${original_key}-reprint-${reprint_attempt_count}.
         """
+        reprinted_jobs = self.env["print_gateway.print_job"]
         for job in self.filtered(lambda row: row.status in ("partial", "unknown") or row.physical_outcome == "unknown"):
             new_count = (job.reprint_attempt_count or 0) + 1
             job.write({"reprint_attempt_count": new_count})
@@ -433,7 +455,17 @@ class PrintGatewayJob(models.Model):
                 idempotency_key=derived_key,
             )
             retry.action_submit()
-        return True
+            reprinted_jobs |= retry
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Force Reprint Dispatched"),
+                "message": _("Operator force reprint dispatched for %d job(s).") % len(reprinted_jobs),
+                "type": "warning",
+                "sticky": False,
+            },
+        }
 
     @api.model
     def cron_submit_pending(self):
