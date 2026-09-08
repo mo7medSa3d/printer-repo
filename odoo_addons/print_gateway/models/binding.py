@@ -358,19 +358,26 @@ class PrintGatewayBinding(models.Model):
                 record=records[0] if records else None,
                 branch=branch,
             )
-        except Exception:
-            binding = False
+        except Exception as exc:
+            return {
+                "has_binding": True,
+                "success": False,
+                "dispatched": False,
+                "error": str(exc),
+                "fail_closed": True,
+            }
 
         if not binding:
-            return {"dispatched": False, "has_binding": False}
+            return {"dispatched": False, "has_binding": False, "success": False}
 
         try:
             route = router.route_report(report, records)
             if route.get("native"):
-                return {"dispatched": False, "has_binding": False}
+                return {"dispatched": False, "has_binding": False, "success": False}
 
             return {
                 "dispatched": True,
+                "success": True,
                 "has_binding": True,
                 "printer_name": route.get("printer_id") or binding.printer_id,
                 "message": route.get("message") or _("Sent silently to printer."),
@@ -378,7 +385,9 @@ class PrintGatewayBinding(models.Model):
         except Exception as exc:
             return {
                 "dispatched": False,
+                "success": False,
                 "has_binding": True,
                 "error": str(exc),
+                "fail_closed": True,
             }
 

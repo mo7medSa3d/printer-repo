@@ -33,20 +33,20 @@ async function silentPrintReportHandler(action, options, env) {
             }
         );
 
-        if (res && res.dispatched) {
-            notification.add(
-                res.message || _t("Sent silently to Gateway printer: %s", res.printer_name || "Printer"),
-                { type: "success" }
-            );
-            return true; // Cancel default browser PDF dialog
-        }
-
-        if (res && res.has_binding && !res.dispatched) {
+        if (res && res.has_binding && (res.success === false || !res.dispatched)) {
             notification.add(
                 res.error || _t("Gateway print failed for bound printer. Native download cancelled."),
                 { type: "danger" }
             );
             return true; // FAIL-CLOSED: Bound printer failed, do not bypass to browser PDF
+        }
+
+        if (res && (res.dispatched || res.success)) {
+            notification.add(
+                res.message || _t("Sent silently to Gateway printer: %s", res.printer_name || "Printer"),
+                { type: "success" }
+            );
+            return true; // Cancel default browser PDF dialog
         }
     } catch (err) {
         console.warn("[print_gateway] Silent dispatch error:", err);

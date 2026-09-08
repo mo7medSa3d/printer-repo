@@ -105,8 +105,9 @@ describe("Odoo addon static contracts", () => {
     expect(binding).toContain("Odoo Company must be a root Company, not a Branch.");
 
     // Fail-Closed: binding pre-resolution and interceptor handling
-    expect(binding).toContain("has_binding");
-    expect(interceptor).toContain("res.has_binding && !res.dispatched");
+    expect(binding).toContain('"fail_closed": True');
+    expect(binding).toContain('"has_binding": True');
+    expect(interceptor).toContain("res.has_binding && (res.success === false || !res.dispatched)");
     expect(interceptor).toContain("return true; // FAIL-CLOSED");
     expect(interceptor).toContain("return false; // Fallback to standard Odoo report action only when no binding exists");
   });
