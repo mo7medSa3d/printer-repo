@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """Native Odoo print bindings: Odoo context -> Gateway runtime printer."""
 
+import logging
+
 from psycopg2 import IntegrityError
 import requests
 
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
+
+_logger = logging.getLogger(__name__)
 
 
 DESTINATION_MODELS = [
@@ -120,11 +124,14 @@ class PrintGatewayBinding(models.Model):
 
     def get_peripheral_payload(self):
         self.ensure_one()
-        return {
-            "drawer": self.drawer_kick_mode if self.drawer_kick_mode != "none" else "none",
-            "cutter": self.cutter_mode if self.cutter_mode != "none" else "none",
-            "buzzer": self.buzzer_mode if self.buzzer_mode != "none" else "none",
-        }
+        payload = {}
+        if self.drawer_kick_mode and self.drawer_kick_mode != "none":
+            payload["drawer"] = self.drawer_kick_mode
+        if self.cutter_mode and self.cutter_mode != "none":
+            payload["cutter"] = self.cutter_mode
+        if self.buzzer_mode and self.buzzer_mode != "none":
+            payload["buzzer"] = self.buzzer_mode
+        return payload
 
     _priority_unique = models.Constraint(
         "UNIQUE(company_id, branch_id, destination_ref, document_type, priority)",

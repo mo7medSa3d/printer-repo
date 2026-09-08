@@ -95,7 +95,10 @@ class PrintGatewayJob(models.Model):
                         if pt in ("raw", "escpos"):
                             vals["payload_type"] = "raw_cmd"
                             if "protocol" not in vals:
-                                vals["protocol"] = p.get("protocol") or (pt if pt == "escpos" else "raw")
+                                proto = p.get("protocol") if isinstance(p, dict) else None
+                                if pt == "escpos" and not proto:
+                                    proto = "escpos"
+                                vals["protocol"] = proto or False
                         elif pt in ("image", "jpeg", "raster_jpeg"):
                             vals["payload_type"] = "raster_jpeg"
                             vals["protocol"] = False
@@ -196,7 +199,11 @@ class PrintGatewayJob(models.Model):
                 raise ValidationError(_("PDF and Raster payloads cannot specify a printer protocol."))
             effective_protocol = False
         else:
-            effective_protocol = protocol or (parsed_payload.get("protocol") if isinstance(parsed_payload, dict) else None) or "raw"
+            effective_protocol = protocol or (parsed_payload.get("protocol") if isinstance(parsed_payload, dict) else None)
+            if not effective_protocol and isinstance(parsed_payload, dict) and parsed_payload.get("type") == "escpos":
+                effective_protocol = "escpos"
+            if not effective_protocol:
+                raise ValidationError(_("Native command payloads require an explicit printer protocol."))
 
         key = (idempotency_key or uuid.uuid4().hex).strip()
 
@@ -294,8 +301,20 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Stored print payload exceeds the 8 MiB safety limit."))
 
         peripherals = payload.get("peripherals")
-        if peripherals is not None and not isinstance(peripherals, dict):
-            raise ValidationError(_("Payload peripherals must be a dictionary."))
+        if peripherals is not None:
+            if not isinstance(peripherals, dict):
+                raise ValidationError(_("Payload peripherals must be a dictionary."))
+            active_periph = {
+                k: v for k, v in peripherals.items()
+                if v and v != "none"
+            }
+            if not active_periph:
+                payload.pop("peripherals", None)
+            else:
+                is_escpos = ptype == "escpos" or (ptype == "raw" and (payload.get("protocol") == "escpos" or self.protocol == "escpos"))
+                if not is_escpos:
+                    raise ValidationError(_("Peripherals are only supported for ESC/POS protocol."))
+                payload["peripherals"] = active_periph
 
     def _submission_body(self):
         self.ensure_one()
@@ -387,8 +406,11 @@ class PrintGatewayJob(models.Model):
                             or (not current_binding.branch_id and current_binding.company_id == (job.company_id.parent_id or job.company_id))
                         )
                         protocol_compatible = True
-                        if job.payload_type == "raw_cmd" and job.protocol:
-                            fallback_proto = getattr(current_binding, "printer_protocol", False)
+                        fallback_proto = getattr(current_binding, "printer_protocol", False)
+                        if job.payload_type in ("pdf", "raster_jpeg"):
+                            if fallback_proto in ("zpl", "tspl"):
+                                protocol_compatible = False
+                        elif job.payload_type == "raw_cmd" and job.protocol:
                             protocol_compatible = (
                                 not fallback_proto
                                 or fallback_proto == "raw"

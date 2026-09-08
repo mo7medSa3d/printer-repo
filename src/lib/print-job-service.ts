@@ -81,6 +81,10 @@ async function insertQueuedJobAtomically({
     if (rateLimitKeyId) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
     }
+    if (idempotencyKey) {
+      const lockKey = rateLimitKeyId ? `print_jobs:idempotency:${rateLimitKeyId}:${idempotencyKey}` : `print_jobs:idempotency:internal:${idempotencyKey}`;
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    }
 
     if (idempotencyKey) {
       const existing = rateLimitKeyId

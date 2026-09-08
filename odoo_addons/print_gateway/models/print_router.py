@@ -237,7 +237,17 @@ class PrintGatewayRouter(models.AbstractModel):
         self._assert_current_company(company)
         binding = route.get("binding")
         if binding and isinstance(payload, dict):
-            payload["peripherals"] = binding.get_peripheral_payload()
+            ptype = str(payload.get("type") or "").strip().lower()
+            proto = str(payload.get("protocol") or "").strip().lower()
+            is_escpos = ptype == "escpos" or (ptype == "raw" and proto == "escpos")
+            if is_escpos:
+                periph = binding.get_peripheral_payload()
+                if periph:
+                    payload["peripherals"] = periph
+                else:
+                    payload.pop("peripherals", None)
+            else:
+                payload.pop("peripherals", None)
         job_id = self._persist_durable_job({
             "company": company,
 

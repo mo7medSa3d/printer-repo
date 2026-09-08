@@ -209,7 +209,7 @@ class TestControlPlane(TransactionCase):
             "destination": "Primary Destination",
             "document_type": "invoice",
             "status": "queued",
-            "payload": json.dumps({"type": "raw", "data": "dGVzdA=="}),
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
             "idempotency_key": "test_pre_dispatch_failover_key_01",
             "fallback_binding_id": self.backup_binding.id,
         })
@@ -236,7 +236,7 @@ class TestControlPlane(TransactionCase):
             "destination": "Primary Destination",
             "document_type": "invoice",
             "status": "queued",
-            "payload": json.dumps({"type": "raw", "data": "dGVzdA=="}),
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
             "idempotency_key": "test_post_dispatch_timeout_key_01",
             "fallback_binding_id": self.backup_binding.id,
         })
@@ -309,7 +309,7 @@ class TestControlPlane(TransactionCase):
             "destination": "Cycle Destination",
             "document_type": "invoice",
             "status": "queued",
-            "payload": json.dumps({"type": "raw", "data": "dGVzdA=="}),
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
             "idempotency_key": "test_cycle_safety_key_01",
             "fallback_binding_id": self.backup_binding.id,
         })
@@ -725,4 +725,112 @@ class TestControlPlane(TransactionCase):
                 "binding_id": self.zpl_binding.id,
                 "domain_filter": "[('non_existent_field_on_picking', '=', True)]",
             })
+
+    def test_18_binding_dispatch_report_action_logger_exception(self):
+        """Verify dispatch_report_action exception path logs warning and fails closed without NameError."""
+        report = self.primary_binding.report_id
+        if not report:
+            self.skipTest("No report fixture available")
+        BindingClass = type(self.primary_binding)
+        with patch.object(BindingClass, "find_for", side_effect=RuntimeError("Simulated database failure")), \
+             patch("odoo.addons.print_gateway.models.binding._logger.warning") as mock_warn:
+            res = self.env["print_gateway.binding"].dispatch_report_action(
+                report_name=report.report_name,
+                res_ids=[1],
+            )
+            self.assertFalse(res.get("dispatched"))
+            self.assertFalse(res.get("success"))
+            self.assertTrue(res.get("fail_closed"))
+            mock_warn.assert_called_once()
+
+    def test_19_peripherals_validation(self):
+        """Verify peripheral validation: PDF/raster reject active peripherals, normalize none."""
+        job_pdf = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "PDF Dest",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({
+                "type": "pdf",
+                "encoding": "base64",
+                "data": "JVBERi0xLjQK",
+                "peripherals": {"drawer": "none", "cutter": "none", "buzzer": "none"},
+            }),
+            "idempotency_key": "test_periph_pdf_none_01",
+        })
+        body = job_pdf._submission_body()
+        self.assertNotIn("peripherals", body["payload"], "Empty/none peripherals must be normalized away for PDF")
+
+        job_pdf_active = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "PDF Dest",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({
+                "type": "pdf",
+                "encoding": "base64",
+                "data": "JVBERi0xLjQK",
+                "peripherals": {"drawer": "pin2"},
+            }),
+            "idempotency_key": "test_periph_pdf_active_01",
+        })
+        with self.assertRaises(ValidationError):
+            job_pdf_active._submission_body()
+
+    def test_20_report_download_fail_closed_on_config_error(self):
+        """Verify report_download fails closed (502) if _gateway_config raises or is invalid."""
+        from odoo.addons.print_gateway.controllers.report_download_override import PrintGatewayReportController
+        ctrl = PrintGatewayReportController()
+        req_data = json.dumps(["/report/pdf/test.report/1", "qweb-pdf"])
+        mock_req = MagicMock()
+        mock_req.env = self.env
+        mock_req.make_response = MagicMock(side_effect=lambda content, headers, status: {"status": status, "content": json.loads(content)})
+        RouterClass = type(self.env["print_gateway.print_router"])
+        with patch("odoo.addons.print_gateway.controllers.report_download_override.request", mock_req), \
+             patch.object(RouterClass, "_gateway_config", side_effect=RuntimeError("Gateway unreachable")):
+            resp = ctrl.report_download(req_data)
+            self.assertEqual(resp.get("status"), 502)
+            self.assertEqual(resp.get("content", {}).get("error"), "gateway_dispatch_failed")
+
+    def test_21_raw_payload_requires_explicit_protocol(self):
+        """Verify raw payload creation strictly requires explicit printer protocol without fallback inference."""
+        with self.assertRaises(ValidationError):
+            self.env["print_gateway.print_job"].create({
+                "company_id": self.branch.id,
+                "gateway_config_id": self.gateway_config.id,
+                "printer_id": self.primary_binding.printer_id,
+                "destination": "Raw Dest",
+                "document_type": "label",
+                "status": "queued",
+                "payload": json.dumps({"type": "raw", "data": "dGVzdA=="}),
+                "idempotency_key": "test_no_proto_key_01",
+            })
+
+    def test_22_queued_to_success_idempotent_replay(self):
+        """Verify action_submit safely records terminal success when Gateway returns replayed idempotent job."""
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Replay Dest",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_idempotent_replay_success_01",
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"jobId": "gw_replayed_123", "status": "success"}
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", return_value=mock_resp):
+            job.action_submit()
+            self.assertEqual(job.status, "success")
+            self.assertEqual(job.physical_outcome, "printed")
+            self.assertEqual(job.gateway_job_id, "gw_replayed_123")
+
 
