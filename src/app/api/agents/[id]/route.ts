@@ -5,7 +5,7 @@ import { validateManager } from "../../../../lib/manager-auth";
 import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { eq, count, desc } from "drizzle-orm";
 import { z } from "zod";
-import { generatePairingCode } from "../../../../lib/agent-auth";
+import { generatePairingCode, hashPairingCode } from "../../../../lib/agent-auth";
 import { closeAgentSockets, publishAgentSessionClose } from "../../../../server/ws";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const agentPrinters = await db.query.printers.findMany({ where: eq(printers.agentId, id), orderBy: [desc(printers.createdAt)] });
   const [jobs] = await db.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, id));
-  const { secret: _secret, pairingCode: _pc, pairingCodeExpiresAt: _exp, ...safe } = agent as Record<string, unknown>;
+  const { secret: _secret, pairingCodeHash: _pch, pairingCode: _pc, pairingCodeExpiresAt: _exp, ...safe } = agent as Record<string, unknown>;
   return NextResponse.json({ agent: safe, printers: agentPrinters, jobCount: jobs?.c ?? 0 });
 }
 
@@ -37,8 +37,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const now = new Date();
   const reenable = agent.lifecycle === "disabled" && next === "active";
   const pairingCode = reenable ? generatePairingCode() : null;
+  const pairingCodeHash = pairingCode ? hashPairingCode(pairingCode) : null;
   await db.transaction(async (tx) => {
-    await tx.update(agents).set({ lifecycle: next, secret: null, pairingCode, pairingCodeExpiresAt: pairingCode ? new Date(now.getTime() + 10 * 60 * 1000) : null, status: "offline", updatedAt: now }).where(eq(agents.id, id));
+    await tx.update(agents).set({ lifecycle: next, secret: null, pairingCodeHash, pairingCodeExpiresAt: pairingCode ? new Date(now.getTime() + 10 * 60 * 1000) : null, status: "offline", updatedAt: now }).where(eq(agents.id, id));
     if (next !== "active") {
       await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(eq(printers.agentId, id));
     }

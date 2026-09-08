@@ -120,3 +120,11 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("runtime_agent_id", source)
         self.assertIn("New branch bindings do not use this field as their source of truth.", source)
         self.assertNotIn("printer_id", source)
+
+    def test_binding_model_enforces_root_company_invariant(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        self.assertIn('@api.constrains("company_id", "branch_id")', source)
+        self.assertIn("def _check_company_hierarchy(self):", source)
+        self.assertIn("record.company_id.parent_id", source)
+        self.assertIn("Odoo Company must be a root Company, not a Branch.", source)
+        self.assertIn("Odoo Branch must belong directly to the selected Odoo Company.", source)

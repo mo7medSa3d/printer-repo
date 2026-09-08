@@ -56,10 +56,20 @@ class TestBranchRuntimeBinding(TransactionCase):
         vals.update(extra)
         return vals
 
+    def test_non_root_company_is_rejected(self):
+        record = self.env["print_gateway.binding"].new({
+            "company_id": self.branch.id,
+            "branch_id": False,
+            "runtime_agent_id": "agent-a",
+            "printer_id": "printer-a",
+        })
+        with self.assertRaises(ValidationError):
+            record._check_company_hierarchy()
+
     def test_branch_from_another_company_is_rejected(self):
         record = self.env["print_gateway.binding"].new({"company_id": self.company.id, "branch_id": self.other_branch.id, "runtime_agent_id": "agent-a", "printer_id": "printer-a"})
         with self.assertRaises(ValidationError):
-            record._check_runtime_scope()
+            record._check_company_hierarchy()
 
     def test_unauthorized_company_is_rejected(self):
         restricted = self.env(context=dict(self.env.context, allowed_company_ids=[self.company.id]))

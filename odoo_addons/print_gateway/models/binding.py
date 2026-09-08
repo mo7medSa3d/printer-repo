@@ -213,16 +213,22 @@ class PrintGatewayBinding(models.Model):
             raise ValidationError(_("Direct inventory/warehouse operations require a label or thermal printer."))
 
 
+    @api.constrains("company_id", "branch_id")
+    def _check_company_hierarchy(self):
+        for record in self:
+            if record.company_id.parent_id:
+                raise ValidationError(_("Odoo Company must be a root Company, not a Branch."))
+            if record.branch_id and record.branch_id.parent_id != record.company_id:
+                raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
+
     @api.constrains("company_id", "branch_id", "runtime_agent_id", "printer_id")
     def _check_runtime_scope(self):
         for record in self:
             if record.company_id not in self.env.companies:
                 raise ValidationError(_("The selected Odoo Company is not available to the current user."))
             if record.branch_id:
-                if record.company_id.parent_id:
-                    raise ValidationError(_("Odoo Company must be a parent Company, not a Branch."))
-                if record.branch_id not in self.env.companies or record.branch_id.parent_id != record.company_id:
-                    raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
+                if record.branch_id not in self.env.companies:
+                    raise ValidationError(_("Odoo Branch is not available to the current user."))
                 if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
                     raise ValidationError(_("A Gateway Runtime Agent is required for a branch binding."))
                 record._validate_runtime_target()
@@ -333,17 +339,46 @@ class PrintGatewayBinding(models.Model):
         context = dict(context or self.env.context)
         report = self.env["ir.actions.report"].search([("report_name", "=", report_name)], limit=1)
         if not report:
-            return {"dispatched": False}
+            return {"dispatched": False, "has_binding": False}
 
         records = self.env[report.model].browse(res_ids or []).exists()
         router = self.env["print_gateway.print_router"]
-        route = router.route_report(report, records)
-        if route.get("native"):
-            return {"dispatched": False}
+        config = router._gateway_config(self.env.company)
+        if not config:
+            return {"dispatched": False, "has_binding": False}
 
-        return {
-            "dispatched": True,
-            "printer_name": route.get("printer_id"),
-            "message": route.get("message") or _("Sent silently to printer."),
-        }
+        try:
+            gateway_company, branch = router._binding_scope(self.env.company)
+            dtype = router._document_type(report=report, record=records[0] if records else None)
+            destination = router.destination_for(report=report, record=records[0] if records else None)
+            binding = self.find_for(
+                gateway_company,
+                dtype,
+                report=report,
+                record=records[0] if records else None,
+                branch=branch,
+            )
+        except Exception:
+            binding = False
+
+        if not binding:
+            return {"dispatched": False, "has_binding": False}
+
+        try:
+            route = router.route_report(report, records)
+            if route.get("native"):
+                return {"dispatched": False, "has_binding": False}
+
+            return {
+                "dispatched": True,
+                "has_binding": True,
+                "printer_name": route.get("printer_id") or binding.printer_id,
+                "message": route.get("message") or _("Sent silently to printer."),
+            }
+        except Exception as exc:
+            return {
+                "dispatched": False,
+                "has_binding": True,
+                "error": str(exc),
+            }
 

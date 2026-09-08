@@ -93,4 +93,21 @@ describe("Odoo addon static contracts", () => {
     expect(jobs).toContain('"idempotencyKey": self.idempotency_key');
     expect(jobs).not.toContain("pcl");
   });
+
+  it("enforces root-company invariant and fail-closed report interceptor", () => {
+    const binding = read("models/binding.py");
+    const interceptor = read("static/src/js/report_interceptor.js");
+
+    // Invariant: Company must be root and branch must belong to company
+    expect(binding).toContain('@api.constrains("company_id", "branch_id")');
+    expect(binding).toContain("def _check_company_hierarchy");
+    expect(binding).toContain("record.company_id.parent_id");
+    expect(binding).toContain("Odoo Company must be a root Company, not a Branch.");
+
+    // Fail-Closed: binding pre-resolution and interceptor handling
+    expect(binding).toContain("has_binding");
+    expect(interceptor).toContain("res.has_binding && !res.dispatched");
+    expect(interceptor).toContain("return true; // FAIL-CLOSED");
+    expect(interceptor).toContain("return false; // Fallback to standard Odoo report action only when no binding exists");
+  });
 });

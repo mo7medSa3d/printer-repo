@@ -45,7 +45,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0012_runtime_state_checks.sql", "0013_runtime_state_constraint_scope_fix.sql", "0014_discovery_state_checks.sql",
       "0015_metrics_and_agent_notifications.sql", "0016_print_job_rate_limits.sql", "0017_notify_requeued_jobs.sql",
       "0018_global_print_job_idempotency.sql", "0019_drop_legacy_print_destination_fk.sql", "0020_remove_gateway_business_ownership.sql",
-      "0021_scope_print_jobs_to_api_key.sql",
+      "0021_scope_print_jobs_to_api_key.sql", "0022_pairing_code_hash.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);

@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from "vitest";
 import { POST as registerPOST } from "../src/app/api/agent/register/route";
+import { hashPairingCode } from "../src/lib/agent-auth";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, closePool, pool } from "./helpers/pg";
 
 const suite = describe.skipIf(!hasTestDatabase);
@@ -26,8 +27,8 @@ suite("agent registration contract", () => {
     const f = await seedFixture();
     const pairingCode = "AB22CD";
     await pool().query(
-      `UPDATE agents SET pairing_code = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
-      [pairingCode, f.agentId],
+      `UPDATE agents SET pairing_code_hash = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
+      [hashPairingCode(pairingCode), f.agentId],
     );
 
     const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
@@ -43,10 +44,10 @@ suite("agent registration contract", () => {
     expect(body.branchId).toBeUndefined();
 
     const row = (await pool().query(
-      `SELECT pairing_code, secret, status, metadata FROM agents WHERE id = $1`,
+      `SELECT pairing_code_hash, secret, status, metadata FROM agents WHERE id = $1`,
       [f.agentId],
     )).rows[0];
-    expect(row.pairing_code).toBeNull();
+    expect(row.pairing_code_hash).toBeNull();
     expect(row.secret).toBeTruthy();
     expect(row.secret).not.toBe(body.secret);
     expect(row.status).toBe("online");

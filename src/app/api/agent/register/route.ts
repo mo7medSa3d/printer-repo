@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents } from "../../../../db/schema";
 import { and, eq, gt } from "drizzle-orm";
-import { generateSecret, hashSecret, isValidPairingCode } from "../../../../lib/agent-auth";
+import { generateSecret, hashPairingCode, hashSecret, isValidPairingCode } from "../../../../lib/agent-auth";
 import {
   clientIpFrom,
   inspectPairingRateLimit,
@@ -37,6 +37,7 @@ export async function POST(req: Request) {
     }
 
     const normalizedCode = parsed.data.pairingCode.trim().toUpperCase();
+    const hashedCode = hashPairingCode(normalizedCode);
     const ip = clientIpFrom(req);
 
     try {
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
     }
 
     const conditions = [
-      eq(agents.pairingCode, normalizedCode),
+      eq(agents.pairingCodeHash, hashedCode),
       gt(agents.pairingCodeExpiresAt, new Date()),
       eq(agents.lifecycle, "active"),
     ];
@@ -66,7 +67,7 @@ export async function POST(req: Request) {
     const secret = generateSecret();
     const now = new Date();
     const updated = await db.update(agents).set({
-      pairingCode: null,
+      pairingCodeHash: null,
       pairingCodeExpiresAt: null,
       secret: hashSecret(secret),
       status: "online",
@@ -75,7 +76,7 @@ export async function POST(req: Request) {
       updatedAt: now,
     }).where(and(
       eq(agents.id, agent.id),
-      eq(agents.pairingCode, normalizedCode),
+      eq(agents.pairingCodeHash, hashedCode),
       eq(agents.lifecycle, "active"),
       gt(agents.pairingCodeExpiresAt, now),
     )).returning({ id: agents.id });

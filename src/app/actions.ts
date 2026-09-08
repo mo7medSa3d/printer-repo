@@ -6,7 +6,7 @@ import { eq, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
-import { generatePairingCode } from "../lib/agent-auth";
+import { generatePairingCode, hashPairingCode } from "../lib/agent-auth";
 import { buildTestPrintPayload } from "../lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../lib/manager-auth";
 import { createPrintJobForPrinter } from "../lib/print-job-service";
@@ -25,7 +25,8 @@ export async function createAgent(name: string) {
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
   await db.insert(agents).values({
-    id, name: name.trim(), pairingCode,
+    id, name: name.trim(),
+    pairingCodeHash: hashPairingCode(pairingCode),
     pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 10),
     status: "offline", lifecycle: "active",
   });
@@ -93,9 +94,11 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
   if (!canTransitionLifecycle(agent.lifecycle, lifecycle)) throw new Error(`invalid lifecycle transition: ${agent.lifecycle} -> ${lifecycle}`);
   const reenable = agent.lifecycle === "disabled" && lifecycle === "active";
   const pairingCode = reenable ? generatePairingCode() : null;
+  const pairingCodeHash = pairingCode ? hashPairingCode(pairingCode) : null;
   await db.transaction(async (tx) => {
     await tx.update(agents).set({
-      lifecycle, secret: null, pairingCode,
+      lifecycle, secret: null,
+      pairingCodeHash,
       pairingCodeExpiresAt: pairingCode ? new Date(Date.now() + 1000 * 60 * 10) : null,
       status: "offline", updatedAt: new Date(),
     }).where(eq(agents.id, id));

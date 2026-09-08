@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  pairingCode: text("pairing_code"),
+  pairingCodeHash: text("pairing_code_hash"),
   pairingCodeExpiresAt: timestamp("pairing_code_expires_at"),
   secret: text("secret"),
   status: text("status").notNull().default("offline"),

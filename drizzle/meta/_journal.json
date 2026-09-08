@@ -23,6 +23,7 @@
     {"idx":18,"version":"7","when":1788739200000,"tag":"0018_global_print_job_idempotency","breakpoints":false},
     {"idx":19,"version":"7","when":1788739200001,"tag":"0019_drop_legacy_print_destination_fk","breakpoints":false},
     {"idx":20,"version":"7","when":1788739200002,"tag":"0020_remove_gateway_business_ownership","breakpoints":false},
-    {"idx":21,"version":"7","when":1788739200003,"tag":"0021_scope_print_jobs_to_api_key","breakpoints":false}
+    {"idx":21,"version":"7","when":1788739200003,"tag":"0021_scope_print_jobs_to_api_key","breakpoints":false},
+    {"idx":22,"version":"7","when":1788739200004,"tag":"0022_pairing_code_hash","breakpoints":false}
   ]
 }

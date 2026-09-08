@@ -101,38 +101,49 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	}
 	defer procEndPagePrinter.Call(uintptr(hPrinter))
 
+	type writeResult struct {
+		ret          uintptr
+		bytesWritten uint32
+		err          error
+	}
+
 	written := 0
 	for written < len(data) {
+		chunk := data[written:]
+		resChan := make(chan writeResult, 1)
+
+		go func(buf []byte) {
+			var bw uint32
+			r, _, e := procWritePrinter.Call(
+				uintptr(hPrinter),
+				uintptr(unsafe.Pointer(&buf[0])),
+				uintptr(len(buf)),
+				uintptr(unsafe.Pointer(&bw)),
+			)
+			resChan <- writeResult{ret: r, bytesWritten: bw, err: e}
+		}(chunk)
+
 		select {
 		case <-ctx.Done():
 			if written > 0 {
 				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 			}
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
-		default:
-		}
-
-		var bytesWritten uint32
-		chunk := data[written:]
-		ret, _, err = procWritePrinter.Call(
-			uintptr(hPrinter),
-			uintptr(unsafe.Pointer(&chunk[0])),
-			uintptr(len(chunk)),
-			uintptr(unsafe.Pointer(&bytesWritten)),
-		)
-		if ret == 0 {
-			if written > 0 {
-				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), err)
+		case res := <-resChan:
+			if res.ret == 0 {
+				if written > 0 {
+					return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), res.err)
+				}
+				return fmt.Errorf("WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), res.err)
 			}
-			return fmt.Errorf("WritePrinter(%q) failed after %d/%d bytes: %w", p.SpoolerName, written, len(data), err)
-		}
-		if bytesWritten == 0 {
-			if written > 0 {
-				return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) wrote 0 bytes after %d/%d bytes", p.SpoolerName, written, len(data))
+			if res.bytesWritten == 0 {
+				if written > 0 {
+					return fmt.Errorf("UNKNOWN_PARTIAL_DELIVERY: WritePrinter(%q) wrote 0 bytes after %d/%d bytes", p.SpoolerName, written, len(data))
+				}
+				return fmt.Errorf("WritePrinter(%q) wrote 0 bytes", p.SpoolerName)
 			}
-			return fmt.Errorf("WritePrinter(%q) wrote 0 bytes", p.SpoolerName)
+			written += int(res.bytesWritten)
 		}
-		written += int(bytesWritten)
 	}
 
 	log.Printf("Spooler printed %d bytes to %s (job %d)", written, p.SpoolerName, jobID)

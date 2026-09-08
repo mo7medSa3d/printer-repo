@@ -48,9 +48,10 @@ describe("architecture hardening", () => {
   it("uses pairing code as the registration credential without Odoo business ownership", () => {
     const src = readFileSync("src/app/api/agent/register/route.ts", "utf8");
     expect(src).toContain("pairingCode");
+    expect(src).toContain("hashPairingCode");
     expect(src).toContain("agentId: z.string().trim().min(1).max(120).optional()");
     expect(src).not.toContain("branchId");
-    expect(src).toContain("eq(agents.pairingCode, normalizedCode)");
+    expect(src).toContain("eq(agents.pairingCodeHash, hashedCode)");
     expect(src).toContain("inspectPairingRateLimit");
     expect(src).toContain("return NextResponse.json({ agentId: agent.id, secret }, { status: 200 });");
   });
