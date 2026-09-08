@@ -72,10 +72,24 @@ class TestControlPlane(TransactionCase):
             "report_id": report.id if report else False,
             "runtime_agent_id": "agent-cp-01",
             "printer_id": "printer-primary",
+            "printer_protocol": "escpos",
             "enabled": True,
             "drawer_kick_mode": "pin2",
             "cutter_mode": "full",
             "buzzer_mode": "epson_pulse",
+        })
+
+        # ZPL binding
+        self.zpl_binding = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": report.id if report else False,
+            "report_id": report.id if report else False,
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-zpl",
+            "printer_protocol": "zpl",
+            "enabled": True,
         })
 
         # Backup failover binding
@@ -87,6 +101,7 @@ class TestControlPlane(TransactionCase):
             "report_id": report.id if report else False,
             "runtime_agent_id": "agent-cp-01",
             "printer_id": "printer-backup",
+            "printer_protocol": "escpos",
             "enabled": True,
             "priority": 20,
         })
@@ -169,7 +184,7 @@ class TestControlPlane(TransactionCase):
             res = router.route_raw_command(
                 zpl_sample,
                 protocol="zpl",
-                binding=self.primary_binding,
+                binding=self.zpl_binding,
                 company=self.branch,
                 document_type="label",
             )
@@ -316,7 +331,8 @@ class TestControlPlane(TransactionCase):
         with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
              patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
             res = router.route_raw_command(
-                "^XA^XZ",
+                "\x1b@Hello",
+                protocol="escpos",
                 binding=self.primary_binding,
                 company=self.branch,
                 idempotency_key="custom_explicit_key_123",
@@ -338,4 +354,84 @@ class TestControlPlane(TransactionCase):
         })
         with self.assertRaises(ValidationError):
             policy.render_raw_template(self.company)
+
+    def test_10_protocol_mismatch_rejection(self):
+        """Verify routing raw command with mismatched protocol raises ValidationError."""
+        router = self.env["print_gateway.print_router"].with_company(self.branch)
+        with self.assertRaises(ValidationError):
+            router.route_raw_command(
+                "^XA^XZ",
+                protocol="zpl",
+                binding=self.primary_binding,  # primary_binding has escpos
+                company=self.branch,
+            )
+
+    def test_11_intent_state_machine(self):
+        """Verify illegal intent state transitions raise ValidationError."""
+        model = self.env["ir.model"].search([], limit=1)
+        policy = self.env["print_gateway.policy"].create({
+            "name": "State Machine Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": model.id,
+            "event_type": "test_event",
+            "binding_id": self.primary_binding.id,
+            "active": True,
+        })
+        intent = self.env["print_gateway.intent"].create({
+            "intent_key": "sm_intent_key_01",
+            "policy_id": policy.id,
+            "res_model": model.model,
+            "res_id": 1,
+            "event_type": "test_event",
+            "status": "dispatched",
+        })
+        with self.assertRaises(ValidationError):
+            intent.write({"status": "pending"})
+
+    def test_12_test_page_cutter_and_raw_banner(self):
+        """Verify test page format for raw banner and ESC/POS cut handling."""
+        router = self.env["print_gateway.print_router"].with_company(self.branch)
+        raw_binding = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-raw",
+            "printer_protocol": "raw",
+            "enabled": True,
+        })
+        RouterClass = type(router)
+        with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
+             patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
+            res = router.route_test_page(raw_binding)
+            job = self.env["print_gateway.print_job"].browse(res["job_id"])
+            self.assertEqual(job.protocol, "raw")
+            self.assertIn("Protocol: RAW", job.raw_payload)
+            self.assertNotIn("\x1b@", job.raw_payload)
+
+    def test_13_action_rearm_intent(self):
+        """Verify operator action_rearm_intent re-arms failed intents."""
+        model = self.env["ir.model"].search([], limit=1)
+        policy = self.env["print_gateway.policy"].create({
+            "name": "Rearm Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": model.id,
+            "event_type": "test_event",
+            "binding_id": self.primary_binding.id,
+            "active": True,
+        })
+        intent = self.env["print_gateway.intent"].create({
+            "intent_key": "rearm_intent_key_01",
+            "policy_id": policy.id,
+            "res_model": model.model,
+            "res_id": 1,
+            "event_type": "test_event",
+            "status": "failed",
+            "attempts": 3,
+        })
+        intent.action_rearm_intent()
+        self.assertEqual(intent.status, "pending")
+        self.assertEqual(intent.attempts, 0)
 

@@ -28,6 +28,19 @@ const registrationSchema = z.object({
   agent_id: z.string().trim().min(1).max(120).optional(),
 }).strict().refine((data) => Boolean(data.pairingCode || data.pairing_code), {
   message: "pairing_code or pairingCode is required",
+}).refine((data) => {
+  if (data.pairingCode && data.pairing_code && data.pairingCode.toUpperCase() !== data.pairing_code.toUpperCase()) {
+    return false;
+  }
+  if (data.agentId && data.agent_id && data.agentId !== data.agent_id) {
+    return false;
+  }
+  if (data.clientVersion && data.client_version && data.clientVersion !== data.client_version) {
+    return false;
+  }
+  return true;
+}, {
+  message: "Conflicting alias fields provided",
 });
 
 export async function POST(req: Request) {

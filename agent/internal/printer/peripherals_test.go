@@ -58,6 +58,13 @@ func TestWrapPeripheralCommands_ThermalIsolation(t *testing.T) {
 		t.Errorf("TSPL payload was modified! Peripherals must not be injected into non-thermal streams")
 	}
 
+	// For generic RAW, peripheral commands must NOT be injected
+	rawDoc := []byte("GENERIC RAW TEXT\n")
+	resRaw := WrapPeripheralCommands(rawDoc, "raw", profile)
+	if !bytes.Equal(resRaw, rawDoc) {
+		t.Errorf("Generic RAW payload was modified! Peripherals must strictly be ESC/POS only")
+	}
+
 	// For PDF, peripheral commands must NOT be injected
 	pdfDoc := []byte("%PDF-1.4...")
 	resPdf := WrapPeripheralCommands(pdfDoc, "pdf", profile)

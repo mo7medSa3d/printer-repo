@@ -35,13 +35,13 @@ type PeripheralProfile struct {
 
 // WrapPeripheralCommands wraps print payload bytes with hardware peripheral sequences.
 // Peripherals are device commands, not documents:
-// - Pre-Print: Injects cash drawer pulse and buzzer chime bytes IF and ONLY IF protocol is "escpos" or "raw".
-// - Post-Print: Appends configured cutter escape sequence IF and ONLY IF protocol is "escpos" or "raw".
-// - Thermal isolation: For vector/label protocols ("zpl", "tspl", "pdf"), thermal escape sequences are NEVER injected.
+// - Pre-Print: Injects cash drawer pulse and buzzer chime bytes IF and ONLY IF protocol is "escpos".
+// - Post-Print: Appends configured cutter escape sequence IF and ONLY IF protocol is "escpos".
+// - Thermal isolation: For generic raw, vector, or label protocols ("raw", "zpl", "tspl", "pdf"), thermal escape sequences are NEVER injected.
 func WrapPeripheralCommands(data []byte, protocol string, profile PeripheralProfile) []byte {
 	proto := strings.ToLower(strings.TrimSpace(protocol))
-	// Thermal isolation: do not inject ESC/POS bytes into ZPL, TSPL, or PDF streams
-	if proto != "escpos" && proto != "raw" {
+	// Peripherals are strictly ESC/POS sequences. Do not inject into raw, ZPL, TSPL, or PDF streams.
+	if proto != "escpos" {
 		return data
 	}
 

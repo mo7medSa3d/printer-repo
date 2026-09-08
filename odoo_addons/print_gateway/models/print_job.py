@@ -194,6 +194,8 @@ class PrintGatewayJob(models.Model):
             payload = json.loads(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValidationError(_("Stored print payload is corrupted.")) from exc
+        if isinstance(payload, dict) and payload.get("type") == "raw" and not payload.get("protocol"):
+            payload["protocol"] = self.protocol or "raw"
         body = {
             "printerId": self.printer_id,
             "documentType": self.document_type,
@@ -271,11 +273,25 @@ class PrintGatewayJob(models.Model):
                     # Pre-dispatch failure: zero bytes transmitted. Safe failover check!
                     if job.attempts == 0 and current_binding and failover_count < MAX_FAILOVER_DEPTH:
                         next_printer = current_binding.printer_id
+                        binding_company = current_binding.branch_id or current_binding.company_id
+                        company_compatible = (
+                            binding_company == job.company_id
+                            or (not current_binding.branch_id and current_binding.company_id == (job.company_id.parent_id or job.company_id))
+                        )
+                        protocol_compatible = True
+                        if job.payload_type == "raw_cmd" and job.protocol:
+                            fallback_proto = getattr(current_binding, "printer_protocol", False)
+                            protocol_compatible = (
+                                not fallback_proto
+                                or fallback_proto == "raw"
+                                or fallback_proto == job.protocol
+                            )
                         if (
                             current_binding.enabled
                             and next_printer
                             and next_printer not in visited_bindings
-                            and (current_binding.branch_id or current_binding.company_id) == job.company_id
+                            and company_compatible
+                            and protocol_compatible
                         ):
                             visited_bindings.add(next_printer)
                             failover_count += 1

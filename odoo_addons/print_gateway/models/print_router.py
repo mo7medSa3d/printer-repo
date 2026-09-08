@@ -264,6 +264,8 @@ class PrintGatewayRouter(models.AbstractModel):
         if route.get("native"):
             return route
         for record in records[1:]:
+            if hasattr(record, "company_id") and record.company_id and record.company_id != self.env.company:
+                raise ValidationError(_("Selected records belong to conflicting routing scopes."))
             candidate = self.resolve_binding(report=report, record=record, company=self.env.company)
             if candidate["binding"].id != route["binding"].id:
                 raise ValidationError(_("The selected records resolve to different Print Bindings. Print them separately."))
@@ -372,8 +374,8 @@ class PrintGatewayRouter(models.AbstractModel):
                 explicit_destination=policy.binding_id.destination_ref if policy.binding_id else None,
             )
             if route.get("native"):
-                return route
-            return self._submit_route(
+                return {"status": "skipped", "message": _("Policy resolved to native print.")}
+            res = self._submit_route(
                 route=route,
                 payload=self._render_pdf_payload(policy.report_id, target_record),
                 company=company,
@@ -382,11 +384,16 @@ class PrintGatewayRouter(models.AbstractModel):
                 source_record_id=target_record.id,
                 idempotency_key=intent.intent_key,
             )
+            return {
+                "status": "dispatched",
+                "job_id": res.get("job_id"),
+                "message": res.get("message"),
+            }
 
         # If policy specifies raw command (e.g. barcode label)
         if getattr(policy, "action_type", False) == "raw_template" or (not policy.report_id and getattr(policy, "raw_template", False)):
             raw_data = policy.render_raw_template(target_record)
-            return self.route_raw_command(
+            res = self.route_raw_command(
                 raw_data,
                 protocol=policy.raw_protocol or "zpl",
                 binding=policy.binding_id or False,
@@ -395,6 +402,13 @@ class PrintGatewayRouter(models.AbstractModel):
                 document_type="label",
                 idempotency_key=intent.intent_key,
             )
+            if res.get("native"):
+                return {"status": "skipped", "message": _("Policy resolved to native print.")}
+            return {
+                "status": "dispatched",
+                "job_id": res.get("job_id"),
+                "message": res.get("message"),
+            }
 
         raise ValidationError(_("No report or raw label action configured for policy %s") % policy.name)
 
@@ -438,6 +452,15 @@ class PrintGatewayRouter(models.AbstractModel):
             target_binding = binding
             target_destination = binding.destination_ref or destination
 
+        # Binding Protocol Authorization
+        if target_binding and getattr(target_binding, "printer_protocol", False):
+            binding_proto = target_binding.printer_protocol
+            if binding_proto and binding_proto != "raw" and binding_proto != protocol:
+                raise ValidationError(
+                    _("Protocol mismatch: Binding '%s' expects %s but job requested %s.")
+                    % (target_binding.display_name, binding_proto, protocol)
+                )
+
         if isinstance(raw_data, str):
             raw_bytes = raw_data.encode("utf-8")
         else:
@@ -447,6 +470,7 @@ class PrintGatewayRouter(models.AbstractModel):
             "type": "raw",
             "encoding": "base64",
             "data": base64.b64encode(raw_bytes).decode("ascii"),
+            "protocol": protocol,
         }
         if target_binding:
             payload["peripherals"] = {
@@ -531,6 +555,23 @@ class PrintGatewayRouter(models.AbstractModel):
                 f'TEXT 50,230,"1",0,1,1,"Status: OK | {now_str}"\n'
                 "PRINT 1,1\n"
             )
+        elif proto == "raw":
+            agent_str = binding.runtime_agent_id or "None"
+            ticket_raw = (
+                "================================\n"
+                "  ODOO PRINT GATEWAY DIAGNOSTIC  \n"
+                "================================\n"
+                f"Company : {company_name}\n"
+                f"Branch  : {branch_name}\n"
+                f"Agent ID: {agent_str}\n"
+                f"Printer : {binding.printer_id}\n"
+                f"Area    : {binding.destination_type.upper()}\n"
+                "Protocol: RAW\n"
+                "--------------------------------\n"
+                "Hardware Test Status: OK\n"
+                f"Timestamp: {now_str}\n"
+                "================================\n\n\n"
+            )
         else:
             ticket_lines = [
                 "\x1b\x40",  # Initialize printer
@@ -552,7 +593,6 @@ class PrintGatewayRouter(models.AbstractModel):
                 "Hardware Test Status: OK\n",
                 f"Timestamp: {now_str}\n",
                 "================================\n\n\n",
-                "\x1d\x56\x01",  # Cut
             ]
             ticket_raw = "".join(ticket_lines)
 

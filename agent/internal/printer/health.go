@@ -125,12 +125,21 @@ func PreFlightHealthCheck(ctx context.Context, address string) error {
 	}
 	defer conn.Close()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(1500 * time.Millisecond)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
 	_ = conn.SetDeadline(deadline)
 
 	_, err = QueryHealthStatus(conn)
-	return err
+	if err != nil {
+		// If TCP connection succeeded but status query read timed out,
+		// the printer or print server is unidirectional. Do not block delivery.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil
+		}
+		return err
+	}
+	return nil
 }

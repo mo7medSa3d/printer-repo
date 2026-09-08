@@ -65,6 +65,36 @@ suite("agent registration contract", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects conflicting alias fields in registration payload", async () => {
+    await seedFixture();
+    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairingCode: "AB22CD",
+        pairing_code: "EF33GH",
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Conflicting alias fields provided");
+
+    const responseVersion = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairingCode: "AB22CD",
+        clientVersion: "1.0.0",
+        client_version: "2.0.0",
+      }),
+    }));
+
+    expect(responseVersion.status).toBe(400);
+    const bodyVersion = await responseVersion.json();
+    expect(bodyVersion.error).toBe("Conflicting alias fields provided");
+  });
+
   it("rejects invalid pairing attempts and rate-limits repeated failures", async () => {
     await seedFixture();
     const headers = { "content-type": "application/json", "x-real-ip": "127.0.0.60" };

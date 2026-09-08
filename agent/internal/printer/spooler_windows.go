@@ -236,6 +236,12 @@ func preFlightSpoolerCheck(spoolerName string) error {
 	if (pi.Status & PRINTER_STATUS_OFFLINE) != 0 {
 		return fmt.Errorf("%w: spooler printer %q is offline (status 0x%08x)", ErrPrinterOffline, spoolerName, pi.Status)
 	}
+	if (pi.Status & PRINTER_STATUS_PAUSED) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is paused (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_ERROR) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is in error state (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
 	if (pi.Status & PRINTER_STATUS_PAPER_JAM) != 0 {
 		return fmt.Errorf("%w: spooler printer %q has a paper jam (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
 	}

@@ -110,6 +110,27 @@ class PrintGatewayPolicy(models.Model):
             if policy.branch_id and policy.branch_id.parent_id != policy.company_id:
                 raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
 
+    @api.constrains("action_type", "report_id", "raw_template", "raw_protocol", "domain_filter", "model_id")
+    def _check_action_configuration(self):
+        for policy in self:
+            if policy.action_type == "report":
+                if not policy.report_id:
+                    raise ValidationError(_("A report must be selected when action type is 'QWeb PDF Report'."))
+                if policy.report_id.model != policy.model_name:
+                    raise ValidationError(_("Selected report model '%s' does not match policy target model '%s'.") % (policy.report_id.model, policy.model_name))
+            elif policy.action_type == "raw_template":
+                if not policy.raw_template or not policy.raw_template.strip():
+                    raise ValidationError(_("Raw command template cannot be empty when action type is 'Raw Command / Label Template'."))
+                if not policy.raw_protocol or policy.raw_protocol not in ("zpl", "tspl", "escpos"):
+                    raise ValidationError(_("A valid raw protocol (ZPL, TSPL, or ESC/POS) must be specified."))
+            if policy.domain_filter and policy.domain_filter.strip():
+                try:
+                    domain = safe_eval(policy.domain_filter)
+                    if not isinstance(domain, list):
+                        raise ValidationError(_("Domain filter must evaluate to a list of criteria."))
+                except Exception as exc:
+                    raise ValidationError(_("Invalid domain filter expression for policy '%s': %s") % (policy.name, exc)) from exc
+
     def matches_record(self, record):
         """Evaluate whether a given record satisfies the policy filters."""
         self.ensure_one()
