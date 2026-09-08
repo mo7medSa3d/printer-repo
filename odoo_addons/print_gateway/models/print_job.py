@@ -59,7 +59,7 @@ class PrintGatewayJob(models.Model):
     _TERMINAL = frozenset(("success", "failed", "partial", "unknown"))
 
     _VALID_TRANSITIONS = {
-        "queued": {"queued", "submitted", "failed", "unknown"},
+        "queued": {"queued", "submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
         "submitted": {"submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
         "claimed": {"claimed", "printing", "success", "failed", "partial", "unknown"},
         "printing": {"printing", "success", "failed", "partial", "unknown"},

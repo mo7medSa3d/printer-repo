@@ -1,5 +1,3 @@
-from odoo.upgrade import util
-
 def migrate(cr, version):
     if not version:
         return

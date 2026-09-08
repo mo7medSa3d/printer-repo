@@ -219,7 +219,7 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
 
         # Direct test on the model logic: simulate transition rules
         transitions = {
-            "queued": {"queued", "submitted", "failed", "unknown"},
+            "queued": {"queued", "submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
             "submitted": {"submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
             "claimed": {"claimed", "printing", "success", "failed", "partial", "unknown"},
             "printing": {"printing", "success", "failed", "partial", "unknown"},
