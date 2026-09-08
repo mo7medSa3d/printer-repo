@@ -556,6 +556,8 @@ class TestControlPlane(TransactionCase):
                 "report_name": "test.picking_report",
             })
 
+        PickingClass = type(self.env[report.model])
+
         # Fake request context
         mock_req = MagicMock()
         mock_req.env = self.env
@@ -586,7 +588,7 @@ class TestControlPlane(TransactionCase):
             route1 = {"binding_id": 1, "printer_id": "p1", "runtime_agent_id": "a1", "gateway_enabled": True}
             route2 = {"binding_id": 2, "printer_id": "p2", "runtime_agent_id": "a1", "gateway_enabled": True}
 
-            with patch.object(self.env[report.model], "browse", return_value=mock_records), \
+            with patch.object(PickingClass, "browse", return_value=mock_records), \
                  patch.object(router, "resolve_binding", side_effect=[route1, route2]):
                 data_mixed = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_mixed)
@@ -594,7 +596,7 @@ class TestControlPlane(TransactionCase):
                 self.assertIn("mixed_scope_batch", resp.get_data(as_text=True))
 
             # Test 4: Access error returns 403 forbidden without leaking internals
-            with patch.object(self.env[report.model], "browse", return_value=mock_records), \
+            with patch.object(PickingClass, "browse", return_value=mock_records), \
                  patch.object(mock_records, "check_access", side_effect=AccessError("No read access")):
                 data_forbidden = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_forbidden)
@@ -603,7 +605,7 @@ class TestControlPlane(TransactionCase):
                 self.assertNotIn("No read access", resp.get_data(as_text=True))
 
             # Test 5: Gateway dispatch failure returns 502 without leaking raw trace
-            with patch.object(self.env[report.model], "browse", return_value=mock_records), \
+            with patch.object(PickingClass, "browse", return_value=mock_records), \
                  patch.object(mock_records, "check_access", return_value=None), \
                  patch.object(router, "resolve_binding", return_value=route1), \
                  patch.object(router, "route_report", side_effect=RuntimeError("Internal gateway timeout")):
