@@ -20,6 +20,8 @@ class AccountMovePrintGateway(models.Model):
 
         if policies:
             for move in self:
+                if not move.is_invoice(include_receipts=True) or move.state != "posted":
+                    continue
                 for policy in policies:
                     if policy.matches_record(move):
                         intent_model.create_and_route(policy, move, "invoice_posted")

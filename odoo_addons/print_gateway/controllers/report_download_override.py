@@ -2,11 +2,14 @@
 """Defense-in-depth ReportController override for silent hardware printing."""
 
 import json
+import logging
 import urllib.parse
 from odoo import http
 from odoo.exceptions import AccessError
 from odoo.http import request
 from odoo.addons.web.controllers.report import ReportController
+
+_logger = logging.getLogger(__name__)
 
 
 class PrintGatewayReportController(ReportController):
@@ -35,14 +38,24 @@ class PrintGatewayReportController(ReportController):
                                 headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
                                 status=400,
                             )
-                        report = request.env["ir.actions.report"].sudo().search([("report_name", "=", report_name)], limit=1)
+                        # Security / IDOR: Verify current user has explicit read access to the report action
+                        report = request.env["ir.actions.report"].search([("report_name", "=", report_name)], limit=1)
                         if not report:
                             return request.make_response(
-                                json.dumps({"error": "report_not_found", "message": f"Report '{report_name}' not found."}),
+                                json.dumps({"error": "report_not_found", "message": "The requested report was not found."}),
                                 headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
                                 status=404,
                             )
-                        # Security / IDOR: Verify current user has explicit read access to the records
+                        try:
+                            report.check_access("read")
+                        except AccessError:
+                            return request.make_response(
+                                json.dumps({"error": "forbidden", "message": "Access denied to requested report."}),
+                                headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
+                                status=403,
+                            )
+
+                        # Security / IDOR: Verify current user has explicit read access to the records in user context
                         records = request.env[report.model].browse(docids).exists()
                         if len(records) != len(docids):
                             return request.make_response(
@@ -52,15 +65,38 @@ class PrintGatewayReportController(ReportController):
                             )
                         try:
                             records.check_access("read")
-                        except AccessError as exc:
+                        except AccessError:
                             return request.make_response(
-                                json.dumps({"error": "forbidden", "message": str(exc)}),
+                                json.dumps({"error": "forbidden", "message": "Access denied to requested records."}),
                                 headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
                                 status=403,
                             )
 
+                        # Multi-record Scope Isolation: Verify all records belong to compatible scopes and bindings
+                        initial_route = None
+                        for rec in records:
+                            rec_route = router.resolve_binding(report=report, record=rec, company=request.env.company)
+                            if initial_route is None:
+                                initial_route = rec_route
+                            else:
+                                if (
+                                    rec_route.get("binding_id") != initial_route.get("binding_id")
+                                    or rec_route.get("printer_id") != initial_route.get("printer_id")
+                                    or rec_route.get("runtime_agent_id") != initial_route.get("runtime_agent_id")
+                                    or rec_route.get("gateway_enabled") != initial_route.get("gateway_enabled")
+                                ):
+                                    _logger.warning("Rejected mixed-scope multi-record print request for report %s", report_name)
+                                    return request.make_response(
+                                        json.dumps({
+                                            "error": "mixed_scope_batch",
+                                            "message": "Multi-record print batch spans multiple companies, branches, or destinations.",
+                                        }),
+                                        headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
+                                        status=400,
+                                    )
+
+                        route = initial_route
                         try:
-                            route = router.resolve_binding(report=report, record=records[0], company=request.env.company)
                             if not route.get("native") and route.get("gateway_enabled"):
                                 submit_res = router.route_report(report, records)
                                 response = request.make_response(
@@ -78,20 +114,22 @@ class PrintGatewayReportController(ReportController):
                         except Exception as exc:
                             # Fail-closed: Never fall back to native browser PDF download
                             # when Gateway is configured and dispatch/routing failed
+                            _logger.exception("Failed to dispatch Gateway print for report %s: %s", report_name, exc)
                             return request.make_response(
                                 json.dumps({
                                     "error": "gateway_dispatch_failed",
-                                    "message": str(exc),
+                                    "message": "Printing failed due to a gateway communication or routing error.",
                                 }),
                                 headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
                                 status=502,
                             )
         except Exception as exc:
+            _logger.exception("Error processing report download request: %s", exc)
             if config:
                 return request.make_response(
                     json.dumps({
                         "error": "gateway_request_error",
-                        "message": str(exc),
+                        "message": "An error occurred while processing the print request.",
                     }),
                     headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
                     status=502,

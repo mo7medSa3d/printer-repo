@@ -78,23 +78,26 @@ class PrintGatewayPolicy(models.Model):
     priority = fields.Integer(default=10, help="Lower numbers execute first.")
 
     def render_raw_template(self, record):
-        """Deterministically render raw template string using record attributes."""
+        """Deterministically render raw template string using safe scalar record attributes."""
         self.ensure_one()
         template = self.raw_template or ""
         if not template:
             raise ValidationError(_("Raw template is empty for policy %s.") % self.name)
-        values = {"record": record}
-        for field_name in record._fields:
-            try:
-                values[field_name] = getattr(record, field_name)
-            except Exception:
-                pass
+        values = {}
+        for field_name, field in record._fields.items():
+            if field.type in ("char", "text", "integer", "float", "date", "datetime", "boolean", "selection"):
+                val = getattr(record, field_name)
+                values[field_name] = "" if val is False or val is None else str(val)
+            elif field.type == "many2one":
+                rel = getattr(record, field_name)
+                values[field_name] = rel.display_name if rel else ""
+                values[f"{field_name}_id"] = rel.id if rel else ""
         try:
             return template.format(**values)
         except Exception as exc:
             raise ValidationError(
-                _("Failed to render raw template for policy '%s' with record %s(%s): %s")
-                % (self.name, record._name, record.id, exc)
+                _("Failed to render raw template for policy '%s': %s")
+                % (self.name, exc)
             ) from exc
 
     @api.depends("company_id", "branch_id")
@@ -110,24 +113,66 @@ class PrintGatewayPolicy(models.Model):
             if policy.branch_id and policy.branch_id.parent_id != policy.company_id:
                 raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
 
-    @api.constrains("action_type", "report_id", "raw_template", "raw_protocol", "domain_filter", "model_id")
+    VALID_MODEL_EVENTS = {
+        "stock.picking": {"picking_validated"},
+        "account.move": {"invoice_posted"},
+        "pos.order": {"pos_order_paid"},
+    }
+
+    @api.constrains("action_type", "report_id", "raw_template", "raw_protocol", "domain_filter", "model_id", "event_type", "binding_id")
     def _check_action_configuration(self):
         for policy in self:
+            # 1. Model and event validation
+            allowed_events = self.VALID_MODEL_EVENTS.get(policy.model_name)
+            if not allowed_events or policy.event_type not in allowed_events:
+                raise ValidationError(
+                    _("Invalid trigger event '%s' for model '%s'. Allowed: %s")
+                    % (policy.event_type, policy.model_name, ", ".join(sorted(allowed_events or [])))
+                )
+
+            # 2. Action type constraints and mutual exclusivity
             if policy.action_type == "report":
                 if not policy.report_id:
                     raise ValidationError(_("A report must be selected when action type is 'QWeb PDF Report'."))
                 if policy.report_id.model != policy.model_name:
                     raise ValidationError(_("Selected report model '%s' does not match policy target model '%s'.") % (policy.report_id.model, policy.model_name))
+                if policy.raw_template:
+                    raise ValidationError(_("Raw template must not be configured when action type is 'QWeb PDF Report'."))
             elif policy.action_type == "raw_template":
                 if not policy.raw_template or not policy.raw_template.strip():
                     raise ValidationError(_("Raw command template cannot be empty when action type is 'Raw Command / Label Template'."))
+                if policy.report_id:
+                    raise ValidationError(_("Report action must not be configured when action type is 'Raw Command / Label Template'."))
                 if not policy.raw_protocol or policy.raw_protocol not in ("zpl", "tspl", "escpos"):
                     raise ValidationError(_("A valid raw protocol (ZPL, TSPL, or ESC/POS) must be specified."))
+
+                # 3. Binding protocol compatibility
+                if policy.binding_id and getattr(policy.binding_id, "printer_protocol", False):
+                    bproto = policy.binding_id.printer_protocol
+                    if bproto and bproto != "raw" and bproto != policy.raw_protocol:
+                        raise ValidationError(
+                            _("Target binding '%s' protocol '%s' is incompatible with policy raw protocol '%s'.")
+                            % (policy.binding_id.display_name, bproto, policy.raw_protocol)
+                        )
+
+            # 4. Domain filter syntax and field existence
             if policy.domain_filter and policy.domain_filter.strip():
                 try:
                     domain = safe_eval(policy.domain_filter)
                     if not isinstance(domain, list):
                         raise ValidationError(_("Domain filter must evaluate to a list of criteria."))
+                    for item in domain:
+                        if isinstance(item, (str, bytes)):
+                            if item not in ("&", "|", "!"):
+                                raise ValidationError(_("Invalid domain operator '%s'.") % item)
+                        elif isinstance(item, (list, tuple)):
+                            if len(item) != 3:
+                                raise ValidationError(_("Domain leaves must have exactly 3 elements: %s") % str(item))
+                            field_name = str(item[0]).split(".")[0]
+                            if field_name not in self.env[policy.model_name]._fields:
+                                raise ValidationError(_("Field '%s' in domain filter does not exist on model '%s'.") % (field_name, policy.model_name))
+                        else:
+                            raise ValidationError(_("Invalid element in domain filter: %s") % str(item))
                 except Exception as exc:
                     raise ValidationError(_("Invalid domain filter expression for policy '%s': %s") % (policy.name, exc)) from exc
 

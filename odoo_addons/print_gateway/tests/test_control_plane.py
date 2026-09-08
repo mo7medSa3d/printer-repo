@@ -77,6 +77,7 @@ class TestControlPlane(TransactionCase):
             "drawer_kick_mode": "pin2",
             "cutter_mode": "full",
             "buzzer_mode": "epson_pulse",
+            "priority": 10,
         })
 
         # ZPL binding
@@ -90,6 +91,7 @@ class TestControlPlane(TransactionCase):
             "printer_id": "printer-zpl",
             "printer_protocol": "zpl",
             "enabled": True,
+            "priority": 30,
         })
 
         # Backup failover binding
@@ -141,7 +143,10 @@ class TestControlPlane(TransactionCase):
             "branch_id": self.branch.id,
             "model_id": model.id,
             "event_type": "picking_validated",
-            "binding_id": self.primary_binding.id,
+            "action_type": "raw_template",
+            "raw_template": "^XA^FD{name}^FS^XZ",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
             "active": True,
         })
 
@@ -262,14 +267,17 @@ class TestControlPlane(TransactionCase):
     def test_06_intent_crash_recovery_cron(self):
         """Verify cron_recover_pending_intents recovers stale claimed or pending intents."""
         intent_model = self.env["print_gateway.intent"]
-        model = self.env["ir.model"].search([], limit=1)
+        model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
         policy = self.env["print_gateway.policy"].create({
             "name": "Cron Recovery Policy",
             "company_id": self.company.id,
             "branch_id": self.branch.id,
             "model_id": model.id,
-            "event_type": "test_event",
-            "binding_id": self.primary_binding.id,
+            "event_type": "picking_validated",
+            "action_type": "raw_template",
+            "raw_template": "^XA^FD{name}^FS^XZ",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
             "active": True,
         })
         intent = intent_model.create({
@@ -277,13 +285,14 @@ class TestControlPlane(TransactionCase):
             "policy_id": policy.id,
             "res_model": model.model,
             "res_id": 1,
-            "event_type": "test_event",
+            "event_type": "picking_validated",
             "status": "pending",
         })
-        with patch.object(intent_model, "_dispatch_intent_postcommit") as mock_dispatch:
+        with patch.object(intent_model, "_execute_dispatched_route") as mock_exec, \
+             patch.object(intent_model, "_claim_intent", return_value="fake_token_123"):
             recovered = intent_model.cron_recover_pending_intents()
             self.assertGreaterEqual(recovered, 1)
-            mock_dispatch.assert_called()
+            mock_exec.assert_called()
 
     def test_07_failover_cycle_safety(self):
         """Verify cycle in fallback bindings terminates without infinite recursion."""
@@ -342,18 +351,23 @@ class TestControlPlane(TransactionCase):
 
     def test_09_policy_template_format_error_raises(self):
         """Verify render_raw_template raises ValidationError on missing format keys."""
-        model = self.env["ir.model"].search([("model", "=", "res.company")], limit=1)
+        model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
         policy = self.env["print_gateway.policy"].create({
             "name": "Template Error Policy",
             "company_id": self.company.id,
             "branch_id": self.branch.id,
             "model_id": model.id,
-            "event_type": "test_event",
+            "event_type": "picking_validated",
+            "action_type": "raw_template",
             "raw_template": "Hello {non_existent_field_xyz}!",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
             "active": True,
         })
+        mock_picking = MagicMock()
+        mock_picking._fields = {}
         with self.assertRaises(ValidationError):
-            policy.render_raw_template(self.company)
+            policy.render_raw_template(mock_picking)
 
     def test_10_protocol_mismatch_rejection(self):
         """Verify routing raw command with mismatched protocol raises ValidationError."""
@@ -368,14 +382,17 @@ class TestControlPlane(TransactionCase):
 
     def test_11_intent_state_machine(self):
         """Verify illegal intent state transitions raise ValidationError."""
-        model = self.env["ir.model"].search([], limit=1)
+        model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
         policy = self.env["print_gateway.policy"].create({
             "name": "State Machine Policy",
             "company_id": self.company.id,
             "branch_id": self.branch.id,
             "model_id": model.id,
-            "event_type": "test_event",
-            "binding_id": self.primary_binding.id,
+            "event_type": "picking_validated",
+            "action_type": "raw_template",
+            "raw_template": "^XA^FD{name}^FS^XZ",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
             "active": True,
         })
         intent = self.env["print_gateway.intent"].create({
@@ -383,7 +400,7 @@ class TestControlPlane(TransactionCase):
             "policy_id": policy.id,
             "res_model": model.model,
             "res_id": 1,
-            "event_type": "test_event",
+            "event_type": "picking_validated",
             "status": "dispatched",
         })
         with self.assertRaises(ValidationError):
@@ -400,6 +417,7 @@ class TestControlPlane(TransactionCase):
             "printer_id": "printer-raw",
             "printer_protocol": "raw",
             "enabled": True,
+            "priority": 40,
         })
         RouterClass = type(router)
         with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
@@ -412,14 +430,17 @@ class TestControlPlane(TransactionCase):
 
     def test_13_action_rearm_intent(self):
         """Verify operator action_rearm_intent re-arms failed intents."""
-        model = self.env["ir.model"].search([], limit=1)
+        model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
         policy = self.env["print_gateway.policy"].create({
             "name": "Rearm Policy",
             "company_id": self.company.id,
             "branch_id": self.branch.id,
             "model_id": model.id,
-            "event_type": "test_event",
-            "binding_id": self.primary_binding.id,
+            "event_type": "picking_validated",
+            "action_type": "raw_template",
+            "raw_template": "^XA^FD{name}^FS^XZ",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
             "active": True,
         })
         intent = self.env["print_gateway.intent"].create({
@@ -427,11 +448,247 @@ class TestControlPlane(TransactionCase):
             "policy_id": policy.id,
             "res_model": model.model,
             "res_id": 1,
-            "event_type": "test_event",
+            "event_type": "picking_validated",
             "status": "failed",
             "attempts": 3,
         })
         intent.action_rearm_intent()
         self.assertEqual(intent.status, "pending")
         self.assertEqual(intent.attempts, 0)
+
+    def test_14_intent_single_claim_recovery_and_fencing(self):
+        """Verify single-claim intent recovery lifecycle and fencing token lease protection."""
+        import datetime
+        from odoo import fields
+        intent_model = self.env["print_gateway.intent"]
+        model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
+        policy = self.env["print_gateway.policy"].create({
+            "name": "Single Claim Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": model.id,
+            "event_type": "picking_validated",
+            "action_type": "raw_template",
+            "raw_template": "^XA^FD{name}^FS^XZ",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
+            "active": True,
+        })
+
+        # 1. Pending intent acquires claim token
+        intent_pending = intent_model.create({
+            "intent_key": "intent_claim_test_pending_01",
+            "policy_id": policy.id,
+            "res_model": model.model,
+            "res_id": 1,
+            "event_type": "picking_validated",
+            "status": "pending",
+        })
+        token_pending = intent_model._claim_intent(self.env, intent_pending.id)
+        self.assertTrue(bool(token_pending), "Pending intent must be claimed atomically")
+        intent_pending.invalidate_recordset()
+        self.assertEqual(intent_pending.status, "claimed")
+        self.assertEqual(intent_pending.claim_token, token_pending)
+
+        # 2. Fresh claimed intent must NOT be claimed again (suppress duplicate processing)
+        token_fresh = intent_model._claim_intent(self.env, intent_pending.id)
+        self.assertIsNone(token_fresh, "Fresh claimed intent must reject duplicate lease acquisition")
+
+        # 3. Stale claimed intent (> 5 min) can be recovered
+        stale_time = fields.Datetime.now() - datetime.timedelta(minutes=10)
+        self.env.cr.execute(
+            "UPDATE print_gateway_intent SET claimed_at = %s WHERE id = %s",
+            (stale_time, intent_pending.id)
+        )
+        token_stale = intent_model._claim_intent(self.env, intent_pending.id)
+        self.assertTrue(bool(token_stale), "Stale claimed intent must be recovered")
+        self.assertNotEqual(token_stale, token_pending, "Recovered intent must receive a new fencing token")
+
+        # 4. Fencing token protection: Stale worker attempting to finalize state with superseded token fails
+        updated_stale = intent_model._finalize_intent_state(
+            self.env, intent_pending.id, token_pending, "dispatched"
+        )
+        self.assertFalse(updated_stale, "Stale worker token must be fenced and rejected")
+
+        # Valid worker finalize succeeds
+        updated_valid = intent_model._finalize_intent_state(
+            self.env, intent_pending.id, token_stale, "dispatched"
+        )
+        self.assertTrue(updated_valid, "Valid current token must successfully finalize state")
+        intent_pending.invalidate_recordset()
+        self.assertEqual(intent_pending.status, "dispatched")
+
+        # 5. Terminal failed intent (attempts >= max_attempts) is NOT claimed
+        intent_terminal = intent_model.create({
+            "intent_key": "intent_claim_test_terminal_01",
+            "policy_id": policy.id,
+            "res_model": model.model,
+            "res_id": 2,
+            "event_type": "picking_validated",
+            "status": "failed",
+            "attempts": 3,
+            "max_attempts": 3,
+        })
+        token_terminal = intent_model._claim_intent(self.env, intent_terminal.id)
+        self.assertIsNone(token_terminal, "Terminal failed intent must not be automatically claimed")
+
+    def test_15_multi_record_report_routing_scope_isolation(self):
+        """Verify /report/download rejects mixed-scope batches and enforces IDOR permissions."""
+        from odoo.addons.print_gateway.controllers.report_download_override import PrintGatewayReportController
+        from odoo.exceptions import AccessError
+
+        controller = PrintGatewayReportController()
+        report = self.env["ir.actions.report"].search([("model", "=", "stock.picking")], limit=1)
+        if not report:
+            report = self.env["ir.actions.report"].create({
+                "name": "Test Picking Report",
+                "model": "stock.picking",
+                "report_type": "qweb-pdf",
+                "report_name": "test.picking_report",
+            })
+
+        # Fake request context
+        mock_req = MagicMock()
+        mock_req.env = self.env
+        mock_req.make_response = lambda data, headers=None, status=200: MagicMock(data=data, status=status)
+
+        with patch("odoo.addons.print_gateway.controllers.report_download_override.request", mock_req):
+            # Test 1: Empty docids returns 400
+            data_empty = json.dumps([f"/report/pdf/{report.report_name}/", "qweb-pdf"])
+            resp = controller.report_download(data_empty)
+            self.assertEqual(resp.status, 400)
+            self.assertIn("invalid_report_request", resp.data)
+
+            # Test 2: Unknown report returns 404
+            data_bad_rep = json.dumps(["/report/pdf/nonexistent.report/1,2", "qweb-pdf"])
+            resp = controller.report_download(data_bad_rep)
+            self.assertEqual(resp.status, 404)
+            self.assertIn("report_not_found", resp.data)
+
+            # Test 3: Mixed scope / different bindings returns 400 mixed_scope_batch
+            mock_records = MagicMock()
+            mock_records.__len__.return_value = 2
+            mock_records.exists.return_value = mock_records
+            mock_records.check_access.return_value = None
+            rec1, rec2 = MagicMock(), MagicMock()
+            mock_records.__iter__.return_value = [rec1, rec2]
+
+            router = self.env["print_gateway.print_router"]
+            route1 = {"binding_id": 1, "printer_id": "p1", "runtime_agent_id": "a1", "gateway_enabled": True}
+            route2 = {"binding_id": 2, "printer_id": "p2", "runtime_agent_id": "a1", "gateway_enabled": True}
+
+            with patch.object(self.env[report.model], "browse", return_value=mock_records), \
+                 patch.object(router, "resolve_binding", side_effect=[route1, route2]):
+                data_mixed = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
+                resp = controller.report_download(data_mixed)
+                self.assertEqual(resp.status, 400)
+                self.assertIn("mixed_scope_batch", resp.data)
+
+            # Test 4: Access error returns 403 forbidden without leaking internals
+            with patch.object(self.env[report.model], "browse", return_value=mock_records), \
+                 patch.object(mock_records, "check_access", side_effect=AccessError("No read access")):
+                data_forbidden = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
+                resp = controller.report_download(data_forbidden)
+                self.assertEqual(resp.status, 403)
+                self.assertIn("forbidden", resp.data)
+                self.assertNotIn("No read access", resp.data)
+
+            # Test 5: Gateway dispatch failure returns 502 without leaking raw trace
+            with patch.object(self.env[report.model], "browse", return_value=mock_records), \
+                 patch.object(mock_records, "check_access", return_value=None), \
+                 patch.object(router, "resolve_binding", return_value=route1), \
+                 patch.object(router, "route_report", side_effect=RuntimeError("Internal gateway timeout")):
+                data_dispatch = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
+                resp = controller.report_download(data_dispatch)
+                self.assertEqual(resp.status, 502)
+                self.assertIn("gateway_dispatch_failed", resp.data)
+                self.assertNotIn("Internal gateway timeout", resp.data)
+
+    def test_16_migration_canonical_root_placeholder(self):
+        """Verify 19.0.2.1.0 migration creates disabled non-routable placeholder when root binding is missing."""
+        import importlib
+        migration = importlib.import_module("odoo.addons.print_gateway.migrations.19.0.2.1.0.post-migrate")
+
+        executed_sqls = []
+        mock_cr = MagicMock()
+        mock_cr.execute.side_effect = lambda sql, *args: executed_sqls.append(sql)
+        mock_cr.fetchone.return_value = ("runtime_agent_id",)
+
+        migration.migrate(mock_cr, "19.0.2.1.0")
+
+        # Verify SQL checks b.branch_id IS NULL specifically
+        insert_sql = next((sql for sql in executed_sqls if "INSERT INTO print_gateway_binding" in sql), "")
+        self.assertIn("b.branch_id IS NULL", insert_sql, "Migration must check for missing root binding specifically")
+        self.assertIn("'unassigned'", insert_sql, "Migration must use 'unassigned' placeholder rather than fake routable printer")
+        self.assertIn("FALSE", insert_sql, "Migration placeholder binding must be explicitly disabled")
+
+    def test_17_policy_validation_constraints(self):
+        """Verify strict policy validation for event/model pairs, mutual exclusivity, and domain fields."""
+        model_picking = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
+        model_partner = self.env["ir.model"].search([("model", "=", "res.partner")], limit=1)
+
+        # 1. Invalid model / event pairing rejected
+        with self.assertRaises(ValidationError):
+            self.env["print_gateway.policy"].create({
+                "name": "Invalid Event Model",
+                "company_id": self.company.id,
+                "model_id": model_partner.id,
+                "event_type": "picking_validated",
+                "action_type": "raw_template",
+                "raw_template": "^XA^XZ",
+                "raw_protocol": "zpl",
+            })
+
+        # 2. Mutual exclusivity: action_type == 'report' rejects raw_template
+        report = self.env["ir.actions.report"].search([("model", "=", "stock.picking")], limit=1)
+        with self.assertRaises(ValidationError):
+            self.env["print_gateway.policy"].create({
+                "name": "Report with Raw Template",
+                "company_id": self.company.id,
+                "model_id": model_picking.id,
+                "event_type": "picking_validated",
+                "action_type": "report",
+                "report_id": report.id if report else False,
+                "raw_template": "^XA^XZ",
+            })
+
+        # 3. Mutual exclusivity: action_type == 'raw_template' rejects report_id
+        with self.assertRaises(ValidationError):
+            self.env["print_gateway.policy"].create({
+                "name": "Raw with Report",
+                "company_id": self.company.id,
+                "model_id": model_picking.id,
+                "event_type": "picking_validated",
+                "action_type": "raw_template",
+                "report_id": report.id if report else False,
+                "raw_template": "^XA^XZ",
+                "raw_protocol": "zpl",
+            })
+
+        # 4. Incompatible binding protocol rejected
+        with self.assertRaises(ValidationError):
+            self.env["print_gateway.policy"].create({
+                "name": "Incompatible Binding Protocol",
+                "company_id": self.company.id,
+                "model_id": model_picking.id,
+                "event_type": "picking_validated",
+                "action_type": "raw_template",
+                "raw_template": "^XA^XZ",
+                "raw_protocol": "zpl",
+                "binding_id": self.primary_binding.id,  # primary_binding has escpos protocol
+            })
+
+        # 5. Invalid field in domain filter rejected
+        with self.assertRaises(ValidationError):
+            self.env["print_gateway.policy"].create({
+                "name": "Invalid Domain Field",
+                "company_id": self.company.id,
+                "model_id": model_picking.id,
+                "event_type": "picking_validated",
+                "action_type": "raw_template",
+                "raw_template": "^XA^XZ",
+                "raw_protocol": "zpl",
+                "binding_id": self.zpl_binding.id,
+                "domain_filter": "[('non_existent_field_on_picking', '=', True)]",
+            })
 

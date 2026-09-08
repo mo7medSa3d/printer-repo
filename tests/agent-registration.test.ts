@@ -93,6 +93,47 @@ suite("agent registration contract", () => {
     expect(responseVersion.status).toBe(400);
     const bodyVersion = await responseVersion.json();
     expect(bodyVersion.error).toBe("Conflicting alias fields provided");
+
+    const responseAgent = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairingCode: "AB22CD",
+        agentId: "agent-1",
+        agent_id: "agent-2",
+      }),
+    }));
+
+    expect(responseAgent.status).toBe(400);
+    const bodyAgent = await responseAgent.json();
+    expect(bodyAgent.error).toBe("Conflicting alias fields provided");
+  });
+
+  it("accepts matching alias fields across pairingCode, agentId, and clientVersion", async () => {
+    const f = await seedFixture();
+    const pairingCode = "EF44GH";
+    await pool().query(
+      `UPDATE agents SET pairing_code_hash = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
+      [hashPairingCode(pairingCode), f.agentId],
+    );
+
+    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-real-ip": "127.0.0.55" },
+      body: JSON.stringify({
+        pairingCode: pairingCode.toLowerCase(),
+        pairing_code: pairingCode.toUpperCase(),
+        agentId: f.agentId,
+        agent_id: f.agentId,
+        clientVersion: "3.0.0",
+        client_version: "3.0.0",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agentId).toBe(f.agentId);
+    expect(body.agent_id).toBe(f.agentId);
   });
 
   it("rejects invalid pairing attempts and rate-limits repeated failures", async () => {

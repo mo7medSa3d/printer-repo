@@ -20,7 +20,9 @@ def migrate(cr, version):
           AND c.runtime_agent_id IS NOT NULL AND c.runtime_agent_id != ''
     """)
 
-    # If a company has a legacy runtime_agent_id but NO binding at all, create a canonical root fallback binding
+    # If a company has a legacy runtime_agent_id but NO canonical root binding (branch_id IS NULL),
+    # create an explicitly disabled placeholder binding (enabled = False, printer_id = 'unassigned')
+    # to preserve administrative visibility of runtime_agent_id without creating fake routable hardware.
     cr.execute("""
         INSERT INTO print_gateway_binding (
             company_id, branch_id, runtime_agent_id, printer_id, destination_type,
@@ -28,14 +30,15 @@ def migrate(cr, version):
             enabled, priority, create_date, write_date
         )
         SELECT 
-            c.company_id, NULL, c.runtime_agent_id, 'default', 'pos',
+            c.company_id, NULL, c.runtime_agent_id, 'unassigned', 'pos',
             'escpos', 'none', 'none', 'none',
-            c.enabled, 100, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC'
+            FALSE, 999, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC'
         FROM print_gateway_gateway_config c
         WHERE c.runtime_agent_id IS NOT NULL AND c.runtime_agent_id != ''
           AND NOT EXISTS (
               SELECT 1 FROM print_gateway_binding b 
               WHERE b.company_id = c.company_id
+                AND b.branch_id IS NULL
           )
     """)
 

@@ -68,6 +68,14 @@ class PrintGatewayIntent(models.Model):
                             _("Invalid intent state transition from '%s' to '%s'.")
                             % (record.status, target)
                         )
+                    # Worker transition from claimed to pending requires active recovery context or valid claim token
+                    if record.status == "claimed" and target == "pending":
+                        if not self.env.context.get("allow_lease_recovery") and not (
+                            vals.get("claim_token") == record.claim_token and record.claim_token
+                        ):
+                            raise ValidationError(
+                                _("Transition from 'claimed' to 'pending' requires valid claim ownership or lease recovery context.")
+                            )
         return super().write(vals)
 
     @api.model
@@ -76,78 +84,121 @@ class PrintGatewayIntent(models.Model):
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @classmethod
-    def _dispatch_intent_postcommit(cls, env, intent_id, res_model, res_id):
-        """Execute network/gateway dispatch strictly after the enclosing database transaction commits."""
+    def _claim_intent(cls, env, intent_id):
+        """Atomically claim intent with a unique token in an independent transaction.
+        Returns claim_token if acquired, or None if already claimed, fresh, or non-retryable."""
         claim_token = uuid.uuid4().hex
         now = fields.Datetime.now()
         stale_threshold = now - datetime.timedelta(minutes=5)
-        claimed = False
-
-        # 1. Atomically claim intent with a unique token in an independent transaction
         try:
             with env.registry.cursor() as cr:
                 cr.execute("""
                     UPDATE print_gateway_intent
                     SET status = 'claimed', claimed_at = %s, claim_token = %s, attempts = attempts + 1
                     WHERE id = %s AND (
-                        status = 'pending' OR
+                        (status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= %s)) OR
                         (status = 'claimed' AND (claimed_at IS NULL OR claimed_at <= %s)) OR
-                        (status = 'failed' AND attempts < max_attempts)
+                        (status = 'failed' AND attempts < max_attempts AND (next_retry_at IS NULL OR next_retry_at <= %s))
                     )
-                """, (now, claim_token, intent_id, stale_threshold))
+                """, (now, claim_token, intent_id, now, stale_threshold, now))
                 if cr.rowcount > 0:
-                    claimed = True
                     cr.commit()
+                    return claim_token
         except Exception as exc:
             _logger.error("Failed to claim print intent %s: %s", intent_id, exc)
-            return
+        return None
 
-        if not claimed:
-            return
+    @classmethod
+    def _finalize_intent_state(cls, env, intent_id, claim_token, status, print_job_id=None, last_error=None, next_retry_at=None):
+        """Atomically finalize intent state strictly protected by the fencing claim_token.
+        Returns True if updated, False if lease was superseded by another worker."""
+        if not claim_token:
+            return False
+        try:
+            with env.registry.cursor() as cr:
+                cr.execute("""
+                    UPDATE print_gateway_intent
+                    SET status = %s,
+                        print_job_id = %s,
+                        last_error = %s,
+                        next_retry_at = %s,
+                        write_date = NOW() AT TIME ZONE 'UTC'
+                    WHERE id = %s AND claim_token = %s
+                """, (status, print_job_id, last_error, next_retry_at, intent_id, claim_token))
+                if cr.rowcount > 0:
+                    cr.commit()
+                    return True
+                else:
+                    _logger.warning("Fencing token mismatch for intent %s; lease was superseded by another worker.", intent_id)
+                    return False
+        except Exception as exc:
+            _logger.error("Failed to finalize intent %s with token %s: %s", intent_id, claim_token, exc)
+            return False
 
-        # 2. Execute route and update terminal/failure state guarded by claim_token
+    @classmethod
+    def _execute_dispatched_route(cls, env, intent_id, res_model, res_id, claim_token):
+        """Execute network/gateway dispatch using an already acquired claim_token."""
+        if not claim_token:
+            return
         try:
             with env.registry.cursor() as cr:
                 new_env = api.Environment(cr, env.uid, dict(env.context))
                 intent = new_env["print_gateway.intent"].browse(intent_id).exists()
                 if not intent or intent.claim_token != claim_token:
+                    _logger.warning("Intent %s claim token mismatch before routing; skipping.", intent_id)
                     return
                 record = new_env[res_model].browse(res_id).exists()
                 if not record:
-                    intent.write({
-                        "status": "skipped",
-                        "last_error": "Source record no longer exists",
-                    })
-                    cr.commit()
+                    cls._finalize_intent_state(
+                        env, intent_id, claim_token,
+                        status="skipped",
+                        last_error="Source record no longer exists",
+                    )
                     return
                 router = new_env["print_gateway.print_router"]
                 try:
                     route_res = router.route_intent(intent, record)
                     if route_res and route_res.get("job_id"):
-                        intent.write({
-                            "print_job_id": route_res["job_id"],
-                            "status": "dispatched",
-                            "last_error": False,
-                        })
+                        cls._finalize_intent_state(
+                            env, intent_id, claim_token,
+                            status="dispatched",
+                            print_job_id=route_res["job_id"],
+                            last_error=False,
+                        )
                     elif route_res and route_res.get("status") in ("skipped", "no_action"):
-                        intent.write({"status": "skipped"})
+                        cls._finalize_intent_state(
+                            env, intent_id, claim_token,
+                            status="skipped",
+                        )
                     else:
-                        intent.write({"status": "dispatched", "last_error": False})
-                    cr.commit()
+                        cls._finalize_intent_state(
+                            env, intent_id, claim_token,
+                            status="dispatched",
+                            last_error=False,
+                        )
                 except Exception as exc:
                     _logger.warning("Failed to route print intent %s for %s(%s): %s", intent.intent_key[:12], res_model, res_id, exc)
                     next_retry = False
                     if intent.attempts < intent.max_attempts:
                         delay_sec = min(300, 15 * (2 ** max(0, intent.attempts - 1)))
                         next_retry = fields.Datetime.now() + datetime.timedelta(seconds=delay_sec)
-                    intent.write({
-                        "status": "failed" if intent.attempts >= intent.max_attempts else "pending",
-                        "last_error": str(exc),
-                        "next_retry_at": next_retry,
-                    })
-                    cr.commit()
+                    target_status = "failed" if intent.attempts >= intent.max_attempts else "pending"
+                    cls._finalize_intent_state(
+                        env, intent_id, claim_token,
+                        status=target_status,
+                        last_error=str(exc),
+                        next_retry_at=next_retry,
+                    )
         except Exception as exc:
-            _logger.error("Error in postcommit print intent execution: %s", exc)
+            _logger.error("Error in dispatched route execution for intent %s: %s", intent_id, exc)
+
+    @classmethod
+    def _dispatch_intent_postcommit(cls, env, intent_id, res_model, res_id):
+        """Execute network/gateway dispatch strictly after the enclosing database transaction commits."""
+        claim_token = cls._claim_intent(env, intent_id)
+        if not claim_token:
+            return
+        cls._execute_dispatched_route(env, intent_id, res_model, res_id, claim_token)
 
     @api.model
     def create_and_route(self, policy, record, event_type):
@@ -244,7 +295,10 @@ class PrintGatewayIntent(models.Model):
         for candidate in candidates:
             if candidate.attempts >= candidate.max_attempts:
                 continue
-            self._dispatch_intent_postcommit(self.env, candidate.id, candidate.res_model, candidate.res_id)
+            claim_token = self._claim_intent(self.env, candidate.id)
+            if not claim_token:
+                continue
+            self._execute_dispatched_route(self.env, candidate.id, candidate.res_model, candidate.res_id, claim_token)
             recovered_count += 1
 
         return recovered_count

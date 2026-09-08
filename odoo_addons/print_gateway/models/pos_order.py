@@ -50,6 +50,8 @@ class PosOrderGatewayPrinting(models.Model):
 
         if policies:
             for order in self:
+                if order.state not in ("paid", "done", "invoiced"):
+                    continue
                 for policy in policies:
                     if policy.matches_record(order):
                         intent_model.create_and_route(policy, order, "pos_order_paid")
