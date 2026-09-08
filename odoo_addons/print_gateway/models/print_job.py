@@ -40,6 +40,20 @@ class PrintGatewayJob(models.Model):
         ("unknown", "Possibly printed / unknown"),
     ], compute="_compute_physical_outcome")
     payload = fields.Text(required=True, copy=False, readonly=True)
+    payload_type = fields.Selection([
+        ("pdf", "PDF Vector"),
+        ("raster_jpeg", "JPEG Raster Banding"),
+        ("raw_cmd", "Native Printer Command"),
+    ], default="pdf", required=True, readonly=True)
+    protocol = fields.Selection([
+        ("raw", "Raw Text/Binary"),
+        ("escpos", "ESC/POS"),
+        ("zpl", "Zebra ZPL-II"),
+        ("tspl", "TSC TSPL"),
+    ], default="raw", required=True, readonly=True)
+    raw_payload = fields.Text(string="Native Command Payload", readonly=True)
+    printer_profile = fields.Text(string="Printer Hardware Profile", readonly=True)
+    fallback_binding_id = fields.Many2one("print_gateway.binding", string="Failover Backup Binding", readonly=True)
     idempotency_key = fields.Char(required=True, index=True, copy=False, readonly=True)
     attempts = fields.Integer(default=0, readonly=True)
     reprint_attempt_count = fields.Integer(string="Reprint Attempts", default=0, readonly=True)
@@ -99,7 +113,8 @@ class PrintGatewayJob(models.Model):
     @api.model
     def create_operation(self, *, company, gateway_config, printer_id, destination, document_type,
                          payload, source_model=None, source_record_id=None, report=None,
-                         idempotency_key=None):
+                         idempotency_key=None, payload_type="pdf", protocol="raw",
+                         raw_payload=None, printer_profile=None, fallback_binding=None):
         if not company or not gateway_config:
             raise ValidationError(_("Gateway configuration is missing."))
         if company != self.env.company:
@@ -144,6 +159,11 @@ class PrintGatewayJob(models.Model):
             "document_type": str(document_type).strip().lower(),
             "status": "queued",
             "payload": payload_json,
+            "payload_type": payload_type or "pdf",
+            "protocol": protocol or "raw",
+            "raw_payload": raw_payload or False,
+            "printer_profile": printer_profile or False,
+            "fallback_binding_id": fallback_binding.id if fallback_binding else False,
             "idempotency_key": key,
             "next_retry_at": fields.Datetime.now(),
             "source_model": source_model or False,
@@ -174,13 +194,26 @@ class PrintGatewayJob(models.Model):
             payload = json.loads(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValidationError(_("Stored print payload is corrupted.")) from exc
-        return {
+        body = {
             "printerId": self.printer_id,
             "documentType": self.document_type,
             "destination": self.destination,
             "payload": payload,
             "idempotencyKey": self.idempotency_key,
         }
+        return body
+
+    def _post_source_audit(self, message):
+        """Post audit message to source record chatter if supported."""
+        for job in self:
+            if not job.source_model or not job.source_record_id:
+                continue
+            try:
+                record = self.env[job.source_model].browse(job.source_record_id).exists()
+                if record and hasattr(record, "message_post"):
+                    record.message_post(body=message, subtype_xmlid="mail.mt_note")
+            except Exception as exc:
+                _logger.debug("Chatter audit logging skipped: %s", exc)
 
     def action_submit(self, raise_on_failure=False):
         for job in self:
@@ -209,6 +242,7 @@ class PrintGatewayJob(models.Model):
                     "status": "submitted" if remote_status == "queued" else remote_status,
                     "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
                 })
+                job._post_source_audit(_("Print Job #%s queued to '%s'") % (remote_id or job.id, job.printer_id))
             except requests.exceptions.Timeout as exc:
                 values = {
                     "status": "unknown",
@@ -220,10 +254,23 @@ class PrintGatewayJob(models.Model):
                     job._persist_state(values)
                 else:
                     job.write(values)
+                job._post_source_audit(_("WARNING: Print Job #%s timed out; physical outcome is unknown on '%s'.") % (job.id, job.printer_id))
                 _logger.warning("Gateway submission timed out; outcome is unknown for job %s", job.idempotency_key[:8])
                 if raise_on_failure:
                     raise ValidationError(_("Gateway submission timed out; physical outcome is unknown. Automated retries are paused to prevent duplicate prints. Operator reprint required.")) from exc
             except requests.exceptions.ConnectionError as exc:
+                # Pre-dispatch failure: zero bytes transmitted. Safe failover check!
+                if job.attempts == 0 and job.fallback_binding_id and job.fallback_binding_id.printer_id != job.printer_id:
+                    fallback = job.fallback_binding_id
+                    _logger.warning("Primary printer %s connection failed; triggering safe pre-dispatch failover to %s", job.printer_id, fallback.printer_id)
+                    job.write({
+                        "printer_id": fallback.printer_id,
+                        "destination": fallback.destination_ref.display_name if fallback.destination_ref else fallback.name,
+                        "last_error": "PRE_DISPATCH_FAILOVER: Primary offline, routed to backup printer %s" % fallback.printer_id,
+                    })
+                    job._post_source_audit(_("Primary printer offline. Failover engaged: routed to backup printer '%s'") % fallback.printer_id)
+                    return job.action_submit(raise_on_failure=raise_on_failure)
+
                 next_attempt = job.attempts + 1
                 terminal = next_attempt >= 5
                 retry_delay = min(300, 10 * (2 ** min(next_attempt - 1, 5)))
@@ -304,6 +351,10 @@ class PrintGatewayJob(models.Model):
                 if status in self._TERMINAL:
                     values["completed_at"] = fields.Datetime.now()
                 job.write(values)
+                if status == "success":
+                    job._post_source_audit(_("Print Job #%s confirmed delivered to printer '%s'") % (job.gateway_job_id or job.id, job.printer_id))
+                elif status in ("partial", "unknown"):
+                    job._post_source_audit(_("WARNING: Print Job #%s interrupted or ambiguous on '%s'. Manual check required.") % (job.gateway_job_id or job.id, job.printer_id))
             except (requests.RequestException, ValueError):
                 _logger.warning("Gateway status sync failed for job %s", job.idempotency_key[:8])
         return True

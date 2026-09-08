@@ -173,7 +173,7 @@ class PrintGatewayRouter(models.AbstractModel):
     def _persist_durable_job(self, values):
         """Create the durable Odoo outbox row in an independent transaction."""
         durable_values = dict(values)
-        for key in ("company", "gateway_config", "report"):
+        for key in ("company", "gateway_config", "report", "fallback_binding"):
             record = durable_values.get(key)
             durable_values[key] = record.id if record else False
 
@@ -183,6 +183,7 @@ class PrintGatewayRouter(models.AbstractModel):
                 ("company", "res.company"),
                 ("gateway_config", "print_gateway.gateway_config"),
                 ("report", "ir.actions.report"),
+                ("fallback_binding", "print_gateway.binding"),
             ):
                 record_id = durable_values.get(key)
                 if not record_id:
@@ -229,6 +230,7 @@ class PrintGatewayRouter(models.AbstractModel):
             "source_model": source_model,
             "source_record_id": source_record_id,
             "report": report,
+            "fallback_binding": route["binding"].fallback_binding_id if route.get("binding") else None,
             "idempotency_key": idempotency_key or uuid.uuid4().hex,
         })
         status = self._submit_durable_job(job_id)
@@ -336,4 +338,137 @@ class PrintGatewayRouter(models.AbstractModel):
         return self._submit_route(
             route=route, payload={"type": "image", "encoding": "base64", "data": image_base64},
             company=self.env.company, source_model=session._name, source_record_id=session.id,
+        )
+
+    @api.model
+    def route_intent(self, intent, record=None):
+        """Route an automated print policy intent to the Outbox."""
+        policy = intent.policy_id
+        target_record = record or self.env[intent.res_model].browse(intent.res_id).exists()
+        if not target_record:
+            return {"status": "skipped", "message": _("Source record no longer exists.")}
+
+        company = target_record.company_id if hasattr(target_record, "company_id") and target_record.company_id else self.env.company
+        config = self._gateway_config(company)
+        if not config:
+            return {"status": "skipped", "message": _("Gateway printing is not enabled for company %s") % company.display_name}
+
+        # If policy specifies a report, render standard report
+        if policy.report_id:
+            route = self.resolve_binding(
+                report=policy.report_id,
+                record=target_record,
+                company=company,
+                explicit_destination=policy.binding_id.destination_ref if policy.binding_id else None,
+            )
+            if route.get("native"):
+                return route
+            return self._submit_route(
+                route=route,
+                payload=self._render_pdf_payload(policy.report_id, target_record),
+                company=company,
+                report=policy.report_id,
+                source_model=target_record._name,
+                source_record_id=target_record.id,
+                idempotency_key=intent.intent_key,
+            )
+
+        # If policy specifies raw command (e.g. barcode label) or binding has raw capability
+        return {"status": "no_action", "message": _("No report action configured for policy %s") % policy.name}
+
+    @api.model
+    def route_raw_command(self, raw_data, *, protocol="zpl", binding=None, destination=None, record=None, company=None, document_type="label"):
+        """Directly route raw printer commands (ZPL/TSPL/ESC-POS) without QWeb rendering."""
+        current_company = company or (record.company_id if record and hasattr(record, "company_id") else self.env.company)
+        config = self._gateway_config(current_company)
+        if not config:
+            return {"gateway_enabled": False, "native": True}
+
+        if not binding:
+            route = self.resolve_binding(
+                record=record,
+                company=current_company,
+                document_type=document_type,
+                explicit_destination=destination,
+            )
+            if route.get("native"):
+                return route
+            target_binding = route["binding"]
+            target_destination = route["destination"]
+        else:
+            target_binding = binding
+            target_destination = binding.destination_ref
+
+        if isinstance(raw_data, str):
+            raw_bytes = raw_data.encode("utf-8")
+        else:
+            raw_bytes = bytes(raw_data)
+
+        payload = {
+            "type": "raw",
+            "encoding": "base64",
+            "data": base64.b64encode(raw_bytes).decode("ascii"),
+        }
+
+        job_id = self._persist_durable_job({
+            "company": current_company,
+            "gateway_config": config,
+            "printer_id": target_binding.printer_id,
+            "destination": target_destination.display_name if hasattr(target_destination, "display_name") else str(target_destination),
+            "document_type": document_type,
+            "payload": payload,
+            "payload_type": "raw_cmd",
+            "protocol": protocol,
+            "raw_payload": raw_data if isinstance(raw_data, str) else raw_bytes.decode("latin1", errors="replace"),
+            "fallback_binding": target_binding.fallback_binding_id,
+            "source_model": record._name if record else False,
+            "source_record_id": record.id if record else False,
+            "idempotency_key": uuid.uuid4().hex,
+        })
+        status = self._submit_durable_job(job_id)
+        return {
+            "gateway_enabled": True,
+            "native": False,
+            "status": status,
+            "job_id": job_id,
+            "message": _("Raw %s print job %s accepted.") % (protocol.upper(), job_id),
+        }
+
+    @api.model
+    def route_test_page(self, binding):
+        """Send a standardized diagnostic test ticket to the target printer."""
+        binding.ensure_one()
+        current_company = binding.branch_id or binding.company_id
+        config = self._gateway_config(current_company)
+        if not config:
+            raise ValidationError(_("Print Gateway is disabled for company %s.") % current_company.display_name)
+
+        ticket_lines = [
+            "\x1b\x40",  # Initialize printer
+            "\x1b\x61\x01",  # Centered
+            "================================\n",
+            "  ODOO PRINT GATEWAY DIAGNOSTIC  \n",
+            "================================\n",
+            "\x1b\x61\x00",  # Left align
+            f"Company : {binding.company_id.name}\n",
+            f"Branch  : {binding.branch_id.name if binding.branch_id else 'Default / Root'}\n",
+            f"Agent ID: {binding.runtime_agent_id}\n",
+            f"Printer : {binding.printer_id}\n",
+            f"Area    : {binding.destination_type.upper()}\n",
+            f"Drawer  : {binding.drawer_kick_mode}\n",
+            f"Cutter  : {binding.cutter_mode}\n",
+            f"Chime   : {binding.buzzer_mode}\n",
+            "--------------------------------\n",
+            "Hardware Test Status: OK\n",
+            "Timestamp: " + fields.Datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n",
+            "================================\n\n\n",
+            "\x1d\x56\x01",  # Cut
+        ]
+        ticket_raw = "".join(ticket_lines)
+        return self.route_raw_command(
+            ticket_raw,
+            protocol="escpos",
+            binding=binding,
+            company=current_company,
+            document_type="test_page",
         )

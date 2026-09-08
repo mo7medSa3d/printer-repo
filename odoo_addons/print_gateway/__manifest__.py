@@ -24,6 +24,7 @@ Odoo printing occurs only when Gateway printing is explicitly disabled.
         'security/security.xml',
         'views/gateway_config_views.xml',
         'views/binding_views.xml',
+        'views/print_policy_views.xml',
         'views/print_job_views.xml',
         'views/menu.xml',
         'data/cron.xml',

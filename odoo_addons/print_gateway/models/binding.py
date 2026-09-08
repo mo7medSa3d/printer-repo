@@ -87,6 +87,26 @@ class PrintGatewayBinding(models.Model):
     printer_id = fields.Char(
         string="Gateway Runtime Printer", required=True, index=True, copy=False,
     )
+    fallback_binding_id = fields.Many2one(
+        "print_gateway.binding", string="Failover Backup Binding", ondelete="set null",
+        domain="['&', ('id', '!=', id), ('company_id', '=', company_id)]",
+        help="Pre-dispatch failover target if the primary printer is confirmed offline before bytes are sent.",
+    )
+    drawer_kick_mode = fields.Selection([
+        ("none", "Disabled"),
+        ("pin2", "Pin 2 (0x1B 0x70 0x00)"),
+        ("pin5", "Pin 5 (0x1B 0x70 0x01)"),
+    ], string="Cash Drawer Kick", default="none", help="Hardware cash drawer pulse mode.")
+    cutter_mode = fields.Selection([
+        ("none", "No Cut"),
+        ("partial", "Partial Cut (0x1D 0x56 0x42)"),
+        ("full", "Full Cut (0x1D 0x56 0x41)"),
+    ], string="Paper Cutter", default="none", help="Hardware paper cutter command mode.")
+    buzzer_mode = fields.Selection([
+        ("none", "Disabled"),
+        ("epson_pulse", "Epson Internal Chime (0x1B 0x63 0x30)"),
+        ("star_bel", "Star Micronics BEL (0x07)"),
+    ], string="Kitchen Chime / Buzzer", default="none", help="Hardware buzzer chime mode.")
     enabled = fields.Boolean(default=True)
     priority = fields.Integer(default=10, help="Lower value is preferred when multiple bindings are valid.")
     name = fields.Char(compute="_compute_name", store=True)
@@ -282,6 +302,13 @@ class PrintGatewayBinding(models.Model):
                 raise ValidationError(_("Stock reports must use an operation type or report destination."))
             if not isinstance(record.printer_id, str) or not record.printer_id.strip():
                 raise ValidationError(_("A Gateway Runtime Printer must be selected."))
+
+    def action_send_test_print(self):
+        """Construct a standardized diagnostic test page and submit via the Outbox pipeline."""
+        self.ensure_one()
+        self._validate_runtime_target()
+        router = self.env["print_gateway.print_router"]
+        return router.route_test_page(self)
 
     def action_verify_remote_hardware(self):
         self.ensure_one()

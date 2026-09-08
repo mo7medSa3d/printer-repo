@@ -26,6 +26,10 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
             "pos_session.py",
             "print_job.py",
             "print_router.py",
+            "print_policy.py",
+            "print_intent.py",
+            "stock_picking.py",
+            "account_move.py",
         }
         self.assertEqual({path.name for path in MODELS.glob("*.py")}, allowed)
 

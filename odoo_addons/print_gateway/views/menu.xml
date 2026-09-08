@@ -18,6 +18,12 @@
               action="action_print_gateway_binding"
               sequence="20"
               groups="base.group_user"/>
+    <menuitem id="menu_print_gateway_policies"
+              name="Print Policies"
+              parent="menu_print_gateway_main"
+              action="action_print_gateway_policies"
+              sequence="25"
+              groups="base.group_user"/>
     <menuitem id="menu_print_gateway_jobs"
               name="Print Jobs"
               parent="menu_print_gateway_main"
