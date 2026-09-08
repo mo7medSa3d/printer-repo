@@ -88,6 +88,7 @@
                             <group string="Runtime Target">
                                 <field name="runtime_agent_id" string="Gateway Runtime Agent" widget="gateway_runtime_agent"/>
                                 <field name="printer_id" string="Gateway Runtime Printer" widget="gateway_runtime_printer"/>
+                                <field name="printer_protocol" string="Printer Protocol"/>
                                 <field name="fallback_binding_id" string="Failover Backup Binding" options="{'no_create': True}"/>
                             </group>
                             <group string="Hardware Peripherals (ESC/POS)">

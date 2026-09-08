@@ -243,3 +243,99 @@ class TestControlPlane(TransactionCase):
             job = self.env["print_gateway.print_job"].browse(res.get("job_id"))
             self.assertEqual(job.protocol, "escpos")
             self.assertIn("ODOO PRINT GATEWAY DIAGNOSTIC", job.raw_payload)
+
+    def test_06_intent_crash_recovery_cron(self):
+        """Verify cron_recover_pending_intents recovers stale claimed or pending intents."""
+        intent_model = self.env["print_gateway.intent"]
+        model = self.env["ir.model"].search([], limit=1)
+        policy = self.env["print_gateway.policy"].create({
+            "name": "Cron Recovery Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": model.id,
+            "event_type": "test_event",
+            "binding_id": self.primary_binding.id,
+            "active": True,
+        })
+        intent = intent_model.create({
+            "intent_key": "stale_intent_test_key_01",
+            "policy_id": policy.id,
+            "res_model": model.model,
+            "res_id": 1,
+            "event_type": "test_event",
+            "status": "pending",
+        })
+        with patch.object(intent_model, "_dispatch_intent_postcommit") as mock_dispatch:
+            recovered = intent_model.cron_recover_pending_intents()
+            self.assertGreaterEqual(recovered, 1)
+            mock_dispatch.assert_called()
+
+    def test_07_failover_cycle_safety(self):
+        """Verify cycle in fallback bindings terminates without infinite recursion."""
+        # Create circular fallback: primary -> backup -> primary
+        self.backup_binding.fallback_binding_id = self.primary_binding.id
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Cycle Destination",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "raw", "data": "dGVzdA=="}),
+            "idempotency_key": "test_cycle_safety_key_01",
+            "fallback_binding_id": self.backup_binding.id,
+        })
+        import requests
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", side_effect=requests.exceptions.ConnectionError("Connection Failed")):
+            # Must terminate gracefully, not hang in recursion
+            job.action_submit()
+            self.assertIn(job.status, ("failed", "queued"))
+
+    def test_08_raw_command_idempotency_and_authorization(self):
+        """Verify route_raw_command accepts explicit idempotency key and enforces binding validation."""
+        router = self.env["print_gateway.print_router"].with_company(self.branch)
+        RouterClass = type(router)
+        disabled_binding = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-disabled",
+            "enabled": False,
+            "priority": 99,
+        })
+        with self.assertRaises(ValidationError):
+            router.route_raw_command(
+                "^XA^XZ",
+                binding=disabled_binding,
+                company=self.branch,
+            )
+
+        with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
+             patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
+            res = router.route_raw_command(
+                "^XA^XZ",
+                binding=self.primary_binding,
+                company=self.branch,
+                idempotency_key="custom_explicit_key_123",
+            )
+            job = self.env["print_gateway.print_job"].browse(res["job_id"])
+            self.assertEqual(job.idempotency_key, "custom_explicit_key_123")
+
+    def test_09_policy_template_format_error_raises(self):
+        """Verify render_raw_template raises ValidationError on missing format keys."""
+        model = self.env["ir.model"].search([("model", "=", "res.company")], limit=1)
+        policy = self.env["print_gateway.policy"].create({
+            "name": "Template Error Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": model.id,
+            "event_type": "test_event",
+            "raw_template": "Hello {non_existent_field_xyz}!",
+            "active": True,
+        })
+        with self.assertRaises(ValidationError):
+            policy.render_raw_template(self.company)
+

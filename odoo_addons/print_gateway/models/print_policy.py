@@ -91,8 +91,11 @@ class PrintGatewayPolicy(models.Model):
                 pass
         try:
             return template.format(**values)
-        except Exception:
-            return template
+        except Exception as exc:
+            raise ValidationError(
+                _("Failed to render raw template for policy '%s' with record %s(%s): %s")
+                % (self.name, record._name, record.id, exc)
+            ) from exc
 
     @api.depends("company_id", "branch_id")
     def _compute_effective_company_id(self):
@@ -125,15 +128,15 @@ class PrintGatewayPolicy(models.Model):
             if not self.branch_id and not record_company.parent_id and record_company != self.company_id:
                 return False
 
-        # Specific warehouse / picking type filters
+        # Specific warehouse / picking type filters (fail-closed if record cannot resolve attribute)
         if self.warehouse_id:
             record_warehouse = getattr(record, "warehouse_id", False) or (getattr(record, "picking_type_id", False) and record.picking_type_id.warehouse_id)
-            if record_warehouse and record_warehouse != self.warehouse_id:
+            if not record_warehouse or record_warehouse != self.warehouse_id:
                 return False
 
         if self.picking_type_id:
             record_ptype = getattr(record, "picking_type_id", False)
-            if record_ptype and record_ptype != self.picking_type_id:
+            if not record_ptype or record_ptype != self.picking_type_id:
                 return False
 
         # Domain filter check

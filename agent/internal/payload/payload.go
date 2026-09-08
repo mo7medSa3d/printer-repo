@@ -27,6 +27,7 @@ type Peripherals struct {
 
 type Payload struct {
 	Type        Type
+	Protocol    string
 	Data        []byte
 	Peripherals Peripherals
 }
@@ -49,6 +50,8 @@ func Parse(raw interface{}) (*Payload, error) {
 		}
 		return nil, fmt.Errorf("unsupported payload type %q (expected %q, %q, %q or %q)", typ, TypeRaw, TypeESCPOS, TypePDF, TypeImage)
 	}
+
+	protocol, _ := m["protocol"].(string)
 
 	encoding, _ := m["encoding"].(string)
 	if encoding != EncodingBase64 {
@@ -84,18 +87,34 @@ func Parse(raw interface{}) (*Payload, error) {
 	var periph Peripherals
 	if periphMap, ok := m["peripherals"].(map[string]interface{}); ok {
 		if d, ok := periphMap["drawer"].(string); ok {
-			periph.Drawer = d
+			switch d {
+			case "pin2", "pin5", "none":
+				periph.Drawer = d
+			default:
+				return nil, fmt.Errorf("invalid drawer mode %q", d)
+			}
 		}
 		if c, ok := periphMap["cutter"].(string); ok {
-			periph.Cutter = c
+			switch c {
+			case "partial", "full", "none":
+				periph.Cutter = c
+			default:
+				return nil, fmt.Errorf("invalid cutter mode %q", c)
+			}
 		}
 		if b, ok := periphMap["buzzer"].(string); ok {
-			periph.Buzzer = b
+			switch b {
+			case "epson_pulse", "star_bel", "none":
+				periph.Buzzer = b
+			default:
+				return nil, fmt.Errorf("invalid buzzer mode %q", b)
+			}
 		}
 	}
 
 	return &Payload{
 		Type:        Type(typ),
+		Protocol:    protocol,
 		Data:        decoded,
 		Peripherals: periph,
 	}, nil

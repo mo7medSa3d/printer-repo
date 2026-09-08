@@ -3,6 +3,7 @@
 
 import base64
 import binascii
+import hashlib
 import uuid
 
 from odoo import api, fields, models, _
@@ -392,12 +393,16 @@ class PrintGatewayRouter(models.AbstractModel):
                 record=target_record,
                 company=company,
                 document_type="label",
+                idempotency_key=intent.intent_key,
             )
 
         raise ValidationError(_("No report or raw label action configured for policy %s") % policy.name)
 
     @api.model
-    def route_raw_command(self, raw_data, *, protocol="zpl", binding=None, destination=None, record=None, company=None, document_type="label"):
+    def route_raw_command(
+        self, raw_data, *, protocol="zpl", binding=None, destination=None,
+        record=None, company=None, document_type="label", idempotency_key=None,
+    ):
         """Directly route raw printer commands (ZPL/TSPL/ESC-POS) without QWeb rendering."""
         current_company = company or (record.company_id if record and hasattr(record, "company_id") else self.env.company)
         config = self._gateway_config(current_company)
@@ -416,8 +421,22 @@ class PrintGatewayRouter(models.AbstractModel):
             target_binding = route["binding"]
             target_destination = route["destination"]
         else:
+            # P1.1 Direct Binding Authorization: Validate caller-supplied binding
+            if not binding.enabled:
+                raise ValidationError(_("The specified print binding '%s' is disabled.") % binding.display_name)
+            binding_effective = binding.branch_id or binding.company_id
+            if binding_effective != current_company and binding.company_id != current_company:
+                raise ValidationError(
+                    _("Print binding '%s' belongs to company '%s', but current operation is for '%s'.")
+                    % (binding.display_name, binding_effective.display_name, current_company.display_name)
+                )
+            if not binding.printer_id:
+                raise ValidationError(_("Print binding '%s' has no Gateway Runtime Printer assigned.") % binding.display_name)
+            if binding.branch_id and not binding.runtime_agent_id:
+                raise ValidationError(_("Print binding '%s' has no Gateway Runtime Agent assigned.") % binding.display_name)
+
             target_binding = binding
-            target_destination = binding.destination_ref
+            target_destination = binding.destination_ref or destination
 
         if isinstance(raw_data, str):
             raw_bytes = raw_data.encode("utf-8")
@@ -436,6 +455,14 @@ class PrintGatewayRouter(models.AbstractModel):
                 "buzzer": target_binding.buzzer_mode if target_binding.buzzer_mode != "none" else "none",
             }
 
+        # P0.3 Deterministic raw idempotency key
+        if not idempotency_key:
+            if record:
+                raw_token = f"{record._name}:{record.id}:{document_type}:{target_binding.id}:{getattr(record, 'write_date', '')}"
+                idempotency_key = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+            else:
+                idempotency_key = uuid.uuid4().hex
+
         job_id = self._persist_durable_job({
             "company": current_company,
             "gateway_config": config,
@@ -449,7 +476,7 @@ class PrintGatewayRouter(models.AbstractModel):
             "fallback_binding": target_binding.fallback_binding_id,
             "source_model": record._name if record else False,
             "source_record_id": record.id if record else False,
-            "idempotency_key": uuid.uuid4().hex,
+            "idempotency_key": idempotency_key,
         })
         status = self._submit_durable_job(job_id)
         return {
@@ -469,32 +496,71 @@ class PrintGatewayRouter(models.AbstractModel):
         if not config:
             raise ValidationError(_("Print Gateway is disabled for company %s.") % current_company.display_name)
 
-        ticket_lines = [
-            "\x1b\x40",  # Initialize printer
-            "\x1b\x61\x01",  # Centered
-            "================================\n",
-            "  ODOO PRINT GATEWAY DIAGNOSTIC  \n",
-            "================================\n",
-            "\x1b\x61\x00",  # Left align
-            f"Company : {binding.company_id.name}\n",
-            f"Branch  : {binding.branch_id.name if binding.branch_id else 'Default / Root'}\n",
-            f"Agent ID: {binding.runtime_agent_id}\n",
-            f"Printer : {binding.printer_id}\n",
-            f"Area    : {binding.destination_type.upper()}\n",
-            f"Drawer  : {binding.drawer_kick_mode}\n",
-            f"Cutter  : {binding.cutter_mode}\n",
-            f"Chime   : {binding.buzzer_mode}\n",
-            "--------------------------------\n",
-            "Hardware Test Status: OK\n",
-            "Timestamp: " + fields.Datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n",
-            "================================\n\n\n",
-            "\x1d\x56\x01",  # Cut
-        ]
-        ticket_raw = "".join(ticket_lines)
+        proto = getattr(binding, "printer_protocol", False) or "escpos"
+        now_str = fields.Datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        company_name = binding.company_id.name
+        branch_name = binding.branch_id.name if binding.branch_id else "Default / Root"
+
+        if proto == "zpl":
+            ticket_raw = (
+                "^XA\n"
+                "^FO50,50^A0N,36,36^FDODOO PRINT GATEWAY DIAGNOSTIC^FS\n"
+                "^FO50,100^GB700,2,2^FS\n"
+                f"^FO50,120^A0N,28,28^FDCompany : {company_name}^FS\n"
+                f"^FO50,160^A0N,28,28^FDBranch  : {branch_name}^FS\n"
+                f"^FO50,200^A0N,28,28^FDAgent ID: {binding.runtime_agent_id or 'None'}^FS\n"
+                f"^FO50,240^A0N,28,28^FDPrinter : {binding.printer_id}^FS\n"
+                f"^FO50,280^A0N,28,28^FDProtocol: ZPL-II^FS\n"
+                "^FO50,320^GB700,2,2^FS\n"
+                f"^FO50,340^A0N,24,24^FDStatus: OK | {now_str}^FS\n"
+                "^XZ\n"
+            )
+        elif proto == "tspl":
+            agent_str = binding.runtime_agent_id or "None"
+            ticket_raw = (
+                "SIZE 75 mm, 50 mm\n"
+                "GAP 2 mm, 0 mm\n"
+                "DIRECTION 1\n"
+                "CLS\n"
+                'TEXT 50,40,"3",0,1,1,"ODOO PRINT GATEWAY DIAGNOSTIC"\n'
+                f'TEXT 50,80,"2",0,1,1,"Company : {company_name}"\n'
+                f'TEXT 50,110,"2",0,1,1,"Branch  : {branch_name}"\n'
+                f'TEXT 50,140,"2",0,1,1,"Agent ID: {agent_str}"\n'
+                f'TEXT 50,170,"2",0,1,1,"Printer : {binding.printer_id}"\n'
+                f'TEXT 50,200,"2",0,1,1,"Protocol: TSPL"\n'
+                f'TEXT 50,230,"1",0,1,1,"Status: OK | {now_str}"\n'
+                "PRINT 1,1\n"
+            )
+        else:
+            ticket_lines = [
+                "\x1b\x40",  # Initialize printer
+                "\x1b\x61\x01",  # Centered
+                "================================\n",
+                "  ODOO PRINT GATEWAY DIAGNOSTIC  \n",
+                "================================\n",
+                "\x1b\x61\x00",  # Left align
+                f"Company : {company_name}\n",
+                f"Branch  : {branch_name}\n",
+                f"Agent ID: {binding.runtime_agent_id}\n",
+                f"Printer : {binding.printer_id}\n",
+                f"Area    : {binding.destination_type.upper()}\n",
+                f"Protocol: {proto.upper()}\n",
+                f"Drawer  : {binding.drawer_kick_mode}\n",
+                f"Cutter  : {binding.cutter_mode}\n",
+                f"Chime   : {binding.buzzer_mode}\n",
+                "--------------------------------\n",
+                "Hardware Test Status: OK\n",
+                f"Timestamp: {now_str}\n",
+                "================================\n\n\n",
+                "\x1d\x56\x01",  # Cut
+            ]
+            ticket_raw = "".join(ticket_lines)
+
         return self.route_raw_command(
             ticket_raw,
-            protocol="escpos",
+            protocol=proto,
             binding=binding,
             company=current_company,
             document_type="test_page",
         )
+

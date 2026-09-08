@@ -87,6 +87,13 @@ class PrintGatewayBinding(models.Model):
     printer_id = fields.Char(
         string="Gateway Runtime Printer", required=True, index=True, copy=False,
     )
+    printer_protocol = fields.Selection([
+        ("escpos", "ESC/POS"),
+        ("zpl", "Zebra ZPL-II"),
+        ("tspl", "TSC TSPL"),
+        ("raw", "Raw Text/Binary"),
+    ], string="Printer Protocol", default="escpos", required=True,
+       help="Hardware control language understood by the printer.")
     fallback_binding_id = fields.Many2one(
         "print_gateway.binding", string="Failover Backup Binding", ondelete="set null",
         domain="['&', ('id', '!=', id), ('company_id', '=', company_id)]",

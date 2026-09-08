@@ -216,110 +216,134 @@ class PrintGatewayJob(models.Model):
                 _logger.debug("Chatter audit logging skipped: %s", exc)
 
     def action_submit(self, raise_on_failure=False):
+        MAX_FAILOVER_DEPTH = 3
         for job in self:
             if job.status in self._TERMINAL and job.gateway_job_id:
                 continue
-            gateway_config = job.gateway_config_id.sudo()
-            try:
-                response = requests.post(
-                    "%s/api/print/jobs" % gateway_config._gateway_base(for_request=True),
-                    json=job._submission_body(), headers=gateway_config._gateway_headers(),
-                    timeout=(5, 20), allow_redirects=False,
-                )
-                if response.status_code not in (200, 201):
-                    raise RuntimeError("GATEWAY_HTTP_%s" % response.status_code)
-                body = response.json()
-                remote_id = body.get("jobId") or body.get("id")
-                if not remote_id:
-                    raise RuntimeError("GATEWAY_INVALID_RESPONSE")
-                remote_status = str(body.get("status") or "queued").strip().lower()
-                if remote_status == "completed":
-                    remote_status = "success"
-                if remote_status not in {"queued", "submitted", "claimed", "printing", "success", "failed", "unknown"}:
-                    remote_status = "submitted"
-                job.write({
-                    "gateway_job_id": str(remote_id),
-                    "status": "submitted" if remote_status == "queued" else remote_status,
-                    "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
-                })
-                job._post_source_audit(_("Print Job #%s queued to '%s'") % (remote_id or job.id, job.printer_id))
-            except requests.exceptions.Timeout as exc:
-                values = {
-                    "status": "unknown",
-                    "attempts": job.attempts + 1,
-                    "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request timed out (ambiguous dispatch)",
-                    "next_retry_at": False,
-                }
-                if raise_on_failure:
-                    job._persist_state(values)
-                else:
-                    job.write(values)
-                job._post_source_audit(_("WARNING: Print Job #%s timed out; physical outcome is unknown on '%s'.") % (job.id, job.printer_id))
-                _logger.warning("Gateway submission timed out; outcome is unknown for job %s", job.idempotency_key[:8])
-                if raise_on_failure:
-                    raise ValidationError(_("Gateway submission timed out; physical outcome is unknown. Automated retries are paused to prevent duplicate prints. Operator reprint required.")) from exc
-            except requests.exceptions.ConnectionError as exc:
-                # Pre-dispatch failure: zero bytes transmitted. Safe failover check!
-                if job.attempts == 0 and job.fallback_binding_id and job.fallback_binding_id.printer_id != job.printer_id:
-                    fallback = job.fallback_binding_id
-                    _logger.warning("Primary printer %s connection failed; triggering safe pre-dispatch failover to %s", job.printer_id, fallback.printer_id)
-                    job.write({
-                        "printer_id": fallback.printer_id,
-                        "destination": fallback.destination_ref.display_name if fallback.destination_ref else fallback.name,
-                        "last_error": "PRE_DISPATCH_FAILOVER: Primary offline, routed to backup printer %s" % fallback.printer_id,
-                    })
-                    job._post_source_audit(_("Primary printer offline. Failover engaged: routed to backup printer '%s'") % fallback.printer_id)
-                    return job.action_submit(raise_on_failure=raise_on_failure)
 
-                next_attempt = job.attempts + 1
-                terminal = next_attempt >= 5
-                retry_delay = min(300, 10 * (2 ** min(next_attempt - 1, 5)))
-                next_retry = False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=retry_delay)
-                values = {
-                    "status": "failed" if terminal else "queued",
-                    "attempts": next_attempt,
-                    "last_error": "CONNECTION_ERROR: %s" % str(exc)[:4000],
-                    "next_retry_at": next_retry,
-                    "completed_at": fields.Datetime.now() if terminal else False,
-                }
-                if raise_on_failure:
-                    job._persist_state(values)
-                else:
-                    job.write(values)
-                _logger.warning("Gateway connection failed for job %s (attempt %s/5)", job.idempotency_key[:8], next_attempt)
-                if raise_on_failure:
-                    raise ValidationError(_("Gateway connection failed: %s") % str(exc)[:500]) from exc
-            except requests.RequestException as exc:
-                next_attempt = job.attempts + 1
-                terminal = next_attempt >= 5
-                values = {
-                    "status": "failed" if terminal else "queued",
-                    "attempts": next_attempt,
-                    "last_error": "GATEWAY_TRANSPORT_ERROR: %s" % str(exc)[:4000],
-                    "next_retry_at": False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=15),
-                    "completed_at": fields.Datetime.now() if terminal else False,
-                }
-                if raise_on_failure:
-                    job._persist_state(values)
-                else:
-                    job.write(values)
-                if raise_on_failure:
-                    raise ValidationError(_("Gateway request failed: %s") % str(exc)[:500]) from exc
-            except (ValueError, RuntimeError, ValidationError) as exc:
-                next_attempt = job.attempts + 1
-                terminal = next_attempt >= 5
-                values = {
-                    "status": "failed" if terminal else "queued", "attempts": next_attempt,
-                    "last_error": str(exc)[:4000],
-                    "next_retry_at": False if terminal else fields.Datetime.now(),
-                    "completed_at": fields.Datetime.now() if terminal else False,
-                }
-                if raise_on_failure:
-                    job._persist_state(values)
-                else:
-                    job.write(values)
-                if raise_on_failure:
-                    raise ValidationError(_("Gateway submission failed: %s") % str(exc)[:500]) from exc
+            current_binding = job.fallback_binding_id
+            visited_bindings = {job.printer_id}
+            failover_count = 0
+
+            while True:
+                gateway_config = job.gateway_config_id.sudo()
+                try:
+                    response = requests.post(
+                        "%s/api/print/jobs" % gateway_config._gateway_base(for_request=True),
+                        json=job._submission_body(), headers=gateway_config._gateway_headers(),
+                        timeout=(5, 20), allow_redirects=False,
+                    )
+                    if response.status_code not in (200, 201):
+                        raise RuntimeError("GATEWAY_HTTP_%s" % response.status_code)
+                    body = response.json()
+                    remote_id = body.get("jobId") or body.get("id")
+                    if not remote_id:
+                        raise RuntimeError("GATEWAY_INVALID_RESPONSE")
+                    remote_status = str(body.get("status") or "queued").strip().lower()
+                    if remote_status == "completed":
+                        remote_status = "success"
+                    if remote_status not in {"queued", "submitted", "claimed", "printing", "success", "failed", "unknown"}:
+                        remote_status = "submitted"
+                    job.write({
+                        "gateway_job_id": str(remote_id),
+                        "status": "submitted" if remote_status == "queued" else remote_status,
+                        "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
+                    })
+                    job._post_source_audit(_("Print Job #%s queued to Gateway for '%s'") % (remote_id or job.id, job.printer_id))
+                    break  # Success
+                except requests.exceptions.Timeout as exc:
+                    values = {
+                        "status": "unknown",
+                        "attempts": job.attempts + 1,
+                        "last_error": "UNKNOWN_SUBMISSION_OUTCOME: gateway request timed out (ambiguous dispatch)",
+                        "next_retry_at": False,
+                    }
+                    if raise_on_failure:
+                        job._persist_state(values)
+                    else:
+                        job.write(values)
+                    job._post_source_audit(_("WARNING: Print Job #%s timed out; physical outcome is unknown on '%s'.") % (job.id, job.printer_id))
+                    _logger.warning("Gateway submission timed out; outcome is unknown for job %s", job.idempotency_key[:8])
+                    if raise_on_failure:
+                        raise ValidationError(_("Gateway submission timed out; physical outcome is unknown. Automated retries are paused to prevent duplicate prints. Operator reprint required.")) from exc
+                    break
+                except requests.exceptions.ConnectionError as exc:
+                    # Pre-dispatch failure: zero bytes transmitted. Safe failover check!
+                    if job.attempts == 0 and current_binding and failover_count < MAX_FAILOVER_DEPTH:
+                        next_printer = current_binding.printer_id
+                        if (
+                            current_binding.enabled
+                            and next_printer
+                            and next_printer not in visited_bindings
+                            and (current_binding.branch_id or current_binding.company_id) == job.company_id
+                        ):
+                            visited_bindings.add(next_printer)
+                            failover_count += 1
+                            _logger.warning(
+                                "Primary printer %s connection failed; triggering safe pre-dispatch failover (%d/%d) to %s",
+                                job.printer_id, failover_count, MAX_FAILOVER_DEPTH, next_printer,
+                            )
+                            job.write({
+                                "printer_id": next_printer,
+                                "destination": current_binding.destination_ref.display_name if current_binding.destination_ref else current_binding.name,
+                                "last_error": "PRE_DISPATCH_FAILOVER: Routed to backup printer %s" % next_printer,
+                            })
+                            job._post_source_audit(_("Primary printer offline. Failover engaged: routed to backup printer '%s'") % next_printer)
+                            current_binding = current_binding.fallback_binding_id
+                            continue  # Retry submission loop with new printer
+
+                    next_attempt = job.attempts + 1
+                    terminal = next_attempt >= 5
+                    retry_delay = min(300, 10 * (2 ** min(next_attempt - 1, 5)))
+                    next_retry = False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=retry_delay)
+                    values = {
+                        "status": "failed" if terminal else "queued",
+                        "attempts": next_attempt,
+                        "last_error": "CONNECTION_ERROR: %s" % str(exc)[:4000],
+                        "next_retry_at": next_retry,
+                        "completed_at": fields.Datetime.now() if terminal else False,
+                    }
+                    if raise_on_failure:
+                        job._persist_state(values)
+                    else:
+                        job.write(values)
+                    _logger.warning("Gateway connection failed for job %s (attempt %s/5)", job.idempotency_key[:8], next_attempt)
+                    if raise_on_failure:
+                        raise ValidationError(_("Gateway connection failed: %s") % str(exc)[:500]) from exc
+                    break
+                except requests.RequestException as exc:
+                    next_attempt = job.attempts + 1
+                    terminal = next_attempt >= 5
+                    values = {
+                        "status": "failed" if terminal else "queued",
+                        "attempts": next_attempt,
+                        "last_error": "GATEWAY_TRANSPORT_ERROR: %s" % str(exc)[:4000],
+                        "next_retry_at": False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=15),
+                        "completed_at": fields.Datetime.now() if terminal else False,
+                    }
+                    if raise_on_failure:
+                        job._persist_state(values)
+                    else:
+                        job.write(values)
+                    if raise_on_failure:
+                        raise ValidationError(_("Gateway request failed: %s") % str(exc)[:500]) from exc
+                    break
+                except (ValueError, RuntimeError, ValidationError) as exc:
+                    next_attempt = job.attempts + 1
+                    terminal = next_attempt >= 5
+                    values = {
+                        "status": "failed" if terminal else "queued", "attempts": next_attempt,
+                        "last_error": str(exc)[:4000],
+                        "next_retry_at": False if terminal else fields.Datetime.now(),
+                        "completed_at": fields.Datetime.now() if terminal else False,
+                    }
+                    if raise_on_failure:
+                        job._persist_state(values)
+                    else:
+                        job.write(values)
+                    if raise_on_failure:
+                        raise ValidationError(_("Gateway submission failed: %s") % str(exc)[:500]) from exc
+                    break
         return True
 
     def action_sync_status(self):
@@ -336,7 +360,7 @@ class PrintGatewayJob(models.Model):
                 response.raise_for_status()
                 body = response.json()
                 status = str(body.get("status") or "").strip().lower()
-                if status == "completed":
+                if status in ("completed", "success"):
                     status = "success"
                 elif status == "expired":
                     status = "failed"
@@ -352,7 +376,7 @@ class PrintGatewayJob(models.Model):
                     values["completed_at"] = fields.Datetime.now()
                 job.write(values)
                 if status == "success":
-                    job._post_source_audit(_("Print Job #%s confirmed delivered to printer '%s'") % (job.gateway_job_id or job.id, job.printer_id))
+                    job._post_source_audit(_("Print Job #%s completed by Gateway agent on '%s'") % (job.gateway_job_id or job.id, job.printer_id))
                 elif status in ("partial", "unknown"):
                     job._post_source_audit(_("WARNING: Print Job #%s interrupted or ambiguous on '%s'. Manual check required.") % (job.gateway_job_id or job.id, job.printer_id))
             except (requests.RequestException, ValueError):

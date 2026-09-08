@@ -19,4 +19,15 @@
         <field name="interval_type">minutes</field>
         <field name="active">True</field>
     </record>
+
+    <record id="cron_recover_pending_gateway_intents" model="ir.cron">
+        <field name="name">Print Gateway: Recover Pending Print Intents</field>
+        <field name="model_id" ref="model_print_gateway_intent"/>
+        <field name="state">code</field>
+        <field name="code">model.cron_recover_pending_intents()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">minutes</field>
+        <field name="active">True</field>
+    </record>
 </odoo>
+
