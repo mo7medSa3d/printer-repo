@@ -784,17 +784,19 @@ class TestControlPlane(TransactionCase):
     def test_20_report_download_fail_closed_on_config_error(self):
         """Verify report_download fails closed (502) if _gateway_config raises or is invalid."""
         from odoo.addons.print_gateway.controllers.report_download_override import PrintGatewayReportController
+        from odoo.http import Response
         ctrl = PrintGatewayReportController()
         req_data = json.dumps(["/report/pdf/test.report/1", "qweb-pdf"])
         mock_req = MagicMock()
         mock_req.env = self.env
-        mock_req.make_response = MagicMock(side_effect=lambda content, headers, status: {"status": status, "content": json.loads(content)})
+        mock_req.make_response = MagicMock(side_effect=lambda content, headers, status: Response(content, status=status, headers=headers))
         RouterClass = type(self.env["print_gateway.print_router"])
         with patch("odoo.addons.print_gateway.controllers.report_download_override.request", mock_req), \
              patch.object(RouterClass, "_gateway_config", side_effect=RuntimeError("Gateway unreachable")):
             resp = ctrl.report_download(req_data)
-            self.assertEqual(resp.get("status"), 502)
-            self.assertEqual(resp.get("content", {}).get("error"), "gateway_dispatch_failed")
+            self.assertEqual(resp.status_code, 502)
+            content = json.loads(resp.get_data(as_text=True))
+            self.assertEqual(content.get("error"), "gateway_dispatch_failed")
 
     def test_21_raw_payload_requires_explicit_protocol(self):
         """Verify raw payload creation strictly requires explicit printer protocol without fallback inference."""

@@ -222,7 +222,7 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const otherAgentId = "agent_other_internal";
     const otherPrinterId = "printer_other_internal";
     await pool().query(
-      `INSERT INTO agents (id, name, hostname, version, status, lifecycle) VALUES ($1, 'Other Agent', 'host2', '1.0.0', 'online', 'active')`,
+      `INSERT INTO agents (id, name, status, lifecycle, metadata) VALUES ($1, 'Other Agent', 'online', 'active', '{"hostname":"host2","version":"1.0.0"}'::jsonb)`,
       [otherAgentId],
     );
     await pool().query(
