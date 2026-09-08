@@ -39,9 +39,10 @@ class TestControlPlane(TransactionCase):
         if not hasattr(cls, "env") or api is None:
             return
 
-        cr = cls.env.registry.cursor()
+        # create a dedicated cursor for class-level setup and keep it for tearDownClass
+        cls.cr = cls.env.registry.cursor()
         try:
-            setup_env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+            setup_env = api.Environment(cls.cr, cls.env.uid, dict(cls.env.context))
             cls.company = setup_env["res.company"].create({
                 "name": "Control Plane Root Company",
             })
@@ -94,9 +95,25 @@ class TestControlPlane(TransactionCase):
             cls.primary_binding_id = cls.primary_binding.id
             cls.backup_binding_id = cls.backup_binding.id
 
-            cr.commit()
-        finally:
-            cr.close()
+            cls.cr.commit()
+        except Exception:
+            # ensure no partial commit leaves DB invalid for other tests
+            try:
+                cls.cr.rollback()
+            except Exception:
+                pass
+            raise
+        # do NOT close cls.cr here; close it in tearDownClass
+
+    @classmethod
+    def tearDownClass(cls):
+        # Close the class-level cursor created in setUpClass
+        if hasattr(cls, "cr") and cls.cr:
+            try:
+                cls.cr.close()
+            except Exception:
+                pass
+        super().tearDownClass()
 
 
     def test_01_policy_engine_and_intent_deduplication(self):
