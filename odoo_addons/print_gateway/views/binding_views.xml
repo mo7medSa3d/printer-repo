@@ -7,6 +7,7 @@
             <list string="Print Gateway Bindings" create="1" delete="1" class="o_pg_list">
                 <field name="company_id" string="Odoo Company" optional="hide"/>
                 <field name="branch_id" string="Odoo Branch" placeholder="All Branches / Root Default"/>
+                <field name="effective_company_id" column_invisible="1"/>
                 <field name="destination_type" string="Operational Area" widget="badge" decoration-info="destination_type == 'pos'" decoration-success="destination_type == 'report'" decoration-warning="destination_type == 'picking_type'"/>
                 <field name="destination_ref" string="Odoo Destination"/>
                 <field name="document_type" string="Document Type"/>
@@ -61,13 +62,13 @@
                                 <field name="destination_type" string="Odoo Destination Type" widget="radio" options="{'horizontal': true}"/>
                                 <field name="destination_pos_config_id" string="Odoo Destination"
                                        invisible="destination_type != 'pos'" required="destination_type == 'pos'"
-                                       domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]"/>
+                                       domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
                                 <field name="destination_pos_printer_id" string="Odoo Destination"
                                        invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"
-                                       domain="['|', ('company_id', '=', False), ('company_id', '=', branch_id)]"/>
+                                       domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]"/>
                                 <field name="destination_picking_type_id" string="Odoo Destination"
                                        invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"
-                                       domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]"/>
+                                       domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
                                 <field name="destination_report_id" string="Odoo Destination"
                                        invisible="destination_type != 'report'" required="destination_type == 'report'"/>
                                 <field name="report_id" string="Document / Report"
@@ -94,6 +95,7 @@
                         </div>
                     </div>
 
+                    <field name="effective_company_id" invisible="1"/>
                     <field name="destination_ref" invisible="1"/>
                     <div class="alert alert-info" role="alert">
                         Odoo owns the Company, Branch, Destination and Document context. The Gateway owns Runtime Agents, Runtime Printers and physical execution. This binding only connects the two.

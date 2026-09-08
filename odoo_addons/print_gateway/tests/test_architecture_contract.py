@@ -195,3 +195,9 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("from werkzeug.exceptions import Forbidden", source)
         self.assertIn("raise Forbidden", source)
         self.assertIn(".sudo().search", source)
+
+    def test_binding_model_defines_effective_company_id(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        self.assertIn("effective_company_id = fields.Many2one(", source)
+        self.assertIn("def _compute_effective_company_id(self):", source)
+        self.assertIn("record.effective_company_id = record.branch_id or record.company_id", source)

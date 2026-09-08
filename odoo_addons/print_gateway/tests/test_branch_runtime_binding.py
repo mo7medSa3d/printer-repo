@@ -170,3 +170,18 @@ class TestBranchRuntimeBinding(TransactionCase):
         ])
         self.assertTrue(restored_assignment)
         self.assertEqual(restored_assignment.runtime_agent_id, "agent-a")
+
+    def test_effective_company_id_computation(self):
+        binding_branch = self.env["print_gateway.binding"].new({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+        })
+        binding_branch._compute_effective_company_id()
+        self.assertEqual(binding_branch.effective_company_id, self.branch)
+
+        binding_root = self.env["print_gateway.binding"].new({
+            "company_id": self.company.id,
+            "branch_id": False,
+        })
+        binding_root._compute_effective_company_id()
+        self.assertEqual(binding_root.effective_company_id, self.company)

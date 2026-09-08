@@ -38,6 +38,13 @@ class PrintGatewayBinding(models.Model):
         "res.company", string="Odoo Branch", ondelete="restrict", index=True,
         domain="[('parent_id', '=', company_id)]",
     )
+    effective_company_id = fields.Many2one(
+        "res.company",
+        string="Effective Company",
+        compute="_compute_effective_company_id",
+        store=True,
+        index=True,
+    )
     runtime_agent_id = fields.Char(
         string="Gateway Runtime Agent", copy=False, index=True,
         help="Opaque Gateway runtime-agent ID. Runtime ownership remains in the Gateway.",
@@ -47,15 +54,15 @@ class PrintGatewayBinding(models.Model):
     )
     destination_pos_config_id = fields.Many2one(
         "pos.config", string="POS Configuration", ondelete="restrict", check_company=True,
-        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]",
+        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]",
     )
     destination_pos_printer_id = fields.Many2one(
         "pos.printer", string="POS / Kitchen Printer", ondelete="restrict", check_company=True,
-        domain="['|', ('company_id', '=', False), ('company_id', '=', branch_id)]",
+        domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]",
     )
     destination_picking_type_id = fields.Many2one(
         "stock.picking.type", string="Operation Type", ondelete="restrict", check_company=True,
-        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', branch_id), ('active', '=', True)]",
+        domain="['&', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]",
     )
     destination_report_id = fields.Many2one(
         "ir.actions.report", string="Report Destination", ondelete="restrict",
@@ -88,6 +95,11 @@ class PrintGatewayBinding(models.Model):
         "UNIQUE(company_id, branch_id, destination_ref, document_type, priority)",
         "Priority must be unique for the same Odoo company, branch, destination and document type.",
     )
+
+    @api.depends("company_id", "branch_id")
+    def _compute_effective_company_id(self):
+        for record in self:
+            record.effective_company_id = record.branch_id or record.company_id
 
     @api.depends("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id")
     def _compute_destination_ref(self):
@@ -233,13 +245,13 @@ class PrintGatewayBinding(models.Model):
                 if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
                     raise ValidationError(_("A Gateway Runtime Agent is required for a branch binding."))
 
-    @api.constrains("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id", "report_id", "printer_id", "company_id", "branch_id")
+    @api.constrains("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id", "report_id", "printer_id", "company_id", "branch_id", "effective_company_id")
     def _check_binding(self):
         for record in self:
             destination = record.destination_ref
             if not destination:
                 raise ValidationError(_("A valid Odoo Destination is required."))
-            expected_company = record.branch_id or record.company_id
+            expected_company = record.effective_company_id
             destination_company = getattr(destination, "company_id", False)
             if destination_company and destination_company != expected_company:
                 raise ValidationError(_("Odoo Destination belongs to another company/branch context."))
