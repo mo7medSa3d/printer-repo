@@ -37,3 +37,26 @@ class PosOrderGatewayPrinting(models.Model):
         if self.company_id != self.env.company:
             raise ValidationError(_("Gateway printing must use the active Odoo company."))
         return bool(self.env["print_gateway.print_router"]._gateway_config(self.env.company))
+
+    def _action_trigger_print_policies(self):
+        policy_model = self.env["print_gateway.policy"].sudo()
+        intent_model = self.env["print_gateway.intent"].sudo()
+
+        policies = policy_model.search([
+            ("model_id.model", "=", "pos.order"),
+            ("event_type", "=", "pos_order_paid"),
+            ("active", "=", True),
+        ], order="priority asc, id asc")
+
+        if policies:
+            for order in self:
+                for policy in policies:
+                    if policy.matches_record(order):
+                        intent_model.create_and_route(policy, order, "pos_order_paid")
+
+    def _process_saved_order(self, draft):
+        res = super()._process_saved_order(draft)
+        if not draft:
+            self._action_trigger_print_policies()
+        return res
+

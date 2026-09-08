@@ -19,9 +19,16 @@ const (
 const EncodingBase64 = "base64"
 const MaxPayloadBytes = 5 * 1024 * 1024
 
+type Peripherals struct {
+	Drawer string
+	Cutter string
+	Buzzer string
+}
+
 type Payload struct {
-	Type Type
-	Data []byte
+	Type        Type
+	Data        []byte
+	Peripherals Peripherals
 }
 
 func Parse(raw interface{}) (*Payload, error) {
@@ -73,5 +80,23 @@ func Parse(raw interface{}) (*Payload, error) {
 	if (Type(typ) == TypeRaw || Type(typ) == TypeESCPOS) && looksLikePDF {
 		return nil, fmt.Errorf("PDF bytes cannot be labeled as raw/escpos")
 	}
-	return &Payload{Type: Type(typ), Data: decoded}, nil
+
+	var periph Peripherals
+	if periphMap, ok := m["peripherals"].(map[string]interface{}); ok {
+		if d, ok := periphMap["drawer"].(string); ok {
+			periph.Drawer = d
+		}
+		if c, ok := periphMap["cutter"].(string); ok {
+			periph.Cutter = c
+		}
+		if b, ok := periphMap["buzzer"].(string); ok {
+			periph.Buzzer = b
+		}
+	}
+
+	return &Payload{
+		Type:        Type(typ),
+		Data:        decoded,
+		Peripherals: periph,
+	}, nil
 }

@@ -29,9 +29,9 @@ class PrintGatewayReportController(ReportController):
                         if report:
                             records = request.env[report.model].browse(docids).exists()
                             if records:
-                                try:
-                                    route = router.resolve_binding(report=report, record=records[0], company=request.env.company)
-                                    if not route.get("native") and route.get("gateway_enabled"):
+                                route = router.resolve_binding(report=report, record=records[0], company=request.env.company)
+                                if not route.get("native") and route.get("gateway_enabled"):
+                                    try:
                                         submit_res = router.route_report(report, records)
                                         response = request.make_response(
                                             json.dumps({
@@ -45,10 +45,19 @@ class PrintGatewayReportController(ReportController):
                                         if token:
                                             response.set_cookie("fileToken", token)
                                         return response
-                                except Exception:
-                                    # If resolving fails or binding is absent, fall back to native controller
-                                    pass
+                                    except Exception as exc:
+                                        # Fail-closed: Never fall back to native browser PDF download
+                                        # when a Gateway print was intended and failed
+                                        return request.make_response(
+                                            json.dumps({
+                                                "error": "gateway_dispatch_failed",
+                                                "message": str(exc),
+                                            }),
+                                            headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
+                                            status=502,
+                                        )
         except Exception:
             pass
 
         return super().report_download(data, context=context, token=token)
+

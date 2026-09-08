@@ -77,3 +77,24 @@ func TestParseOversizedPrecheck(t *testing.T) {
 		t.Fatalf("expected too large, got %v", err)
 	}
 }
+
+func TestParsePeripherals(t *testing.T) {
+	data := base64.StdEncoding.EncodeToString([]byte("hello"))
+	pl, err := Parse(map[string]interface{}{
+		"type":     "raw",
+		"encoding": "base64",
+		"data":     data,
+		"peripherals": map[string]interface{}{
+			"drawer": "pin2",
+			"cutter": "full",
+			"buzzer": "epson_pulse",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pl.Peripherals.Drawer != "pin2" || pl.Peripherals.Cutter != "full" || pl.Peripherals.Buzzer != "epson_pulse" {
+		t.Fatalf("unexpected peripherals: %+v", pl.Peripherals)
+	}
+}
+

@@ -5,6 +5,11 @@ const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
 export const printJobPayloadSchema = z.object({
   type: z.enum(["raw", "escpos", "pdf", "image"]),
   encoding: z.literal("base64"),
+  peripherals: z.object({
+    drawer: z.enum(["pin2", "pin5", "none"]).optional(),
+    cutter: z.enum(["partial", "full", "none"]).optional(),
+    buzzer: z.enum(["epson_pulse", "star_bel", "none"]).optional(),
+  }).optional(),
   data: z.string().min(1).refine((value) => {
     if (value.length > (MAX_PAYLOAD_BYTES / 3) * 4 + 8) return false;
     try {

@@ -1369,7 +1369,17 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	// Kind-aware dispatch: PDF goes through the PDF pipeline (validated,
 	// written to a secure temp file, rendered by the printer driver), raw and
 	// ESC/POS keep their byte-stream paths. A PDF is never re-labelled as RAW.
-	printErr := printer.PrintDocument(printCtx, p, printer.Document{Kind: kind, Data: pl.Data, JobID: jobID})
+	printData := pl.Data
+	if pl.Peripherals.Drawer != "" || pl.Peripherals.Cutter != "" || pl.Peripherals.Buzzer != "" {
+		profile := printer.PeripheralProfile{
+			DrawerKickMode: pl.Peripherals.Drawer,
+			CutterMode:     pl.Peripherals.Cutter,
+			BuzzerMode:     pl.Peripherals.Buzzer,
+		}
+		printData = printer.WrapPeripheralCommands(printData, kind, profile)
+	}
+	printErr := printer.PrintDocument(printCtx, p, printer.Document{Kind: kind, Data: printData, JobID: jobID})
+
 	if printErr != nil {
 		_ = a.queue.UpdateStatusWithError(jobID, "failed", printErr.Error())
 	} else {

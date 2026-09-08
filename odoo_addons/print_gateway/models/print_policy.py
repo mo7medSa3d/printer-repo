@@ -9,7 +9,6 @@ from odoo.tools.safe_eval import safe_eval
 EVENT_TYPES = [
     ("picking_validated", "Stock Picking Validated"),
     ("invoice_posted", "Customer Invoice / Bill Posted"),
-    ("mrp_done", "Manufacturing Order Completed"),
     ("pos_order_paid", "Point of Sale Order Paid"),
 ]
 
@@ -45,10 +44,23 @@ class PrintGatewayPolicy(models.Model):
         string="Domain Filter",
         help="Optional domain filter expression evaluated against the triggering record, e.g. [('picking_type_code', '=', 'outgoing')]",
     )
+    action_type = fields.Selection([
+        ("report", "QWeb PDF Report"),
+        ("raw_template", "Raw Command / Label Template"),
+    ], string="Action Type", default="report", required=True)
     report_id = fields.Many2one(
         "ir.actions.report", string="Report Action", ondelete="restrict",
         domain="[('model', '=', model_name)]",
-        help="Optional standard report to render into PDF. Leave blank for raw command label policies.",
+        help="Standard QWeb report to render into PDF.",
+    )
+    raw_protocol = fields.Selection([
+        ("zpl", "Zebra ZPL-II"),
+        ("tspl", "TSC TSPL"),
+        ("escpos", "ESC/POS"),
+    ], string="Raw Protocol", default="zpl")
+    raw_template = fields.Text(
+        string="Raw Command Template",
+        help="Raw printer command string with optional {record.<field>} or {<field>} placeholders.",
     )
     binding_id = fields.Many2one(
         "print_gateway.binding", string="Target Binding", ondelete="restrict",
@@ -64,6 +76,23 @@ class PrintGatewayPolicy(models.Model):
         domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]",
     )
     priority = fields.Integer(default=10, help="Lower numbers execute first.")
+
+    def render_raw_template(self, record):
+        """Deterministically render raw template string using record attributes."""
+        self.ensure_one()
+        template = self.raw_template or ""
+        if not template:
+            raise ValidationError(_("Raw template is empty for policy %s.") % self.name)
+        values = {"record": record}
+        for field_name in record._fields:
+            try:
+                values[field_name] = getattr(record, field_name)
+            except Exception:
+                pass
+        try:
+            return template.format(**values)
+        except Exception:
+            return template
 
     @api.depends("company_id", "branch_id")
     def _compute_effective_company_id(self):

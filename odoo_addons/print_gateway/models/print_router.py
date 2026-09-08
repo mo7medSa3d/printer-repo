@@ -5,7 +5,7 @@ import base64
 import binascii
 import uuid
 
-from odoo import api, models, _
+from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
 
 REPORT_DOCUMENT_TYPES = {
@@ -220,8 +220,12 @@ class PrintGatewayRouter(models.AbstractModel):
         source_record_id=None, idempotency_key=None,
     ):
         self._assert_current_company(company)
+        binding = route.get("binding")
+        if binding and isinstance(payload, dict):
+            payload["peripherals"] = binding.get_peripheral_payload()
         job_id = self._persist_durable_job({
             "company": company,
+
             "gateway_config": route["config"],
             "printer_id": route["binding"].printer_id,
             "destination": route["destination"].display_name,
@@ -373,8 +377,19 @@ class PrintGatewayRouter(models.AbstractModel):
                 idempotency_key=intent.intent_key,
             )
 
-        # If policy specifies raw command (e.g. barcode label) or binding has raw capability
-        return {"status": "no_action", "message": _("No report action configured for policy %s") % policy.name}
+        # If policy specifies raw command (e.g. barcode label)
+        if getattr(policy, "action_type", False) == "raw_template" or (not policy.report_id and getattr(policy, "raw_template", False)):
+            raw_data = policy.render_raw_template(target_record)
+            return self.route_raw_command(
+                raw_data,
+                protocol=policy.raw_protocol or "zpl",
+                binding=policy.binding_id or False,
+                record=target_record,
+                company=company,
+                document_type="label",
+            )
+
+        raise ValidationError(_("No report or raw label action configured for policy %s") % policy.name)
 
     @api.model
     def route_raw_command(self, raw_data, *, protocol="zpl", binding=None, destination=None, record=None, company=None, document_type="label"):
@@ -409,6 +424,12 @@ class PrintGatewayRouter(models.AbstractModel):
             "encoding": "base64",
             "data": base64.b64encode(raw_bytes).decode("ascii"),
         }
+        if target_binding:
+            payload["peripherals"] = {
+                "drawer": target_binding.drawer_kick_mode if target_binding.drawer_kick_mode != "none" else "none",
+                "cutter": target_binding.cutter_mode if target_binding.cutter_mode != "none" else "none",
+                "buzzer": target_binding.buzzer_mode if target_binding.buzzer_mode != "none" else "none",
+            }
 
         job_id = self._persist_durable_job({
             "company": current_company,

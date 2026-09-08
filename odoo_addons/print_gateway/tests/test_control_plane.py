@@ -14,71 +14,90 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 try:
+    from odoo import api
     from odoo.tests.common import TransactionCase
     from odoo.exceptions import ValidationError
+    from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 except ImportError:
+    api = None
     class ValidationError(Exception):
         pass
     TransactionCase = unittest.TestCase
+    PrintGatewayConfig = None
 
 
 class TestControlPlane(TransactionCase):
 
     def setUp(self):
         super().setUp()
-        if not hasattr(self, "env"):
+        if not hasattr(self, "env") or api is None:
             self.skipTest("Odoo runtime environment not available")
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        if not hasattr(cls, "env"):
+        if not hasattr(cls, "env") or api is None:
             return
-        cls.company = cls.env["res.company"].create({
-            "name": "Control Plane Root Company",
-        })
-        cls.branch = cls.env["res.company"].create({
-            "name": "Control Plane Branch 1",
-            "parent_id": cls.company.id,
-        })
-        ConfigClass = type(cls.env["print_gateway.gateway_config"])
-        with patch.object(ConfigClass, "_validate_gateway_host"):
-            cls.gateway_config = cls.env["print_gateway.gateway_config"].create({
+
+        cr = cls.env.registry.cursor()
+        try:
+            setup_env = api.Environment(cr, cls.env.uid, dict(cls.env.context))
+            cls.company = setup_env["res.company"].create({
+                "name": "Control Plane Root Company",
+            })
+            cls.branch = setup_env["res.company"].create({
+                "name": "Control Plane Branch 1",
+                "parent_id": cls.company.id,
+            })
+            ConfigClass = PrintGatewayConfig or type(setup_env["print_gateway.gateway_config"])
+            with patch.object(ConfigClass, "_validate_gateway_host"):
+                cls.gateway_config = setup_env["print_gateway.gateway_config"].create({
+                    "company_id": cls.company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                    "gateway_api_key": "test_api_key_control_plane",
+                })
+
+            # Primary binding
+            cls.primary_binding = setup_env["print_gateway.binding"].create({
                 "company_id": cls.company.id,
-                "gateway_url": "https://gateway.example.com",
+                "branch_id": cls.branch.id,
+                "destination_type": "report",
+                "destination_report_id": setup_env.ref("account.account_invoices").id,
+                "report_id": setup_env.ref("account.account_invoices").id,
+                "runtime_agent_id": "agent-cp-01",
+                "printer_id": "printer-primary",
                 "enabled": True,
-                "gateway_api_key": "test_api_key_control_plane",
+                "drawer_kick_mode": "pin2",
+                "cutter_mode": "full",
+                "buzzer_mode": "epson_pulse",
             })
 
-        # Primary binding
-        cls.primary_binding = cls.env["print_gateway.binding"].create({
-            "company_id": cls.company.id,
-            "branch_id": cls.branch.id,
-            "destination_type": "report",
-            "destination_report_id": cls.env.ref("account.account_invoices").id,
-            "report_id": cls.env.ref("account.account_invoices").id,
-            "runtime_agent_id": "agent-cp-01",
-            "printer_id": "printer-primary",
-            "enabled": True,
-            "drawer_kick_mode": "pin2",
-            "cutter_mode": "full",
-            "buzzer_mode": "epson_pulse",
-        })
+            # Backup failover binding
+            cls.backup_binding = setup_env["print_gateway.binding"].create({
+                "company_id": cls.company.id,
+                "branch_id": cls.branch.id,
+                "destination_type": "report",
+                "destination_report_id": setup_env.ref("account.account_invoices").id,
+                "report_id": setup_env.ref("account.account_invoices").id,
+                "runtime_agent_id": "agent-cp-01",
+                "printer_id": "printer-backup",
+                "enabled": True,
+                "priority": 20,
+            })
 
-        # Backup failover binding
-        cls.backup_binding = cls.env["print_gateway.binding"].create({
-            "company_id": cls.company.id,
-            "branch_id": cls.branch.id,
-            "destination_type": "report",
-            "destination_report_id": cls.env.ref("account.account_invoices").id,
-            "report_id": cls.env.ref("account.account_invoices").id,
-            "runtime_agent_id": "agent-cp-01",
-            "printer_id": "printer-backup",
-            "enabled": True,
-            "priority": 20,
-        })
+            cls.primary_binding.fallback_binding_id = cls.backup_binding.id
 
-        cls.primary_binding.fallback_binding_id = cls.backup_binding.id
+            cls.company_id = cls.company.id
+            cls.branch_id = cls.branch.id
+            cls.gateway_config_id = cls.gateway_config.id
+            cls.primary_binding_id = cls.primary_binding.id
+            cls.backup_binding_id = cls.backup_binding.id
+
+            cr.commit()
+        finally:
+            cr.close()
+
 
     def test_01_policy_engine_and_intent_deduplication(self):
         """Verify policy matching and strict suppression of duplicate intent."""

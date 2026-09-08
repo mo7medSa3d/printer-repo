@@ -104,12 +104,20 @@ class PrintGatewayBinding(models.Model):
     ], string="Paper Cutter", default="none", help="Hardware paper cutter command mode.")
     buzzer_mode = fields.Selection([
         ("none", "Disabled"),
-        ("epson_pulse", "Epson Internal Chime (0x1B 0x63 0x30)"),
-        ("star_bel", "Star Micronics BEL (0x07)"),
-    ], string="Kitchen Chime / Buzzer", default="none", help="Hardware buzzer chime mode.")
+        ("epson_pulse", "Epson Pulse (0x1B 0x63 0x30 0x02)"),
+        ("star_bel", "Star Bell (0x07)"),
+    ], string="Kitchen Buzzer", default="none", help="Hardware audio chime.")
     enabled = fields.Boolean(default=True)
     priority = fields.Integer(default=10, help="Lower value is preferred when multiple bindings are valid.")
     name = fields.Char(compute="_compute_name", store=True)
+
+    def get_peripheral_payload(self):
+        self.ensure_one()
+        return {
+            "drawer": self.drawer_kick_mode if self.drawer_kick_mode != "none" else "none",
+            "cutter": self.cutter_mode if self.cutter_mode != "none" else "none",
+            "buzzer": self.buzzer_mode if self.buzzer_mode != "none" else "none",
+        }
 
     _priority_unique = models.Constraint(
         "UNIQUE(company_id, branch_id, destination_ref, document_type, priority)",

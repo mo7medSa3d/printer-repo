@@ -42,7 +42,10 @@
                             <field name="active" widget="boolean_toggle"/>
                         </group>
                         <group string="Print Action">
-                            <field name="report_id" domain="[('model', '=', model_name)]" options="{'no_create': True}"/>
+                            <field name="action_type" widget="radio"/>
+                            <field name="report_id" domain="[('model', '=', model_name)]" options="{'no_create': True}" invisible="action_type != 'report'"/>
+                            <field name="raw_protocol" invisible="action_type != 'raw_template'"/>
+                            <field name="raw_template" invisible="action_type != 'raw_template'" placeholder="e.g. ^XA^FO50,50^ADN,36,20^FD{name}^FS^XZ"/>
                             <field name="binding_id" options="{'no_create': True}"/>
                             <field name="priority"/>
                         </group>
