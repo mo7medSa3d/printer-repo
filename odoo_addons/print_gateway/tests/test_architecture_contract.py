@@ -1,7 +1,11 @@
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from odoo.tests.common import TransactionCase
+try:
+    from odoo.tests.common import TransactionCase
+except ImportError:
+    TransactionCase = unittest.TestCase
 
 
 ADDON = Path(__file__).resolve().parents[1]
@@ -134,6 +138,8 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         """Test that a user restricted strictly to Branch B (company_ids=[branch.id])
         can read gateway config and execute routing without AccessError.
         """
+        if not hasattr(self, "env"):
+            self.skipTest("Odoo runtime environment not available")
         root_company = self.env.company
         branch = self.env["res.company"].create({
             "name": "Branch Test Context",
@@ -162,6 +168,8 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
 
     def test_runtime_controller_cross_branch_idor_forbidden(self):
         """Test that user in Branch A requesting Branch B receives Forbidden (403)."""
+        if not hasattr(self, "env"):
+            self.skipTest("Odoo runtime environment not available")
         from werkzeug.exceptions import Forbidden
         from odoo.addons.print_gateway.controllers.runtime_printers import PrintGatewayRuntimePrinterController
 

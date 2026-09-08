@@ -29,8 +29,8 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 			return nil, fmt.Errorf("printer %s: network printer requires an endpoint (ip:port)", cfg.ID)
 		}
 		switch proto {
-		case "raw", "escpos", "":
-			return &NetworkPrinter{Address: cfg.Endpoint}, nil
+		case "raw", "escpos", "zpl", "tspl", "":
+			return &NetworkPrinter{Address: cfg.Endpoint, Protocol: proto}, nil
 		case "ipp", "ipps":
 			// Network printer explicitly using IPP protocol -> treat as IPP
 			return NewIPPPrinter(cfg.Endpoint, cfg.Name)

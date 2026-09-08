@@ -82,4 +82,41 @@ suite("agent registration contract", () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBeTruthy();
   });
+
+  it("supports unified registration payload with snake_case fields and returns agent_id and agent_secret", async () => {
+    const f = await seedFixture();
+    const pairingCode = "CD33EF";
+    await pool().query(
+      `UPDATE agents SET pairing_code_hash = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
+      [hashPairingCode(pairingCode), f.agentId],
+    );
+
+    const response = await registerPOST(new Request("http://gateway.test/api/agent/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-real-ip": "127.0.0.70" },
+      body: JSON.stringify({
+        pairing_code: pairingCode.toLowerCase(),
+        hostname: "pos-lane-02",
+        client_version: "2.1.0",
+        platform: "windows",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agent_id).toBe(f.agentId);
+    expect(body.agentId).toBe(f.agentId);
+    expect(body.agent_secret).toMatch(/.+/);
+    expect(body.secret).toBe(body.agent_secret);
+
+    const row = (await pool().query(
+      `SELECT pairing_code_hash, secret, status, metadata FROM agents WHERE id = $1`,
+      [f.agentId],
+    )).rows[0];
+    expect(row.pairing_code_hash).toBeNull();
+    expect(row.secret).toBeTruthy();
+    expect(row.status).toBe("online");
+    expect(row.metadata).toMatchObject({ hostname: "pos-lane-02", version: "2.1.0", os: "windows" });
+  });
 });
+

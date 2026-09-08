@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrPrinterPaperOut  = errors.New("ERR_PRINTER_PAPER_OUT")
-	ErrPrinterOffline   = errors.New("ERR_PRINTER_OFFLINE")
-	ErrPrinterCoverOpen = errors.New("ERR_PRINTER_COVER_OPEN")
+	ErrPrinterNotReady  = errors.New("ERR_PRINTER_NOT_READY")
+	ErrPrinterPaperOut  = fmt.Errorf("%w: ERR_PRINTER_PAPER_OUT", ErrPrinterNotReady)
+	ErrPrinterOffline   = fmt.Errorf("%w: ERR_PRINTER_OFFLINE", ErrPrinterNotReady)
+	ErrPrinterCoverOpen = fmt.Errorf("%w: ERR_PRINTER_COVER_OPEN", ErrPrinterNotReady)
 )
 
 // ESC/POS DLE EOT status inquiry command bytes.

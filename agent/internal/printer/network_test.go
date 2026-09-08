@@ -132,3 +132,60 @@ func TestNetworkPrinterPartialDelivery(t *testing.T) {
 	}
 }
 
+func TestNetworkPrinterPreFlightCheckFailure(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:19992")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+
+	// Mock printer responding to DLE EOT status inquiry with Paper Out
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		cmd := make([]byte, 3)
+		for i := 0; i < 3; i++ {
+			if _, err := io.ReadFull(conn, cmd); err != nil {
+				return
+			}
+			switch cmd[2] {
+			case 1:
+				_, _ = conn.Write([]byte{0x12}) // Online
+			case 2:
+				_, _ = conn.Write([]byte{0x12}) // Cover closed
+			case 4:
+				_, _ = conn.Write([]byte{0x72}) // Paper out (bits 5 & 6 = 1 -> 0x60)
+			}
+		}
+	}()
+
+	p := &NetworkPrinter{
+		Address:  ln.Addr().String(),
+		Protocol: "escpos",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	data := []byte("\x1b\x40Hello Print")
+	err = p.Print(ctx, data)
+	if err == nil {
+		t.Fatal("expected error due to pre-flight paper out, got nil")
+	}
+
+	// Must return ErrPrinterNotReady
+	if !strings.Contains(err.Error(), "ERR_PRINTER_NOT_READY") {
+		t.Fatalf("expected ERR_PRINTER_NOT_READY in error, got: %v", err)
+	}
+
+	// Must NOT report partial delivery
+	if strings.Contains(err.Error(), "UNKNOWN_PARTIAL_DELIVERY") {
+		t.Fatalf("unexpected UNKNOWN_PARTIAL_DELIVERY on pre-flight abort: %v", err)
+	}
+}
+
+

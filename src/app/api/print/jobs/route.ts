@@ -37,6 +37,7 @@ function responseForRow(row: typeof printJobs.$inferSelect) {
     agentId: row.agentId,
     destination: row.destination,
     documentType: row.documentType,
+    error: row.error,
   };
 }
 

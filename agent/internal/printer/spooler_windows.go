@@ -23,6 +23,17 @@ var (
 	procEndPagePrinter   = modWinspool.NewProc("EndPagePrinter")
 	procEndDocPrinter    = modWinspool.NewProc("EndDocPrinter")
 	procEnumPrintersW    = modWinspool.NewProc("EnumPrintersW")
+	procGetPrinterW      = modWinspool.NewProc("GetPrinterW")
+)
+
+const (
+	PRINTER_STATUS_PAUSED            = 0x00000001
+	PRINTER_STATUS_ERROR             = 0x00000002
+	PRINTER_STATUS_PAPER_JAM         = 0x00000008
+	PRINTER_STATUS_PAPER_OUT         = 0x00000010
+	PRINTER_STATUS_OFFLINE           = 0x00000080
+	PRINTER_STATUS_USER_INTERVENTION = 0x00100000
+	PRINTER_STATUS_DOOR_OPEN         = 0x00400000
 )
 
 type docInfo1 struct {
@@ -173,6 +184,66 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 	return spoolerTaskResult{written: written, jobID: jobID, err: nil}
 }
 
+func preFlightSpoolerCheck(spoolerName string) error {
+	printerNamePtr, err := syscall.UTF16PtrFromString(spoolerName)
+	if err != nil {
+		return fmt.Errorf("invalid spooler name %q: %w", spoolerName, err)
+	}
+
+	var hPrinter syscall.Handle
+	ret, _, err := procOpenPrinterW.Call(
+		uintptr(unsafe.Pointer(printerNamePtr)),
+		uintptr(unsafe.Pointer(&hPrinter)),
+		0,
+	)
+	if ret == 0 {
+		return fmt.Errorf("%w: OpenPrinterW(%q) failed: %v", ErrPrinterOffline, spoolerName, err)
+	}
+	defer procClosePrinter.Call(uintptr(hPrinter))
+
+	var needed uint32
+	procGetPrinterW.Call(
+		uintptr(hPrinter),
+		2,
+		0,
+		0,
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if needed == 0 {
+		return nil
+	}
+
+	buf := make([]byte, needed)
+	ret, _, _ = procGetPrinterW.Call(
+		uintptr(hPrinter),
+		2,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(needed),
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if ret == 0 {
+		return nil
+	}
+
+	pi := (*printerInfo2)(unsafe.Pointer(&buf[0]))
+	if (pi.Status & PRINTER_STATUS_OFFLINE) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is offline (status 0x%08x)", ErrPrinterOffline, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_PAPER_JAM) != 0 {
+		return fmt.Errorf("%w: spooler printer %q has a paper jam (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_USER_INTERVENTION) != 0 {
+		return fmt.Errorf("%w: spooler printer %q requires user intervention (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_DOOR_OPEN) != 0 {
+		return fmt.Errorf("%w: spooler printer %q door or cover is open (status 0x%08x)", ErrPrinterCoverOpen, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_PAPER_OUT) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is out of paper (status 0x%08x)", ErrPrinterPaperOut, spoolerName, pi.Status)
+	}
+	return nil
+}
+
 // Print writes raw byte data directly to the Windows Spooler.
 // Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
 // This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
@@ -188,6 +259,11 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+
+	// Pre-flight check printer status before allocating worker slots
+	if err := preFlightSpoolerCheck(p.SpoolerName); err != nil {
+		return fmt.Errorf("%w: %v", ErrPrinterNotReady, err)
 	}
 
 	select {

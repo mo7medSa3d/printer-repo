@@ -18,5 +18,4 @@ def migrate(cr, version):
         ON CONFLICT (company_id, branch_id) DO NOTHING
     """)
 
-    # Drop the column as it's no longer needed
-    cr.execute("ALTER TABLE print_gateway_gateway_config DROP COLUMN IF EXISTS runtime_agent_id")
+    # runtime_agent_id column is retained on print_gateway_gateway_config as a legacy field

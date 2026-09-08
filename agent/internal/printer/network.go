@@ -28,10 +28,20 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) > maxPrintBytes {
 		return fmt.Errorf("payload %d bytes exceeds %d limit", len(data), maxPrintBytes)
 	}
+
+	// Active PreFlightHealthCheck before transmitting raster or raw payload bytes.
+	if strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := PreFlightHealthCheck(probeCtx, p.Address); err != nil {
+			return fmt.Errorf("%w: pre-flight health check failed: %v", ErrPrinterNotReady, err)
+		}
+	}
+
 	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", p.Address, err)
+		return fmt.Errorf("%w: dial %s: %v", ErrPrinterNotReady, p.Address, err)
 	}
 	defer conn.Close()
 

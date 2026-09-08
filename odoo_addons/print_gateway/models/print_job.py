@@ -56,7 +56,31 @@ class PrintGatewayJob(models.Model):
         "UNIQUE(company_id, idempotency_key)",
         "The same logical print operation may only be created once.",
     )
-    _TERMINAL = frozenset(("success", "failed", "partial"))
+    _TERMINAL = frozenset(("success", "failed", "partial", "unknown"))
+
+    _VALID_TRANSITIONS = {
+        "queued": {"queued", "submitted", "failed", "unknown"},
+        "submitted": {"submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
+        "claimed": {"claimed", "printing", "success", "failed", "partial", "unknown"},
+        "printing": {"printing", "success", "failed", "partial", "unknown"},
+        "success": {"success"},
+        "failed": {"failed", "queued"},
+        "partial": {"partial", "queued"},
+        "unknown": {"unknown", "queued"},
+    }
+
+    def write(self, vals):
+        if "status" in vals:
+            target_status = vals["status"]
+            for job in self:
+                if job.status and target_status != job.status:
+                    allowed = self._VALID_TRANSITIONS.get(job.status, set())
+                    if target_status not in allowed:
+                        raise ValidationError(
+                            _("Invalid print job state transition from '%s' to '%s'.")
+                            % (job.status, target_status)
+                        )
+        return super().write(vals)
 
     @api.depends("status", "last_error")
     def _compute_physical_outcome(self):
@@ -267,6 +291,10 @@ class PrintGatewayJob(models.Model):
                 status = str(body.get("status") or "").strip().lower()
                 if status == "completed":
                     status = "success"
+                elif status == "expired":
+                    status = "failed"
+                    if not body.get("error"):
+                        body["error"] = "GATEWAY_JOB_EXPIRED: Gateway lease or expiration window elapsed before job was claimed or printed"
                 if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
                     continue
                 err_msg = body.get("error") or False
@@ -350,7 +378,7 @@ class PrintGatewayJob(models.Model):
     def cron_sync_status(self):
         jobs = self.search([
             ("gateway_job_id", "!=", False),
-            ("status", "not in", ["success", "failed"]),
+            ("status", "not in", list(self._TERMINAL)),
         ], order="id asc", limit=100)
         for job in jobs:
             job.action_sync_status()
