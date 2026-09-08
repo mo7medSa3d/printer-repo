@@ -41,12 +41,14 @@ class TestControlPlane(TransactionCase):
             "name": "Control Plane Branch 1",
             "parent_id": cls.company.id,
         })
-        cls.gateway_config = cls.env["print_gateway.gateway_config"].create({
-            "company_id": cls.company.id,
-            "gateway_url": "https://gateway.example.com",
-            "enabled": True,
-            "gateway_api_key": "test_api_key_control_plane",
-        })
+        ConfigClass = type(cls.env["print_gateway.gateway_config"])
+        with patch.object(ConfigClass, "_validate_gateway_host"):
+            cls.gateway_config = cls.env["print_gateway.gateway_config"].create({
+                "company_id": cls.company.id,
+                "gateway_url": "https://gateway.example.com",
+                "enabled": True,
+                "gateway_api_key": "test_api_key_control_plane",
+            })
 
         # Primary binding
         cls.primary_binding = cls.env["print_gateway.binding"].create({
@@ -122,9 +124,10 @@ class TestControlPlane(TransactionCase):
     def test_02_raw_zpl_command_routing(self):
         """Verify raw ZPL command routing bypasses QWeb and creates raw_cmd outbox job."""
         router = self.env["print_gateway.print_router"].with_company(self.branch)
+        RouterClass = type(router)
         zpl_sample = "^XA^FO50,50^ADN,36,20^FDLabel Test^FS^XZ"
 
-        with patch.object(router, "_submit_durable_job", return_value="submitted"):
+        with patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
             res = router.route_raw_command(
                 zpl_sample,
                 protocol="zpl",
@@ -159,7 +162,9 @@ class TestControlPlane(TransactionCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"jobId": "gw_job_backup_123", "status": "queued"}
 
-        with patch("requests.post", side_effect=[requests.exceptions.ConnectionError("Connection Refused"), mock_resp]):
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host"), \
+             patch("requests.post", side_effect=[requests.exceptions.ConnectionError("Connection Refused"), mock_resp]):
             job.action_submit()
             self.assertEqual(job.printer_id, self.backup_binding.printer_id, "Job must safely failover to backup printer on pre-dispatch connection error")
             self.assertEqual(job.gateway_job_id, "gw_job_backup_123")
@@ -179,7 +184,9 @@ class TestControlPlane(TransactionCase):
         })
 
         import requests
-        with patch("requests.post", side_effect=requests.exceptions.Timeout("Read timeout")):
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host"), \
+             patch("requests.post", side_effect=requests.exceptions.Timeout("Read timeout")):
             job.action_submit()
             self.assertEqual(job.status, "unknown")
             self.assertFalse(job.next_retry_at, "Automated retry must be halted on unknown outcome")
@@ -188,10 +195,12 @@ class TestControlPlane(TransactionCase):
     def test_05_hardware_test_page_action(self):
         """Verify binding 'action_send_test_print' produces diagnostic outbox job."""
         router = self.env["print_gateway.print_router"].with_company(self.branch)
-        with patch.object(self.primary_binding, "_validate_runtime_target"):
-            with patch.object(router, "_submit_durable_job", return_value="submitted"):
-                res = self.primary_binding.with_company(self.branch).action_send_test_print()
-                self.assertTrue(res.get("gateway_enabled"))
-                job = self.env["print_gateway.print_job"].browse(res.get("job_id"))
-                self.assertEqual(job.protocol, "escpos")
-                self.assertIn("ODOO PRINT GATEWAY DIAGNOSTIC", job.raw_payload)
+        BindingClass = type(self.primary_binding)
+        RouterClass = type(router)
+        with patch.object(BindingClass, "_validate_runtime_target"), \
+             patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
+            res = self.primary_binding.with_company(self.branch).action_send_test_print()
+            self.assertTrue(res.get("gateway_enabled"))
+            job = self.env["print_gateway.print_job"].browse(res.get("job_id"))
+            self.assertEqual(job.protocol, "escpos")
+            self.assertIn("ODOO PRINT GATEWAY DIAGNOSTIC", job.raw_payload)
