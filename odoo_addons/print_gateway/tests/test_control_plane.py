@@ -590,8 +590,22 @@ class TestControlPlane(TransactionCase):
 
             router = self.env["print_gateway.print_router"]
             RouterClass = type(router)
-            route1 = {"binding_id": 1, "printer_id": "p1", "runtime_agent_id": "a1", "gateway_enabled": True}
-            route2 = {"binding_id": 2, "printer_id": "p2", "runtime_agent_id": "a1", "gateway_enabled": True}
+            route1 = {
+                "binding": self.primary_binding,
+                "binding_id": self.primary_binding.id,
+                "printer_id": self.primary_binding.printer_id,
+                "runtime_agent_id": self.primary_binding.runtime_agent_id,
+                "gateway_enabled": True,
+                "native": False,
+            }
+            route2 = {
+                "binding": self.zpl_binding,
+                "binding_id": self.zpl_binding.id,
+                "printer_id": self.zpl_binding.printer_id,
+                "runtime_agent_id": self.zpl_binding.runtime_agent_id,
+                "gateway_enabled": True,
+                "native": False,
+            }
 
             with patch.object(PickingClass, "browse", return_value=mock_records), \
                  patch.object(RouterClass, "resolve_binding", side_effect=[route1, route2]):

@@ -72,12 +72,12 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect((await res.json()).code).toBe("CAPABILITY_MISMATCH");
     const jobs = await pool().query(`SELECT count(*)::int AS n FROM print_jobs`);
     expect(jobs.rows[0].n).toBe(0);
-    const ok = await printJobsPOST(odooRequest(escpos.odooKey, { printerId: escpos.printerId, documentType: "receipt", payload: { type: "escpos", encoding: "base64", data: Buffer.from("\x1b@hello\x1dV\x01").toString("base64") } }));
+    const ok = await printJobsPOST(odooRequest(escpos.odooKey, { printerId: escpos.printerId, documentType: "receipt", payload: { type: "escpos", protocol: "escpos", encoding: "base64", data: Buffer.from("\x1b@hello\x1dV\x01").toString("base64") } }));
     expect(ok.status).toBe(201);
   });
 
   it("keeps a job queued when no agent socket is connected", async () => {
-    const res = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
+    const res = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", protocol: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
     expect(res.status).toBe(201);
     const created = await res.json();
     const row = await jobRow(created.jobId);
@@ -86,7 +86,7 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
   });
 
   it("supports polling claims and explicit job ACK", async () => {
-    const createRes = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
+    const createRes = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", protocol: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
     expect(createRes.status).toBe(201);
     const created = await createRes.json();
     const pollRes = await agentJobsGET(new Request("http://gateway.test/api/agent/jobs", { headers: { Authorization: f.agentAuth } }));

@@ -79,11 +79,21 @@ class PrintGatewayReportController(ReportController):
                             if initial_route is None:
                                 initial_route = rec_route
                             else:
+                                initial_binding = initial_route.get("binding")
+                                rec_binding = rec_route.get("binding")
+                                initial_binding_id = initial_binding.id if hasattr(initial_binding, "id") else initial_route.get("binding_id")
+                                rec_binding_id = rec_binding.id if hasattr(rec_binding, "id") else rec_route.get("binding_id")
+                                initial_printer = getattr(initial_binding, "printer_id", None) or initial_route.get("printer_id")
+                                rec_printer = getattr(rec_binding, "printer_id", None) or rec_route.get("printer_id")
+                                initial_agent = getattr(initial_binding, "runtime_agent_id", None) or initial_route.get("runtime_agent_id")
+                                rec_agent = getattr(rec_binding, "runtime_agent_id", None) or rec_route.get("runtime_agent_id")
+
                                 if (
-                                    rec_route.get("binding_id") != initial_route.get("binding_id")
-                                    or rec_route.get("printer_id") != initial_route.get("printer_id")
-                                    or rec_route.get("runtime_agent_id") != initial_route.get("runtime_agent_id")
+                                    rec_binding_id != initial_binding_id
+                                    or rec_printer != initial_printer
+                                    or rec_agent != initial_agent
                                     or rec_route.get("gateway_enabled") != initial_route.get("gateway_enabled")
+                                    or rec_route.get("native") != initial_route.get("native")
                                 ):
                                     _logger.warning("Rejected mixed-scope multi-record print request for report %s", report_name)
                                     return request.make_response(

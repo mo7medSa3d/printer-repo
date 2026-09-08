@@ -2,6 +2,9 @@ package printer
 
 import (
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 
 	"github.com/odoo-print-agent/agent/internal/config"
 )
@@ -29,11 +32,13 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 			return nil, fmt.Errorf("printer %s: network printer requires an endpoint (ip:port)", cfg.ID)
 		}
 		switch proto {
-		case "raw", "escpos", "zpl", "tspl", "":
+		case "raw", "escpos", "zpl", "tspl":
 			return &NetworkPrinter{Address: cfg.Endpoint, Protocol: proto}, nil
 		case "ipp", "ipps":
 			// Network printer explicitly using IPP protocol -> treat as IPP
 			return NewIPPPrinter(cfg.Endpoint, cfg.Name)
+		case "":
+			return nil, fmt.Errorf("printer %s: network printer requires an explicit protocol (raw, escpos, zpl, tspl, ipp)", cfg.ID)
 		default:
 			return nil, fmt.Errorf("printer %s: unsupported protocol %q for network printer", cfg.ID, cfg.Protocol)
 		}
@@ -89,86 +94,25 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 }
 
 func isNetworkEndpoint(ep string) bool {
-	// Heuristic: if it contains : and looks like ip:port, treat as network
 	if ep == "" {
 		return false
 	}
-	// Windows spooler names typically do not contain colon+port
 	if len(ep) > 0 && ep[0] == '\\' {
 		return false
 	}
-	parts := 0
-	for _, c := range ep {
-		if c == ':' {
-			parts++
-		}
-	}
-	if parts == 1 {
-		if _, _, err := parseHostPort(ep); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func parseHostPort(ep string) (string, string, error) {
-	// local helper to avoid importing net in non-needed path
-	return splitHostPort(ep)
-}
-
-func splitHostPort(ep string) (string, string, error) {
-	for i := len(ep) - 1; i >= 0; i-- {
-		if ep[i] == ':' {
-			if i == 0 || i == len(ep)-1 {
-				break
-			}
-			host := ep[:i]
-			port := ep[i+1:]
-			for _, c := range port {
-				if c < '0' || c > '9' {
-					return "", "", fmt.Errorf("not host:port")
-				}
-			}
-			return host, port, nil
-		}
-	}
-	return "", "", fmt.Errorf("missing port")
+	_, _, err := net.SplitHostPort(ep)
+	return err == nil
 }
 
 func parseHex16(s string) uint16 {
-	s = trimSpace(s)
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0
 	}
-	if len(s) > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
-		s = s[2:]
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	v, err := strconv.ParseUint(s, 16, 16)
+	if err != nil {
+		return 0
 	}
-	var v uint16
-	for _, c := range s {
-		var val uint16
-		switch {
-		case c >= '0' && c <= '9':
-			val = uint16(c - '0')
-		case c >= 'a' && c <= 'f':
-			val = uint16(c - 'a' + 10)
-		case c >= 'A' && c <= 'F':
-			val = uint16(c - 'A' + 10)
-		default:
-			continue
-		}
-		v = v*16 + val
-	}
-	return v
-}
-
-func trimSpace(s string) string {
-	start := 0
-	for start < len(s) && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	end := len(s)
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
+	return uint16(v)
 }

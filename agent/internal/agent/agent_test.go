@@ -22,6 +22,7 @@ const jobIDPrefix = "JOBID:"
 func makeJobPayload(jobID string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":     "raw",
+		"protocol": "raw",
 		"encoding": "base64",
 		"data":     base64.StdEncoding.EncodeToString([]byte(jobIDPrefix + jobID)),
 	}

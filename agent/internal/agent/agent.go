@@ -1376,11 +1376,7 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 			CutterMode:     pl.Peripherals.Cutter,
 			BuzzerMode:     pl.Peripherals.Buzzer,
 		}
-		proto := pl.Protocol
-		if proto == "" {
-			proto = kind
-		}
-		printData = printer.WrapPeripheralCommands(printData, proto, profile)
+		printData = printer.WrapPeripheralCommands(printData, pl.Protocol, profile)
 	}
 	printErr := printer.PrintDocument(printCtx, p, printer.Document{Kind: kind, Data: printData, JobID: jobID})
 

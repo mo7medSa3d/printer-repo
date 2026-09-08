@@ -42,7 +42,7 @@ suite("installation API-key print authorization", () => {
       printerId: f.printerId,
       documentType: "receipt",
       destination: "POS",
-      payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: "aGVsbG8=" },
       idempotencyKey: "installation-key-1",
     });
     expect(res.status).toBe(201);
@@ -61,7 +61,7 @@ suite("installation API-key print authorization", () => {
       printerId: f.printerId,
       documentType: "receipt",
       destination: "POS",
-      payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: "aGVsbG8=" },
     }, rawKey);
     expect(res.status).toBe(401);
   });
@@ -71,7 +71,7 @@ suite("installation API-key print authorization", () => {
       printerId: f.printerId,
       documentType: "receipt",
       destination: "POS",
-      payload: { type: "raw", encoding: "base64", data: "aGVsbG8=" },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: "aGVsbG8=" },
       branchId: "legacy-branch-id",
       allowedDocumentTypes: ["receipt"],
     });

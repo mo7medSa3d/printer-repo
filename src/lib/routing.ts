@@ -27,7 +27,7 @@ export function validatePayloadForPrinter(
     return ["raw", "escpos", "pdf"].includes(pt) ? { ok: true } : { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} is not supported by IPP transport` };
   }
   if (pt === "raw" || pt === "escpos") {
-    return ["raw", "escpos", "spooler", ""].includes(proto) || conn === "spooler"
+    return ["raw", "escpos", "spooler"].includes(proto) || conn === "spooler"
       ? { ok: true }
       : { ok: false, reason: `CAPABILITY_MISMATCH: ${pt} incompatible with printer protocol ${proto}` };
   }

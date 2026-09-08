@@ -59,7 +59,7 @@ suite("real PostgreSQL runtime architecture gate", () => {
     await pool().query(`INSERT INTO api_keys (id,scope,name,hashed_key) VALUES
       ('key_unique_a','standard','A','hash_unique_a'),
       ('key_unique_b','standard','B','hash_unique_b')`);
-    const payload = JSON.stringify({ type: "raw", encoding: "base64", data: "aA==" });
+    const payload = JSON.stringify({ type: "raw", protocol: "raw", encoding: "base64", data: "aA==" });
     await pool().query(`INSERT INTO print_jobs (id,api_key_id,destination,document_type,agent_id,printer_id,status,payload,expires_at,idempotency_key)
       VALUES ('job_unique_1','key_unique_a','POS','receipt','agt_unique','prn_unique','queued',$1::jsonb,now()+interval '1 hour','same-key')`, [payload]);
     await expect(pool().query(`INSERT INTO print_jobs (id,api_key_id,destination,document_type,agent_id,printer_id,status,payload,expires_at,idempotency_key)

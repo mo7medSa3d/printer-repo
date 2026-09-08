@@ -37,14 +37,24 @@ export const printJobPayloadSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["data"], message: "PDF bytes cannot be labeled as raw/escpos; provide a real byte-stream payload or convert explicitly" });
   }
 
-  if (payload.type === "raw" && !payload.protocol) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["protocol"], message: "protocol is required for raw payloads" });
+  if (payload.type === "raw") {
+    if (!payload.protocol) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["protocol"], message: "protocol is required for raw payloads" });
+    }
+  }
+  if (payload.type === "escpos") {
+    if (!payload.protocol || payload.protocol !== "escpos") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["protocol"], message: "protocol 'escpos' is required for escpos payloads" });
+    }
   }
   if ((payload.type === "pdf" || payload.type === "image") && payload.protocol) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["protocol"], message: "protocol is not applicable for pdf/image payloads" });
   }
-  if (payload.peripherals && payload.protocol && payload.protocol !== "escpos") {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["peripherals"], message: "peripherals are only supported for escpos protocol" });
+  if (payload.peripherals) {
+    const hasPeripherals = payload.peripherals.drawer || payload.peripherals.cutter || payload.peripherals.buzzer;
+    if (hasPeripherals && payload.protocol !== "escpos") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["peripherals"], message: "peripherals are only supported for escpos protocol" });
+    }
   }
 });
 

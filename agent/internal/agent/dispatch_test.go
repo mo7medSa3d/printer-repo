@@ -11,7 +11,7 @@ func dispatchTestJob(id, printerID string) map[string]interface{} {
 		"id":        id,
 		"printerId": printerID,
 		"payload": map[string]interface{}{
-			"type": "raw", "encoding": "base64", "data": "aGVsbG8=", // "hello"
+			"type": "raw", "protocol": "raw", "encoding": "base64", "data": "aGVsbG8=", // "hello"
 		},
 		"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
 	}

@@ -23,7 +23,7 @@ func TestMockTCPPrinterE2E(t *testing.T) {
 	// Simulate Odoo payload as Gateway would create: escpos base64
 	raw := "Hello from Odoo\nLine2\n\x1d\x56\x01"
 	b64 := base64.StdEncoding.EncodeToString([]byte(raw))
-	jobPayload := map[string]interface{}{"type": "escpos", "encoding": "base64", "data": b64}
+	jobPayload := map[string]interface{}{"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": b64}
 
 	pl, err := payload.Parse(jobPayload)
 	if err != nil {

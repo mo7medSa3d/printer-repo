@@ -53,6 +53,29 @@ func Parse(raw interface{}) (*Payload, error) {
 
 	protocol, _ := m["protocol"].(string)
 
+	switch Type(typ) {
+	case TypeRaw:
+		if protocol == "" {
+			return nil, fmt.Errorf("protocol is required for raw payloads")
+		}
+		switch protocol {
+		case "raw", "escpos", "zpl", "tspl":
+		default:
+			return nil, fmt.Errorf("unsupported protocol %q for raw payload", protocol)
+		}
+	case TypeESCPOS:
+		if protocol == "" {
+			return nil, fmt.Errorf("protocol is required for escpos payloads")
+		}
+		if protocol != "escpos" {
+			return nil, fmt.Errorf("protocol %q is incompatible with escpos payload", protocol)
+		}
+	case TypePDF, TypeImage:
+		if protocol != "" {
+			return nil, fmt.Errorf("protocol is not applicable for %s payloads", typ)
+		}
+	}
+
 	encoding, _ := m["encoding"].(string)
 	if encoding != EncodingBase64 {
 		return nil, fmt.Errorf("unsupported payload encoding %q (only %q is supported)", encoding, EncodingBase64)
@@ -110,6 +133,11 @@ func Parse(raw interface{}) (*Payload, error) {
 				return nil, fmt.Errorf("invalid buzzer mode %q", b)
 			}
 		}
+	}
+
+	hasPeripherals := periph.Drawer != "" || periph.Cutter != "" || periph.Buzzer != ""
+	if hasPeripherals && protocol != "escpos" {
+		return nil, fmt.Errorf("peripherals are only supported for escpos protocol")
 	}
 
 	return &Payload{
