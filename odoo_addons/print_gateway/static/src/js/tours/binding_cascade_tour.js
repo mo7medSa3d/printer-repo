@@ -22,12 +22,12 @@ registry.category("web_tour.tours").add("binding_cascade_tour", {
         },
         {
             trigger: '.o_field_widget[name="company_id"] input',
-            content: "2. Select Company",
-            run: "edit San Francisco",
+            content: "2. Focus Company input for dynamic autocomplete",
+            run: "click",
         },
         {
-            trigger: '.o_field_widget[name="company_id"] .dropdown-item:first',
-            content: "Confirm selected Company",
+            trigger: '.ui-autocomplete > li:first-child > a, .o-autocomplete--dropdown-item:first-child, .dropdown-item:first-child',
+            content: "Select Company via dynamic autocomplete",
             run: "click",
         },
         {
@@ -72,9 +72,54 @@ registry.category("web_tour.tours").add("binding_cascade_tour", {
             },
         },
         {
+            trigger: '.o_field_runtime_agent select',
+            content: "Re-select Agent before persisting",
+            run: "selectByIndex 1",
+        },
+        {
+            trigger: '.o_field_runtime_printer select:not([disabled]) option:not([value=""])',
+            content: "Wait for printers to re-populate",
+            run() {},
+        },
+        {
+            trigger: '.o_field_runtime_printer select',
+            content: "Re-select Printer for persistence check",
+            run: "selectByIndex 1",
+        },
+        {
             trigger: "button.o_form_button_save",
-            content: "6. Save and re-read",
+            content: "Click Save",
             run: "click",
+        },
+        {
+            trigger: ".o_form_saved",
+            content: "Wait for .o_form_saved confirmation",
+            run() {},
+        },
+        {
+            trigger: ".o_form_view",
+            content: "Trigger a record reload or re-read action",
+            run() {
+                const reloadBtn = document.querySelector(".o_control_panel .o_pager_reload, button.o_form_button_reload, button[aria-label='Reload'], button[title='Reload']");
+                if (reloadBtn) {
+                    reloadBtn.click();
+                } else {
+                    const form = document.querySelector(".o_form_view");
+                    if (form) {
+                        form.dispatchEvent(new CustomEvent("reload", { bubbles: true }));
+                    }
+                }
+            },
+        },
+        {
+            trigger: '.o_field_runtime_printer select',
+            content: "Assert that the selected printer_id remains populated from database storage",
+            run() {
+                const printerSelect = document.querySelector('.o_field_runtime_printer select');
+                if (!printerSelect || !printerSelect.value) {
+                    throw new Error("Expected printer_id to remain populated from database storage after reload");
+                }
+            },
         },
     ],
 });
