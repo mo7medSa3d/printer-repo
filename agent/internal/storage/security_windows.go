@@ -4,7 +4,6 @@ package storage
 
 import (
 	"fmt"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -23,11 +22,6 @@ func getCurrentUserSID() (string, error) {
 	return u.User.Sid.String(), nil
 }
 
-// IsUserDirectory checks if a path resides inside a user profile / local app data directory.
-func IsUserDirectory(path string) bool {
-	lower := strings.ToLower(path)
-	return strings.Contains(lower, "appdata") || strings.Contains(lower, "users") || strings.Contains(lower, "userprofile")
-}
 
 // BuildSecureSDDL returns the appropriate SDDL depending on whether the directory is
 // a per-user directory (%LOCALAPPDATA% / %USERPROFILE%) or a system-wide service directory (%ProgramData%).

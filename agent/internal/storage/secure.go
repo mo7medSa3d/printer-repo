@@ -21,6 +21,12 @@ import (
 
 const secretFile = "agent-secrets.dat"
 
+// IsUserDirectory checks if a path resides inside a user profile / local app data directory.
+func IsUserDirectory(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.Contains(lower, "appdata") || strings.Contains(lower, "users") || strings.Contains(lower, "userprofile") || strings.Contains(lower, "/home/")
+}
+
 // Store saves key/value secrets under Dir (the agent data directory, e.g.
 // C:\ProgramData\OdooPrintAgent).
 type Store struct {
