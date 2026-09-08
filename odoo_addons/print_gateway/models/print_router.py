@@ -193,7 +193,11 @@ class PrintGatewayRouter(models.AbstractModel):
                 if not record:
                     raise ValidationError(_("The durable print operation references a record that is no longer available."))
                 durable_values[key] = record
-            job = env["print_gateway.print_job"].create_operation(**durable_values)
+            target_company = durable_values.get("company")
+            model = env["print_gateway.print_job"]
+            if target_company:
+                model = model.with_company(target_company)
+            job = model.create_operation(**durable_values)
             job_id = job.id
             cr.commit()
         return job_id
@@ -207,6 +211,7 @@ class PrintGatewayRouter(models.AbstractModel):
             if not job:
                 raise ValidationError(_("The durable print job is no longer available."))
             try:
+                job = job.with_company(job.company_id)
                 job.action_submit(raise_on_failure=True)
                 status = job.status
                 cr.commit()

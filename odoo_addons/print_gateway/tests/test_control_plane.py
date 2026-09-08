@@ -108,7 +108,11 @@ class TestControlPlane(TransactionCase):
                 durable_values[key] = self.env[model_name].browse(record)
             else:
                 durable_values[key] = False
-        job = self.env["print_gateway.print_job"].create_operation(**durable_values)
+        target_company = durable_values.get("company")
+        model = self.env["print_gateway.print_job"]
+        if target_company:
+            model = model.with_company(target_company)
+        job = model.create_operation(**durable_values)
         return job.id
 
     def test_01_policy_engine_and_intent_deduplication(self):
