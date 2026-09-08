@@ -200,9 +200,14 @@ class PrintGatewayBinding(models.Model):
         except (requests.RequestException, ValueError) as exc:
             raise ValidationError(_("Gateway runtime agent discovery is unavailable.")) from exc
         agents = body.get("agents") if isinstance(body, dict) else None
-        selected_agent = next((agent for agent in agents or [] if isinstance(agent, dict) and agent.get("id") == self.runtime_agent_id and agent.get("lifecycle", "active") != "retired"), None)
-        if not isinstance(agents, list) or not selected_agent:
-            raise ValidationError(_("The selected Gateway Runtime Agent is not an active runtime agent."))
+        agent_match = next((agent for agent in agents or [] if isinstance(agent, dict) and agent.get("id") == self.runtime_agent_id), None)
+        if not isinstance(agents, list) or not agent_match:
+            raise ValidationError(_("The selected Gateway Runtime Agent is not found."))
+        if agent_match.get("lifecycle") != "active":
+            raise ValidationError(
+                _("Agent '%s' cannot be assigned because its status is '%s'. Only active agents are allowed.")
+                % (agent_match.get("name") or self.runtime_agent_id, agent_match.get("lifecycle"))
+            )
         try:
             response = requests.get("%s/api/odoo/printers" % config._gateway_base(for_request=True), headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False)
             if response.status_code != 200:
@@ -213,9 +218,15 @@ class PrintGatewayBinding(models.Model):
         except (requests.RequestException, ValueError) as exc:
             raise ValidationError(_("Gateway runtime printer discovery is unavailable.")) from exc
         printers = body.get("printers") if isinstance(body, dict) else None
-        selected_printer = next((printer for printer in printers or [] if isinstance(printer, dict) and printer.get("id") == self.printer_id and printer.get("lifecycle", "active") != "retired"), None)
-        if not isinstance(printers, list) or not selected_printer:
-            raise ValidationError(_("The selected Gateway Runtime Printer is not an active runtime printer."))
+        printer_match = next((printer for printer in printers or [] if isinstance(printer, dict) and printer.get("id") == self.printer_id), None)
+        if not isinstance(printers, list) or not printer_match:
+            raise ValidationError(_("The selected Gateway Runtime Printer is not found."))
+        if printer_match.get("lifecycle") != "active":
+            raise ValidationError(
+                _("Printer '%s' cannot be assigned because its status is '%s'. Only active printers are allowed.")
+                % (printer_match.get("name") or self.printer_id, printer_match.get("lifecycle"))
+            )
+        selected_printer = printer_match
         agent = selected_printer.get("agent") if isinstance(selected_printer.get("agent"), dict) else {}
         if agent.get("id") != self.runtime_agent_id:
             raise ValidationError(_("Gateway Runtime Printer does not belong to the selected Runtime Agent."))

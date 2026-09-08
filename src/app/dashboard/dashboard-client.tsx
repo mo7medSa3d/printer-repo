@@ -229,11 +229,11 @@ export default function DashboardClient({
     setMessage(null);
     try {
       const result = await createAgent(name);
-      const expiresAt = new Date(Date.now() + 1000 * 60 * 10);
+      const expiresAt = result.expiresAt ? new Date(result.expiresAt) : (result.expires_at ? new Date(result.expires_at) : new Date(Date.now() + 1000 * 60 * 10));
       setActivePairing({ code: result.pairingCode, expiresAt });
       setAgentName("");
       setMessage({
-        text: `Agent registered! Use pairing code ${result.pairingCode} within 10 minutes.`,
+        text: `Agent registered! Use pairing code ${result.pairingCode} before expiration.`,
         type: "ok",
       });
     } catch (error) {

@@ -19,7 +19,7 @@ export async function GET(req: Request) {
       lastSeenAt: agents.lastSeenAt,
     })
     .from(agents)
-    .where(ne(agents.lifecycle, "retired"))
+    .where(eq(agents.lifecycle, "active"))
     .orderBy(asc(agents.name));
 
   return NextResponse.json({ agents: rows }, {

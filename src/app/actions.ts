@@ -25,14 +25,15 @@ export async function createAgent(name: string) {
   if (typeof name !== "string" || !name.trim() || name.trim().length > 200) throw new Error("invalid agent name");
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 10);
   await db.insert(agents).values({
     id, name: name.trim(),
     pairingCodeHash: hashPairingCode(pairingCode),
-    pairingCodeExpiresAt: new Date(Date.now() + 1000 * 60 * 10),
+    pairingCodeExpiresAt: expiresAt,
     status: "offline", lifecycle: "active",
   });
   revalidatePath("/dashboard");
-  return { id, pairingCode };
+  return { id, pairingCode, expiresAt, expires_at: expiresAt.toISOString() };
 }
 
 export async function deleteAgent(id: string) {

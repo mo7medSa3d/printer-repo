@@ -7,13 +7,17 @@ def migrate(cr, version):
     if not cr.fetchone():
         return
 
-    # Migrate the legacy runtime_agent_id to the new print_gateway_runtime_agent_assignment table
+    # Migrate legacy root-level runtime_agent_id records by inserting/updating print_gateway_binding
+    # with company_id = res_company.id and branch_id = NULL (canonical root fallback binding),
+    # never assigning branch_id = company_id which violates child branch hierarchy.
     cr.execute("""
-        INSERT INTO print_gateway_runtime_agent_assignment (company_id, branch_id, runtime_agent_id, enabled)
-        SELECT company_id, company_id, runtime_agent_id, enabled
-        FROM print_gateway_gateway_config
-        WHERE runtime_agent_id IS NOT NULL AND runtime_agent_id != ''
-        ON CONFLICT (company_id, branch_id) DO NOTHING
+        UPDATE print_gateway_binding b
+        SET runtime_agent_id = c.runtime_agent_id
+        FROM print_gateway_gateway_config c
+        WHERE b.company_id = c.company_id
+          AND b.branch_id IS NULL
+          AND (b.runtime_agent_id IS NULL OR b.runtime_agent_id = '')
+          AND c.runtime_agent_id IS NOT NULL AND c.runtime_agent_id != ''
     """)
 
     # runtime_agent_id column is retained on print_gateway_gateway_config as a legacy field

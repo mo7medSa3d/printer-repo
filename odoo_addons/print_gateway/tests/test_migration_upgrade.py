@@ -44,11 +44,15 @@ class TestPrintGatewayMigrationUpgrade(TransactionCase):
         mock_cr.fetchone.return_value = ("runtime_agent_id",)
         module.migrate(mock_cr, "19.0.2.1.0")
 
-        # Verify it executed the INSERT INTO assignment table
+        # Verify it executed the binding update/migration
         executed_sqls = [call[0][0] for call in mock_cr.execute.call_args_list]
         self.assertTrue(
-            any("INSERT INTO print_gateway_runtime_agent_assignment" in sql for sql in executed_sqls),
-            "Migration must copy legacy runtime_agent_id into runtime_agent_assignment",
+            any("UPDATE print_gateway_binding" in sql or "INSERT INTO print_gateway_binding" in sql for sql in executed_sqls),
+            "Migration must copy legacy runtime_agent_id into root fallback bindings",
+        )
+        self.assertFalse(
+            any("branch_id = company_id" in sql.lower() for sql in executed_sqls),
+            "Migration must never assign branch_id = company_id",
         )
         # Verify it did not execute DROP COLUMN
         self.assertFalse(

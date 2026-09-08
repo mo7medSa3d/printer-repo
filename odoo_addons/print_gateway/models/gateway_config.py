@@ -219,6 +219,11 @@ class PrintGatewayPairAgentWizard(models.TransientModel):
                     _("Agent '%s' not found on Central Gateway. Registered active agents: %s")
                     % (target, ", ".join(available) if available else _("none"))
                 )
+            if matched.get("lifecycle") != "active":
+                raise ValidationError(
+                    _("Agent '%s' cannot be assigned because its status is '%s'. Only active agents are allowed.")
+                    % (matched.get("name") or target, matched.get("lifecycle"))
+                )
             resolved_agent_id = matched["id"]
             assignment_model = self.env["print_gateway.runtime_agent_assignment"]
             existing = assignment_model.search([
