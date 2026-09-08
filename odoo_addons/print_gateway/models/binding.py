@@ -231,7 +231,6 @@ class PrintGatewayBinding(models.Model):
                     raise ValidationError(_("Odoo Branch is not available to the current user."))
                 if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
                     raise ValidationError(_("A Gateway Runtime Agent is required for a branch binding."))
-                record._validate_runtime_target()
 
     @api.constrains("destination_type", "destination_pos_config_id", "destination_pos_printer_id", "destination_picking_type_id", "destination_report_id", "report_id", "printer_id", "company_id", "branch_id")
     def _check_binding(self):
@@ -259,6 +258,20 @@ class PrintGatewayBinding(models.Model):
                 raise ValidationError(_("Stock reports must use an operation type or report destination."))
             if not isinstance(record.printer_id, str) or not record.printer_id.strip():
                 raise ValidationError(_("A Gateway Runtime Printer must be selected."))
+
+    def action_verify_remote_hardware(self):
+        self.ensure_one()
+        self._validate_runtime_target()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Hardware Verification"),
+                "message": _("Gateway runtime agent (%s) and printer (%s) are reachable and verified active.") % (self.runtime_agent_id, self.printer_id),
+                "type": "success",
+                "sticky": False,
+            },
+        }
 
     @api.model_create_multi
     def create(self, vals_list):

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
+from werkzeug.exceptions import Forbidden
 
 from odoo import http
 from odoo.http import request
@@ -9,21 +10,35 @@ from odoo.exceptions import ValidationError
 class PrintGatewayRuntimePrinterController(http.Controller):
     def _scope(self, company_id=None, branch_id=None):
         env = request.env
-        company = env["res.company"].browse(company_id or env.company.id).exists()
-        if not company or company not in env.companies:
-            raise ValidationError("The selected Odoo Company is not available to the current user.")
+        if company_id:
+            try:
+                company = env["res.company"].browse(int(company_id)).exists()
+            except (TypeError, ValueError):
+                raise Forbidden("Access Denied: Invalid Odoo Company.")
+            if not company or company not in env.companies:
+                raise Forbidden("Access Denied: The selected Odoo Company is not available to the current user.")
+        else:
+            company = env.company
+            if not company or company not in env.companies:
+                raise Forbidden("Access Denied: The active Odoo Company is not available to the current user.")
+
         if company.parent_id:
             raise ValidationError("The selected Odoo Company must be a parent Company, not a Branch.")
-        branch = env["res.company"].browse(branch_id).exists() if branch_id else False
-        if branch:
-            if branch not in env.companies:
-                raise ValidationError("The selected Odoo Branch is not available to the current user.")
+
+        branch = False
+        if branch_id:
+            try:
+                branch = env["res.company"].browse(int(branch_id)).exists()
+            except (TypeError, ValueError):
+                raise Forbidden("Access Denied: Invalid Odoo Branch.")
+            if not branch or branch not in env.companies:
+                raise Forbidden("Access Denied: The selected Odoo Branch is not available to the current user.")
             if branch.parent_id != company:
                 raise ValidationError("Odoo Branch must belong directly to the selected Odoo Company.")
         return company, branch
 
     def _get_config(self, company):
-        config = request.env["print_gateway.gateway_config"].search(
+        config = request.env["print_gateway.gateway_config"].sudo().search(
             [("company_id", "=", company.id)], limit=1,
         )
         return config, company

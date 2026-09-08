@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from odoo.tests.common import TransactionCase
 
@@ -128,3 +129,75 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("record.company_id.parent_id", source)
         self.assertIn("Odoo Company must be a root Company, not a Branch.", source)
         self.assertIn("Odoo Branch must belong directly to the selected Odoo Company.", source)
+
+    def test_branch_restricted_user_can_query_gateway_config_and_route(self):
+        """Test that a user restricted strictly to Branch B (company_ids=[branch.id])
+        can read gateway config and execute routing without AccessError.
+        """
+        root_company = self.env.company
+        branch = self.env["res.company"].create({
+            "name": "Branch Test Context",
+            "parent_id": root_company.id,
+        })
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
+        if not config:
+            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+                config = self.env["print_gateway.gateway_config"].create({
+                    "company_id": root_company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                })
+
+        branch_user = self.env["res.users"].create({
+            "name": "Branch Restricted Cashier",
+            "login": "branch_cashier_%s" % branch.id,
+            "company_id": branch.id,
+            "company_ids": [(6, 0, [branch.id])],
+            "groups_id": [(6, 0, [self.env.ref("base.group_user").id])],
+        })
+
+        router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
+        cfg = router._gateway_config(branch)
+        self.assertTrue(cfg)
+        self.assertEqual(cfg.id, config.id)
+
+    def test_runtime_controller_cross_branch_idor_forbidden(self):
+        """Test that user in Branch A requesting Branch B receives Forbidden (403)."""
+        from werkzeug.exceptions import Forbidden
+        from odoo.addons.print_gateway.controllers.runtime_printers import PrintGatewayRuntimePrinterController
+
+        root_company = self.env.company
+        branch_a = self.env["res.company"].create({
+            "name": "Branch Alpha",
+            "parent_id": root_company.id,
+        })
+        branch_b = self.env["res.company"].create({
+            "name": "Branch Beta",
+            "parent_id": root_company.id,
+        })
+
+        controller = PrintGatewayRuntimePrinterController()
+
+        env_a = self.env(context=dict(self.env.context, allowed_company_ids=[branch_a.id]))
+        with patch("odoo.addons.print_gateway.controllers.runtime_printers.request") as mock_req:
+            mock_req.env = env_a
+            mock_req.env.companies = branch_a
+            mock_req.env.company = branch_a
+
+            with self.assertRaises(Forbidden):
+                controller._scope(company_id=root_company.id, branch_id=branch_b.id)
+
+    def test_binding_constraints_do_not_contain_network_calls(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        scope_idx = source.find("def _check_runtime_scope")
+        binding_idx = source.find("def _check_binding")
+        runtime_scope_code = source[scope_idx:binding_idx]
+        self.assertNotIn("_validate_runtime_target", runtime_scope_code)
+        self.assertNotIn("requests.", runtime_scope_code)
+        self.assertIn("def action_verify_remote_hardware(self):", source)
+
+    def test_runtime_printer_controller_guards_sudo_with_forbidden(self):
+        source = (CONTROLLERS / "runtime_printers.py").read_text(encoding="utf-8")
+        self.assertIn("from werkzeug.exceptions import Forbidden", source)
+        self.assertIn("raise Forbidden", source)
+        self.assertIn(".sudo().search", source)

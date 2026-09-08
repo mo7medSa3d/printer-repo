@@ -161,10 +161,11 @@ class PrintGatewayJob(models.Model):
         for job in self:
             if job.status in self._TERMINAL and job.gateway_job_id:
                 continue
+            gateway_config = job.gateway_config_id.sudo()
             try:
                 response = requests.post(
-                    "%s/api/print/jobs" % job.gateway_config_id._gateway_base(for_request=True),
-                    json=job._submission_body(), headers=job.gateway_config_id._gateway_headers(),
+                    "%s/api/print/jobs" % gateway_config._gateway_base(for_request=True),
+                    json=job._submission_body(), headers=gateway_config._gateway_headers(),
                     timeout=(5, 20), allow_redirects=False,
                 )
                 if response.status_code not in (200, 201):
@@ -215,10 +216,11 @@ class PrintGatewayJob(models.Model):
 
     def action_sync_status(self):
         for job in self.filtered(lambda row: row.gateway_job_id and row.status not in self._TERMINAL):
+            gateway_config = job.gateway_config_id.sudo()
             try:
                 response = requests.get(
-                    "%s/api/print/jobs" % job.gateway_config_id._gateway_base(for_request=True),
-                    params={"id": job.gateway_job_id}, headers=job.gateway_config_id._gateway_headers(),
+                    "%s/api/print/jobs" % gateway_config._gateway_base(for_request=True),
+                    params={"id": job.gateway_job_id}, headers=gateway_config._gateway_headers(),
                     timeout=(5, 10), allow_redirects=False,
                 )
                 if response.status_code == 404:

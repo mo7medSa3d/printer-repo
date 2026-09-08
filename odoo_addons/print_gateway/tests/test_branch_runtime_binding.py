@@ -77,10 +77,23 @@ class TestBranchRuntimeBinding(TransactionCase):
         with self.assertRaises(ValidationError):
             record._check_runtime_scope()
 
-    def test_retired_agent_is_rejected(self):
+    def test_retired_agent_is_rejected_on_hardware_verification(self):
+        binding = self.env["print_gateway.binding"].create(self._values(runtime_agent_id="agent-old"))
         with patch("odoo.addons.print_gateway.models.binding.requests.get", return_value=Response({"agents": self.agents})), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
             with self.assertRaises(ValidationError):
-                self.env["print_gateway.binding"].create(self._values(runtime_agent_id="agent-old"))
+                binding.action_verify_remote_hardware()
+
+    def test_binding_creation_succeeds_without_network_io(self):
+        # Database persistence does not block on synchronous network requests
+        binding = self.env["print_gateway.binding"].create(self._values(priority=99))
+        self.assertTrue(binding.id)
+
+    def test_action_verify_remote_hardware_success(self):
+        binding = self.env["print_gateway.binding"].create(self._values(priority=98))
+        with patch("odoo.addons.print_gateway.models.binding.requests.get", side_effect=self._gets()), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+            res = binding.action_verify_remote_hardware()
+            self.assertEqual(res.get("type"), "ir.actions.client")
+            self.assertEqual(res.get("params", {}).get("type"), "success")
 
     def test_printer_from_another_agent_is_rejected(self):
         record = self.env["print_gateway.binding"].new({"company_id": self.company.id, "branch_id": self.branch.id, "runtime_agent_id": "agent-a", "printer_id": "printer-b"})

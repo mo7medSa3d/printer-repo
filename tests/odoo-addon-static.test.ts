@@ -144,4 +144,39 @@ describe("Odoo addon static contracts", () => {
     expect(jobs).toContain("gateway_config.company_id != expected_config_owner");
     expect(jobs).not.toContain("gateway_config.company_id != company");
   });
+
+  it("secures gateway config and binding resolution for branch users using sudo in router and job", () => {
+    const router = read("models/print_router.py");
+    const jobs = read("models/print_job.py");
+    const security = read("security/security.xml");
+
+    expect(router).toContain('self.env["print_gateway.gateway_config"].sudo().search');
+    expect(router).toContain('self.env["print_gateway.binding"].sudo().find_for');
+    expect(jobs).toContain("job.gateway_config_id.sudo()");
+    expect(security).toContain("('company_id.child_ids', 'in', company_ids)");
+    expect(security).toContain("('branch_id', 'in', company_ids)");
+  });
+
+  it("decouples network I/O from @api.constrains in binding and provides action button", () => {
+    const binding = read("models/binding.py");
+    const views = read("views/binding_views.xml");
+
+    const scopeIdx = binding.indexOf("def _check_runtime_scope");
+    const bindingIdx = binding.indexOf("def _check_binding");
+    const constraintBody = binding.slice(scopeIdx, bindingIdx);
+
+    expect(constraintBody).not.toContain("_validate_runtime_target");
+    expect(constraintBody).not.toContain("requests.");
+    expect(binding).toContain("def action_verify_remote_hardware(self):");
+    expect(views).toContain('name="action_verify_remote_hardware"');
+  });
+
+  it("hardens runtime printer controller against cross-branch IDOR with Forbidden", () => {
+    const controller = read("controllers/runtime_printers.py");
+
+    expect(controller).toContain("from werkzeug.exceptions import Forbidden");
+    expect(controller).toContain("raise Forbidden");
+    expect(controller).toContain('request.env["print_gateway.gateway_config"].sudo().search');
+  });
 });
+

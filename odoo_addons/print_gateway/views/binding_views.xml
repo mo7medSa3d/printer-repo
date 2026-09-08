@@ -23,6 +23,9 @@
         <field name="model">print_gateway.binding</field>
         <field name="arch" type="xml">
             <form string="Print Gateway Binding" class="o_pg_view o_pg_form">
+                <header>
+                    <button name="action_verify_remote_hardware" type="object" string="Test Hardware Reachability" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
+                </header>
                 <sheet>
                     <div class="o_pg_record_header">
                         <span class="o_pg_record_icon">🖨️</span>
