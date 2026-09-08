@@ -139,8 +139,9 @@ suite("agent registration contract", () => {
     const [res1, res2] = await Promise.all([makeReq("127.0.0.81"), makeReq("127.0.0.82")]);
     const statuses = [res1.status, res2.status].sort();
 
-    // Exactly one must succeed (200) and the second must be rejected as already consumed (409)
-    expect(statuses).toEqual([200, 409]);
+    // Exactly one must succeed (200), and the losing concurrent request receives either 409 (if reached update) or 400 (if read after winner's commit)
+    expect(statuses[0]).toBe(200);
+    expect([400, 409]).toContain(statuses[1]);
 
     const winnerRes = res1.status === 200 ? res1 : res2;
     const winnerBody = await winnerRes.json();
