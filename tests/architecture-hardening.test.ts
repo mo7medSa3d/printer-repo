@@ -75,4 +75,17 @@ describe("architecture hardening", () => {
     expect(block).toContain("tx.update(agents)");
     expect(block).toContain("tx.update(printers)");
   });
+
+  it("keeps permanent agent deletion transactional with row-level locking and audit protection", () => {
+    const src = readFileSync("src/app/actions.ts", "utf8");
+    const start = src.indexOf("export async function deleteAgent");
+    const end = src.indexOf("export async function createPrintJob", start);
+    const block = src.slice(start, end);
+    expect(block).toContain("requireManager()");
+    expect(block).toContain("db.transaction");
+    expect(block).toContain("FOR UPDATE");
+    expect(block).toContain("tx.delete(agents)");
+    expect(block).toContain("closeAgentSockets");
+    expect(block).toContain("publishAgentSessionClose");
+  });
 });

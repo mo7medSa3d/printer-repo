@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   createAgent,
   createTestPrintJob,
+  deleteAgent,
   setAgentLifecycle,
   setPrinterLifecycle,
 } from "../actions";
@@ -29,6 +30,7 @@ import {
   Key,
   RotateCcw,
   Eye,
+  Trash2,
 } from "lucide-react";
 import {
   Button,
@@ -40,6 +42,7 @@ import {
   StatusBadge,
   Mono,
   Drawer,
+  Modal,
   CopyButton,
   agentTone,
   jobTone,
@@ -139,6 +142,7 @@ export default function DashboardClient({
   const [activePairing, setActivePairing] = useState<{ code: string; expiresAt: Date } | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [countdownText, setCountdownText] = useState("10:00");
+  const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
 
   // Filter & view states
   const [printerViewMode, setPrinterViewMode] = useState<"grid" | "table">("grid");
@@ -566,6 +570,18 @@ export default function DashboardClient({
                             Pair Code
                           </Button>
                         )}
+
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-bad hover:bg-bad-bg/60 hover:text-bad"
+                          onClick={() => setAgentToDelete(agent)}
+                          disabled={busy}
+                          icon={<Trash2 className="h-3.5 w-3.5" />}
+                          title="Permanently delete agent"
+                        >
+                          Delete
+                        </Button>
                       </div>
                     </div>
                   );
@@ -1078,6 +1094,67 @@ export default function DashboardClient({
           </div>
         )}
       </Drawer>
+
+      {/* Permanent Agent Deletion Confirmation Modal */}
+      <Modal
+        open={Boolean(agentToDelete)}
+        onClose={() => {
+          if (!busy) setAgentToDelete(null);
+        }}
+        title="Delete Agent"
+        description="This permanently removes this runtime agent from the Gateway."
+        footer={
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              variant="secondary"
+              onClick={() => setAgentToDelete(null)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (!agentToDelete) return;
+                const id = agentToDelete.id;
+                await runAction(() => deleteAgent(id), "Agent permanently deleted.");
+                setAgentToDelete(null);
+              }}
+              disabled={busy}
+              loading={busy}
+              icon={<Trash2 className="h-4 w-4" />}
+            >
+              Delete Agent
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4 text-sm text-ink-2">
+          <div className="rounded-xl border border-bad-edge bg-bad-bg/50 p-4 text-xs leading-relaxed text-bad">
+            <div className="flex items-center gap-2 font-semibold">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-bad" />
+              <span>This action cannot be undone.</span>
+            </div>
+            <p className="mt-2 text-ink-2">
+              The agent must be offline before it can be deleted. Historical print/audit records may
+              require the agent to be retired instead.
+            </p>
+          </div>
+
+          <p>
+            Are you sure you want to permanently delete agent{" "}
+            <strong className="font-semibold text-ink">{agentToDelete?.name}</strong>{" "}
+            (<Mono>{agentToDelete?.id}</Mono>)?
+          </p>
+
+          {agentToDelete?.status === "online" && (
+            <p className="text-xs font-semibold text-warn">
+              Note: This agent is currently marked as online. You must shut down or disconnect the
+              agent before deleting it.
+            </p>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }
