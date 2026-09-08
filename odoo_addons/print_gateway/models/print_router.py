@@ -445,7 +445,7 @@ class PrintGatewayRouter(models.AbstractModel):
             "payload": payload,
             "payload_type": "raw_cmd",
             "protocol": protocol,
-            "raw_payload": raw_data if isinstance(raw_data, str) else raw_bytes.decode("latin1", errors="replace"),
+            "raw_payload": (raw_data.replace("\x00", "\\x00") if isinstance(raw_data, str) else raw_bytes.decode("latin1", errors="replace").replace("\x00", "\\x00")),
             "fallback_binding": target_binding.fallback_binding_id,
             "source_model": record._name if record else False,
             "source_record_id": record.id if record else False,

@@ -161,7 +161,7 @@ class PrintGatewayJob(models.Model):
             "payload": payload_json,
             "payload_type": payload_type or "pdf",
             "protocol": protocol or "raw",
-            "raw_payload": raw_payload or False,
+            "raw_payload": (raw_payload.replace("\x00", "\\x00") if isinstance(raw_payload, str) else False),
             "printer_profile": printer_profile or False,
             "fallback_binding_id": fallback_binding.id if fallback_binding else False,
             "idempotency_key": key,
