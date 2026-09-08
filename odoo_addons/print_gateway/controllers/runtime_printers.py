@@ -8,8 +8,8 @@ from odoo.exceptions import ValidationError
 
 
 class PrintGatewayRuntimePrinterController(http.Controller):
-    def _scope(self, company_id=None, branch_id=None):
-        env = request.env
+    def _scope(self, company_id=None, branch_id=None, env=None):
+        env = env or request.env
         if company_id:
             try:
                 company = env["res.company"].browse(int(company_id)).exists()
@@ -37,8 +37,9 @@ class PrintGatewayRuntimePrinterController(http.Controller):
                 raise ValidationError("Odoo Branch must belong directly to the selected Odoo Company.")
         return company, branch
 
-    def _get_config(self, company):
-        config = request.env["print_gateway.gateway_config"].sudo().search(
+    def _get_config(self, company, env=None):
+        env = env or request.env
+        config = env["print_gateway.gateway_config"].sudo().search(
             [("company_id", "=", company.id)], limit=1,
         )
         return config, company

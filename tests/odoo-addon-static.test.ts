@@ -176,7 +176,7 @@ describe("Odoo addon static contracts", () => {
 
     expect(controller).toContain("from werkzeug.exceptions import Forbidden");
     expect(controller).toContain("raise Forbidden");
-    expect(controller).toContain('request.env["print_gateway.gateway_config"].sudo().search');
+    expect(controller).toContain('["print_gateway.gateway_config"].sudo().search');
   });
 });
 

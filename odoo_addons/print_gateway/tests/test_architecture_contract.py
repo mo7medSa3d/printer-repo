@@ -153,7 +153,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
             "login": "branch_cashier_%s" % branch.id,
             "company_id": branch.id,
             "company_ids": [(6, 0, [branch.id])],
-            "groups_id": [(6, 0, [self.env.ref("base.group_user").id])],
         })
 
         router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
@@ -179,13 +178,8 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         controller = PrintGatewayRuntimePrinterController()
 
         env_a = self.env(context=dict(self.env.context, allowed_company_ids=[branch_a.id]))
-        with patch("odoo.addons.print_gateway.controllers.runtime_printers.request") as mock_req:
-            mock_req.env = env_a
-            mock_req.env.companies = branch_a
-            mock_req.env.company = branch_a
-
-            with self.assertRaises(Forbidden):
-                controller._scope(company_id=root_company.id, branch_id=branch_b.id)
+        with self.assertRaises(Forbidden):
+            controller._scope(company_id=root_company.id, branch_id=branch_b.id, env=env_a)
 
     def test_binding_constraints_do_not_contain_network_calls(self):
         source = (MODELS / "binding.py").read_text(encoding="utf-8")
