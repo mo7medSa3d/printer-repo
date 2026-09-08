@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { asc, ne } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { db } from "../../../../db";
 import { agents } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
