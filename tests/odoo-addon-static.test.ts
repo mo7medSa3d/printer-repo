@@ -111,4 +111,37 @@ describe("Odoo addon static contracts", () => {
     expect(interceptor).toContain("return true; // FAIL-CLOSED");
     expect(interceptor).toContain("return false; // Fallback to standard Odoo report action only when no binding exists");
   });
+
+  it("uses root-aware resolver for POS gateway enablement instead of direct config queries", () => {
+    const order = read("models/pos_order.py");
+    const session = read("models/pos_session.py");
+    const posCtrl = read("controllers/pos.py");
+
+    // Must NOT contain direct gateway_config searches by self.env.company.id
+    for (const src of [order, session]) {
+      expect(src).not.toContain('("company_id", "=", self.env.company.id)');
+    }
+    expect(posCtrl).not.toContain("('company_id', '=', request.env.company.id)");
+
+    // Must use the router's root-aware resolver
+    expect(order).toContain("_gateway_config");
+    expect(session).toContain("_gateway_config");
+    expect(posCtrl).toContain("_gateway_config");
+  });
+
+  it("persists outbox jobs under the active branch company, not the root gateway company", () => {
+    const router = read("models/print_router.py");
+    const submitIdx = router.indexOf("def _submit_route");
+    const submitBlock = router.slice(submitIdx, submitIdx + 600);
+    // The company passed to _persist_durable_job must be the caller's company, not route["company"]
+    expect(submitBlock).toContain('"company": company');
+    expect(submitBlock).not.toContain('"company": route["company"]');
+  });
+
+  it("validates gateway config ownership through company hierarchy, not strict equality", () => {
+    const jobs = read("models/print_job.py");
+    expect(jobs).toContain("expected_config_owner = company.parent_id or company");
+    expect(jobs).toContain("gateway_config.company_id != expected_config_owner");
+    expect(jobs).not.toContain("gateway_config.company_id != company");
+  });
 });

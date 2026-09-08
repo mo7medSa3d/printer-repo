@@ -220,7 +220,7 @@ class PrintGatewayRouter(models.AbstractModel):
     ):
         self._assert_current_company(company)
         job_id = self._persist_durable_job({
-            "company": route["company"],
+            "company": company,
             "gateway_config": route["config"],
             "printer_id": route["binding"].printer_id,
             "destination": route["destination"].display_name,

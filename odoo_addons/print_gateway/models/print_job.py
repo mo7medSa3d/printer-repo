@@ -79,8 +79,9 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Gateway configuration is missing."))
         if company != self.env.company:
             raise ValidationError(_("Print operations must be created in the active Odoo company."))
-        if gateway_config.company_id != company:
-            raise ValidationError(_("Gateway configuration does not belong to the active company."))
+        expected_config_owner = company.parent_id or company
+        if gateway_config.company_id != expected_config_owner:
+            raise ValidationError(_("Gateway configuration does not belong to the company hierarchy of the active Odoo company."))
         if not printer_id or not str(printer_id).strip():
             raise ValidationError(_("Printer is required."))
         if not destination or not str(destination).strip():
