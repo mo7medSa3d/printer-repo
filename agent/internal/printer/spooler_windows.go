@@ -191,16 +191,17 @@ func preFlightSpoolerCheck(spoolerName string) error {
 	}
 
 	var hPrinter syscall.Handle
-	ret, _, err := procOpenPrinterW.Call(
+	ret, _, lastErr := procOpenPrinterW.Call(
 		uintptr(unsafe.Pointer(printerNamePtr)),
 		uintptr(unsafe.Pointer(&hPrinter)),
 		0,
 	)
 	if ret == 0 {
-		return fmt.Errorf("%w: OpenPrinterW(%q) failed: %v", ErrPrinterOffline, spoolerName, err)
+		return fmt.Errorf("%w: OpenPrinterW(%q) failed: %w", ErrPrinterOffline, spoolerName, lastErr)
 	}
 	defer procClosePrinter.Call(uintptr(hPrinter))
 
+	minSize := uint32(unsafe.Sizeof(printerInfo2{}))
 	var needed uint32
 	procGetPrinterW.Call(
 		uintptr(hPrinter),
@@ -209,12 +210,13 @@ func preFlightSpoolerCheck(spoolerName string) error {
 		0,
 		uintptr(unsafe.Pointer(&needed)),
 	)
-	if needed == 0 {
-		return nil
+	if needed < minSize {
+		// Fail-closed: winspool must provide at least enough bytes for printerInfo2
+		return fmt.Errorf("%w: GetPrinterW(%q) returned invalid buffer size %d (minimum %d)", ErrPrinterNotReady, spoolerName, needed, minSize)
 	}
 
 	buf := make([]byte, needed)
-	ret, _, _ = procGetPrinterW.Call(
+	ret, _, lastErr = procGetPrinterW.Call(
 		uintptr(hPrinter),
 		2,
 		uintptr(unsafe.Pointer(&buf[0])),
@@ -222,7 +224,12 @@ func preFlightSpoolerCheck(spoolerName string) error {
 		uintptr(unsafe.Pointer(&needed)),
 	)
 	if ret == 0 {
-		return nil
+		// Fail-closed: cannot confirm printer readiness
+		return fmt.Errorf("%w: GetPrinterW(%q) level 2 query failed: %w", ErrPrinterNotReady, spoolerName, lastErr)
+	}
+
+	if len(buf) < int(minSize) {
+		return fmt.Errorf("%w: spooler buffer size %d smaller than printerInfo2 struct %d", ErrPrinterNotReady, len(buf), minSize)
 	}
 
 	pi := (*printerInfo2)(unsafe.Pointer(&buf[0]))
@@ -263,7 +270,7 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 
 	// Pre-flight check printer status before allocating worker slots
 	if err := preFlightSpoolerCheck(p.SpoolerName); err != nil {
-		return fmt.Errorf("%w: %v", ErrPrinterNotReady, err)
+		return fmt.Errorf("pre-flight spooler check failed: %w", err)
 	}
 
 	select {

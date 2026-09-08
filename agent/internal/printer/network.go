@@ -30,18 +30,20 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 	}
 
 	// Active PreFlightHealthCheck before transmitting raster or raw payload bytes.
+	// TOCTOU Notice: pre-flight check validates readiness at dial time, but cannot eliminate
+	// mid-stream disconnects/hardware halts during actual payload transmission.
 	if strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		if err := PreFlightHealthCheck(probeCtx, p.Address); err != nil {
-			return fmt.Errorf("%w: pre-flight health check failed: %v", ErrPrinterNotReady, err)
+			return fmt.Errorf("pre-flight health check failed: %w", err)
 		}
 	}
 
 	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
-		return fmt.Errorf("%w: dial %s: %v", ErrPrinterNotReady, p.Address, err)
+		return fmt.Errorf("%w: dial %s: %w", ErrPrinterOffline, p.Address, err)
 	}
 	defer conn.Close()
 

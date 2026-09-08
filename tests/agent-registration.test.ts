@@ -118,5 +118,35 @@ suite("agent registration contract", () => {
     expect(row.status).toBe("online");
     expect(row.metadata).toMatchObject({ hostname: "pos-lane-02", version: "2.1.0", os: "windows" });
   });
+
+  it("handles concurrent registration on the same pairing code with exactly one winner", async () => {
+    const f = await seedFixture();
+    const pairingCode = "CC44DD";
+    await pool().query(
+      `UPDATE agents SET pairing_code_hash = $1, pairing_code_expires_at = now() + interval '30 minutes', secret = NULL, status = 'offline' WHERE id = $2`,
+      [hashPairingCode(pairingCode), f.agentId],
+    );
+
+    const makeReq = (ip: string) =>
+      registerPOST(
+        new Request("http://gateway.test/api/agent/register", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-real-ip": ip },
+          body: JSON.stringify({ pairing_code: pairingCode }),
+        }),
+      );
+
+    const [res1, res2] = await Promise.all([makeReq("127.0.0.81"), makeReq("127.0.0.82")]);
+    const statuses = [res1.status, res2.status].sort();
+
+    // Exactly one must succeed (200) and the second must be rejected as already consumed (409)
+    expect(statuses).toEqual([200, 409]);
+
+    const winnerRes = res1.status === 200 ? res1 : res2;
+    const winnerBody = await winnerRes.json();
+    expect(winnerBody.agent_id).toBe(f.agentId);
+    expect(winnerBody.agent_secret).toBeTruthy();
+  });
 });
+
 

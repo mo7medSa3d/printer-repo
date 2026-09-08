@@ -33,16 +33,32 @@ type HealthStatus struct {
 }
 
 // QueryHealthStatus inspects an active connection using ESC/POS DLE EOT sequences.
+//
+// Protocol verification note:
+// In the ESC/POS specification, standard DLE EOT 1/2/4 response bytes have fixed bits:
+// Bit 1 = 1, Bit 4 = 1, Bit 0 = 0, Bit 7 = 0 (mask 0x93 == 0x12).
+// Any byte that fails this framing check indicates either garbage, non-ESC/POS device,
+// or echo, and fails closed with ErrPrinterNotReady.
+//
+// TOCTOU notice:
+// Pre-flight health checking reduces delivery failures caused by pre-existing paper-out,
+// cover-open, or offline states. However, it cannot guarantee that the printer will not run
+// out of paper, disconnect, or experience a jam mid-payload during actual transmission.
+// Mid-stream failures are tracked separately via UNKNOWN_PARTIAL_DELIVERY.
 func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 	status := &HealthStatus{Online: true}
 
 	// 1. Printer Status (DLE EOT 1)
 	if _, err := rw.Write(cmdInquirePrinterStatus); err != nil {
-		return nil, fmt.Errorf("%w: failed to write printer status inquiry: %v", ErrPrinterOffline, err)
+		return nil, fmt.Errorf("%w: failed to write printer status inquiry: %w", ErrPrinterOffline, err)
 	}
 	buf := make([]byte, 1)
 	if _, err := io.ReadFull(rw, buf); err != nil {
-		return nil, fmt.Errorf("%w: failed to read printer status: %v", ErrPrinterOffline, err)
+		return nil, fmt.Errorf("%w: failed to read printer status: %w", ErrPrinterOffline, err)
+	}
+	// Check standard ESC/POS DLE EOT response framing: bit 1=1, bit 4=1, bit 0=0, bit 7=0
+	if (buf[0] & 0x93) != 0x12 {
+		return nil, fmt.Errorf("%w: invalid ESC/POS printer status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterNotReady, buf[0])
 	}
 	// Bit 3: Online (0) / Offline (1)
 	if (buf[0] & 0x08) != 0 {
@@ -52,10 +68,13 @@ func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 
 	// 2. Offline Status (DLE EOT 2)
 	if _, err := rw.Write(cmdInquireOfflineStatus); err != nil {
-		return nil, fmt.Errorf("%w: failed to write offline status inquiry: %v", ErrPrinterOffline, err)
+		return nil, fmt.Errorf("%w: failed to write offline status inquiry: %w", ErrPrinterOffline, err)
 	}
 	if _, err := io.ReadFull(rw, buf); err != nil {
-		return nil, fmt.Errorf("%w: failed to read offline status: %v", ErrPrinterOffline, err)
+		return nil, fmt.Errorf("%w: failed to read offline status: %w", ErrPrinterOffline, err)
+	}
+	if (buf[0] & 0x93) != 0x12 {
+		return nil, fmt.Errorf("%w: invalid ESC/POS offline status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterNotReady, buf[0])
 	}
 	// Bit 2: Cover open (1)
 	if (buf[0] & 0x04) != 0 {
@@ -75,10 +94,13 @@ func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 
 	// 3. Paper Status (DLE EOT 4)
 	if _, err := rw.Write(cmdInquirePaperStatus); err != nil {
-		return nil, fmt.Errorf("%w: failed to write paper status inquiry: %v", ErrPrinterOffline, err)
+		return nil, fmt.Errorf("%w: failed to write paper status inquiry: %w", ErrPrinterOffline, err)
 	}
 	if _, err := io.ReadFull(rw, buf); err != nil {
-		return nil, fmt.Errorf("%w: failed to read paper status: %v", ErrPrinterOffline, err)
+		return nil, fmt.Errorf("%w: failed to read paper status: %w", ErrPrinterOffline, err)
+	}
+	if (buf[0] & 0x93) != 0x12 {
+		return nil, fmt.Errorf("%w: invalid ESC/POS paper status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterNotReady, buf[0])
 	}
 	// Bits 2 and 3: Paper roll near-end sensor
 	if (buf[0] & 0x0C) != 0 {
@@ -99,7 +121,7 @@ func PreFlightHealthCheck(ctx context.Context, address string) error {
 	d := net.Dialer{Timeout: 2 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return fmt.Errorf("%w: dial %s: %v", ErrPrinterOffline, address, err)
+		return fmt.Errorf("%w: dial %s: %w", ErrPrinterOffline, address, err)
 	}
 	defer conn.Close()
 
