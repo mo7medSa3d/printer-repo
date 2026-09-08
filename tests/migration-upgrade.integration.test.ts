@@ -30,6 +30,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
     adminUrl.pathname = "/postgres";
     tempDb = `upgrade_${Date.now()}_${randomBytes(3).toString("hex")}`;
     admin = new Pool({ connectionString: adminUrl.toString(), max: 2 });
+    admin.on("error", () => {});
     await admin.query(`CREATE DATABASE "${tempDb}"`);
 
     workDir = await mkdtemp(join(tmpdir(), "odoo-print-upgrade-"));
@@ -67,6 +68,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
 
   it("upgrades a populated legacy database to the runtime-only architecture without losing print history", async () => {
     const pool = new Pool({ connectionString: databaseUrlFor(tempDb), max: 4 });
+    pool.on("error", () => {});
     const db = drizzle(pool);
     try {
       await migrate(db, { migrationsFolder: oldDir });

@@ -86,7 +86,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     "printer_id": "printer_runtime_%s" % key,
                     "destination": "Sales",
                     "document_type": "order",
-                    "payload": {"type": "raw", "encoding": "base64", "data": "aGVsbG8="},
+                    "payload": {"type": "raw", "protocol": "raw", "encoding": "base64", "data": "aGVsbG8="},
+                    "protocol": "raw",
                     "idempotency_key": key,
                 }
             )
