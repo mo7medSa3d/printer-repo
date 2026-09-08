@@ -185,5 +185,20 @@ describe("Odoo addon static contracts", () => {
     expect(binding).toContain("with self.env.cr.savepoint():");
     expect(binding).toContain("except IntegrityError:");
   });
+
+  it("stops automatic retry of unknown submission outcomes in outbox and restricts cron to queued jobs", () => {
+    const jobs = read("models/print_job.py");
+    expect(jobs).toContain('("status", "=", "queued")');
+    expect(jobs).not.toContain('("status", "in", ["queued", "unknown"])');
+    expect(jobs).toContain('"next_retry_at": False');
+    expect(jobs).toContain("def action_force_reprint");
+  });
+
+  it("reconciles stale runtime agent assignments on binding write and unlink", () => {
+    const binding = read("models/binding.py");
+    expect(binding).toContain("def _reconcile_assignments(self, company_branch_pairs):");
+    expect(binding).toContain("def unlink(self):");
+    expect(binding).toContain("assignment.unlink()");
+  });
 });
 

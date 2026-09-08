@@ -284,6 +284,38 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             job = model_env["print_gateway.print_job"].browse(job_id).exists()
             self.assertEqual(job.status, "unknown")
             self.assertIn("UNKNOWN_SUBMISSION_OUTCOME", job.last_error)
+            self.assertFalse(job.next_retry_at)
+
+    def test_cron_submit_pending_ignores_unknown_jobs(self):
+        job_id = self._job("cron-safety-unknown")
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
+            job.write({"status": "unknown", "next_retry_at": False})
+
+            with patch.object(type(job), "action_submit", autospec=True) as mocked_submit:
+                model_env["print_gateway.print_job"].cron_submit_pending()
+                mocked_submit.assert_not_called()
+
+    def test_force_reprint_from_unknown_generates_derived_key(self):
+        job_id = self._job("reprint-unknown-origin")
+        with self.env.registry.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
+            job.write({"status": "unknown", "next_retry_at": False})
+
+            with patch.object(type(job), "action_submit", autospec=True, return_value=True) as mocked_submit:
+                job.action_force_reprint()
+                self.assertEqual(job.reprint_attempt_count, 1)
+                derived_jobs = model_env["print_gateway.print_job"].search([
+                    ("idempotency_key", "=", "%s-reprint-1" % job.idempotency_key),
+                ])
+                self.assertEqual(len(derived_jobs), 1)
+                mocked_submit.assert_called_once()
 
     def test_manual_retry_does_not_reset_in_flight_or_unknown_jobs(self):
         for status in ("submitted", "claimed", "printing", "unknown"):

@@ -927,7 +927,23 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 			statuses[i] = p.Status()
 		}(i, id, printerByID[id])
 	}
-	probeWg.Wait()
+
+	probeDone := make(chan struct{})
+	go func() {
+		probeWg.Wait()
+		close(probeDone)
+	}()
+
+	select {
+	case <-probeDone:
+	case <-time.After(2 * time.Second):
+		log.Printf("WARNING: Printer status probe batch timed out after 2s; proceeding with available statuses")
+		for i := range statuses {
+			if statuses[i] == "" {
+				statuses[i] = "spooler_rpc_unresponsive"
+			}
+		}
+	}
 
 	result := make([]map[string]interface{}, 0, len(ids))
 	for i, id := range ids {

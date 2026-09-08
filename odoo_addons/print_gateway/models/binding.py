@@ -274,50 +274,93 @@ class PrintGatewayBinding(models.Model):
             },
         }
 
+    @api.model
+    def _reconcile_assignments(self, company_branch_pairs):
+        """Reconcile runtime_agent_assignment records as a projected cache of active bindings.
+
+        If no active/enabled binding with a runtime_agent_id remains for a (company_id, branch_id) tuple,
+        the orphaned assignment is removed. If active bindings remain, the assignment is synchronized.
+        """
+        assignment_model = self.env["print_gateway.runtime_agent_assignment"].sudo()
+        for company_id, branch_id in company_branch_pairs:
+            if not company_id or not branch_id:
+                continue
+            active_bindings = self.sudo().search([
+                ("company_id", "=", company_id),
+                ("branch_id", "=", branch_id),
+                ("enabled", "=", True),
+                ("runtime_agent_id", "!=", False),
+            ], order="priority asc, id asc")
+
+            assignment = assignment_model.search([
+                ("company_id", "=", company_id),
+                ("branch_id", "=", branch_id),
+            ], limit=1)
+
+            if not active_bindings:
+                if assignment:
+                    assignment.unlink()
+            else:
+                target_agent = (active_bindings[0].runtime_agent_id or "").strip()
+                if not target_agent:
+                    continue
+                conflict = active_bindings.filtered(lambda b: (b.runtime_agent_id or "").strip() != target_agent)
+                if conflict:
+                    raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
+
+                if not assignment:
+                    try:
+                        with self.env.cr.savepoint():
+                            assignment_model.create({
+                                "company_id": company_id,
+                                "branch_id": branch_id,
+                                "runtime_agent_id": target_agent,
+                                "enabled": True,
+                            })
+                    except IntegrityError:
+                        assignment = assignment_model.search([
+                            ("company_id", "=", company_id),
+                            ("branch_id", "=", branch_id),
+                        ], limit=1)
+                        if assignment:
+                            assignment.write({"runtime_agent_id": target_agent, "enabled": True})
+                elif assignment.runtime_agent_id != target_agent or not assignment.enabled:
+                    assignment.write({"runtime_agent_id": target_agent, "enabled": True})
+
+    def _sync_runtime_assignment(self):
+        pairs = {(r.company_id.id, r.branch_id.id) for r in self if r.branch_id}
+        if pairs:
+            self._reconcile_assignments(pairs)
+
     @api.model_create_multi
     def create(self, vals_list):
         records = super().create(vals_list)
-        for record in records:
-            record._sync_runtime_assignment()
+        pairs = {(r.company_id.id, r.branch_id.id) for r in records if r.branch_id}
+        if pairs:
+            self._reconcile_assignments(pairs)
         return records
 
-    def _sync_runtime_assignment(self):
-        self.ensure_one()
-        if not self.branch_id or not self.runtime_agent_id:
-            return
-        assignment_model = self.env["print_gateway.runtime_agent_assignment"]
-        assignment = assignment_model.search([("company_id", "=", self.company_id.id), ("branch_id", "=", self.branch_id.id)], limit=1)
-        if assignment:
-            if assignment.runtime_agent_id != self.runtime_agent_id:
-                other_bindings = self.search([
-                    ("id", "!=", self.id), ("company_id", "=", self.company_id.id),
-                    ("branch_id", "=", self.branch_id.id), ("runtime_agent_id", "!=", self.runtime_agent_id),
-                ], limit=1)
-                if other_bindings:
-                    raise ValidationError(_("The selected Odoo Branch is already assigned to another Gateway Runtime Agent."))
-                assignment.write({"runtime_agent_id": self.runtime_agent_id, "enabled": True})
-            return
-        try:
-            with self.env.cr.savepoint():
-                assignment_model.create({
-                    "company_id": self.company_id.id,
-                    "branch_id": self.branch_id.id,
-                    "runtime_agent_id": self.runtime_agent_id,
-                    "enabled": True,
-                })
-        except IntegrityError:
-            assignment = assignment_model.search([
-                ("company_id", "=", self.company_id.id),
-                ("branch_id", "=", self.branch_id.id),
-            ], limit=1)
-            if assignment:
-                assignment.write({"runtime_agent_id": self.runtime_agent_id, "enabled": True})
-
     def write(self, vals):
+        trigger_fields = {"company_id", "branch_id", "runtime_agent_id", "enabled"}
+        pairs = set()
+        if trigger_fields.intersection(vals):
+            for r in self:
+                if r.branch_id:
+                    pairs.add((r.company_id.id, r.branch_id.id))
         result = super().write(vals)
-        if set(vals).intersection({"company_id", "branch_id", "runtime_agent_id"}):
-            for record in self:
-                record._sync_runtime_assignment()
+        if trigger_fields.intersection(vals):
+            for r in self:
+                if r.branch_id:
+                    pairs.add((r.company_id.id, r.branch_id.id))
+            if pairs:
+                self._reconcile_assignments(pairs)
+        return result
+
+    def unlink(self):
+        pairs = {(r.company_id.id, r.branch_id.id) for r in self if r.branch_id}
+        result = super().unlink()
+        if pairs:
+            self._reconcile_assignments(pairs)
         return result
 
     @api.model

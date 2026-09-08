@@ -40,7 +40,7 @@ class PrintGatewayRuntimeAgentAssignment(models.Model):
             )
 
     def _check_admin(self):
-        if not self.env.user.has_group("base.group_system"):
+        if not (self.env.is_superuser or self.env.user.has_group("base.group_system")):
             raise AccessError(_("Only Odoo system administrators can change runtime agent assignments."))
 
     @api.model_create_multi

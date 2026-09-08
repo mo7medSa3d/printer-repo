@@ -138,3 +138,35 @@ class TestBranchRuntimeBinding(TransactionCase):
         self.assertFalse(record.runtime_agent_id)
         self.assertFalse(record.printer_id)
         self.assertFalse(record.report_id)
+
+    def test_binding_unlink_reconciles_and_removes_orphaned_assignment(self):
+        with patch("odoo.addons.print_gateway.models.binding.requests.get", side_effect=self._gets()), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+            binding = self.env["print_gateway.binding"].create(self._values(priority=40))
+        assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertTrue(assignment)
+        binding.unlink()
+        remaining_assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertFalse(remaining_assignment)
+
+    def test_binding_disable_reconciles_and_removes_orphaned_assignment(self):
+        with patch("odoo.addons.print_gateway.models.binding.requests.get", side_effect=self._gets()), patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+            binding = self.env["print_gateway.binding"].create(self._values(priority=50))
+        assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertTrue(assignment)
+        binding.write({"enabled": False})
+        remaining_assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertFalse(remaining_assignment)
+        binding.write({"enabled": True})
+        restored_assignment = self.env["print_gateway.runtime_agent_assignment"].search([
+            ("company_id", "=", self.company.id), ("branch_id", "=", self.branch.id),
+        ])
+        self.assertTrue(restored_assignment)
+        self.assertEqual(restored_assignment.runtime_agent_id, "agent-a")

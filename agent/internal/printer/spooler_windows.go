@@ -32,9 +32,11 @@ type docInfo1 struct {
 }
 
 type SpoolerPrinter struct {
-	Name       string
+	Name        string
 	SpoolerName string
-	PDFPrint   PDFPrintFunc
+	PDFPrint    PDFPrintFunc
+	ProbeFunc   func(spoolerName string) string
+	Timeout     time.Duration
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
@@ -237,6 +239,10 @@ func (p *SpoolerPrinter) Test(ctx context.Context) error {
 }
 
 func (p *SpoolerPrinter) Status() string {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 1500 * time.Millisecond
+	}
 	resCh := make(chan string, 1)
 	go func() {
 		defer func() {
@@ -245,6 +251,10 @@ func (p *SpoolerPrinter) Status() string {
 				resCh <- "error"
 			}
 		}()
+		if p.ProbeFunc != nil {
+			resCh <- p.ProbeFunc(p.SpoolerName)
+			return
+		}
 		printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
 		if err != nil {
 			resCh <- "error"
@@ -264,14 +274,14 @@ func (p *SpoolerPrinter) Status() string {
 		resCh <- "online"
 	}()
 
-	timer := time.NewTimer(2 * time.Second)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
 	case st := <-resCh:
 		return st
 	case <-timer.C:
-		log.Printf("WARNING: Spooler status probe timed out for %q", p.SpoolerName)
+		log.Printf("WARNING: Spooler status probe timed out for %q after %v", p.SpoolerName, timeout)
 		return "spooler_rpc_unresponsive"
 	}
 }
