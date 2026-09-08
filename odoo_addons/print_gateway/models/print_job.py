@@ -78,9 +78,9 @@ class PrintGatewayJob(models.Model):
         "claimed": {"claimed", "printing", "success", "failed", "partial", "unknown"},
         "printing": {"printing", "success", "failed", "partial", "unknown"},
         "success": {"success"},
-        "failed": {"failed", "queued"},
-        "partial": {"partial", "queued"},
-        "unknown": {"unknown", "queued"},
+        "failed": {"failed"},
+        "partial": {"partial"},
+        "unknown": {"unknown"},
     }
 
     def write(self, vals):
@@ -363,7 +363,21 @@ class PrintGatewayJob(models.Model):
         return True
 
     def action_sync_status(self):
-        for job in self.filtered(lambda row: row.gateway_job_id and row.status not in self._TERMINAL):
+        candidates = self.filtered(lambda row: row.gateway_job_id and row.status not in self._TERMINAL)
+        if not candidates:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": _("Status Sync"),
+                    "message": _("No active in-flight print jobs found to synchronize."),
+                    "type": "info",
+                    "sticky": False,
+                },
+            }
+        synced_count = 0
+        failed_count = 0
+        for job in candidates:
             gateway_config = job.gateway_config_id.sudo()
             try:
                 response = requests.get(
@@ -372,6 +386,7 @@ class PrintGatewayJob(models.Model):
                     timeout=(5, 10), allow_redirects=False,
                 )
                 if response.status_code == 404:
+                    failed_count += 1
                     continue
                 response.raise_for_status()
                 body = response.json()
@@ -383,6 +398,7 @@ class PrintGatewayJob(models.Model):
                     if not body.get("error"):
                         body["error"] = "GATEWAY_JOB_EXPIRED: Gateway lease or expiration window elapsed before job was claimed or printed"
                 if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
+                    failed_count += 1
                     continue
                 err_msg = body.get("error") or False
                 if err_msg and "UNKNOWN_PARTIAL_DELIVERY" in str(err_msg):
@@ -391,19 +407,32 @@ class PrintGatewayJob(models.Model):
                 if status in self._TERMINAL:
                     values["completed_at"] = fields.Datetime.now()
                 job.write(values)
+                synced_count += 1
                 if status == "success":
                     job._post_source_audit(_("Print Job #%s completed by Gateway agent on '%s'") % (job.gateway_job_id or job.id, job.printer_id))
                 elif status in ("partial", "unknown"):
                     job._post_source_audit(_("WARNING: Print Job #%s interrupted or ambiguous on '%s'. Manual check required.") % (job.gateway_job_id or job.id, job.printer_id))
             except (requests.RequestException, ValueError):
+                failed_count += 1
                 _logger.warning("Gateway status sync failed for job %s", job.idempotency_key[:8])
+
+        if synced_count > 0 and failed_count == 0:
+            notif_type = "success"
+            msg = _("%d print job(s) synchronized successfully.") % synced_count
+        elif synced_count > 0 and failed_count > 0:
+            notif_type = "warning"
+            msg = _("%d print job(s) synchronized, %d failed.") % (synced_count, failed_count)
+        else:
+            notif_type = "danger"
+            msg = _("Status synchronization failed for all %d job(s).") % failed_count
+
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",
             "params": {
                 "title": _("Status Synchronized"),
-                "message": _("Print job status has been synchronized with the Gateway."),
-                "type": "info",
+                "message": msg,
+                "type": notif_type,
                 "sticky": False,
             },
         }
@@ -415,8 +444,20 @@ class PrintGatewayJob(models.Model):
         is definitely not printed gets a fresh idempotency key so the new operation
         is not collapsed into the old Gateway job.
         """
+        failed_jobs = self.filtered(lambda row: row.status == "failed" and row.physical_outcome == "not_printed")
+        if not failed_jobs:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": _("No Eligible Jobs"),
+                    "message": _("No eligible failed print jobs (with confirmed non-printed outcome) found to retry."),
+                    "type": "warning",
+                    "sticky": False,
+                },
+            }
         retried_jobs = self.env["print_gateway.print_job"]
-        for job in self.filtered(lambda row: row.status == "failed" and row.physical_outcome == "not_printed"):
+        for job in failed_jobs:
             retry = self.create_operation(
                 company=job.company_id,
                 gateway_config=job.gateway_config_id,
@@ -449,8 +490,20 @@ class PrintGatewayJob(models.Model):
         This requires conscious operator action, preventing automated double printing of receipts/invoices.
         Generates a deterministic derived idempotency key: ${original_key}-reprint-${reprint_attempt_count}.
         """
+        reprint_candidates = self.filtered(lambda row: row.status in ("partial", "unknown") or row.physical_outcome == "unknown")
+        if not reprint_candidates:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": _("No Eligible Jobs"),
+                    "message": _("No eligible partial or unknown outcome print jobs found for force reprint."),
+                    "type": "info",
+                    "sticky": False,
+                },
+            }
         reprinted_jobs = self.env["print_gateway.print_job"]
-        for job in self.filtered(lambda row: row.status in ("partial", "unknown") or row.physical_outcome == "unknown"):
+        for job in reprint_candidates:
             new_count = (job.reprint_attempt_count or 0) + 1
             job.write({"reprint_attempt_count": new_count})
             derived_key = "%s-reprint-%d" % (job.idempotency_key, new_count)

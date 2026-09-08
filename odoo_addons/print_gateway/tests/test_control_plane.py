@@ -259,8 +259,11 @@ class TestControlPlane(TransactionCase):
              patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
              patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
             res = self.primary_binding.with_company(self.branch).action_send_test_print()
-            self.assertTrue(res.get("gateway_enabled"))
-            job = self.env["print_gateway.print_job"].browse(res.get("job_id"))
+            self.assertEqual(res.get("type"), "ir.actions.client")
+            self.assertEqual(res.get("tag"), "display_notification")
+            route_res = router.route_test_page(self.primary_binding)
+            self.assertTrue(route_res.get("gateway_enabled"))
+            job = self.env["print_gateway.print_job"].browse(route_res.get("job_id"))
             self.assertEqual(job.protocol, "escpos")
             self.assertIn("ODOO PRINT GATEWAY DIAGNOSTIC", job.raw_payload)
 
@@ -288,8 +291,9 @@ class TestControlPlane(TransactionCase):
             "event_type": "picking_validated",
             "status": "pending",
         })
-        with patch.object(intent_model, "_execute_dispatched_route") as mock_exec, \
-             patch.object(intent_model, "_claim_intent", return_value="fake_token_123"):
+        IntentClass = type(intent_model)
+        with patch.object(IntentClass, "_execute_dispatched_route") as mock_exec, \
+             patch.object(IntentClass, "_claim_intent", return_value="fake_token_123"):
             recovered = intent_model.cron_recover_pending_intents()
             self.assertGreaterEqual(recovered, 1)
             mock_exec.assert_called()
@@ -325,6 +329,8 @@ class TestControlPlane(TransactionCase):
             "company_id": self.company.id,
             "branch_id": self.branch.id,
             "destination_type": "report",
+            "destination_report_id": self.primary_binding.destination_report_id.id,
+            "report_id": self.primary_binding.report_id.id,
             "runtime_agent_id": "agent-cp-01",
             "printer_id": "printer-disabled",
             "enabled": False,
@@ -413,6 +419,8 @@ class TestControlPlane(TransactionCase):
             "company_id": self.company.id,
             "branch_id": self.branch.id,
             "destination_type": "report",
+            "destination_report_id": self.primary_binding.destination_report_id.id,
+            "report_id": self.primary_binding.report_id.id,
             "runtime_agent_id": "agent-cp-01",
             "printer_id": "printer-raw",
             "printer_protocol": "raw",
@@ -484,14 +492,14 @@ class TestControlPlane(TransactionCase):
             "event_type": "picking_validated",
             "status": "pending",
         })
-        token_pending = intent_model._claim_intent(self.env, intent_pending.id)
+        token_pending = intent_model._claim_intent(self.env, intent_pending.id, cr=self.env.cr)
         self.assertTrue(bool(token_pending), "Pending intent must be claimed atomically")
         intent_pending.invalidate_recordset()
         self.assertEqual(intent_pending.status, "claimed")
         self.assertEqual(intent_pending.claim_token, token_pending)
 
         # 2. Fresh claimed intent must NOT be claimed again (suppress duplicate processing)
-        token_fresh = intent_model._claim_intent(self.env, intent_pending.id)
+        token_fresh = intent_model._claim_intent(self.env, intent_pending.id, cr=self.env.cr)
         self.assertIsNone(token_fresh, "Fresh claimed intent must reject duplicate lease acquisition")
 
         # 3. Stale claimed intent (> 5 min) can be recovered
@@ -500,19 +508,19 @@ class TestControlPlane(TransactionCase):
             "UPDATE print_gateway_intent SET claimed_at = %s WHERE id = %s",
             (stale_time, intent_pending.id)
         )
-        token_stale = intent_model._claim_intent(self.env, intent_pending.id)
+        token_stale = intent_model._claim_intent(self.env, intent_pending.id, cr=self.env.cr)
         self.assertTrue(bool(token_stale), "Stale claimed intent must be recovered")
         self.assertNotEqual(token_stale, token_pending, "Recovered intent must receive a new fencing token")
 
         # 4. Fencing token protection: Stale worker attempting to finalize state with superseded token fails
         updated_stale = intent_model._finalize_intent_state(
-            self.env, intent_pending.id, token_pending, "dispatched"
+            self.env, intent_pending.id, token_pending, "dispatched", cr=self.env.cr
         )
         self.assertFalse(updated_stale, "Stale worker token must be fenced and rejected")
 
         # Valid worker finalize succeeds
         updated_valid = intent_model._finalize_intent_state(
-            self.env, intent_pending.id, token_stale, "dispatched"
+            self.env, intent_pending.id, token_stale, "dispatched", cr=self.env.cr
         )
         self.assertTrue(updated_valid, "Valid current token must successfully finalize state")
         intent_pending.invalidate_recordset()
@@ -529,13 +537,14 @@ class TestControlPlane(TransactionCase):
             "attempts": 3,
             "max_attempts": 3,
         })
-        token_terminal = intent_model._claim_intent(self.env, intent_terminal.id)
+        token_terminal = intent_model._claim_intent(self.env, intent_terminal.id, cr=self.env.cr)
         self.assertIsNone(token_terminal, "Terminal failed intent must not be automatically claimed")
 
     def test_15_multi_record_report_routing_scope_isolation(self):
         """Verify /report/download rejects mixed-scope batches and enforces IDOR permissions."""
         from odoo.addons.print_gateway.controllers.report_download_override import PrintGatewayReportController
         from odoo.exceptions import AccessError
+        from werkzeug.wrappers import Response as WerkzeugResponse
 
         controller = PrintGatewayReportController()
         report = self.env["ir.actions.report"].search([("model", "=", "stock.picking")], limit=1)
@@ -550,20 +559,20 @@ class TestControlPlane(TransactionCase):
         # Fake request context
         mock_req = MagicMock()
         mock_req.env = self.env
-        mock_req.make_response = lambda data, headers=None, status=200: MagicMock(data=data, status=status)
+        mock_req.make_response = lambda data, headers=None, status=200: WerkzeugResponse(data, status=status, headers=headers)
 
         with patch("odoo.addons.print_gateway.controllers.report_download_override.request", mock_req):
             # Test 1: Empty docids returns 400
             data_empty = json.dumps([f"/report/pdf/{report.report_name}/", "qweb-pdf"])
             resp = controller.report_download(data_empty)
-            self.assertEqual(resp.status, 400)
-            self.assertIn("invalid_report_request", resp.data)
+            self.assertEqual(resp.status_code, 400)
+            self.assertIn("invalid_report_request", resp.get_data(as_text=True))
 
             # Test 2: Unknown report returns 404
             data_bad_rep = json.dumps(["/report/pdf/nonexistent.report/1,2", "qweb-pdf"])
             resp = controller.report_download(data_bad_rep)
-            self.assertEqual(resp.status, 404)
-            self.assertIn("report_not_found", resp.data)
+            self.assertEqual(resp.status_code, 404)
+            self.assertIn("report_not_found", resp.get_data(as_text=True))
 
             # Test 3: Mixed scope / different bindings returns 400 mixed_scope_batch
             mock_records = MagicMock()
@@ -581,17 +590,17 @@ class TestControlPlane(TransactionCase):
                  patch.object(router, "resolve_binding", side_effect=[route1, route2]):
                 data_mixed = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_mixed)
-                self.assertEqual(resp.status, 400)
-                self.assertIn("mixed_scope_batch", resp.data)
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("mixed_scope_batch", resp.get_data(as_text=True))
 
             # Test 4: Access error returns 403 forbidden without leaking internals
             with patch.object(self.env[report.model], "browse", return_value=mock_records), \
                  patch.object(mock_records, "check_access", side_effect=AccessError("No read access")):
                 data_forbidden = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_forbidden)
-                self.assertEqual(resp.status, 403)
-                self.assertIn("forbidden", resp.data)
-                self.assertNotIn("No read access", resp.data)
+                self.assertEqual(resp.status_code, 403)
+                self.assertIn("forbidden", resp.get_data(as_text=True))
+                self.assertNotIn("No read access", resp.get_data(as_text=True))
 
             # Test 5: Gateway dispatch failure returns 502 without leaking raw trace
             with patch.object(self.env[report.model], "browse", return_value=mock_records), \
@@ -600,14 +609,18 @@ class TestControlPlane(TransactionCase):
                  patch.object(router, "route_report", side_effect=RuntimeError("Internal gateway timeout")):
                 data_dispatch = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_dispatch)
-                self.assertEqual(resp.status, 502)
-                self.assertIn("gateway_dispatch_failed", resp.data)
-                self.assertNotIn("Internal gateway timeout", resp.data)
+                self.assertEqual(resp.status_code, 502)
+                self.assertIn("gateway_dispatch_failed", resp.get_data(as_text=True))
+                self.assertNotIn("Internal gateway timeout", resp.get_data(as_text=True))
 
     def test_16_migration_canonical_root_placeholder(self):
         """Verify 19.0.2.1.0 migration creates disabled non-routable placeholder when root binding is missing."""
-        import importlib
-        migration = importlib.import_module("odoo.addons.print_gateway.migrations.19.0.2.1.0.post-migrate")
+        import importlib.util
+        import os
+        migration_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "migrations", "19.0.2.1.0", "post-migrate.py"))
+        spec = importlib.util.spec_from_file_location("post_migrate", migration_path)
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
 
         executed_sqls = []
         mock_cr = MagicMock()

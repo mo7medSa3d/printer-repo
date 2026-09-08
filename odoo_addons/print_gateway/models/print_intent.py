@@ -84,15 +84,17 @@ class PrintGatewayIntent(models.Model):
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @classmethod
-    def _claim_intent(cls, env, intent_id):
-        """Atomically claim intent with a unique token in an independent transaction.
+    def _claim_intent(cls, env, intent_id, cr=None):
+        """Atomically claim intent with a unique token in an independent transaction (or provided cursor).
         Returns claim_token if acquired, or None if already claimed, fresh, or non-retryable."""
         claim_token = uuid.uuid4().hex
         now = fields.Datetime.now()
         stale_threshold = now - datetime.timedelta(minutes=5)
+        manage_cr = cr is None
         try:
-            with env.registry.cursor() as cr:
-                cr.execute("""
+            target_cr = env.registry.cursor() if manage_cr else cr
+            try:
+                target_cr.execute("""
                     UPDATE print_gateway_intent
                     SET status = 'claimed', claimed_at = %s, claim_token = %s, attempts = attempts + 1
                     WHERE id = %s AND (
@@ -101,22 +103,28 @@ class PrintGatewayIntent(models.Model):
                         (status = 'failed' AND attempts < max_attempts AND (next_retry_at IS NULL OR next_retry_at <= %s))
                     )
                 """, (now, claim_token, intent_id, now, stale_threshold, now))
-                if cr.rowcount > 0:
-                    cr.commit()
+                if target_cr.rowcount > 0:
+                    if manage_cr:
+                        target_cr.commit()
                     return claim_token
+            finally:
+                if manage_cr:
+                    target_cr.close()
         except Exception as exc:
             _logger.error("Failed to claim print intent %s: %s", intent_id, exc)
         return None
 
     @classmethod
-    def _finalize_intent_state(cls, env, intent_id, claim_token, status, print_job_id=None, last_error=None, next_retry_at=None):
+    def _finalize_intent_state(cls, env, intent_id, claim_token, status, print_job_id=None, last_error=None, next_retry_at=None, cr=None):
         """Atomically finalize intent state strictly protected by the fencing claim_token.
         Returns True if updated, False if lease was superseded by another worker."""
         if not claim_token:
             return False
+        manage_cr = cr is None
         try:
-            with env.registry.cursor() as cr:
-                cr.execute("""
+            target_cr = env.registry.cursor() if manage_cr else cr
+            try:
+                target_cr.execute("""
                     UPDATE print_gateway_intent
                     SET status = %s,
                         print_job_id = %s,
@@ -125,12 +133,16 @@ class PrintGatewayIntent(models.Model):
                         write_date = NOW() AT TIME ZONE 'UTC'
                     WHERE id = %s AND claim_token = %s
                 """, (status, print_job_id, last_error, next_retry_at, intent_id, claim_token))
-                if cr.rowcount > 0:
-                    cr.commit()
+                if target_cr.rowcount > 0:
+                    if manage_cr:
+                        target_cr.commit()
                     return True
                 else:
                     _logger.warning("Fencing token mismatch for intent %s; lease was superseded by another worker.", intent_id)
                     return False
+            finally:
+                if manage_cr:
+                    target_cr.close()
         except Exception as exc:
             _logger.error("Failed to finalize intent %s with token %s: %s", intent_id, claim_token, exc)
             return False
@@ -220,9 +232,6 @@ class PrintGatewayIntent(models.Model):
                 _logger.info("Print intent %s is permanently failed (%d attempts); manual operator re-arm required.", key[:12], existing.attempts)
                 return existing
 
-            if existing.status in ("pending", "failed", "claimed"):
-                existing.write({"status": "pending", "next_retry_at": False})
-
             intent_id = existing.id
             res_model = record._name
             res_id = record.id
@@ -254,7 +263,19 @@ class PrintGatewayIntent(models.Model):
         return intent
 
     def action_rearm_intent(self):
-        for intent in self:
+        failed_intents = self.filtered(lambda i: i.status == "failed")
+        if not failed_intents:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": _("No Intents Re-armed"),
+                    "message": _("No eligible failed intents were selected for re-arming."),
+                    "type": "warning",
+                    "sticky": False,
+                },
+            }
+        for intent in failed_intents:
             intent.write({
                 "status": "pending",
                 "attempts": 0,
@@ -271,7 +292,7 @@ class PrintGatewayIntent(models.Model):
             "tag": "display_notification",
             "params": {
                 "title": _("Intents Re-armed"),
-                "message": _("%d failed intent(s) re-armed for immediate dispatch.") % len(self),
+                "message": _("%d failed intent(s) re-armed for immediate dispatch.") % len(failed_intents),
                 "type": "success",
                 "sticky": False,
             },
