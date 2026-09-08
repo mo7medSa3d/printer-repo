@@ -3,8 +3,13 @@ import { getAgentAvailability } from "./agent-availability";
 
 export type CapabilityCheckResult = { ok: true } | { ok: false; reason: string };
 
+export interface PayloadSpec {
+  type: string;
+  protocol?: string | null;
+}
+
 export function validatePayloadForPrinter(
-  payloadType: string | null | undefined,
+  payloadInput: PayloadSpec | string | null | undefined,
   printer: {
     protocol?: string | null;
     capabilities?: { supported_protocols?: string[] } | null;
@@ -12,30 +17,81 @@ export function validatePayloadForPrinter(
     printerType?: string | null;
   },
 ): CapabilityCheckResult {
-  if (!payloadType) return { ok: true };
-  const pt = payloadType.toLowerCase();
+  if (!payloadInput) return { ok: true };
+  const pt = (typeof payloadInput === "string" ? payloadInput : payloadInput.type).toLowerCase();
+  const payloadProto = typeof payloadInput === "object" && payloadInput?.protocol ? payloadInput.protocol.toLowerCase() : null;
   const proto = (printer.protocol ?? "").toLowerCase();
   const conn = (printer.connectionType ?? "").toLowerCase();
   const supported = printer.capabilities?.supported_protocols?.map((value) => value.toLowerCase());
 
-  if (supported?.length) {
-    if (supported.includes(pt)) return { ok: true };
-    if ((pt === "raw" || pt === "escpos") && (supported.includes("raw") || supported.includes("escpos") || conn === "spooler" || proto === "spooler")) return { ok: true };
-    return { ok: false, reason: `CAPABILITY_MISMATCH: payload type ${pt} not supported by printer` };
-  }
-  if (["ipp", "ipps"].includes(proto) || ["ipp", "ipps"].includes(conn)) {
-    return ["raw", "escpos", "pdf"].includes(pt) ? { ok: true } : { ok: false, reason: `CAPABILITY_MISMATCH: payload ${pt} is not supported by IPP transport` };
-  }
-  if (pt === "raw" || pt === "escpos") {
-    return ["raw", "escpos", "spooler"].includes(proto) || conn === "spooler"
-      ? { ok: true }
-      : { ok: false, reason: `CAPABILITY_MISMATCH: ${pt} incompatible with printer protocol ${proto}` };
-  }
+  // PDF
   if (pt === "pdf") {
-    return proto === "spooler" || conn === "spooler"
-      ? { ok: true }
-      : { ok: false, reason: `CAPABILITY_MISMATCH: pdf requires spooler or IPP transport` };
+    if (payloadProto) {
+      return { ok: false, reason: "CAPABILITY_MISMATCH: pdf payloads cannot specify a printer protocol" };
+    }
+    const canSpool = proto === "spooler" || conn === "spooler";
+    const canIpp = ["ipp", "ipps"].includes(proto) || ["ipp", "ipps"].includes(conn);
+    const explicitlySupported = supported?.includes("pdf") || supported?.includes("spooler") || supported?.includes("ipp");
+    if (canSpool || canIpp || explicitlySupported) return { ok: true };
+    return { ok: false, reason: "CAPABILITY_MISMATCH: pdf requires spooler or IPP transport" };
   }
+
+  // Image
+  if (pt === "image") {
+    if (payloadProto) {
+      return { ok: false, reason: "CAPABILITY_MISMATCH: image payloads cannot specify a printer protocol" };
+    }
+    const canSpool = proto === "spooler" || conn === "spooler";
+    const explicitlySupported = supported?.includes("image") || supported?.includes("jpeg") || supported?.includes("spooler");
+    if (canSpool || explicitlySupported) return { ok: true };
+    return { ok: false, reason: "CAPABILITY_MISMATCH: image payload not supported by printer" };
+  }
+
+  // ESC/POS
+  if (pt === "escpos") {
+    if (payloadProto && payloadProto !== "escpos") {
+      return { ok: false, reason: `CAPABILITY_MISMATCH: escpos payload cannot use protocol ${payloadProto}` };
+    }
+    if (supported?.length) {
+      if (supported.includes("escpos") || supported.includes("spooler") || supported.includes("raw")) return { ok: true };
+      return { ok: false, reason: "CAPABILITY_MISMATCH: printer capabilities do not support escpos" };
+    }
+    return ["escpos", "raw", "spooler"].includes(proto) || conn === "spooler"
+      ? { ok: true }
+      : { ok: false, reason: `CAPABILITY_MISMATCH: escpos incompatible with printer protocol ${proto}` };
+  }
+
+  // RAW
+  if (pt === "raw") {
+    const targetProto = payloadProto || "raw";
+    if (targetProto === "zpl" || targetProto === "tspl") {
+      if (supported?.length) {
+        if (supported.includes(targetProto)) return { ok: true };
+        return { ok: false, reason: `CAPABILITY_MISMATCH: printer does not support ${targetProto.toUpperCase()}` };
+      }
+      return proto === targetProto
+        ? { ok: true }
+        : { ok: false, reason: `CAPABILITY_MISMATCH: printer protocol ${proto} does not match required ${targetProto.toUpperCase()}` };
+    }
+    if (targetProto === "escpos") {
+      if (supported?.length) {
+        if (supported.includes("escpos") || supported.includes("spooler") || supported.includes("raw")) return { ok: true };
+        return { ok: false, reason: "CAPABILITY_MISMATCH: printer does not support ESC/POS" };
+      }
+      return ["escpos", "raw", "spooler"].includes(proto) || conn === "spooler"
+        ? { ok: true }
+        : { ok: false, reason: `CAPABILITY_MISMATCH: raw escpos incompatible with printer protocol ${proto}` };
+    }
+    // Generic RAW
+    if (supported?.length) {
+      if (supported.includes("raw") || supported.includes("spooler")) return { ok: true };
+      return { ok: false, reason: "CAPABILITY_MISMATCH: printer does not support raw payload" };
+    }
+    return ["raw", "spooler"].includes(proto) || conn === "spooler"
+      ? { ok: true }
+      : { ok: false, reason: `CAPABILITY_MISMATCH: raw incompatible with printer protocol ${proto}` };
+  }
+
   return { ok: false, reason: `CAPABILITY_MISMATCH: unsupported payload type ${pt}` };
 }
 

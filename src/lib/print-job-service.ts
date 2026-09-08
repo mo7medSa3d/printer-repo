@@ -6,6 +6,7 @@ import { validatePrintJobPayload } from "./payload";
 import { claimAndPushJobToAgent } from "../server/ws";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { canonicalize } from "./canonicalize";
 
 export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 export const MAX_AGENT_QUEUED_JOBS = 1000;
@@ -50,7 +51,8 @@ export type CreatePrintJobResult = {
   id: string;
   printerId: string;
   agentId: string;
-  status: "queued";
+  status: string;
+  isReused?: boolean;
 };
 
 function normalizeRequestedBy(value: string): string {
@@ -73,8 +75,8 @@ async function insertQueuedJobAtomically({
   destination?: string | null;
   documentType?: string | null;
   rateLimitKeyId?: string | null;
-}): Promise<void> {
-  await db.transaction(async (tx) => {
+}): Promise<{ jobId: string; status: string; agentId: string; printerId: string; isReused: boolean }> {
+  return await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
     if (rateLimitKeyId) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
@@ -82,12 +84,35 @@ async function insertQueuedJobAtomically({
 
     if (idempotencyKey) {
       const existing = rateLimitKeyId
-        ? await tx.execute(sql`SELECT id FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1`)
-        : await tx.execute(sql`SELECT id FROM print_jobs WHERE api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1`);
+        ? await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`)
+        : await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`);
       if (existing.rows.length > 0) {
-        const err = new Error("DUPLICATE_JOB");
-        Object.assign(err, { code: "DUPLICATE_JOB" });
-        throw err;
+        const row = existing.rows[0] as {
+          id: string;
+          printer_id: string;
+          destination?: string | null;
+          document_type?: string | null;
+          payload: unknown;
+          agent_id: string;
+          status: string;
+        };
+        const destMatch = (row.destination || null) === (destination?.trim() || null);
+        const docMatch = (row.document_type || null)?.toLowerCase() === (documentType?.trim().toLowerCase() || null);
+        const printerMatch = row.printer_id === printerId;
+        const payloadMatch = JSON.stringify(canonicalize(row.payload)) === JSON.stringify(canonicalize(validatedPayload));
+
+        if (printerMatch && destMatch && docMatch && payloadMatch) {
+          return {
+            jobId: row.id,
+            status: row.status,
+            agentId: row.agent_id,
+            printerId: row.printer_id,
+            isReused: true,
+          };
+        }
+        const conflictErr = new Error("IDEMPOTENCY_CONFLICT");
+        Object.assign(conflictErr, { code: "IDEMPOTENCY_CONFLICT" });
+        throw conflictErr;
       }
     }
 
@@ -149,6 +174,14 @@ async function insertQueuedJobAtomically({
       idempotencyKey: idempotencyKey ?? null,
       expiresAt,
     });
+
+    return {
+      jobId,
+      status: "queued",
+      agentId,
+      printerId,
+      isReused: false,
+    };
   });
 }
 
@@ -167,7 +200,7 @@ export async function createPrintJobForPrinter(
   if (printer.status !== "online") throw new Error(`Printer is not online (status=${printer.status})`);
 
   const validatedPayload = validatePrintJobPayload(payload);
-  const capability = validatePayloadForPrinter(validatedPayload.type, {
+  const capability = validatePayloadForPrinter(validatedPayload, {
     protocol: printer.protocol, connectionType: printer.connectionType, capabilities: printer.capabilities,
   });
   if (!capability.ok) throw new PrintJobCapabilityError(capability.reason);
@@ -182,7 +215,7 @@ export async function createPrintJobForPrinter(
     throw new Error("expiresAt must be in the future");
   }
 
-  await insertQueuedJobAtomically({
+  const result = await insertQueuedJobAtomically({
     jobId: id,
     printerId: printer.id,
     agentId: ownerAgent.id,
@@ -195,10 +228,14 @@ export async function createPrintJobForPrinter(
     rateLimitKeyId: options.rateLimitKeyId ?? null,
   });
 
-  try {
-    await claimAndPushJobToAgent({ id, agentId: ownerAgent.id });
-  } catch (error) {
-    console.warn(`[print-job-service] WS push deferred for job ${id}:`, error instanceof Error ? error.message : error);
+  if (result.isReused) {
+    return { id: result.jobId, printerId: result.printerId, agentId: result.agentId, status: result.status, isReused: true };
   }
-  return { id, printerId: printer.id, agentId: ownerAgent.id, status: "queued" };
+
+  try {
+    await claimAndPushJobToAgent({ id: result.jobId, agentId: ownerAgent.id });
+  } catch (error) {
+    console.warn(`[print-job-service] WS push deferred for job ${result.jobId}:`, error instanceof Error ? error.message : error);
+  }
+  return { id: result.jobId, printerId: printer.id, agentId: ownerAgent.id, status: "queued", isReused: false };
 }

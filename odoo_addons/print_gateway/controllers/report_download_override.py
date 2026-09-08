@@ -17,9 +17,10 @@ class PrintGatewayReportController(ReportController):
     @http.route(["/report/download"], type="http", auth="user")
     def report_download(self, data, context=None, token=None):
         router = request.env["print_gateway.print_router"]
-        config = router._gateway_config(request.env.company)
+        config = None
 
         try:
+            config = router._gateway_config(request.env.company)
             requestcontent = json.loads(data)
             url, report_type = requestcontent[0], requestcontent[1]
             if report_type in ("qweb-pdf", "pdf"):
@@ -29,7 +30,17 @@ class PrintGatewayReportController(ReportController):
                 if len(parts) >= 3 and parts[0] == "report" and parts[1] in ("pdf", "qweb-pdf"):
                     report_name = parts[2]
                     docids_str = parts[3] if len(parts) > 3 else ""
-                    docids = [int(i) for i in docids_str.split(",") if i.isdigit()]
+                    if not docids_str:
+                        docids = []
+                    else:
+                        tokens = docids_str.split(",")
+                        if not all(t.isdigit() for t in tokens):
+                            return request.make_response(
+                                json.dumps({"error": "invalid_report_request", "message": "Malformed document IDs."}),
+                                headers=[("Content-Type", "application/json"), ("Cache-Control", "no-store")],
+                                status=400,
+                            )
+                        docids = [int(t) for t in tokens]
 
                     if config:
                         if not docids:

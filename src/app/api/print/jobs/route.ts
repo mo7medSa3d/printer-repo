@@ -7,6 +7,7 @@ import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, 
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { canonicalize } from "../../../../lib/canonicalize";
 
 export const dynamic = "force-dynamic";
 
@@ -41,17 +42,6 @@ function responseForRow(row: typeof printJobs.$inferSelect) {
   };
 }
 
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, child]) => [key, canonicalize(child)]),
-    );
-  }
-  return value;
-}
 
 function idempotencyFingerprint(request: {
   printerId: string;
@@ -126,6 +116,14 @@ export async function POST(req: Request) {
       expiresAt,
       rateLimitKeyId: odoo.id,
     });
+    if (result.isReused) {
+      const existing = await db.query.printJobs.findFirst({
+        where: eq(printJobs.id, result.id),
+      });
+      if (existing) {
+        return NextResponse.json(responseForRow(existing), { status: 200 });
+      }
+    }
     return NextResponse.json({
       jobId: result.id,
       status: result.status,
@@ -147,7 +145,7 @@ export async function POST(req: Request) {
     if (error instanceof PrintJobCapabilityError) {
       return NextResponse.json({ error: error.message, code: error.code, retryable: false }, { status: 422 });
     }
-    if (error instanceof Error && (error as Error & { code?: string }).code === "DUPLICATE_JOB" && parsed.data.idempotencyKey) {
+    if (error instanceof Error && ((error as Error & { code?: string }).code === "DUPLICATE_JOB" || (error as Error & { code?: string }).code === "IDEMPOTENCY_CONFLICT") && parsed.data.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({
         where: and(eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
       });

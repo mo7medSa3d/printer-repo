@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Durable Odoo-side print outbox and retry state."""
 
+import base64
 import datetime
 import json
 import logging
@@ -50,7 +51,7 @@ class PrintGatewayJob(models.Model):
         ("escpos", "ESC/POS"),
         ("zpl", "Zebra ZPL-II"),
         ("tspl", "TSC TSPL"),
-    ], default="raw", required=True, readonly=True)
+    ], required=False, readonly=True)
     raw_payload = fields.Text(string="Native Command Payload", readonly=True)
     printer_profile = fields.Text(string="Printer Hardware Profile", readonly=True)
     fallback_binding_id = fields.Many2one("print_gateway.binding", string="Failover Backup Binding", readonly=True)
@@ -83,6 +84,34 @@ class PrintGatewayJob(models.Model):
         "unknown": {"unknown"},
     }
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if "payload_type" not in vals:
+                if "payload" in vals:
+                    try:
+                        p = json.loads(vals["payload"]) if isinstance(vals["payload"], str) else vals["payload"]
+                        pt = p.get("type") if isinstance(p, dict) else None
+                        if pt in ("raw", "escpos"):
+                            vals["payload_type"] = "raw_cmd"
+                            if "protocol" not in vals:
+                                vals["protocol"] = p.get("protocol") or (pt if pt == "escpos" else "raw")
+                        elif pt in ("image", "jpeg", "raster_jpeg"):
+                            vals["payload_type"] = "raster_jpeg"
+                            vals["protocol"] = False
+                        else:
+                            vals["payload_type"] = "pdf"
+                            vals["protocol"] = False
+                    except Exception:
+                        vals["payload_type"] = "pdf"
+                        vals["protocol"] = False
+                else:
+                    vals["payload_type"] = "pdf"
+                    vals["protocol"] = False
+            elif vals.get("payload_type") in ("pdf", "raster_jpeg"):
+                vals["protocol"] = False
+        return super().create(vals_list)
+
     def write(self, vals):
         if "status" in vals:
             target_status = vals["status"]
@@ -94,7 +123,19 @@ class PrintGatewayJob(models.Model):
                             _("Invalid print job state transition from '%s' to '%s'.")
                             % (job.status, target_status)
                         )
+        if "payload_type" in vals and vals["payload_type"] in ("pdf", "raster_jpeg"):
+            vals["protocol"] = False
         return super().write(vals)
+
+    @api.constrains("payload_type", "protocol")
+    def _check_payload_type_and_protocol(self):
+        for job in self:
+            if job.payload_type in ("pdf", "raster_jpeg"):
+                if job.protocol:
+                    raise ValidationError(_("PDF and Raster payloads cannot specify a printer protocol."))
+            elif job.payload_type == "raw_cmd":
+                if not job.protocol:
+                    raise ValidationError(_("Native command payloads require a valid printer protocol."))
 
     @api.depends("status", "last_error")
     def _compute_physical_outcome(self):
@@ -113,7 +154,7 @@ class PrintGatewayJob(models.Model):
     @api.model
     def create_operation(self, *, company, gateway_config, printer_id, destination, document_type,
                          payload, source_model=None, source_record_id=None, report=None,
-                         idempotency_key=None, payload_type="pdf", protocol="raw",
+                         idempotency_key=None, payload_type=None, protocol=None,
                          raw_payload=None, printer_profile=None, fallback_binding=None):
         if not company or not gateway_config:
             raise ValidationError(_("Gateway configuration is missing."))
@@ -134,6 +175,28 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Print payload is not JSON serializable.")) from exc
         if len(payload_json.encode("utf-8")) > 8 * 1024 * 1024:
             raise ValidationError(_("Print payload exceeds the 8 MiB safety limit."))
+
+        parsed_payload = payload
+        if isinstance(payload, str):
+            try:
+                parsed_payload = json.loads(payload)
+            except Exception:
+                pass
+
+        if not payload_type:
+            if isinstance(parsed_payload, dict) and parsed_payload.get("type") in ("raw", "escpos"):
+                payload_type = "raw_cmd"
+            elif isinstance(parsed_payload, dict) and parsed_payload.get("type") in ("image", "jpeg", "raster_jpeg"):
+                payload_type = "raster_jpeg"
+            else:
+                payload_type = "pdf"
+
+        if payload_type in ("pdf", "raster_jpeg"):
+            if protocol:
+                raise ValidationError(_("PDF and Raster payloads cannot specify a printer protocol."))
+            effective_protocol = False
+        else:
+            effective_protocol = protocol or (parsed_payload.get("protocol") if isinstance(parsed_payload, dict) else None) or "raw"
 
         key = (idempotency_key or uuid.uuid4().hex).strip()
 
@@ -159,8 +222,8 @@ class PrintGatewayJob(models.Model):
             "document_type": str(document_type).strip().lower(),
             "status": "queued",
             "payload": payload_json,
-            "payload_type": payload_type or "pdf",
-            "protocol": protocol or "raw",
+            "payload_type": payload_type,
+            "protocol": effective_protocol,
             "raw_payload": (raw_payload.replace("\x00", "\\x00") if isinstance(raw_payload, str) else False),
             "printer_profile": printer_profile or False,
             "fallback_binding_id": fallback_binding.id if fallback_binding else False,
@@ -191,13 +254,56 @@ class PrintGatewayJob(models.Model):
         finally:
             cr.close()
 
+    def _validate_persisted_payload(self, payload):
+        self.ensure_one()
+        if not isinstance(payload, dict):
+            raise ValidationError(_("Stored print payload must be a dictionary."))
+        ptype = payload.get("type")
+        if not ptype:
+            raise ValidationError(_("Stored print payload is missing 'type'."))
+
+        if self.payload_type == "pdf":
+            if ptype != "pdf":
+                raise ValidationError(_("Payload type mismatch: expected 'pdf', got '%s'.") % ptype)
+            if payload.get("protocol"):
+                raise ValidationError(_("PDF payloads cannot specify a printer protocol."))
+        elif self.payload_type == "raster_jpeg":
+            if ptype not in ("image", "jpeg", "raster_jpeg"):
+                raise ValidationError(_("Payload type mismatch: expected image/raster, got '%s'.") % ptype)
+            if payload.get("protocol"):
+                raise ValidationError(_("Raster payloads cannot specify a printer protocol."))
+        elif self.payload_type == "raw_cmd":
+            if ptype not in ("raw", "escpos"):
+                raise ValidationError(_("Payload type mismatch: expected raw/escpos, got '%s'.") % ptype)
+            if self.protocol and payload.get("protocol") and payload.get("protocol") != self.protocol:
+                raise ValidationError(
+                    _("Payload protocol mismatch: expected '%s', got '%s'.")
+                    % (self.protocol, payload.get("protocol"))
+                )
+
+        raw_data = payload.get("data") or payload.get("base64")
+        if not raw_data or not isinstance(raw_data, str):
+            raise ValidationError(_("Stored print payload data must be a non-empty string."))
+        try:
+            decoded = base64.b64decode(raw_data.encode("ascii"), validate=True)
+            if not decoded:
+                raise ValidationError(_("Stored print payload decoded to empty content."))
+        except Exception as exc:
+            raise ValidationError(_("Stored print payload data is not valid base64.")) from exc
+        if len(decoded) > 8 * 1024 * 1024:
+            raise ValidationError(_("Stored print payload exceeds the 8 MiB safety limit."))
+
+        peripherals = payload.get("peripherals")
+        if peripherals is not None and not isinstance(peripherals, dict):
+            raise ValidationError(_("Payload peripherals must be a dictionary."))
+
     def _submission_body(self):
         self.ensure_one()
         try:
             payload = json.loads(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValidationError(_("Stored print payload is corrupted.")) from exc
-        # Removed implicit protocol inference. Protocol must be provided by router.
+        self._validate_persisted_payload(payload)
         body = {
             "printerId": self.printer_id,
             "documentType": self.document_type,
@@ -467,6 +573,11 @@ class PrintGatewayJob(models.Model):
                 destination=job.destination,
                 document_type=job.document_type,
                 payload=json.loads(job.payload),
+                payload_type=job.payload_type,
+                protocol=job.protocol,
+                raw_payload=job.raw_payload,
+                printer_profile=job.printer_profile,
+                fallback_binding=job.fallback_binding_id,
                 source_model=job.source_model,
                 source_record_id=job.source_record_id,
                 report=job.report_id,
@@ -520,6 +631,11 @@ class PrintGatewayJob(models.Model):
                 destination=job.destination,
                 document_type=job.document_type,
                 payload=json.loads(job.payload),
+                payload_type=job.payload_type,
+                protocol=job.protocol,
+                raw_payload=job.raw_payload,
+                printer_profile=job.printer_profile,
+                fallback_binding=job.fallback_binding_id,
                 source_model=job.source_model,
                 source_record_id=job.source_record_id,
                 report=job.report_id,

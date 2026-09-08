@@ -374,8 +374,10 @@ class PrintGatewayRouter(models.AbstractModel):
         if not config:
             return {"status": "skipped", "message": _("Gateway printing is not enabled for company %s") % company.display_name}
 
-        # If policy specifies a report, render standard report
-        if policy.report_id:
+        # Action type authority: check action_type explicitly
+        if policy.action_type == "report":
+            if not policy.report_id:
+                raise ValidationError(_("Policy '%s' is configured for report action but has no report selected.") % policy.name)
             route = self.resolve_binding(
                 report=policy.report_id,
                 record=target_record,
@@ -399,12 +401,13 @@ class PrintGatewayRouter(models.AbstractModel):
                 "message": res.get("message"),
             }
 
-        # If policy specifies raw command (e.g. barcode label)
-        if policy.action_type == "raw_template":
+        elif policy.action_type == "raw_template":
+            if not policy.raw_protocol:
+                raise ValidationError(_("Policy '%s' raw protocol is required.") % policy.name)
             raw_data = policy.render_raw_template(target_record)
             res = self.route_raw_command(
                 raw_data,
-                protocol=policy.raw_protocol or "zpl",
+                protocol=policy.raw_protocol,
                 binding=policy.binding_id or False,
                 record=target_record,
                 company=company,
@@ -419,7 +422,7 @@ class PrintGatewayRouter(models.AbstractModel):
                 "message": res.get("message"),
             }
 
-        raise ValidationError(_("No report or raw label action configured for policy %s") % policy.name)
+        raise ValidationError(_("No valid action configured for policy %s (action_type: %s)") % (policy.name, policy.action_type))
 
     @api.model
     def route_raw_command(
@@ -529,7 +532,11 @@ class PrintGatewayRouter(models.AbstractModel):
         if not config:
             raise ValidationError(_("Print Gateway is disabled for company %s.") % current_company.display_name)
 
-        proto = getattr(binding, "printer_protocol", False) or "escpos"
+        proto = getattr(binding, "printer_protocol", False)
+        if not proto:
+            raise ValidationError(_("Printer protocol is required on binding '%s' to send a diagnostic test ticket.") % binding.display_name)
+        if proto not in ("zpl", "tspl", "raw", "escpos"):
+            raise ValidationError(_("Unsupported printer protocol '%s' for diagnostic test ticket.") % proto)
         now_str = fields.Datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         company_name = binding.company_id.name
         branch_name = binding.branch_id.name if binding.branch_id else "Default / Root"
@@ -581,7 +588,7 @@ class PrintGatewayRouter(models.AbstractModel):
                 f"Timestamp: {now_str}\n"
                 "================================\n\n\n"
             )
-        else:
+        elif proto == "escpos":
             ticket_lines = [
                 "\x1b\x40",  # Initialize printer
                 "\x1b\x61\x01",  # Centered
