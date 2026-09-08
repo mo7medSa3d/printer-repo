@@ -6,7 +6,7 @@
         <field name="arch" type="xml">
             <list string="Print Gateway Bindings" create="1" delete="1" class="o_pg_list">
                 <field name="company_id" string="Odoo Company" optional="hide"/>
-                <field name="branch_id" string="Odoo Branch"/>
+                <field name="branch_id" string="Odoo Branch" placeholder="All Branches / Root Default"/>
                 <field name="destination_type" string="Operational Area" widget="badge" decoration-info="destination_type == 'pos'" decoration-success="destination_type == 'report'" decoration-warning="destination_type == 'picking_type'"/>
                 <field name="destination_ref" string="Odoo Destination"/>
                 <field name="document_type" string="Document Type"/>
@@ -46,7 +46,7 @@
                             <group string="Business Context">
                                 <field name="company_id" string="Odoo Company" domain="[('parent_id', '=', False)]" options="{'no_create': True}"/>
                                 <field name="branch_id" string="Odoo Branch" domain="[('parent_id', '=', company_id)]"
-                                       invisible="not company_id" required="1" options="{'no_create': True}"/>
+                                       invisible="not company_id" placeholder="All Branches / Root Default" options="{'no_create': True}"/>
                             </group>
                         </div>
 

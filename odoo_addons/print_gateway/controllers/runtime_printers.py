@@ -47,8 +47,6 @@ class PrintGatewayRuntimePrinterController(http.Controller):
     @http.route('/print_gateway/runtime-agents', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_agents(self, company_id=None, branch_id=None):
         company, branch = self._scope(company_id, branch_id)
-        if not branch:
-            raise ValidationError("An Odoo Branch is required for runtime-agent assignment.")
         config, root_company = self._get_config(company)
         if not config or not config.enabled:
             return {'enabled': False, 'selectedAgentId': False, 'agents': []}
@@ -88,8 +86,6 @@ class PrintGatewayRuntimePrinterController(http.Controller):
     @http.route('/print_gateway/runtime-printers', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_printers(self, company_id=None, branch_id=None, agent_id=None):
         company, branch = self._scope(company_id, branch_id)
-        if not branch:
-            raise ValidationError("An Odoo Branch is required for runtime-printer selection.")
         if not isinstance(agent_id, str) or not agent_id.strip():
             return {'enabled': True, 'selectedAgentId': False, 'printers': []}
         config, _root_company = self._get_config(company)

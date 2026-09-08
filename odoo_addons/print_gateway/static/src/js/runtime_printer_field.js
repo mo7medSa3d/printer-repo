@@ -16,8 +16,8 @@ export class RuntimeAgentField extends Component {
     static props = ["*"];
     static template = xml`
         <div class="o_field_widget o_field_runtime_agent">
-            <select class="o_input" t-att-disabled="props.readonly || state.loading || !state.branchId" t-on-change="onChange">
-                <option value=""><t t-esc="state.loading ? 'Loading agents…' : (!state.branchId ? 'Select an Odoo Branch first' : 'Select Gateway Runtime Agent')"/></option>
+            <select class="o_input" t-att-disabled="props.readonly || state.loading || !state.companyId" t-on-change="onChange">
+                <option value=""><t t-esc="state.loading ? 'Loading agents…' : (!state.companyId ? 'Select an Odoo Company first' : 'Select Gateway Runtime Agent')"/></option>
                 <option t-foreach="state.agents" t-as="agent" t-key="agent.id" t-att-value="agent.id" t-att-selected="agent.id === props.record.data[props.name]">
                     <t t-esc="agent.name"/> — <t t-esc="agent.id"/> — <t t-esc="agent.status"/>
                 </option>
@@ -27,7 +27,8 @@ export class RuntimeAgentField extends Component {
 
     setup() {
         this.rpc = useService("rpc");
-        this.state = useState({ loading: false, agents: [], branchId: false, error: null });
+        this.currentRequestId = 0;
+        this.state = useState({ loading: false, agents: [], companyId: false, branchId: false, error: null });
         onWillStart(() => this.load(this.props));
         onWillUpdateProps((nextProps) => {
             const before = this.scope(this.props);
@@ -47,21 +48,27 @@ export class RuntimeAgentField extends Component {
 
     async load(props) {
         const { companyId, branchId } = this.scope(props);
+        this.state.companyId = companyId;
         this.state.branchId = branchId;
         this.state.agents = [];
         this.state.error = null;
-        if (!companyId || !branchId) {
+        if (!companyId) {
             this.state.loading = false;
             return;
         }
         this.state.loading = true;
+        const reqId = ++this.currentRequestId;
         try {
             const result = await this.rpc("/print_gateway/runtime-agents", { company_id: companyId, branch_id: branchId });
+            if (reqId !== this.currentRequestId) return;
             this.state.agents = Array.isArray(result?.agents) ? result.agents : [];
         } catch (error) {
+            if (reqId !== this.currentRequestId) return;
             this.state.error = error;
         } finally {
-            this.state.loading = false;
+            if (reqId === this.currentRequestId) {
+                this.state.loading = false;
+            }
         }
     }
 
@@ -88,12 +95,16 @@ export class RuntimePrinterField extends Component {
 
     setup() {
         this.rpc = useService("rpc");
+        this.currentRequestId = 0;
         this.state = useState({ loading: false, printers: [], agentId: false, destinationType: false, error: null });
         onWillStart(() => this.load(this.props));
         onWillUpdateProps((nextProps) => {
             const before = this.scope(this.props);
             const after = this.scope(nextProps);
             if (before.companyId !== after.companyId || before.branchId !== after.branchId || before.agentId !== after.agentId || before.destinationType !== after.destinationType) {
+                if (before.agentId !== after.agentId) {
+                    this.state.printers = [];
+                }
                 this.load(nextProps);
             }
         });
@@ -130,22 +141,27 @@ export class RuntimePrinterField extends Component {
         this.state.destinationType = destinationType;
         this.state.printers = [];
         this.state.error = null;
-        if (!companyId || !branchId || !agentId) {
+        if (!companyId || !agentId) {
             this.state.loading = false;
             return;
         }
         this.state.loading = true;
+        const reqId = ++this.currentRequestId;
         try {
             const result = await this.rpc("/print_gateway/runtime-printers", {
                 company_id: companyId,
                 branch_id: branchId,
                 agent_id: agentId,
             });
+            if (reqId !== this.currentRequestId) return;
             this.state.printers = Array.isArray(result?.printers) ? result.printers : [];
         } catch (error) {
+            if (reqId !== this.currentRequestId) return;
             this.state.error = error;
         } finally {
-            this.state.loading = false;
+            if (reqId === this.currentRequestId) {
+                this.state.loading = false;
+            }
         }
     }
 

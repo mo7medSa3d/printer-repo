@@ -31,6 +31,11 @@ type docInfo1 struct {
 	pDatatype   *uint16
 }
 
+// SpoolerPrinter interacts with the Windows Spooler API (winspool.drv).
+//
+// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
+// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
+// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 type SpoolerPrinter struct {
 	Name        string
 	SpoolerName string
@@ -47,6 +52,10 @@ func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
 	return &SpoolerPrinter{Name: name, SpoolerName: spoolerName}
 }
 
+// maxSpoolerWorkers bounds concurrent spooler operations.
+// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
+// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
+// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 const maxSpoolerWorkers = 4
 
 var spoolerWorkerSem = make(chan struct{}, maxSpoolerWorkers)
@@ -164,6 +173,10 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 	return spoolerTaskResult{written: written, jobID: jobID, err: nil}
 }
 
+// Print writes raw byte data directly to the Windows Spooler.
+// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
+// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
+// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("refusing to print empty payload")
