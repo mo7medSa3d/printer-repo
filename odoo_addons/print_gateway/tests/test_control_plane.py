@@ -585,11 +585,12 @@ class TestControlPlane(TransactionCase):
             mock_records.__iter__.return_value = [rec1, rec2]
 
             router = self.env["print_gateway.print_router"]
+            RouterClass = type(router)
             route1 = {"binding_id": 1, "printer_id": "p1", "runtime_agent_id": "a1", "gateway_enabled": True}
             route2 = {"binding_id": 2, "printer_id": "p2", "runtime_agent_id": "a1", "gateway_enabled": True}
 
             with patch.object(PickingClass, "browse", return_value=mock_records), \
-                 patch.object(router, "resolve_binding", side_effect=[route1, route2]):
+                 patch.object(RouterClass, "resolve_binding", side_effect=[route1, route2]):
                 data_mixed = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_mixed)
                 self.assertEqual(resp.status_code, 400)
@@ -607,8 +608,8 @@ class TestControlPlane(TransactionCase):
             # Test 5: Gateway dispatch failure returns 502 without leaking raw trace
             with patch.object(PickingClass, "browse", return_value=mock_records), \
                  patch.object(mock_records, "check_access", return_value=None), \
-                 patch.object(router, "resolve_binding", return_value=route1), \
-                 patch.object(router, "route_report", side_effect=RuntimeError("Internal gateway timeout")):
+                 patch.object(RouterClass, "resolve_binding", return_value=route1), \
+                 patch.object(RouterClass, "route_report", side_effect=RuntimeError("Internal gateway timeout")):
                 data_dispatch = json.dumps([f"/report/pdf/{report.report_name}/1,2", "qweb-pdf"])
                 resp = controller.report_download(data_dispatch)
                 self.assertEqual(resp.status_code, 502)
