@@ -393,6 +393,7 @@ class PrintGatewayJob(models.Model):
                                 not fallback_proto
                                 or fallback_proto == "raw"
                                 or fallback_proto == job.protocol
+                                or job.protocol == "raw"
                             )
                         if (
                             current_binding.enabled

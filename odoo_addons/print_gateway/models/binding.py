@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """Native Odoo print bindings: Odoo context -> Gateway runtime printer."""
 
+import logging
+
 from psycopg2 import IntegrityError
 import requests
 
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
+
+_logger = logging.getLogger(__name__)
 
 
 DESTINATION_MODELS = [
