@@ -341,31 +341,36 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         finally:
             scope_cr.close()
         try:
-            branch_user = self.env["res.users"].browse(scope_ids["user_id"])
-            self.assertFalse(branch_user.has_group("base.group_system"))
-            branch = self.env["res.company"].browse(scope_ids["branch_id"])
-            binding = self.env["print_gateway.binding"].browse(scope_ids["binding_id"])
+            exec_cr = self.env.registry.cursor()
+            try:
+                exec_env = api.Environment(exec_cr, self.env.uid, dict(self.env.context, allowed_company_ids=[scope_ids["branch_id"]]))
+                branch_user = exec_env["res.users"].browse(scope_ids["user_id"])
+                self.assertFalse(branch_user.has_group("base.group_system"))
+                branch = exec_env["res.company"].browse(scope_ids["branch_id"])
+                binding = exec_env["print_gateway.binding"].browse(scope_ids["binding_id"])
 
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"jobId": "gw_branch_submit_1", "status": "queued"}
-            router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
-            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None), \
-                 patch("requests.post", return_value=mock_resp):
-                res = router.route_raw_command(
-                    "\x1b@Branch submit ticket",
-                    protocol="escpos",
-                    binding=binding,
-                    company=branch,
-                    document_type="receipt",
-                    idempotency_key="test_branch_submit_key_01",
-                )
-            self.assertTrue(res.get("gateway_enabled"))
-            job = self.env["print_gateway.print_job"].browse(res["job_id"])
-            self.assertTrue(job.exists())
-            self.assertEqual(job.status, "submitted")
-            self.assertEqual(job.gateway_job_id, "gw_branch_submit_1")
-            self.assertEqual(job.company_id, branch)
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"jobId": "gw_branch_submit_1", "status": "queued"}
+                router = exec_env["print_gateway.print_router"].with_user(branch_user).with_context(allowed_company_ids=[branch.id])
+                with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None), \
+                     patch("requests.post", return_value=mock_resp):
+                    res = router.route_raw_command(
+                        "\x1b@Branch submit ticket",
+                        protocol="escpos",
+                        binding=binding,
+                        company=branch,
+                        document_type="receipt",
+                        idempotency_key="test_branch_submit_key_01",
+                    )
+                self.assertTrue(res.get("gateway_enabled"))
+                job = exec_env["print_gateway.print_job"].browse(res["job_id"])
+                self.assertTrue(job.exists())
+                self.assertEqual(job.status, "submitted")
+                self.assertEqual(job.gateway_job_id, "gw_branch_submit_1")
+                self.assertEqual(job.company_id, branch)
+            finally:
+                exec_cr.close()
         finally:
             if scope_ids:
                 cleanup_cr = self.env.registry.cursor()
@@ -394,8 +399,14 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                             if rec.exists():
                                 rec.write({"active": False})
                         cleanup_cr.commit()
+                except Exception:
+                    cleanup_cr.rollback()
+                    raise
                 finally:
                     cleanup_cr.close()
+            # Roll back self.cr so its PostgreSQL snapshot is refreshed for
+            # subsequent tests in this TransactionCase class.
+            self.cr.rollback()
 
     def test_status_advance_records_replay_hop_by_hop_without_shortcuts(self):
         """BEHAVIORAL: an idempotent replay observed beyond 'submitted' must

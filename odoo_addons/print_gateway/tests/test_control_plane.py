@@ -1022,7 +1022,7 @@ class TestControlPlane(TransactionCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
         RouterClass = type(self.env["print_gateway.print_router"])
-        router = self.env["print_gateway.print_router"].with_user(user).with_company(self.branch)
+        router = self.env["print_gateway.print_router"].with_user(user).with_context(allowed_company_ids=[self.branch.id])
 
         def _operator_persist_job(values):
             durable_values = dict(values)
@@ -1040,14 +1040,16 @@ class TestControlPlane(TransactionCase):
                 else:
                     durable_values[key] = False
             target_company = durable_values.get("company")
-            model = self.env["print_gateway.print_job"].with_user(user)
-            if target_company:
-                model = model.with_company(target_company)
+            model = self.env["print_gateway.print_job"].with_user(user).with_context(
+                allowed_company_ids=[target_company.id] if target_company else [self.branch.id]
+            )
             job = model.create_operation(**durable_values)
             return job.id
 
         def _operator_submit_job(job_id):
-            job = self.env["print_gateway.print_job"].with_user(user).browse(job_id)
+            job = self.env["print_gateway.print_job"].with_user(user).with_context(
+                allowed_company_ids=[self.branch.id]
+            ).browse(job_id)
             with self.assertRaises(AccessError):
                 job.action_submit()
             job._action_submit_trusted(raise_on_failure=True)
@@ -1325,13 +1327,14 @@ class TestControlPlane(TransactionCase):
         other_company = self.env["res.company"].create({"name": "Control Plane Other Co"})
 
         def _binding(company, branch, printer, protocol="escpos"):
+            agent_id = "agent-cp-01" if branch == self.branch else ("agent-scope-%s" % printer)
             return self.env["print_gateway.binding"].create({
                 "company_id": company.id,
                 "branch_id": branch.id if branch else False,
                 "destination_type": "report",
                 "destination_report_id": report_id,
                 "report_id": report_id,
-                "runtime_agent_id": "agent-scope-%s" % printer,
+                "runtime_agent_id": agent_id,
                 "printer_id": printer,
                 "printer_protocol": protocol,
                 "enabled": True,
