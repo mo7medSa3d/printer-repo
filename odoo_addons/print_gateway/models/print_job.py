@@ -754,8 +754,10 @@ class PrintGatewayJob(models.Model):
         # operator actions are privileged. Server-side flows (router submit,
         # intent dispatch, cron) already run elevated and pass transparently.
         # This guard keeps RPC access fail-closed for interactive users.
-        self.check_access_rights("write")
-        self.check_access_rule("write")
+        # NOTE: check_access() is the single Odoo 19 API covering both model
+        # rights and record rules (check_access_rights/check_access_rule are
+        # deprecated since 18.0).
+        self.check_access("write")
 
     def action_submit(self, raise_on_failure=False):
         self._require_outbox_write()

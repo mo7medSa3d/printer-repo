@@ -1,12 +1,14 @@
 import json
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 try:
-    from odoo import fields
+    from odoo import api, fields
     from odoo.exceptions import ValidationError
 except ImportError:
+    api = None  # type: ignore
     fields = None  # type: ignore
     ValidationError = Exception
 
@@ -277,64 +279,115 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         """A standard print operator (group_user, outbox read-only) must be
         able to submit a raw print end-to-end: the trusted service boundary
         elevates creation/submission internally while the model ACL stays
-        read-only. Any AccessError here is a P0 regression."""
+        read-only. Any AccessError here is a P0 regression.
+
+        Routing fixtures live on a SEPARATE committed cursor: the durable
+        persist path runs on an independent PostgreSQL cursor that can only
+        see committed rows (same as production). Uncommitted in-test rows
+        are correctly refused - never silently used.
+        """
         if not hasattr(self, "env"):
             self.skipTest("Odoo runtime environment not available")
         from unittest.mock import MagicMock
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
         root_company = self.env.company
-        branch = self.env["res.company"].create({
-            "name": "Branch Submit Context",
-            "parent_id": root_company.id,
-        })
-        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
-        if not config:
+        scope_cr = self.env.registry.cursor()
+        scope_ids = {}
+        try:
+            scope_env = api.Environment(scope_cr, self.env.uid, dict(self.env.context)) if api else None
+            if scope_env is None:
+                self.skipTest("Odoo runtime environment not available")
+            scope_branch = scope_env["res.company"].create({
+                "name": "Branch Submit Context %s" % suffix,
+                "parent_id": root_company.id,
+            })
             with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
-                config = self.env["print_gateway.gateway_config"].create({
+                scope_config = scope_env["print_gateway.gateway_config"].create({
                     "company_id": root_company.id,
                     "gateway_url": "https://gateway.example.com",
                     "enabled": True,
                 })
-        report = self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
-        self.assertTrue(report)
-        binding = self.env["print_gateway.binding"].create({
-            "company_id": root_company.id,
-            "branch_id": branch.id,
-            "destination_type": "report",
-            "destination_report_id": report.id,
-            "report_id": report.id,
-            "runtime_agent_id": "agt-branch-submit",
-            "printer_id": "printer-branch-submit",
-            "printer_protocol": "escpos",
-            "enabled": True,
-        })
-        branch_user = self.env["res.users"].create({
-            "name": "Branch Submit Operator",
-            "login": "branch_submit_%s" % branch.id,
-            "company_id": branch.id,
-            "company_ids": [(6, 0, [branch.id])],
-        })
-        self.assertFalse(branch_user.has_group("base.group_system"))
+            report = scope_env.ref("sale.action_report_saleorder", raise_if_not_found=False)
+            self.assertTrue(report)
+            scope_binding = scope_env["print_gateway.binding"].create({
+                "company_id": root_company.id,
+                "branch_id": scope_branch.id,
+                "destination_type": "report",
+                "destination_report_id": report.id,
+                "report_id": report.id,
+                "runtime_agent_id": "agt-branch-submit-%s" % suffix,
+                "printer_id": "printer-branch-submit-%s" % suffix,
+                "printer_protocol": "escpos",
+                "enabled": True,
+            })
+            scope_user = scope_env["res.users"].create({
+                "name": "Branch Submit Operator %s" % suffix,
+                "login": "branch_submit_%s" % suffix,
+                "company_id": scope_branch.id,
+                "company_ids": [(6, 0, [scope_branch.id])],
+            })
+            scope_cr.commit()
+            scope_ids = {
+                "branch_id": scope_branch.id,
+                "config_id": scope_config.id,
+                "binding_id": scope_binding.id,
+                "user_id": scope_user.id,
+                "printer_id": "printer-branch-submit-%s" % suffix,
+            }
+        finally:
+            scope_cr.close()
+        try:
+            branch_user = self.env["res.users"].browse(scope_ids["user_id"])
+            self.assertFalse(branch_user.has_group("base.group_system"))
+            branch = self.env["res.company"].browse(scope_ids["branch_id"])
+            binding = self.env["print_gateway.binding"].browse(scope_ids["binding_id"])
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"jobId": "gw_branch_submit_1", "status": "queued"}
-        router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
-        with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None), \
-             patch("requests.post", return_value=mock_resp):
-            res = router.route_raw_command(
-                "\x1b@Branch submit ticket",
-                protocol="escpos",
-                binding=binding,
-                company=branch,
-                document_type="receipt",
-                idempotency_key="test_branch_submit_key_01",
-            )
-        self.assertTrue(res.get("gateway_enabled"))
-        job = self.env["print_gateway.print_job"].browse(res["job_id"])
-        self.assertTrue(job.exists())
-        self.assertEqual(job.status, "submitted")
-        self.assertEqual(job.gateway_job_id, "gw_branch_submit_1")
-        self.assertEqual(job.company_id, branch)
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"jobId": "gw_branch_submit_1", "status": "queued"}
+            router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
+            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None), \
+                 patch("requests.post", return_value=mock_resp):
+                res = router.route_raw_command(
+                    "\x1b@Branch submit ticket",
+                    protocol="escpos",
+                    binding=binding,
+                    company=branch,
+                    document_type="receipt",
+                    idempotency_key="test_branch_submit_key_01",
+                )
+            self.assertTrue(res.get("gateway_enabled"))
+            job = self.env["print_gateway.print_job"].browse(res["job_id"])
+            self.assertTrue(job.exists())
+            self.assertEqual(job.status, "submitted")
+            self.assertEqual(job.gateway_job_id, "gw_branch_submit_1")
+            self.assertEqual(job.company_id, branch)
+        finally:
+            if scope_ids:
+                cleanup_cr = self.env.registry.cursor()
+                try:
+                    cleanup_env = api.Environment(cleanup_cr, self.env.uid, dict(self.env.context)) if api else None
+                    if cleanup_env is not None:
+                        if scope_ids.get("printer_id"):
+                            job_ids = cleanup_env["print_gateway.print_job"].sudo().search(
+                                [("printer_id", "=", scope_ids["printer_id"])]).ids
+                            if job_ids:
+                                cleanup_env["print_gateway.print_job"].sudo().browse(job_ids).unlink()
+                        for model, key in (
+                            ("print_gateway.binding", "binding_id"),
+                            ("print_gateway.gateway_config", "config_id"),
+                            ("res.users", "user_id"),
+                            ("res.company", "branch_id"),
+                        ):
+                            if not scope_ids.get(key):
+                                continue
+                            rec = cleanup_env[model].sudo().browse(scope_ids[key])
+                            if rec.exists():
+                                rec.unlink()
+                        cleanup_cr.commit()
+                finally:
+                    cleanup_cr.close()
 
     def test_status_advance_records_replay_hop_by_hop_without_shortcuts(self):
         """BEHAVIORAL: an idempotent replay observed beyond 'submitted' must

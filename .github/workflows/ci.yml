@@ -205,7 +205,7 @@ jobs:
               --db_user=odoo \
               --db_password=odoo \
               --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
-              --without-demo=all \
+              --without-demo=true \
               --http-interface=127.0.0.1 \
               --init=print_gateway \
               --test-tags=/print_gateway \

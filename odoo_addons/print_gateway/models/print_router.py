@@ -508,15 +508,38 @@ class PrintGatewayRouter(models.AbstractModel):
             target_binding = route["binding"]
             target_destination = route["destination"]
         else:
-            # P1.1 Direct Binding Authorization: Validate caller-supplied binding
+            # Direct Binding Authorization: a caller-supplied binding must
+            # satisfy the EXACT same company/branch/effective-scope model as
+            # binding.find_for() resolution (which searches (company, branch)
+            # first and falls back to (company, branch=False) for branch
+            # operations). Concretely, with operation_root being the root
+            # company of the operation:
+            #   - the binding's company must equal operation_root
+            #     (cross-company bindings are rejected even when enabled);
+            #   - a branch binding is usable only from its own branch;
+            #   - a root binding is usable from the root and, as the
+            #     documented fallback, from its branches;
+            #   - operating from the root can never use a branch binding.
+            # find_for() would never select anything else, so accepting it
+            # here would open a scope bypass around resolution.
             if not binding.enabled:
                 raise ValidationError(_("The specified print binding '%s' is disabled.") % binding.display_name)
-            binding_effective = binding.branch_id or binding.company_id
-            if binding_effective != current_company and binding.company_id != current_company:
+            operation_root = current_company.parent_id or current_company
+            if not binding.company_id or binding.company_id != operation_root:
                 raise ValidationError(
                     _("Print binding '%s' belongs to company '%s', but current operation is for '%s'.")
-                    % (binding.display_name, binding_effective.display_name, current_company.display_name)
+                    % (binding.display_name, (binding.company_id.display_name if binding.company_id else False), current_company.display_name)
                 )
+            if binding.branch_id:
+                if binding.branch_id != current_company:
+                    raise ValidationError(
+                        _("Print binding '%s' is scoped to branch '%s' and cannot be used from '%s'.")
+                        % (binding.display_name, binding.branch_id.display_name, current_company.display_name)
+                    )
+            elif current_company.parent_id:
+                # Root binding used from one of its branches: allowed as the
+                # documented find_for fallback. Nothing to reject.
+                pass
             if not binding.printer_id:
                 raise ValidationError(_("Print binding '%s' has no Gateway Runtime Printer assigned.") % binding.display_name)
             if binding.branch_id and not binding.runtime_agent_id:

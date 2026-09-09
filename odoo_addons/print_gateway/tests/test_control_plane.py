@@ -11,6 +11,7 @@ Covers:
 
 import json
 import unittest
+import uuid
 from unittest.mock import patch, MagicMock
 
 try:
@@ -994,47 +995,167 @@ class TestControlPlane(TransactionCase):
         boundary exists to preserve)."""
         user = self._operator_user()
         with self.assertRaises(AccessError):
-            self.env["print_gateway.print_job"].with_user(user).check_access_rights("create")
+            self.env["print_gateway.print_job"].with_user(user).check_access("create")
         with self.assertRaises(AccessError):
-            self.env["print_gateway.print_job"].with_user(user).check_access_rights("write")
+            self.env["print_gateway.print_job"].with_user(user).check_access("write")
 
     def test_26_normal_user_full_print_flow_succeeds_through_service_boundary(self):
         """BEHAVIORAL: an operator with NO outbox rights routes a raw command
         end-to-end. The create/submit elevation happens inside the trusted
         server-side boundary (create_operation + submit), never via the
-        user's raw model rights."""
-        user = self._operator_user()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
-        ConfigClass = type(self.gateway_config)
-        router = self.env["print_gateway.print_router"].with_user(user).with_company(self.branch)
-        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
-             patch("requests.post", return_value=mock_resp):
-            res = router.route_raw_command(
-                "\x1b@Operator ticket",
-                protocol="escpos",
-                binding=self.primary_binding,
-                company=self.branch,
-                document_type="receipt",
-                idempotency_key="test_operator_flow_key_01",
-            )
-        self.assertTrue(res.get("gateway_enabled"))
-        job = self.env["print_gateway.print_job"].browse(res["job_id"])
-        self.assertTrue(job.exists())
-        self.assertEqual(job.status, "submitted")
-        self.assertEqual(job.gateway_job_id, "gw_operator_123")
-        self.assertEqual(job.company_id, self.branch)
+        user's raw model rights.
+
+        The routing fixtures live on a SEPARATE committed cursor: the
+        durable persist path runs on an independent PostgreSQL cursor that
+        can only see committed rows (same as production, where bindings and
+        configs are long-committed). Uncommitted in-test rows are correctly
+        refused - see test_26b.
+        """
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        scope_cr = self.env.registry.cursor()
+        scope_ids = {}
+        try:
+            scope_env = api.Environment(scope_cr, self.env.uid, dict(self.env.context))
+            scope_branch = scope_env["res.company"].create({
+                "name": "Operator Flow Branch %s" % suffix,
+                "parent_id": self.company.id,
+            })
+            with patch.object(PrintGatewayConfig, "_validate_gateway_host", return_value=None):
+                scope_config = scope_env["print_gateway.gateway_config"].create({
+                    "company_id": self.company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                })
+            report = scope_env.ref("sale.action_report_saleorder", raise_if_not_found=False)
+            self.assertTrue(report)
+            scope_binding = scope_env["print_gateway.binding"].create({
+                "company_id": self.company.id,
+                "branch_id": scope_branch.id,
+                "destination_type": "report",
+                "destination_report_id": report.id,
+                "report_id": report.id,
+                "runtime_agent_id": "agent-operator-%s" % suffix,
+                "printer_id": "printer-operator-%s" % suffix,
+                "printer_protocol": "escpos",
+                "enabled": True,
+                "priority": 10,
+            })
+            scope_user = scope_env["res.users"].create({
+                "name": "Print Operator %s" % suffix,
+                "login": "print_operator_%s" % suffix,
+                "company_id": scope_branch.id,
+                "company_ids": [(6, 0, [scope_branch.id])],
+            })
+            scope_cr.commit()
+            scope_ids = {
+                "branch_id": scope_branch.id,
+                "config_id": scope_config.id,
+                "binding_id": scope_binding.id,
+                "user_id": scope_user.id,
+                "printer_id": "printer-operator-%s" % suffix,
+            }
+        finally:
+            scope_cr.close()
+        try:
+            user = self.env["res.users"].browse(scope_ids["user_id"])
+            self.assertFalse(user.has_group("base.group_system"))
+            branch = self.env["res.company"].browse(scope_ids["branch_id"])
+            binding = self.env["print_gateway.binding"].browse(scope_ids["binding_id"])
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
+            ConfigClass = type(self.gateway_config)
+            router = self.env["print_gateway.print_router"].with_user(user).with_company(branch)
+            with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+                 patch("requests.post", return_value=mock_resp):
+                res = router.route_raw_command(
+                    "\x1b@Operator ticket",
+                    protocol="escpos",
+                    binding=binding,
+                    company=branch,
+                    document_type="receipt",
+                    idempotency_key="test_operator_flow_key_01",
+                )
+            self.assertTrue(res.get("gateway_enabled"))
+            job = self.env["print_gateway.print_job"].browse(res["job_id"])
+            self.assertTrue(job.exists())
+            self.assertEqual(job.status, "submitted")
+            self.assertEqual(job.gateway_job_id, "gw_operator_123")
+            self.assertEqual(job.company_id, branch)
+        finally:
+            if scope_ids:
+                cleanup_cr = self.env.registry.cursor()
+                try:
+                    cleanup_env = api.Environment(cleanup_cr, self.env.uid, dict(self.env.context))
+                    if scope_ids.get("printer_id"):
+                        job_ids = cleanup_env["print_gateway.print_job"].sudo().search(
+                            [("printer_id", "=", scope_ids["printer_id"])]).ids
+                        if job_ids:
+                            cleanup_env["print_gateway.print_job"].sudo().browse(job_ids).unlink()
+                    for model, key in (
+                        ("print_gateway.binding", "binding_id"),
+                        ("print_gateway.gateway_config", "config_id"),
+                        ("res.users", "user_id"),
+                        ("res.company", "branch_id"),
+                    ):
+                        if not scope_ids.get(key):
+                            continue
+                        rec = cleanup_env[model].sudo().browse(scope_ids[key])
+                        if rec.exists():
+                            rec.unlink()
+                    cleanup_cr.commit()
+                finally:
+                    cleanup_cr.close()
+
+    def test_26b_persist_refuses_records_invisible_to_its_own_cursor(self):
+        """BEHAVIORAL transaction-visibility regression test: the durable
+        persist path runs on an independent cursor, so rows created but not
+        yet committed in the caller transaction MUST be refused with a clear
+        error - never silently operated on, and never resolved from stale
+        in-memory records. Standalone requests (committed bindings/configs)
+        and post-commit intent dispatch are unaffected."""
+        router = self.env["print_gateway.print_router"]
+        with self.assertRaises(ValidationError) as ctx:
+            router._persist_durable_job({
+                "company": self.branch,
+                "gateway_config": self.gateway_config,
+                "printer_id": "printer-visibility",
+                "destination": "Visibility Desk",
+                "document_type": "label",
+                "payload": {"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="},
+                "idempotency_key": "test_visibility_key_01",
+            })
+        self.assertIn("no longer available", str(ctx.exception))
+        # And a wholesale-missing record fails the same existence gate
+        # (proving the check is the visibility gate, not an ACL accident).
+        ghost_company = self.env["res.company"].browse(999999999)
+        with self.assertRaises(ValidationError):
+            router._persist_durable_job({
+                "company": ghost_company,
+                "gateway_config": self.gateway_config,
+                "printer_id": "printer-visibility",
+                "destination": "Visibility Desk",
+                "document_type": "label",
+                "payload": {"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="},
+                "idempotency_key": "test_visibility_key_02",
+            })
 
     def test_27_create_operation_is_not_reachable_via_rpc(self):
-        """BEHAVIORAL: create_operation is server-internal (@api.private): an
-        RPC call_kw to it raises AccessError for ANY user, so forged outbox
-        rows (arbitrary printer/protocol/data) cannot be created remotely."""
+        """BEHAVIORAL (real RPC dispatch gate): every remote call_kw in Odoo
+        resolves through odoo.service.model.call_kw -> get_public_method,
+        which raises AccessError for methods carrying @api.private. Driving
+        that exact gate proves create_operation() cannot be invoked remotely
+        by ANY user, so forged outbox rows (arbitrary printer/protocol/data)
+        cannot be created remotely. A public operator action passes the same
+        gate (row-level ACLs are enforced separately, not here)."""
+        from odoo.service.model import get_public_method
         user = self._operator_user()
         with self.assertRaises(AccessError):
-            self.env["print_gateway.print_job"].with_user(user).check_method_access("create_operation", [])
+            get_public_method(self.env["print_gateway.print_job"].with_user(user), "create_operation")
         with self.assertRaises(AccessError):
-            self.env["print_gateway.print_job"].check_method_access("create_operation", [])
+            get_public_method(self.env["print_gateway.print_job"], "create_operation")
+        self.assertTrue(callable(get_public_method(self.env["print_gateway.print_job"], "action_retry")))
 
     def test_28_operator_retry_and_direct_create_stay_fail_closed(self):
         """BEHAVIORAL: operator actions that change outbox state still
@@ -1225,3 +1346,78 @@ class TestControlPlane(TransactionCase):
             self.assertEqual(garbage.attempts, 1)
             self.assertFalse(garbage.next_retry_at)
             self.assertIn("GATEWAY_INVALID_RESPONSE", garbage.last_error or "")
+
+    def test_30_direct_binding_enforces_resolution_scope_parity(self):
+        """Direct binding= must satisfy the EXACT same scope model as
+        find_for() resolution: same-branch allow; sibling-branch reject;
+        root-context with branch binding reject; branch-context with root
+        binding allow (documented fallback); cross-company reject. A manual
+        binding must never bypass the scopes resolution would enforce."""
+        report_id = self.primary_binding.destination_report_id.id
+        sibling_branch = self.env["res.company"].create({
+            "name": "Control Plane Sibling Branch",
+            "parent_id": self.company.id,
+        })
+        other_company = self.env["res.company"].create({"name": "Control Plane Other Co"})
+
+        def _binding(company, branch, printer, protocol="escpos"):
+            return self.env["print_gateway.binding"].create({
+                "company_id": company.id,
+                "branch_id": branch.id if branch else False,
+                "destination_type": "report",
+                "destination_report_id": report_id,
+                "report_id": report_id,
+                "runtime_agent_id": "agent-scope-%s" % printer,
+                "printer_id": printer,
+                "printer_protocol": protocol,
+                "enabled": True,
+                "priority": 10,
+            })
+
+        branch_binding = _binding(self.company, self.branch, "printer-scope-branch")
+        sibling_binding = _binding(self.company, sibling_branch, "printer-scope-sibling")
+        root_binding = _binding(self.company, False, "printer-scope-root")
+        other_binding = _binding(other_company, False, "printer-scope-other")
+
+        router = self.env["print_gateway.print_router"].with_company(self.branch)
+        RouterClass = type(router)
+
+        def _route(company, binding):
+            with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
+                 patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
+                return router.route_raw_command(
+                    "\x1b@Scope probe",
+                    protocol="escpos",
+                    binding=binding,
+                    company=company,
+                    document_type="receipt",
+                    idempotency_key="test_scope_%s_%s" % (company.id, binding.id),
+                )
+
+        # Same branch: the binding find_for would resolve here.
+        self.assertTrue(_route(self.branch, branch_binding).get("gateway_enabled"))
+        # Manually supplied binding works the same as a resolved one.
+        self.assertTrue(_route(self.branch, branch_binding).get("gateway_enabled"))
+        # Sibling branch: find_for from branchA never selects branchB rows.
+        with self.assertRaises(ValidationError):
+            _route(self.branch, sibling_binding)
+        # Branch operation with a root binding: allowed, mirroring find_for's
+        # documented (company, branch=False) fallback.
+        self.assertTrue(_route(self.branch, root_binding).get("gateway_enabled"))
+        # Root operation with a branch binding: find_for from the root only
+        # searches branch=False, so this is rejected.
+        root_router = self.env["print_gateway.print_router"].with_company(self.company)
+        with patch.object(RouterClass, "_persist_durable_job", side_effect=self._fake_persist_job), \
+             patch.object(RouterClass, "_submit_durable_job", return_value="submitted"):
+            with self.assertRaises(ValidationError):
+                root_router.route_raw_command(
+                    "\x1b@Scope probe",
+                    protocol="escpos",
+                    binding=branch_binding,
+                    company=self.company,
+                    document_type="receipt",
+                    idempotency_key="test_scope_root_branch",
+                )
+        # Another company entirely: rejected.
+        with self.assertRaises(ValidationError):
+            _route(self.branch, other_binding)
