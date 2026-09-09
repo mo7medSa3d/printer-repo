@@ -90,8 +90,14 @@ type Agent struct {
 	// attempt, under the same mutex. Heartbeat keep-alives echo the token
 	// so the gateway can fence the lease refresh to the live claim.
 	inFlightTokens map[string]string
-	inFlightMu     sync.Mutex
-	wg             sync.WaitGroup
+	// inFlightReceived records when each delivery was accepted, under the
+	// same mutex. It bounds the physical-dispatch race: the gateway sweep
+	// can only reclaim a claim observed stale for a full lease window, so
+	// a transport failure inside that window cannot be masking a
+	// reassignment (see authorizeDispatchAfterReportFailure).
+	inFlightReceived map[string]time.Time
+	inFlightMu       sync.Mutex
+	wg               sync.WaitGroup
 
 	// Guards making heartbeat/poll ticks non-reentrant. A slow tick (offline
 	// printers probing at 2s, slow gateway) must never let ticks pile up.
@@ -210,20 +216,21 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 	registryPath := config.RegistryPath(configPath)
 
 	a := &Agent{
-		cfg:            cfg,
-		configPath:     configPath,
-		registryPath:   registryPath,
-		client:         &http.Client{Timeout: 15 * time.Second},
-		printers:       make(map[string]printer.Printer),
-		printerConfigs: make(map[string]config.PrinterConfig),
-		queue:          q,
-		jobLocks:       make(map[string]*sync.Mutex),
-		execSem:        make(chan struct{}, maxConcurrentJobs),
-		pendingSlots:   make(chan struct{}, maxPendingJobs),
-		inFlight:       make(map[string]struct{}),
-		inFlightTokens: make(map[string]string),
-		shutdownCh:     make(chan struct{}),
-		discoverySem:   make(chan struct{}, 1),
+		cfg:              cfg,
+		configPath:       configPath,
+		registryPath:     registryPath,
+		client:           &http.Client{Timeout: 15 * time.Second},
+		printers:         make(map[string]printer.Printer),
+		printerConfigs:   make(map[string]config.PrinterConfig),
+		queue:            q,
+		jobLocks:         make(map[string]*sync.Mutex),
+		execSem:          make(chan struct{}, maxConcurrentJobs),
+		pendingSlots:     make(chan struct{}, maxPendingJobs),
+		inFlight:         make(map[string]struct{}),
+		inFlightTokens:   make(map[string]string),
+		inFlightReceived: make(map[string]time.Time),
+		shutdownCh:       make(chan struct{}),
+		discoverySem:     make(chan struct{}, 1),
 	}
 
 	// An explicitly configured PDF helper takes precedence over the platform
@@ -835,7 +842,11 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 	if a.inFlightTokens == nil {
 		a.inFlightTokens = make(map[string]string)
 	}
+	if a.inFlightReceived == nil {
+		a.inFlightReceived = make(map[string]time.Time)
+	}
 	a.inFlightTokens[jobID] = jobClaimToken(job)
+	a.inFlightReceived[jobID] = time.Now()
 	a.wg.Add(1)
 	a.inFlightMu.Unlock()
 
@@ -878,6 +889,59 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 	}()
 }
 
+// staleClaimSafetyWindow mirrors the gateway's STALE_CLAIM_SECONDS
+// (src/lib/job-maintenance.ts). The sweep only requeues a claim observed
+// stale for a full window past its claim commit, so a delivery received
+// less than a window ago cannot have been reclaimed yet. Both sides must
+// be changed together if the lease ever changes.
+const staleClaimSafetyWindow = 90 * time.Second
+
+// authorizeDispatchAfterReportFailure decides whether physical dispatch may
+// proceed after the claimed->printing report did NOT come back accepted.
+//
+//   - Fence rejection (ErrStaleClaim) or any other explicit gateway
+//     rejection (ErrTransitionRejected): the gateway evaluated our claim
+//     and refused it. Another attempt may own the job. HARD STOP.
+//   - Transport failure: the gateway said nothing. Dispatch may proceed
+//     ONLY if ownership is still provable: the delivery was received less
+//     than a full lease window ago (no reclaim could have completed) and
+//     the job TTL has not passed while we held it. Otherwise the job may
+//     already belong to a reclaimed attempt: HARD STOP.
+//   - Unknown receipt time (zero): freshness cannot be proven. HARD STOP.
+//
+// The returned reason is recorded in the aborted ledger row for forensics.
+func authorizeDispatchAfterReportFailure(receivedAt time.Time, expiresAt time.Time, hasExpiry bool, now time.Time, reportErr error) (bool, string) {
+	if errors.Is(reportErr, ErrStaleClaim) {
+		return false, "claim fence rejected by gateway"
+	}
+	if errors.Is(reportErr, ErrTransitionRejected) {
+		return false, "gateway explicitly rejected the printing transition"
+	}
+	if receivedAt.IsZero() {
+		return false, "delivery receipt time unknown; ownership freshness unprovable"
+	}
+	if hasExpiry && !now.Before(expiresAt) {
+		return false, "job TTL elapsed while held locally"
+	}
+	if now.Sub(receivedAt) >= staleClaimSafetyWindow {
+		return false, "delivery older than the claim-lease window; a reclaim may have completed"
+	}
+	return true, ""
+}
+
+// authorizeDispatchAfterReportFailure is the processJob-facing wrapper that
+// reads the delivery receipt time tracked at dispatch acceptance.
+func (a *Agent) authorizeDispatchAfterReportFailure(jobID, expiresAtStr string, reportErr error) (bool, string) {
+	var expiresAt time.Time
+	hasExpiry := false
+	if expiresAtStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
+			expiresAt, hasExpiry = parsed, true
+		}
+	}
+	return authorizeDispatchAfterReportFailure(a.deliveryReceivedAt(jobID), expiresAt, hasExpiry, time.Now(), reportErr)
+}
+
 func jobClaimToken(job map[string]interface{}) string {
 	if token, ok := job["claimToken"].(string); ok {
 		return token
@@ -889,7 +953,14 @@ func (a *Agent) forgetJob(id string) {
 	a.inFlightMu.Lock()
 	delete(a.inFlight, id)
 	delete(a.inFlightTokens, id)
+	delete(a.inFlightReceived, id)
 	a.inFlightMu.Unlock()
+}
+
+func (a *Agent) deliveryReceivedAt(jobID string) time.Time {
+	a.inFlightMu.Lock()
+	defer a.inFlightMu.Unlock()
+	return a.inFlightReceived[jobID]
 }
 
 // inFlightJobIDs returns up to limit ids of jobs currently held by the
@@ -1530,21 +1601,16 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 
 	// Report printing outside the per-printer lock (network I/O must not
 	// hold mutex) - AND gate physical dispatch on the gateway's answer.
-	// If our claim was superseded (STALE_CLAIM / 409 / 410), another worker
-	// owns this job now: abort the local ledger row and RETURN with zero
-	// bytes transmitted. A transport-level failure (gateway unreachable) is
-	// NOT a fence rejection: the claim cannot have been reassigned without
-	// the gateway, so offline-tolerant printing proceeds and the gateway
-	// sweep will mark the outcome unknown if we never report back.
 	if err := a.updateJobStatus(jobID, "printing", "", claimToken); err != nil {
-		if errors.Is(err, ErrStaleClaim) {
-			log.Printf("Job %s: claim fence rejected by gateway - another attempt owns this job; aborting before any byte is sent", jobID)
-			if aberr := a.queue.AbortPrint(jobID, "fence_rejected: gateway no longer recognizes this claim; zero bytes transmitted"); aberr != nil {
+		if proceed, reason := a.authorizeDispatchAfterReportFailure(jobID, expiresAtStr, err); !proceed {
+			log.Printf("Job %s: physical dispatch refused (%s); aborting before any byte is sent", jobID, reason)
+			if aberr := a.queue.AbortPrint(jobID, "dispatch_refused: "+reason+"; zero bytes transmitted"); aberr != nil {
 				log.Printf("Job %s: failed to abort local ledger row: %v", jobID, aberr)
 			}
 			return
+		} else {
+			log.Printf("Job %s: printing report unacknowledged (%v); ownership still provable, proceeding with ledger-tracked outcome", jobID, err)
 		}
-		log.Printf("Job %s: printing report unacknowledged (%v); proceeding, outcome stays ledger-tracked", jobID, err)
 	}
 
 	// The document budget scales with size: a 5MB payload on a slow thermal
@@ -1613,6 +1679,12 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 // treats it as a HARD STOP before any byte reaches the printer.
 var ErrStaleClaim = errors.New("gateway rejected claim fence: stale or reclaimed token")
 
+// ErrTransitionRejected is returned by updateJobStatus when the gateway
+// answers a status report with an explicit non-fence rejection (any other
+// 4xx/5xx). Unlike a transport error, this IS authoritative: the gateway
+// evaluated our transition and refused it, so physical dispatch must stop.
+var ErrTransitionRejected = errors.New("gateway rejected status transition")
+
 func (a *Agent) updateJobStatus(jobID, status, errMsg, claimToken string) error {
 	reqURL := fmt.Sprintf("%s/api/agent/jobs", a.cfg.Server.URL)
 	body := map[string]interface{}{
@@ -1640,7 +1712,7 @@ func (a *Agent) updateJobStatus(jobID, status, errMsg, claimToken string) error 
 			strings.Contains(string(respBody), "STALE_CLAIM") || strings.Contains(string(respBody), "FENCE_REJECTED") {
 			return fmt.Errorf("%w: job %s status %q rejected (%d)", ErrStaleClaim, jobID, status, resp.StatusCode)
 		}
-		return fmt.Errorf("gateway rejected status update to %q (%d): %s", status, resp.StatusCode, string(respBody))
+		return fmt.Errorf("%w to %q (%d): %s", ErrTransitionRejected, status, resp.StatusCode, string(respBody))
 	}
 	return nil
 }

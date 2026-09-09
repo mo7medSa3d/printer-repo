@@ -4,8 +4,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
+    from odoo import fields
     from odoo.exceptions import ValidationError
 except ImportError:
+    fields = None  # type: ignore
     ValidationError = Exception
 
 try:
@@ -333,3 +335,61 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertEqual(job.status, "submitted")
         self.assertEqual(job.gateway_job_id, "gw_branch_submit_1")
         self.assertEqual(job.company_id, branch)
+
+    def test_status_advance_records_replay_hop_by_hop_without_shortcuts(self):
+        """BEHAVIORAL: an idempotent replay observed beyond 'submitted' must
+        be recorded through every canonical hop (queued->submitted->claimed
+        ->printing->success); a direct queued->success write stays rejected
+        even though the payload is identical. Failure/unknown targets write
+        directly as explicit exits."""
+        if not hasattr(self, "env"):
+            self.skipTest("Odoo runtime environment not available")
+        root_company = self.env.company
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
+        if not config:
+            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+                config = self.env["print_gateway.gateway_config"].create({
+                    "company_id": root_company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                })
+        model = self.env["print_gateway.print_job"]
+        job = model.create({
+            "company_id": root_company.id,
+            "gateway_config_id": config.id,
+            "printer_id": "printer-stepper",
+            "destination": "Stepper Dest",
+            "document_type": "label",
+            "payload": json.dumps({"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_stepper_replay_01",
+        })
+        # The shortcut the old matrix allowed is now rejected outright.
+        with self.assertRaises(ValidationError):
+            job.write({"status": "success"})
+        self.assertEqual(job.status, "queued")
+        # The replay path records every hop; final values land on the row.
+        model._advance_status(job, "success", {
+            "gateway_job_id": "gw_stepper_1",
+            "attempts": 1,
+            "completed_at": fields.Datetime.now(),
+        })
+        self.assertEqual(job.status, "success")
+        self.assertEqual(job.gateway_job_id, "gw_stepper_1")
+        self.assertEqual(job.attempts, 1)
+        # Failure/unknown are direct exits from any non-terminal state.
+        job2 = model.create({
+            "company_id": root_company.id,
+            "gateway_config_id": config.id,
+            "printer_id": "printer-stepper",
+            "destination": "Stepper Dest 2",
+            "document_type": "label",
+            "payload": json.dumps({"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_stepper_replay_02",
+        })
+        model._advance_status(job2, "unknown", {"last_error": "UNKNOWN_SUBMISSION_OUTCOME: x"})
+        self.assertEqual(job2.status, "unknown")
+        # Regressions are refused by the stepper itself, not just write().
+        with self.assertRaises(ValidationError):
+            model._advance_status(job2, "queued", {})
+        with self.assertRaises(ValidationError):
+            model._advance_status(job, "claimed", {})

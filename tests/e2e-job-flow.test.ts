@@ -101,14 +101,16 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect(jobs[0].id).toBe(created.jobId);
     expect(jobs[0].status).toBe("claimed");
     expect(jobs[0].claimToken).toMatch(/.{8,}/);
-    // The poll response itself IS the delivery: claimed rows are stamped
-    // delivered_at so the stale-claim sweep can never silently re-deliver a
-    // job the agent already holds (double-print protection).
-    expect((await jobRow(created.jobId)).delivered_at).not.toBeNull();
+    // claimed != delivered: committing the claim row is not proof the HTTP
+    // response reached the agent, so no delivery evidence is stamped here.
+    expect((await jobRow(created.jobId)).delivered_at).toBeNull();
     const pollPatch = (status: string, token?: string) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status, ...(token ? { claimToken: token } : {}) }) }));
     // Fenced: reporting without the claim token is rejected.
     expect((await pollPatch("printing")).status).toBe(409);
     expect((await pollPatch("printing", jobs[0].claimToken)).status).toBe(200);
+    // The fenced status report proves the agent holds this attempt, so
+    // delivery evidence is stamped now (and only now).
+    expect((await jobRow(created.jobId)).delivered_at).not.toBeNull();
     await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId, claimToken: jobs[0].claimToken }));
     const row = await jobRow(created.jobId);
     expect(row.acked_at).not.toBeNull();

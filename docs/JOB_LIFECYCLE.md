@@ -57,6 +57,33 @@ job.expires_at > now()
 The owner rows are locked at the claim decision point. A lifecycle change is therefore serialized
 with the claim instead of being protected by an in-memory pre-check.
 
+## Cross-path delivery invariants
+
+These hold identically across WebSocket delivery, polling delivery, ACK,
+heartbeats, sweeps and agent reports - verified by
+`tests/ws-claim-delivery.test.ts`, `tests/e2e-job-flow.test.ts`,
+`tests/heartbeat-enabled.test.ts` and `tests/job-status-postgres-concurrency.test.ts`:
+
+* **Claim ownership is token-fenced.** Every claim mints a fresh
+  `claim_token`; every lifecycle UPDATE, delivery-evidence write, release
+  and lease refresh predicates on it inside PostgreSQL. No in-memory
+  comparison is a security boundary.
+* **Delivery evidence is attempt-specific.** `delivered_at`/`acked_at` are
+  stamped only when the agent demonstrably holds that attempt (fenced WS
+  mark, fenced ack, fenced status report) - never by the server committing
+  a claim or a response. Heartbeat keep-alives extend the lease only.
+* **Pre-execution rejection is safely requeueable.** A fenced
+  `claimed -> queued` return (pending_full / agent_shutting_down /
+  ledger_unavailable) clears token, timestamps and claim time, so the row
+  unambiguously means "nothing was physically dispatched".
+* **Delivered-but-silent is never silently auto-reprinted.** It becomes
+  terminal `failed` with an `UNKNOWN_PARTIAL_DELIVERY` marker; only a
+  deliberate operator reprint may re-issue it.
+* **Stale workers cannot physically dispatch after losing ownership.** The
+  gateway rejects their reports at the fence, and the agent hard-stops
+  before `PrintDocument` when its claim is rejected or when ownership
+  freshness is unprovable (transport failure past the lease window).
+
 ## Failure semantics
 
 | Situation | Gateway behaviour | Physical outcome |

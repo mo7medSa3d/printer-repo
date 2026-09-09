@@ -1174,3 +1174,54 @@ class TestControlPlane(TransactionCase):
             intent_model.search([("intent_key", "=", key)]),
             "rolled-back business work must leave no orphan intent",
         )
+
+    def test_04d_deterministic_failures_terminalize_without_retry(self):
+        """Validation/contract failures can never succeed on retry: a
+        corrupted persisted payload and a contract-violating Gateway reply
+        must terminalize immediately (failed, no next_retry_at) instead of
+        burning five backoff attempts on identical bytes."""
+        import requests
+        ConfigClass = type(self.gateway_config)
+
+        corrupted = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Corrupt Dest",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_deterministic_corrupt_key_01",
+            "fallback_binding_id": self.backup_binding.id,
+        })
+        corrupted.write({"payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "!!!not-base64!!!"})})
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post") as mock_post:
+            corrupted.action_submit()
+            mock_post.assert_not_called()
+            self.assertEqual(corrupted.status, "failed")
+            self.assertEqual(corrupted.attempts, 1)
+            self.assertFalse(corrupted.next_retry_at)
+            self.assertEqual(corrupted.printer_id, self.primary_binding.printer_id)
+
+        garbage = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Garbage Dest",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_deterministic_garbage_key_01",
+            "fallback_binding_id": self.backup_binding.id,
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"unexpected": "shape"}
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", return_value=mock_resp):
+            garbage.action_submit()
+            self.assertEqual(garbage.status, "failed")
+            self.assertEqual(garbage.attempts, 1)
+            self.assertFalse(garbage.next_retry_at)
+            self.assertIn("GATEWAY_INVALID_RESPONSE", garbage.last_error or "")

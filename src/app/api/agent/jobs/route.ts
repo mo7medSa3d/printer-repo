@@ -25,8 +25,12 @@ const MAX_ERROR_LENGTH = 2000;
  *
  * A claim whose lease expired AFTER delivery is deliberately absent here: the
  * delivery sweep fails those with an unknown-outcome marker instead, because
- * re-delivering could print a document twice. The poll response itself
- * constitutes delivery, so claimed rows are stamped delivered_at=now().
+ * re-delivering could print a document twice.
+ *
+ * claimed != delivered: the poll claim does NOT stamp delivered_at. Committing
+ * a row is not proof the HTTP response reached the agent; delivery evidence
+ * is stamped only when the agent demonstrably holds the job (WebSocket send +
+ * fenced mark, fenced job_ack, or a fenced status report on the claim).
  */
 export async function GET(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
@@ -116,7 +120,6 @@ export async function GET(req: Request) {
         claimed_at = now(),
         updated_at = now(),
         claim_token = gen_random_uuid()::text,
-        delivered_at = now(),
         acked_at = NULL,
         delivery_attempts = print_jobs.delivery_attempts + 1,
         retries = CASE WHEN print_jobs.status = 'claimed'
@@ -183,7 +186,10 @@ export async function PATCH(req: Request) {
         ? "UNKNOWN_PARTIAL_DELIVERY: job expired after delivery without an execution report"
         : null;
     const expired = await db.update(printJobs)
-      .set({ status: "expired", error: expiryError, updatedAt: new Date() })
+      // Delivery evidence only when the expired row was actually held
+      // (claimed/printing): a queued row that merely timed out was never
+      // possessed by any agent, so stamping it would fabricate evidence.
+      .set({ status: "expired", error: expiryError, updatedAt: new Date(), deliveredAt: sql`CASE WHEN ${printJobs.status} IN ('claimed', 'printing') THEN COALESCE(${printJobs.deliveredAt}, now()) ELSE ${printJobs.deliveredAt} END` })
       .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
       .returning({ status: printJobs.status, error: printJobs.error });
     if (expired.length === 1) {
@@ -202,7 +208,12 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Invalid status transition: claimed -> queued requires an explicit pre-execution rejection reason" }, { status: 409 });
     }
     const updated = await db.update(printJobs)
-      .set({ status: "queued", claimToken: null, error: `Agent returned job before execution (${reason})`, updatedAt: new Date() })
+      // A fenced pre-execution return proves nothing was dispatched, so the
+      // row must carry NO attempt-specific delivery evidence afterwards:
+      // token, delivered_at, acked_at and claimed_at are all cleared. The
+      // resulting state unambiguously means "safe to redeliver" - the next
+      // claim mints a fresh token and the sweep may requeue it.
+      .set({ status: "queued", claimToken: null, deliveredAt: null, ackedAt: null, claimedAt: null, error: `Agent returned job before execution (${reason})`, updatedAt: new Date() })
       .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
       .returning({ status: printJobs.status, error: printJobs.error });
     if (updated.length !== 1) {
@@ -232,11 +243,17 @@ export async function PATCH(req: Request) {
   // inside the UPDATE predicate. A stale worker whose claim was reclaimed
   // (new token) matches zero rows here even if it passed the advisory read
   // above - this is the TOCTOU-proof fence, not the in-memory compare.
+  //
+  // A fenced report on a claimed/printing row also proves the agent holds
+  // this delivery attempt, so delivered_at is stamped (without overwriting
+  // earlier evidence). claimed != delivered: only agent-observed possession
+  // - never the server's own claim commit - creates delivery evidence.
   const updated = await db.update(printJobs)
     .set({
       status: requestedStatus,
       error: nextError,
       updatedAt: new Date(),
+      deliveredAt: sql`COALESCE(${printJobs.deliveredAt}, now())`,
     })
     .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
     .returning({ status: printJobs.status, error: printJobs.error });

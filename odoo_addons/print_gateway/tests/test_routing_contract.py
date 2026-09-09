@@ -359,7 +359,16 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             cr.close()
 
     def test_manual_retry_does_not_reset_in_flight_or_unknown_jobs(self):
-        for status in ("submitted", "claimed", "printing", "unknown"):
+        # Fixture rows walk the canonical chain hop-by-hop (the matrix
+        # forbids shortcuts even in tests): queued -> submitted -> claimed
+        # -> printing, plus a terminal unknown row.
+        chain = {
+            "submitted": ("submitted",),
+            "claimed": ("submitted", "claimed"),
+            "printing": ("submitted", "claimed", "printing"),
+            "unknown": None,
+        }
+        for status, hops in chain.items():
             job_id = self._job("retry-safety-%s" % status)
             cr = self.env.registry.cursor()
             try:
@@ -367,7 +376,11 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 company = env["res.company"].browse(self.durable_company_id).exists()
                 model_env = env["print_gateway.print_job"].with_company(company).env
                 job = model_env["print_gateway.print_job"].browse(job_id).exists()
-                job.write({"status": status})
+                if hops is None:
+                    job.write({"status": "unknown", "next_retry_at": False})
+                else:
+                    for hop in hops:
+                        job.write({"status": hop})
                 job.action_retry()
                 self.assertEqual(job.status, status)
             finally:
@@ -465,3 +478,42 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 )
             finally:
                 cr.close()
+
+    def test_force_reprint_does_not_consume_sequence_on_failed_create(self):
+        job_id = self._job("reprint-sequence-safety")
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
+            job.write({"status": "unknown", "next_retry_at": False})
+            self.assertEqual(job.reprint_attempt_count, 0)
+
+            real_create = type(job).create_operation
+            calls = {"n": 0}
+
+            def flaky_create(model_self, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ValidationError("simulated creation failure")
+                return real_create(model_self, **kwargs)
+
+            with patch.object(type(job), "create_operation", autospec=True, side_effect=flaky_create):
+                with self.assertRaises(ValidationError):
+                    job.action_force_reprint()
+            job.invalidate_recordset()
+            self.assertEqual(job.reprint_attempt_count, 0)
+            self.assertFalse(model_env["print_gateway.print_job"].search([
+                ("idempotency_key", "like", "%s-reprint-%%" % job.idempotency_key),
+            ]))
+
+            with patch.object(type(job), "action_submit", autospec=True, return_value=True):
+                job.action_force_reprint()
+            self.assertEqual(job.reprint_attempt_count, 1)
+            derived = model_env["print_gateway.print_job"].search([
+                ("idempotency_key", "=", "%s-reprint-1" % job.idempotency_key),
+            ])
+            self.assertEqual(len(derived), 1)
+        finally:
+            cr.close()

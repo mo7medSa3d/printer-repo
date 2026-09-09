@@ -99,8 +99,13 @@ is written. "Sent" is therefore never confused with "executed".
 * When the socket is down, the agent polls `GET /api/agent/jobs` every 10 s.
 * While the socket is up, the agent still polls every third tick (~30 s) as a safety net for a lost
   WebSocket delivery.
-* A poll claim IS a delivery: the claimed rows are stamped `delivered_at` in
-  the same transaction, because the response carries the payload bytes.
+* **claimed != delivered:** a poll claim does NOT stamp `delivered_at`.
+  Committing the claim row is not proof the HTTP response reached the agent;
+  delivery evidence is stamped only when the agent demonstrably holds the
+  attempt: WebSocket send + fenced mark, fenced `job_ack`, or a fenced
+  status report (`PATCH`) on the claim. A lost poll response therefore
+  recovers via requeue (safe: no execution report can exist yet), never via
+  a fabricated delivery stamp.
 * **Delivery lease:** a silent `claimed` job with NO delivery evidence
   (`delivered_at`/`acked_at` both NULL) may be reclaimed under a fresh claim
   token after `STALE_CLAIM_SECONDS` (90 s). A silent `claimed` job WITH

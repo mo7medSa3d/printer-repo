@@ -92,6 +92,20 @@ suite("WS claim-before-delivery", () => {
     expect((await jobRow("job_ack")).status).toBe("claimed");
   });
 
+  it("a forged ack cannot stamp delivery evidence onto a live claim", async () => {
+    await insertQueuedJob(f, "job_ack_forged");
+    const claim = await claimJobForDelivery("job_ack_forged", f.agentId);
+    expect(claim!.claimToken).toBeTruthy();
+    expect(await recordJobAck("job_ack_forged", f.agentId, "forged-token")).toBe(false);
+    expect(await recordJobAck("job_ack_forged", f.agentId)).toBe(false);
+    const row = await jobRow("job_ack_forged");
+    expect(row.acked_at).toBeNull();
+    expect(row.delivered_at).toBeNull();
+    expect(row.status).toBe("claimed");
+    expect(await recordJobAck("job_ack_forged", f.agentId, claim!.claimToken)).toBe(true);
+    expect((await jobRow("job_ack_forged")).acked_at).not.toBeNull();
+  });
+
   it("late ACK cannot mutate terminal delivery bookkeeping", async () => {
     await insertQueuedJob(f, "job_late_ack");
     const lateClaim = await claimJobForDelivery("job_late_ack", f.agentId);
@@ -155,6 +169,64 @@ suite("WS claim-before-delivery", () => {
     const row = await jobRow("job_t3c");
     expect(row.status).toBe("failed");
     expect(row.error).toContain("delivery attempts");
+  });
+
+  it("lost poll response recovers safely with no false delivery evidence", async () => {
+    // Failure injection: the poll claim commits, but the HTTP response
+    // never reaches the agent (connection dies mid-response). claimed !=
+    // delivered, so the sweep must REQUEUE (safe: provably no execution
+    // report exists) rather than fail the job as unknown - and a later
+    // poll must reclaim it under a fresh token with still no delivered_at.
+    await insertQueuedJob(f, "job_lost_poll");
+    const first = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    const lost = first.find((r: any) => r.id === "job_lost_poll");
+    expect(lost).toBeDefined();
+    expect(lost.status).toBe("claimed");
+    expect(lost.claimToken).toBeTruthy();
+    // ... the response is lost here: the agent never sees it ...
+    let row = await jobRow("job_lost_poll");
+    expect(row.delivered_at).toBeNull();
+    expect(row.acked_at).toBeNull();
+    await pool().query(`UPDATE print_jobs SET claimed_at = now() - interval '200 seconds', updated_at = now() - interval '200 seconds' WHERE id = 'job_lost_poll'`);
+    const swept = await sweepPrintJobs({ agentId: f.agentId });
+    expect(swept.requeuedClaims).toBeGreaterThanOrEqual(1);
+    expect(swept.silentDeliveries).toBe(0);
+    row = await jobRow("job_lost_poll");
+    expect(row.status).toBe("queued");
+    expect(row.delivered_at).toBeNull();
+    expect((row.error as string | null) ?? "").not.toMatch(/UNKNOWN_PARTIAL_DELIVERY/);
+    const second = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    const reclaimed = second.find((r: any) => r.id === "job_lost_poll");
+    expect(reclaimed).toBeDefined();
+    expect(reclaimed.claimToken).toBeTruthy();
+    expect(reclaimed.claimToken).not.toBe(lost.claimToken);
+    expect((await jobRow("job_lost_poll")).delivered_at).toBeNull();
+  });
+
+  it("pre-execution rejection clears all attempt delivery evidence", async () => {
+    // A WS-delivered claim returned via pending_full must come back with
+    // NO surviving attempt evidence (token, delivered_at, acked_at,
+    // claimed_at): the row must unambiguously mean "safe to redeliver,
+    // nothing was physically dispatched" - and must actually be
+    // reclaimable afterwards under a fresh token.
+    await insertQueuedJob(f, "job_reject_evidence");
+    const claim = await claimJobForDelivery("job_reject_evidence", f.agentId);
+    await realMarkJobDelivered("job_reject_evidence", f.agentId, claim!.claimToken);
+    await pool().query(`UPDATE print_jobs SET acked_at = now() WHERE id = 'job_reject_evidence'`);
+    const res = await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_reject_evidence", status: "queued", reason: "pending_full", claimToken: claim!.claimToken,
+    }));
+    expect(res.status).toBe(200);
+    const row = await jobRow("job_reject_evidence");
+    expect(row.status).toBe("queued");
+    expect(row.claim_token).toBeNull();
+    expect(row.delivered_at).toBeNull();
+    expect(row.acked_at).toBeNull();
+    expect(row.claimed_at).toBeNull();
+    const next = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    const reclaimed = next.find((r: any) => r.id === "job_reject_evidence");
+    expect(reclaimed).toBeDefined();
+    expect(reclaimed.claimToken).toBeTruthy();
   });
 
   it("stale claimed job is reclaimed by the poll path", async () => {

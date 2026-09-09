@@ -85,15 +85,76 @@ class PrintGatewayJob(models.Model):
     _TERMINAL = frozenset(("success", "failed", "partial", "unknown"))
 
     _VALID_TRANSITIONS = {
-        "queued": {"queued", "submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
-        "submitted": {"submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
-        "claimed": {"claimed", "printing", "success", "failed", "partial", "unknown"},
-        "printing": {"printing", "success", "failed", "partial", "unknown"},
+        # Canonical happy path: queued -> submitted -> claimed -> printing
+        # -> success, exactly one hop at a time. Forward progress NEVER
+        # skips a stage (an idempotent replay observed beyond 'submitted' is
+        # recorded hop-by-hop via _advance_status, so no writer needs a
+        # shortcut). Failure/unknown are explicitly valid exits from any
+        # non-terminal state; nothing leaves a terminal state (self-loops
+        # only, and 'partial' accepts no inbound writes at all - the
+        # Gateway sync never produces it).
+        "queued": {"submitted", "failed", "unknown"},
+        "submitted": {"claimed", "failed", "unknown"},
+        "claimed": {"printing", "failed", "unknown"},
+        "printing": {"success", "failed", "unknown"},
         "success": {"success"},
         "failed": {"failed"},
         "partial": {"partial"},
         "unknown": {"unknown"},
     }
+
+    # Forward-progress chain for _advance_status. Failure/unknown are NOT
+    # chain hops: they are written directly (they are valid exits from any
+    # non-terminal state per the matrix above).
+    _FORWARD_CHAIN = ("queued", "submitted", "claimed", "printing", "success")
+
+    def _advance_status(self, job, target, values):
+        """Write a status advance honoring the canonical chain.
+
+        `values` carries the final row content (gateway_job_id, attempts,
+        last_error, completed_at...); its "status" key is ignored in favor
+        of `target`. Forward hops (e.g. queued -> claimed on an idempotent
+        replay) are written stage-by-stage so the transition matrix never
+        needs a shortcut; failure/unknown targets are written directly.
+        Raises ValidationError for any regression or unknown target.
+        """
+        job.ensure_one()
+        if target not in self._FORWARD_CHAIN and target not in ("failed", "unknown"):
+            raise ValidationError(
+                _("Invalid print job state transition from '%s' to '%s'.")
+                % (job.status, target)
+            )
+        if target == job.status:
+            # Refresh-only write (e.g. a sync updating last_error while the
+            # state is unchanged): write() skips the matrix on no-op
+            # transitions, so this is always legal.
+            refresh_values = dict(values)
+            refresh_values["status"] = target
+            job.write(refresh_values)
+            return
+        if target in ("failed", "unknown"):
+            terminal_values = dict(values)
+            terminal_values["status"] = target
+            job.write(terminal_values)
+            return
+        try:
+            position = self._FORWARD_CHAIN.index(job.status)
+            destination = self._FORWARD_CHAIN.index(target)
+        except ValueError:
+            raise ValidationError(
+                _("Invalid print job state transition from '%s' to '%s'.")
+                % (job.status, target)
+            )
+        if destination < position:
+            raise ValidationError(
+                _("Invalid print job state transition from '%s' to '%s'.")
+                % (job.status, target)
+            )
+        for hop in self._FORWARD_CHAIN[position + 1:destination + 1]:
+            hop_values = {"status": hop}
+            if hop == target:
+                hop_values.update({key: value for key, value in values.items() if key != "status"})
+            job.write(hop_values)
 
     # Payload kinds recognized in the canonical contract. A payload whose
     # type is not one of these is malformed input and must fail - it is
@@ -559,6 +620,37 @@ class PrintGatewayJob(models.Model):
                     stack.append(arg)
         return False
 
+    @api.model
+    def _is_deterministic_failure(self, exc):
+        """True when retrying can NEVER succeed: validation/programming
+        failures, not transport failures.
+
+        - Odoo ValidationError: our own persisted payload failed strict
+          validation (corrupted/stale row) - resubmitting identical bytes
+          fails identically.
+        - GATEWAY_INVALID_RESPONSE: the Gateway answered 200 with a body
+          that violates its own contract (no job id / unparsable JSON) -
+          a gateway-side bug, not a transport blip.
+        - requests URL/config errors (MissingSchema/InvalidSchema/
+          InvalidURL/InvalidHeader): broken Gateway configuration, not a
+          network condition.
+
+        Everything else (HTTP 5xx, chunked/stream errors, ambiguous
+        timeouts) stays on the retry path: the durable idempotency key
+        makes a replay safe.
+        """
+        if isinstance(exc, ValidationError):
+            return True
+        message = str(exc)[:120]
+        if "GATEWAY_INVALID_RESPONSE" in message:
+            return True
+        return type(exc).__name__ in (
+            "MissingSchema",
+            "InvalidSchema",
+            "InvalidURL",
+            "InvalidHeader",
+        )
+
     def _record_ambiguous_submission(self, job, exc, detail, raise_on_failure=False):
         """Terminalize a submission whose outcome cannot be proven.
 
@@ -763,12 +855,15 @@ class PrintGatewayJob(models.Model):
                         remote_status = "submitted"
                     values = {
                         "gateway_job_id": str(remote_id),
-                        "status": "submitted" if remote_status == "queued" else remote_status,
                         "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
                     }
                     if remote_status == "failed" and remote_error:
                         values["last_error"] = str(remote_error)[:4000]
-                    job.write(values)
+                    # An idempotent replay may report the job beyond
+                    # 'submitted' (claimed/printing/success at the Gateway).
+                    # Record it hop-by-hop through the canonical chain rather
+                    # than jumping queued -> success in one privileged write.
+                    self._advance_status(job, "submitted" if remote_status == "queued" else remote_status, values)
                     job._post_source_audit(_("Print Job #%s queued to Gateway for '%s'") % (remote_id or job.id, job.printer_id))
                     break  # Success
                 except requests.exceptions.Timeout as exc:
@@ -832,6 +927,26 @@ class PrintGatewayJob(models.Model):
                         raise ValidationError(_("Gateway request failed: %s") % str(exc)[:500]) from exc
                     break
                 except (ValueError, RuntimeError, ValidationError) as exc:
+                    if self._is_deterministic_failure(exc):
+                        # Programming/validation failures (corrupted
+                        # persisted payload, gateway contract violation,
+                        # broken gateway URL) can never succeed on retry:
+                        # terminalize immediately instead of burning five
+                        # backoff attempts on identical bytes.
+                        values = {
+                            "status": "failed", "attempts": job.attempts + 1,
+                            "last_error": str(exc)[:4000],
+                            "next_retry_at": False,
+                            "completed_at": fields.Datetime.now(),
+                        }
+                        if raise_on_failure:
+                            job._persist_state(values)
+                        else:
+                            job.write(values)
+                        _logger.warning("Gateway submission failed deterministically for job %s: %s", job.idempotency_key[:8], str(exc)[:300])
+                        if raise_on_failure:
+                            raise ValidationError(_("Gateway submission failed: %s") % str(exc)[:500]) from exc
+                        break
                     next_attempt = job.attempts + 1
                     terminal = next_attempt >= 5
                     values = {
@@ -905,7 +1020,11 @@ class PrintGatewayJob(models.Model):
                         status = "failed"
                         if not body.get("error"):
                             body["error"] = "GATEWAY_JOB_EXPIRED: The Gateway no longer holds the job (never claimed within its release window); nothing reached the agent"
-                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown", "partial"}:
+                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
+                    # The Gateway contract only ever emits these six (its own
+                    # CHECK-backed enum); anything else - including a "partial"
+                    # the Gateway cannot produce - is rejected without
+                    # touching the row.
                     failed_count += 1
                     continue
                 err_msg = body.get("error") or False
@@ -923,10 +1042,14 @@ class PrintGatewayJob(models.Model):
                     # produces it: every ambiguous Gateway outcome is
                     # 'unknown'.)
                     status = "unknown"
-                values = {"status": status, "last_error": err_msg}
+                values = {"last_error": err_msg}
                 if status in self._TERMINAL:
                     values["completed_at"] = fields.Datetime.now()
-                job.write(values)
+                # Recorded hop-by-hop through the canonical chain: a sync
+                # observing e.g. submitted -> success writes submitted ->
+                # claimed -> printing -> success rather than jumping, so the
+                # transition matrix needs no privileged shortcut.
+                self._advance_status(job, status, values)
                 synced_count += 1
                 if status == "success":
                     job._post_source_audit(_("Print Job #%s completed by Gateway agent on '%s'") % (job.gateway_job_id or job.id, job.printer_id))
@@ -1032,7 +1155,6 @@ class PrintGatewayJob(models.Model):
         reprinted_jobs = self.env["print_gateway.print_job"]
         for job in reprint_candidates:
             new_count = (job.reprint_attempt_count or 0) + 1
-            job.write({"reprint_attempt_count": new_count})
             derived_key = "%s-reprint-%d" % (job.idempotency_key, new_count)
             _logger.info(
                 "Force reprint requested for print job %s (attempt %d, derived key: %s)",
@@ -1055,6 +1177,13 @@ class PrintGatewayJob(models.Model):
                 report=job.report_id,
                 idempotency_key=derived_key,
             )
+            # The sequence number is consumed ONLY once the new operation
+            # exists: a failed creation (validation/conflict) must not burn
+            # a number, or the next attempt would skip a key and gap the
+            # audit trail. Concurrent operators computing the same number
+            # collapse onto the unique idempotency key instead of printing
+            # twice.
+            job.write({"reprint_attempt_count": new_count})
             retry.action_submit()
             reprinted_jobs |= retry
         return {

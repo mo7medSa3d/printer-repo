@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -591,4 +592,116 @@ func TestKeepAliveEchoesClaimTokens(t *testing.T) {
 	close(release)
 	ag.waitForJobs()
 	assertNoInFlight(t, ag)
+}
+
+func TestAuthorizeDispatchAfterReportFailure(t *testing.T) {
+	now := time.Now()
+	transportErr := errors.New("connection refused")
+	cases := []struct {
+		name      string
+		received  time.Time
+		expires   time.Time
+		hasExpiry bool
+		err       error
+		want      bool
+	}{
+		{"fence rejection never proceeds", now, time.Time{}, false, ErrStaleClaim, false},
+		{"explicit gateway rejection never proceeds", now, time.Time{}, false, ErrTransitionRejected, false},
+		{"nil error proceeds (defensive: gate only runs on error)", now, time.Time{}, false, nil, true},
+		{"transport failure with fresh receipt proceeds", now.Add(-10 * time.Second), time.Time{}, false, transportErr, true},
+		{"transport failure with stale receipt refuses", now.Add(-time.Hour), time.Time{}, false, transportErr, false},
+		{"transport failure with unknown receipt refuses", time.Time{}, time.Time{}, false, transportErr, false},
+		{"transport failure past TTL refuses even when fresh", now.Add(-time.Second), now.Add(-time.Second), true, transportErr, false},
+		{"transport failure before TTL proceeds when fresh", now.Add(-time.Second), now.Add(time.Hour), true, transportErr, true},
+		{"boundary: exactly at the window refuses", now.Add(-staleClaimSafetyWindow), time.Time{}, false, transportErr, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := authorizeDispatchAfterReportFailure(tc.received, tc.expires, tc.hasExpiry, now, tc.err)
+			if got != tc.want {
+				t.Fatalf("proceed = %v, want %v (reason: %s)", got, tc.want, reason)
+			}
+			if got == tc.want && !got && reason == "" {
+				t.Fatalf("refusals must carry a forensic reason")
+			}
+		})
+	}
+}
+
+func TestStaleTransportFailureHaltsBeforeHardware(t *testing.T) {
+	// Gateway unreachable AND the delivery is older than the claim-lease
+	// window: a reclaim may already have completed, so the stale attempt
+	// must not touch the printer even though the failure is "only" a
+	// transport error.
+	server := newStatusTestServer(t)
+	defer server.Close()
+	cfg := &config.Config{}
+	cfg.Agent.ID = "agt_test"
+	cfg.Agent.Secret = "secret"
+	cfg.Server.URL = "http://127.0.0.1:1"
+	tmpDir := t.TempDir()
+	ag, err := New(cfg, filepath.Join(tmpDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = ag.Close() }()
+	p := &fakePrinter{}
+	ag.printers = map[string]printer.Printer{"p1": p}
+	ag.printerConfigs = map[string]config.PrinterConfig{"p1": {ID: "p1", Name: "T", Type: "network", Protocol: "raw", Endpoint: "127.0.0.1:9100"}}
+	jobID := "job-stale-transport"
+	// Simulate a delivery accepted long ago: dispatch acceptance stamped
+	// the receipt time, then the gateway went dark.
+	ag.inFlightMu.Lock()
+	ag.inFlight[jobID] = struct{}{}
+	ag.inFlightTokens[jobID] = "tok-old-1"
+	ag.inFlightReceived[jobID] = time.Now().Add(-time.Hour)
+	ag.inFlightMu.Unlock()
+	ag.processJob(context.Background(), map[string]interface{}{
+		"id":         jobID,
+		"printerId":  "p1",
+		"payload":    makeJobPayload(jobID),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "tok-old-1",
+	})
+	if p.calls != 0 {
+		t.Fatalf("stale attempt with unreachable gateway must print nothing, got %d calls", p.calls)
+	}
+	_, status, found, err := ag.queue.Get(jobID)
+	if err != nil || !found {
+		t.Fatalf("expected an aborted ledger row, found=%v err=%v", found, err)
+	}
+	if status == "printing" || status == "success" {
+		t.Fatalf("aborted attempt must not be left in %q", status)
+	}
+}
+
+func TestFreshTransportFailureStillPrints(t *testing.T) {
+	// The mirror case: gateway unreachable but the delivery is seconds old,
+	// so no reclaim could have completed. Offline-tolerant printing is
+	// preserved: the job prints and the ledger tracks it.
+	cfg := &config.Config{}
+	cfg.Agent.ID = "agt_test"
+	cfg.Agent.Secret = "secret"
+	cfg.Server.URL = "http://127.0.0.1:1"
+	tmpDir := t.TempDir()
+	ag, err := New(cfg, filepath.Join(tmpDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = ag.Close() }()
+	p := &fakePrinter{}
+	ag.printers = map[string]printer.Printer{"p1": p}
+	ag.printerConfigs = map[string]config.PrinterConfig{"p1": {ID: "p1", Name: "T", Type: "network", Protocol: "raw", Endpoint: "127.0.0.1:9100"}}
+	jobID := "job-fresh-transport"
+	ag.dispatchJob(context.Background(), map[string]interface{}{
+		"id":         jobID,
+		"printerId":  "p1",
+		"payload":    makeJobPayload(jobID),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "tok-fresh-1",
+	})
+	ag.waitForJobs()
+	if p.calls != 1 {
+		t.Fatalf("fresh delivery with unreachable gateway must still print once, got %d calls", p.calls)
+	}
 }
