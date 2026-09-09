@@ -214,27 +214,32 @@ jobs:
       - name: Assert the Odoo addon tests actually ran and passed
         run: |
           set -euo pipefail
-          # unittest prints "Ran N tests in ...s" exactly once when the suite
-          # executed. Missing summary or zero tests = vacuous green.
-          ran_line="$(grep -E 'Ran [0-9]+ tests' /tmp/odoo19_test.log | tail -1 || true)"
-          if [ -z "$ran_line" ]; then
-            echo 'ERROR: no unittest summary found - the Odoo test suite did not run.'
-            tail -50 /tmp/odoo19_test.log || true
+          # Odoo 19 reports its suite as two log lines (NOT unittest's
+          # "Ran N tests" format):
+          #   odoo.tests.stats:  print_gateway: 92 tests ...
+          #   odoo.tests.result: 0 failed, 0 error(s) of 80 tests ...
+          # A tag/import regression that collects ZERO tests still exits 0,
+          # so both lines are asserted here. Missing lines or any nonzero
+          # failure/error/skip count = vacuous or broken green.
+          stats_line="$(grep -E 'odoo\.tests\.stats: +print_gateway: +[0-9]+ tests' /tmp/odoo19_test.log | tail -1 || true)"
+          result_line="$(grep -E 'odoo\.tests\.result: ' /tmp/odoo19_test.log | tail -1 || true)"
+          if [ -z "$stats_line" ] || [ -z "$result_line" ]; then
+            echo 'ERROR: Odoo test summary lines missing - the suite did not run to completion.'
+            tail -30 /tmp/odoo19_test.log || true
             exit 1
           fi
-          count="$(echo "$ran_line" | grep -oE '[0-9]+' | head -1)"
-          echo "$ran_line"
-          if [ "$count" -lt 20 ]; then
-            echo "ERROR: only $count Odoo tests ran; expected the full print_gateway suite (>=20)."
+          echo "$stats_line"
+          echo "$result_line"
+          collected="$(echo "$stats_line" | grep -oE '[0-9]+ tests' | grep -oE '[0-9]+')"
+          if [ "$collected" -lt 80 ]; then
+            echo "ERROR: only $collected Odoo tests collected; expected the full print_gateway suite (>=80)."
             exit 1
           fi
-          # A skip that never runs the production assertion is a silent
-          # coverage hole: unittest prints OK (skipped=N) and exits 0.
-          if grep -Eo 'skipped=[0-9]+' /tmp/odoo19_test.log | grep -Ev 'skipped=0$'; then
+          if ! grep -Eq 'odoo\.tests\.result: 0 failed, 0 error\(s\)' /tmp/odoo19_test.log; then
+            echo 'ERROR: Odoo test suite reported failures or errors.'
+            exit 1
+          fi
+          if grep -Eo 'odoo\.tests\.result:.*[1-9][0-9]* skipped' /tmp/odoo19_test.log; then
             echo 'ERROR: the Odoo suite skipped tests; required production tests must not silently disappear.'
-            exit 1
-          fi
-          if grep -E '^(FAILED|CRITICAL)' /tmp/odoo19_test.log; then
-            echo 'ERROR: Odoo test suite reported failures.'
             exit 1
           fi
