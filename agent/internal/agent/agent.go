@@ -836,15 +836,21 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 	if _, dup := a.inFlight[jobID]; dup {
 		// A redelivery of a job this agent is ALREADY executing (the exact
 		// shape of a gateway reclaim after a lost delivery-evidence write):
-		// never print it a second time, but ADOPT the newer claim token.
-		// Otherwise the keep-alive heartbeats and the eventual terminal
-		// report would stay bound to the superseded attempt's token, the
-		// gateway would fence-reject them as stale, and a physically real
-		// result would strand as an unknown outcome. (The maps are first
-		// initialized by the normal registration below; a duplicate can only
-		// follow a successful registration, so they already exist here.)
+		// never print it a second time, but ADOPT the newer claim token and
+		// its delivery timestamp. Otherwise the keep-alive heartbeats and the
+		// eventual terminal report would stay bound to the superseded
+		// attempt's token, the gateway would fence-reject them as stale, and
+		// a physically real result would strand as an unknown outcome; and
+		// authorizeDispatchAfterReportFailure would judge the freshness
+		// window against the OLD envelope's arrival instead of the hand-off
+		// this agent just accepted. (The maps are first initialized by the
+		// normal registration below; a duplicate can only follow a
+		// successful registration, so they already exist here.)
 		if tok := jobClaimToken(job); tok != "" && a.inFlightTokens != nil {
 			a.inFlightTokens[jobID] = tok
+			if a.inFlightReceived != nil {
+				a.inFlightReceived[jobID] = time.Now()
+			}
 		}
 		a.inFlightMu.Unlock()
 		log.Printf("Job %s is already in flight; duplicate delivery ignored (latest claim token adopted).", jobID)

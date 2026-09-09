@@ -556,6 +556,38 @@ suite("WS claim-before-delivery", () => {
     expect(rows.find((r: any) => r.id === "job_ceiling_other")).toBeTruthy();
   });
 
+  it("a ceiling-exhausted stale claim terminates via requeue then expiry, never stuck invisible", async () => {
+    // PHASE 4 lifecycle proof: delivery_attempts >= MAX with retries < MAX
+    // must not strand. The sweep requeues the provably-undelivered claim,
+    // both claim boundaries then refuse it (ceiling), and TTL expiry drives
+    // it to a terminal outcome with no fabricated evidence.
+    await insertQueuedJob(f, "job_ceiling_lifecycle");
+    const claim = await claimJobForDelivery("job_ceiling_lifecycle", f.agentId);
+    expect(claim).not.toBeNull();
+    await pool().query(
+      `UPDATE print_jobs SET delivery_attempts = ${MAX_DELIVERY_ATTEMPTS}, retries = 0, updated_at = now() - interval '2 minutes' WHERE id = 'job_ceiling_lifecycle'`,
+    );
+    await sweepPrintJobs({ agentId: f.agentId });
+    let row = await jobRow("job_ceiling_lifecycle");
+    expect(row.status).toBe("queued"); // T8 requeued the stale no-evidence claim
+    expect(row.claim_token).toBeNull();
+    expect(Number(row.delivery_attempts)).toBe(MAX_DELIVERY_ATTEMPTS);
+
+    expect(await claimJobForDelivery("job_ceiling_lifecycle", f.agentId)).toBeNull();
+    const poll = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    expect(poll.find((r: any) => r.id === "job_ceiling_lifecycle")).toBeUndefined();
+    row = await jobRow("job_ceiling_lifecycle");
+    expect(row.status).toBe("queued"); // never reclaimed
+
+    // TTL expiry makes the fate explicit and terminal.
+    await pool().query(`UPDATE print_jobs SET expires_at = now() - interval '1 second' WHERE id = 'job_ceiling_lifecycle'`);
+    await sweepPrintJobs();
+    row = await jobRow("job_ceiling_lifecycle");
+    expect(row.status).toBe("expired");
+    expect(row.delivered_at).toBeNull(); // no evidence existed, none fabricated
+    expect(row.error).toBeNull(); // unheld claim: not_printed derivation is honest
+  });
+
   it("WebSocket claim refuses at the ceiling and leaves the row untouched", async () => {
     // FIX-3 ceiling enforcement proof for the WS boundary (the contract
     // documented in job-delivery.ts): a job whose hand-off budget is spent

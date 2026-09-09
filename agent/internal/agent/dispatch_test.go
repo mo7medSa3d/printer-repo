@@ -78,12 +78,21 @@ func TestRedeliveryAdoptsLiveClaimTokenForReports(t *testing.T) {
 
 	second := dispatchTestJob("reclaim_token_race", "p1")
 	second["claimToken"] = "tok-B"
+	receivedBefore := ag.deliveryReceivedAt("reclaim_token_race")
+	time.Sleep(5 * time.Millisecond)
 	ag.dispatchJob(context.Background(), second)
 
 	// Bookkeeping must have adopted the live token for keep-alives.
 	pairs := ag.inFlightJobIDs(64)
 	if len(pairs) != 1 || pairs[0]["jobId"] != "reclaim_token_race" || pairs[0]["claimToken"] != "tok-B" {
 		t.Fatalf("duplicate delivery must adopt the live claim token, got %v", pairs)
+	}
+	// And the delivery-received timestamp must move to the hand-off THIS
+	// agent actually accepted last: the stale-claim safety window in
+	// authorizeDispatchAfterReportFailure is judged against the CURRENT
+	// envelope, not the superseded one.
+	if received := ag.deliveryReceivedAt("reclaim_token_race"); !received.After(receivedBefore) {
+		t.Fatalf("redelivery must refresh the delivery-received timestamp (before=%v after=%v)", receivedBefore, received)
 	}
 
 	close(p.blocked)

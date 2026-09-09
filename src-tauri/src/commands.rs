@@ -716,27 +716,44 @@ pub async fn get_autostart(app: tauri::AppHandle) -> Result<AutostartStatus, Str
     .await
 }
 
+/// Record that the user has explicitly chosen an autostart state, so the
+/// first-launch default (main.rs) never overrides it again. MUST fail loudly
+/// when the record cannot be persisted: a silently swallowed write failure
+/// would make the next launch treat the user as "never chose" and re-apply
+/// the default-enable - silently reversing an explicit DISABLE.
+fn record_autostart_choice(marker: &Path) -> Result<(), String> {
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create marker dir {}: {e}", parent.display()))?;
+    }
+    std::fs::write(marker, "1").map_err(|e| format!("write marker {}: {e}", marker.display()))
+}
+
 #[tauri::command]
 pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<String, String> {
     run_blocking(move || {
         #[cfg(windows)]
         {
             use tauri_plugin_autostart::ManagerExt;
-            let result = if enabled {
+            let state = if enabled {
                 app.autolaunch().enable().map_err(|e| format!("enable autostart: {}", e))?;
-                Ok("autostart enabled".into())
+                "autostart enabled"
             } else {
                 app.autolaunch().disable().map_err(|e| format!("disable autostart: {}", e))?;
-                Ok("autostart disabled".into())
+                "autostart disabled"
             };
             // Record that the user has explicitly chosen autostart so the
             // app never re-enables it on a later start (see setup in main.rs).
             let touched = paths::manager_data_root().join("autostart-user-choice");
-            if let Some(parent) = touched.parent() {
-                let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = record_autostart_choice(&touched) {
+                // The registry change happened, but without the choice
+                // record the next launch would silently re-apply the
+                // default. Surface the divergence instead of reporting a
+                // clean success the system cannot keep.
+                return Err(format!(
+                    "{state} applied, but the user-choice record could not be persisted ({e}); the first-launch default may override it on the next start - retry from Settings"
+                ));
             }
-            let _ = std::fs::write(&touched, "1");
-            result
+            Ok(state.to_string())
         }
         #[cfg(not(windows))]
         {
@@ -745,4 +762,34 @@ pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<Strin
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod autostart_choice_tests {
+    use super::record_autostart_choice;
+
+    #[test]
+    fn successful_choice_record_persists_the_marker() {
+        let dir = std::env::temp_dir().join(format!("odoo-choice-ok-{}", std::process::id()));
+        let marker = dir.join("nested").join("autostart-user-choice");
+        let _ = std::fs::remove_dir_all(&dir);
+        record_autostart_choice(&marker).expect("marker must persist");
+        assert!(marker.exists(), "explicit user choice must be durably recorded");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persistence_failure_is_propagated_not_swallowed() {
+        // THE regression: the command previously did `let _ = fs::write(...)`
+        // - a failed choice record silently left the next launch to re-apply
+        // the default-enable, reversing an explicit user DISABLE. Here the
+        // marker path is a DIRECTORY, so any write to it must fail loudly.
+        let dir = std::env::temp_dir().join(format!("odoo-choice-fail-{}", std::process::id()));
+        let marker = dir.join("autostart-user-choice");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&marker).unwrap();
+        let err = record_autostart_choice(&marker).expect_err("write onto a directory must surface an error");
+        assert!(err.contains("write marker"), "error must identify the failed persistence: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

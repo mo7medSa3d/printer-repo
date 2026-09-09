@@ -98,12 +98,6 @@ jobs:
         working-directory: agent
         shell: pwsh
         run: go test -count=1 -race -p 2 ./...
-      - name: Rust unit tests (desktop)
-        shell: pwsh
-        run: |
-          Push-Location src-tauri
-          cargo test --locked
-          Pop-Location
       - name: Build Go Agent
         working-directory: agent
         shell: pwsh
@@ -135,6 +129,12 @@ jobs:
           Write-Host "All $($icons.Count) configured icons are present."
       - name: Build desktop frontend
         run: npm run desktop:vite:build
+      - name: Rust unit tests (desktop)
+        shell: pwsh
+        run: |
+          Push-Location src-tauri
+          cargo test --locked
+          Pop-Location
       - name: Build Tauri Windows installer (MSI + NSIS EXE)
         shell: pwsh
         run: |
