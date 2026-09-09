@@ -371,6 +371,9 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                         idempotency_key="test_branch_submit_key_01",
                     )
                 self.assertTrue(res.get("gateway_enabled"))
+                # route_raw_command committed the job on an independent transaction.
+                # Refresh exec_cr snapshot to observe the newly committed print job.
+                exec_cr.rollback()
                 job = exec_env["print_gateway.print_job"].browse(res["job_id"])
                 self.assertTrue(job.exists())
                 self.assertEqual(job.status, "submitted")

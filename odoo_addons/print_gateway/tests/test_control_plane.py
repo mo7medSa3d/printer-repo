@@ -1328,7 +1328,10 @@ class TestControlPlane(TransactionCase):
         test_companies = [self.company.id, self.branch.id, sibling_branch.id, other_company.id]
         self.env = self.env(context=dict(self.env.context, allowed_company_ids=test_companies))
 
+        pri_counter = [50]
+
         def _binding(company, branch, printer, protocol="escpos"):
+            pri_counter[0] += 1
             agent_id = "agent-cp-01" if branch == self.branch else ("agent-scope-%s" % printer)
             return self.env["print_gateway.binding"].create({
                 "company_id": company.id,
@@ -1340,7 +1343,7 @@ class TestControlPlane(TransactionCase):
                 "printer_id": printer,
                 "printer_protocol": protocol,
                 "enabled": True,
-                "priority": 10,
+                "priority": pri_counter[0],
             })
 
         branch_binding = _binding(self.company, self.branch, "printer-scope-branch")
