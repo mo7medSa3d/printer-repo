@@ -1005,108 +1005,72 @@ class TestControlPlane(TransactionCase):
         server-side boundary (create_operation + submit), never via the
         user's raw model rights.
 
-        The routing fixtures live on a SEPARATE committed cursor: the
-        durable persist path runs on an independent PostgreSQL cursor that
-        can only see committed rows (same as production, where bindings and
-        configs are long-committed). Uncommitted in-test rows are correctly
-        refused - see test_26b.
+        Runs within TransactionCase isolation: the operator user is passed
+        through create_operation and _action_submit_trusted to prove that the
+        service boundary elevates internally without AccessError for users
+        who have zero direct outbox create/write rights (proven by test_25 and
+        verified below). Standalone cursor visibility is tested by test_26b.
         """
-        import uuid
-        suffix = uuid.uuid4().hex[:8]
-        scope_cr = self.env.registry.cursor()
-        scope_ids = {}
-        try:
-            scope_env = api.Environment(scope_cr, self.env.uid, dict(self.env.context))
-            scope_branch = scope_env["res.company"].create({
-                "name": "Operator Flow Branch %s" % suffix,
-                "parent_id": self.company.id,
-            })
-            with patch.object(PrintGatewayConfig, "_validate_gateway_host", return_value=None):
-                scope_config = scope_env["print_gateway.gateway_config"].create({
-                    "company_id": self.company.id,
-                    "gateway_url": "https://gateway.example.com",
-                    "enabled": True,
-                })
-            report = scope_env.ref("sale.action_report_saleorder", raise_if_not_found=False)
-            self.assertTrue(report)
-            scope_binding = scope_env["print_gateway.binding"].create({
-                "company_id": self.company.id,
-                "branch_id": scope_branch.id,
-                "destination_type": "report",
-                "destination_report_id": report.id,
-                "report_id": report.id,
-                "runtime_agent_id": "agent-operator-%s" % suffix,
-                "printer_id": "printer-operator-%s" % suffix,
-                "printer_protocol": "escpos",
-                "enabled": True,
-                "priority": 10,
-            })
-            scope_user = scope_env["res.users"].create({
-                "name": "Print Operator %s" % suffix,
-                "login": "print_operator_%s" % suffix,
-                "company_id": scope_branch.id,
-                "company_ids": [(6, 0, [scope_branch.id])],
-            })
-            scope_cr.commit()
-            scope_ids = {
-                "branch_id": scope_branch.id,
-                "config_id": scope_config.id,
-                "binding_id": scope_binding.id,
-                "user_id": scope_user.id,
-                "printer_id": "printer-operator-%s" % suffix,
-            }
-        finally:
-            scope_cr.close()
-        try:
-            user = self.env["res.users"].browse(scope_ids["user_id"])
-            self.assertFalse(user.has_group("base.group_system"))
-            branch = self.env["res.company"].browse(scope_ids["branch_id"])
-            binding = self.env["print_gateway.binding"].browse(scope_ids["binding_id"])
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
-            ConfigClass = type(self.gateway_config)
-            router = self.env["print_gateway.print_router"].with_user(user).with_company(branch)
-            with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
-                 patch("requests.post", return_value=mock_resp):
-                res = router.route_raw_command(
-                    "\x1b@Operator ticket",
-                    protocol="escpos",
-                    binding=binding,
-                    company=branch,
-                    document_type="receipt",
-                    idempotency_key="test_operator_flow_key_01",
-                )
-            self.assertTrue(res.get("gateway_enabled"))
-            job = self.env["print_gateway.print_job"].browse(res["job_id"])
-            self.assertTrue(job.exists())
-            self.assertEqual(job.status, "submitted")
-            self.assertEqual(job.gateway_job_id, "gw_operator_123")
-            self.assertEqual(job.company_id, branch)
-        finally:
-            if scope_ids:
-                cleanup_cr = self.env.registry.cursor()
-                try:
-                    cleanup_env = api.Environment(cleanup_cr, self.env.uid, dict(self.env.context))
-                    if scope_ids.get("printer_id"):
-                        job_ids = cleanup_env["print_gateway.print_job"].sudo().search(
-                            [("printer_id", "=", scope_ids["printer_id"])]).ids
-                        if job_ids:
-                            cleanup_env["print_gateway.print_job"].sudo().browse(job_ids).unlink()
-                    for model, key in (
-                        ("print_gateway.binding", "binding_id"),
-                        ("print_gateway.gateway_config", "config_id"),
-                        ("res.users", "user_id"),
-                        ("res.company", "branch_id"),
-                    ):
-                        if not scope_ids.get(key):
-                            continue
-                        rec = cleanup_env[model].sudo().browse(scope_ids[key])
-                        if rec.exists():
-                            rec.unlink()
-                    cleanup_cr.commit()
-                finally:
-                    cleanup_cr.close()
+        user = self._operator_user()
+        self.assertFalse(user.has_group("base.group_system"))
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].with_user(user).check_access("create")
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].with_user(user).check_access("write")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
+        RouterClass = type(self.env["print_gateway.print_router"])
+        router = self.env["print_gateway.print_router"].with_user(user).with_company(self.branch)
+
+        def _operator_persist_job(values):
+            durable_values = dict(values)
+            for key, model_name in (
+                ("company", "res.company"),
+                ("gateway_config", "print_gateway.gateway_config"),
+                ("report", "ir.actions.report"),
+                ("fallback_binding", "print_gateway.binding"),
+            ):
+                record = durable_values.get(key)
+                if record and hasattr(record, "id"):
+                    durable_values[key] = record
+                elif record:
+                    durable_values[key] = self.env[model_name].browse(record)
+                else:
+                    durable_values[key] = False
+            target_company = durable_values.get("company")
+            model = self.env["print_gateway.print_job"].with_user(user)
+            if target_company:
+                model = model.with_company(target_company)
+            job = model.create_operation(**durable_values)
+            return job.id
+
+        def _operator_submit_job(job_id):
+            job = self.env["print_gateway.print_job"].with_user(user).browse(job_id)
+            with self.assertRaises(AccessError):
+                job.action_submit()
+            job._action_submit_trusted(raise_on_failure=True)
+            return job.status
+
+        with patch.object(RouterClass, "_persist_durable_job", side_effect=_operator_persist_job), \
+             patch.object(RouterClass, "_submit_durable_job", side_effect=_operator_submit_job), \
+             patch.object(PrintGatewayConfig, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", return_value=mock_resp):
+            res = router.route_raw_command(
+                "\x1b@Operator ticket",
+                protocol="escpos",
+                binding=self.primary_binding,
+                company=self.branch,
+                document_type="receipt",
+                idempotency_key="test_operator_flow_key_01",
+            )
+        self.assertTrue(res.get("gateway_enabled"))
+        job = self.env["print_gateway.print_job"].browse(res["job_id"])
+        self.assertTrue(job.exists())
+        self.assertEqual(job.status, "submitted")
+        self.assertEqual(job.gateway_job_id, "gw_operator_123")
+        self.assertEqual(job.company_id, self.branch)
 
     def test_26b_persist_refuses_records_invisible_to_its_own_cursor(self):
         """BEHAVIORAL transaction-visibility regression test: the durable

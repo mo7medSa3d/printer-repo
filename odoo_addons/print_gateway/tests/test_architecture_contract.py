@@ -291,27 +291,29 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         from unittest.mock import MagicMock
         import uuid
         suffix = uuid.uuid4().hex[:8]
-        root_company = self.env.company
         scope_cr = self.env.registry.cursor()
         scope_ids = {}
         try:
             scope_env = api.Environment(scope_cr, self.env.uid, dict(self.env.context)) if api else None
             if scope_env is None:
                 self.skipTest("Odoo runtime environment not available")
+            scope_root = scope_env["res.company"].create({
+                "name": "Branch Submit Root %s" % suffix,
+            })
             scope_branch = scope_env["res.company"].create({
                 "name": "Branch Submit Context %s" % suffix,
-                "parent_id": root_company.id,
+                "parent_id": scope_root.id,
             })
             with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
                 scope_config = scope_env["print_gateway.gateway_config"].create({
-                    "company_id": root_company.id,
+                    "company_id": scope_root.id,
                     "gateway_url": "https://gateway.example.com",
                     "enabled": True,
                 })
             report = scope_env.ref("sale.action_report_saleorder", raise_if_not_found=False)
             self.assertTrue(report)
             scope_binding = scope_env["print_gateway.binding"].create({
-                "company_id": root_company.id,
+                "company_id": scope_root.id,
                 "branch_id": scope_branch.id,
                 "destination_type": "report",
                 "destination_report_id": report.id,
@@ -329,6 +331,7 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
             })
             scope_cr.commit()
             scope_ids = {
+                "root_id": scope_root.id,
                 "branch_id": scope_branch.id,
                 "config_id": scope_config.id,
                 "binding_id": scope_binding.id,
@@ -378,13 +381,18 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                             ("print_gateway.binding", "binding_id"),
                             ("print_gateway.gateway_config", "config_id"),
                             ("res.users", "user_id"),
-                            ("res.company", "branch_id"),
                         ):
                             if not scope_ids.get(key):
                                 continue
                             rec = cleanup_env[model].sudo().browse(scope_ids[key])
                             if rec.exists():
                                 rec.unlink()
+                        for key in ("branch_id", "root_id"):
+                            if not scope_ids.get(key):
+                                continue
+                            rec = cleanup_env["res.company"].sudo().browse(scope_ids[key])
+                            if rec.exists():
+                                rec.write({"active": False})
                         cleanup_cr.commit()
                 finally:
                     cleanup_cr.close()

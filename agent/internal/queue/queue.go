@@ -247,11 +247,19 @@ func (q *Queue) MarkInterrupted() ([]InterruptedJob, error) {
 
 // UnknownOutcomeMarkers lists the local last_error prefixes whose physical
 // outcome is ambiguous. It must stay equal to the gateway's
-// PHYSICAL_OUTCOME_UNKNOWN_MARKERS (src/lib/job-status.ts) — tests on both
+// PHYSICAL_OUTCOME_UNKNOWN_MARKERS (src/lib/job-status.ts) and to
+// printer.OutcomeMarkers (agent/internal/printer/outcome.go) — tests on both
 // sides lock the values. AGENT_RESTART_DURING_PRINT is queue.InterruptedMarker.
+// The full canonical list is kept here (not just the markers this package
+// writes today) so a future local writer of any ambiguous marker is refused
+// reprint by WasOutcomeUnknown instead of being misclassified as safely
+// retryable.
 var UnknownOutcomeMarkers = []string{
+	"AGENT_EXECUTION_TIMEOUT",
 	"AGENT_RESTART_DURING_PRINT",
+	"JOB_EXPIRED_DURING_PRINT",
 	"UNKNOWN_PARTIAL_DELIVERY",
+	"UNKNOWN_SUBMISSION_OUTCOME",
 }
 
 // WasOutcomeUnknown reports whether the local record for id carries a

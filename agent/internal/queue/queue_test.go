@@ -141,3 +141,52 @@ func TestMarkInterruptedFlagsMidPrintJobs(t *testing.T) {
 		t.Fatalf("second scan must find nothing, got %#v", again)
 	}
 }
+
+// The unknown-outcome marker TEXT is the contract between the agent, the
+// gateway (src/lib/job-status.ts: PHYSICAL_OUTCOME_UNKNOWN_MARKERS) and Odoo
+// (print_gateway.print_job._GATEWAY_UNKNOWN_MARKERS). WasOutcomeUnknown must
+// recognize every canonical marker: a locally-failed job carrying ANY of
+// them may have produced paper and must never be silently reprinted. This
+// locks the list against drift back to a subset.
+func TestUnknownOutcomeMarkersMatchCanonicalContract(t *testing.T) {
+	want := []string{
+		"AGENT_EXECUTION_TIMEOUT",
+		"AGENT_RESTART_DURING_PRINT",
+		"JOB_EXPIRED_DURING_PRINT",
+		"UNKNOWN_PARTIAL_DELIVERY",
+		"UNKNOWN_SUBMISSION_OUTCOME",
+	}
+	if len(UnknownOutcomeMarkers) != len(want) {
+		t.Fatalf("UnknownOutcomeMarkers = %v, want %v", UnknownOutcomeMarkers, want)
+	}
+	for i, marker := range want {
+		if UnknownOutcomeMarkers[i] != marker {
+			t.Fatalf("UnknownOutcomeMarkers[%d] = %q, want %q", i, UnknownOutcomeMarkers[i], marker)
+		}
+	}
+
+	q := newTestQueue(t)
+	for _, marker := range want {
+		id := "job_unknown_" + marker
+		if err := q.Push(id, "printer_1", []byte("x")); err != nil {
+			t.Fatalf("Push(%s): %v", id, err)
+		}
+		if err := q.UpdateStatusWithError(id, "failed", marker+": ambiguous physical outcome"); err != nil {
+			t.Fatalf("UpdateStatusWithError(%s): %v", id, err)
+		}
+		if !q.WasOutcomeUnknown(id) {
+			t.Fatalf("WasOutcomeUnknown(%s) = false, want true for marker %q", id, marker)
+		}
+	}
+	// A provably pre-dispatch failure stays reprintable: it must NOT be
+	// classified as an unknown outcome.
+	if err := q.Push("job_plain_fail", "printer_1", []byte("x")); err != nil {
+		t.Fatalf("Push(job_plain_fail): %v", err)
+	}
+	if err := q.UpdateStatusWithError("job_plain_fail", "failed", "dial tcp: connection refused"); err != nil {
+		t.Fatalf("UpdateStatusWithError(job_plain_fail): %v", err)
+	}
+	if q.WasOutcomeUnknown("job_plain_fail") {
+		t.Fatal("WasOutcomeUnknown(job_plain_fail) = true, want false for a provably pre-dispatch failure")
+	}
+}
