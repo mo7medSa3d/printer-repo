@@ -443,20 +443,53 @@ class TestControlPlane(TransactionCase):
             # the intent's branch company (exactly the pre-fix failure mode).
             cron_env = api.Environment(self.env.cr, self.env.uid, {"allowed_company_ids": [self.company.id]})
             RouterClass = type(self.env["print_gateway.print_router"])
+            IntentClass = type(self.env["print_gateway.intent"])
+            real_finalize = IntentClass._finalize_intent_state.__func__
+            captured = []
+
+            def finalize_spy(env, intent_id, claim_token, status=None, print_job_id=None,
+                             last_error=None, next_retry_at=None, cr=None):
+                captured.append({
+                    "intent_id": intent_id,
+                    "claim_token": claim_token,
+                    "status": status,
+                    "print_job_id": print_job_id,
+                })
+                return real_finalize(
+                    IntentClass, env, intent_id, claim_token, status,
+                    print_job_id=print_job_id, last_error=last_error,
+                    next_retry_at=next_retry_at, cr=cr,
+                )
+
             with patch.object(RouterClass, "_render_pdf_payload", return_value={"type": "pdf", "encoding": "base64", "data": "dGVzdA=="}), \
                  patch.object(RouterClass, "_submit_route", return_value={"job_id": outbox.id}) as mock_submit, \
+                 patch.object(IntentClass, "_finalize_intent_state", side_effect=finalize_spy), \
                  patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
                 self.env["print_gateway.intent"]._execute_dispatched_route(
                     cron_env, intent.id, picking_model.model, picking.id, "fake_token_branch_1"
                 )
                 # The branch record routed despite the cron env defaulting to
-                # the root company (the fix), reaching the (mocked) dispatch.
+                # the root company (the fix): resolve_binding's company assert
+                # passed and the dispatch was reached. A regression re-introducing
+                # the mismatch raises ValidationError inside routing, the mock is
+                # never called, and this assertion fails.
                 mock_submit.assert_called_once()
-            intent.invalidate_recordset(["status", "print_job_id", "last_error"])
-            # Fenced finalize landed `dispatched` (NOT `failed`): the company
-            # assert passed because routing switched to the record's company.
-            self.assertEqual(intent.status, "dispatched")
-            self.assertEqual(intent.print_job_id.id, outbox.id)
+            # The fenced finalize ran with status=dispatched for THIS claim
+            # token and the routed outbox job. (The UPDATE itself executes and
+            # then TestCursor.close() rolls the outer savepoint back - harness
+            # semantics only; independent-cursor durability and token fencing
+            # of that write are proven behaviorally by test_14, test_26b and
+            # the architecture-contract committed-fixture tests.)
+            self.assertEqual(
+                captured,
+                [{
+                    "intent_id": intent.id,
+                    "claim_token": "fake_token_branch_1",
+                    "status": "dispatched",
+                    "print_job_id": outbox.id,
+                }],
+                "routing under the record\'s company must finalize the fenced dispatched state",
+            )
 
     def test_07_failover_cycle_safety(self):
         """Verify cycle in fallback bindings terminates without infinite recursion."""
