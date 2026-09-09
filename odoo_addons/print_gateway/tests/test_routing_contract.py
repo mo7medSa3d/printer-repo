@@ -105,6 +105,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 "destination_report_id": report.id,
                 "report_id": report.id,
                 "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
                 "enabled": True,
                 "priority": 10,
             }
@@ -120,6 +121,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 "destination_report_id": report.id,
                 "report_id": report.id,
                 "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
             }
         )
         self.assertEqual(binding.destination_ref._name, "ir.actions.report")
@@ -142,6 +144,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 "report_id": report.id,
                 "destination_ref": "ir.actions.report,%s" % other_report.id,
                 "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
             }
         )
         self.assertEqual(binding.destination_ref._name, "ir.actions.report")
@@ -175,6 +178,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                         "destination_picking_type_id": picking_type.id,
                         "report_id": report.id,
                         "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
                     }
                 )
         finally:
