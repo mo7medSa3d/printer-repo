@@ -160,6 +160,9 @@ jobs:
 
   odoo19:
     runs-on: ubuntu-latest
+    # A hung Odoo suite must fail loudly instead of burning the 6h default
+    # timeout silently (module load + suite normally finish well within this).
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:15-alpine
