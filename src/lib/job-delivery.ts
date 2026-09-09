@@ -95,13 +95,17 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
   });
 }
 
-export async function markJobDelivered(jobId: string, agentId: string, claimToken: string | null): Promise<void> {
+export async function markJobDelivered(jobId: string, agentId: string, claimToken: string | null): Promise<boolean> {
   // Fenced to THIS claim (the token returned by claimJobForDelivery): a
   // superseded delivery attempt can never stamp evidence onto the row of
-  // the claim that replaced it.
-  await db.update(printJobs)
+  // the claim that replaced it. Returns whether the evidence write landed:
+  // callers must NOT report "delivered" on a socket success alone - only a
+  // persisted, same-token delivered_at counts as delivery.
+  const res = await db.update(printJobs)
     .set({ deliveredAt: new Date(), updatedAt: new Date() })
-    .where(fencedDeliveryWrite(jobId, agentId, claimToken, ["claimed", "printing"]));
+    .where(fencedDeliveryWrite(jobId, agentId, claimToken, ["claimed", "printing"]))
+    .returning({ id: printJobs.id });
+  return res.length > 0;
 }
 
 export async function recordJobAck(jobId: string, agentId: string, claimToken?: string | null): Promise<boolean> {

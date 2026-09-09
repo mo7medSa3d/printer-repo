@@ -80,7 +80,7 @@ func PayloadCompatibleForDevice(plType, plProtocol string, d TransportFacts) (bo
 		if pp != "" {
 			return false, "pdf payloads cannot specify a printer protocol"
 		}
-		if hasCaps && capabilityListed("pdf", "spooler", "ipp") {
+		if hasCaps && capabilityListed("pdf", "spooler", "ipp", "ipps") {
 			return true, ""
 		}
 		if !hasCaps && transportIs("spooler", "ipp", "ipps") {
@@ -91,7 +91,7 @@ func PayloadCompatibleForDevice(plType, plProtocol string, d TransportFacts) (bo
 		if pp != "" {
 			return false, "image payloads cannot specify a printer protocol"
 		}
-		if hasCaps && capabilityListed("image", "jpeg", "spooler", "ipp", "escpos") {
+		if hasCaps && capabilityListed("image", "jpeg", "spooler", "ipp", "ipps", "escpos") {
 			return true, ""
 		}
 		if !hasCaps && (transportIs("spooler") || declared("escpos", "escpos")) {

@@ -1127,3 +1127,50 @@ class TestControlPlane(TransactionCase):
             self.assertEqual(job.status, "queued")
             self.assertTrue(job.next_retry_at, "Backoff retry is scheduled")
             self.assertIn("CONNECTION_ERROR", job.last_error or "")
+
+    def test_01b_business_rollback_discards_intent_and_dispatch(self):
+        """The durable print intent is committed ATOMICALLY with the
+        originating business transaction: if the business work rolls back,
+        the intent row vanishes AND the registered post-commit dispatch is
+        discarded (Odoo drops postcommit hooks added inside a rolled-back
+        savepoint). No orphan intent may survive to print later."""
+        model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
+        if not model:
+            model = self.env["ir.model"].search([], limit=1)
+        policy = self.env["print_gateway.policy"].create({
+            "name": "Rollback Atomicity Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": model.id,
+            "event_type": "picking_validated",
+            "action_type": "raw_template",
+            "raw_template": "^XA^FD{name}^FS^XZ",
+            "raw_protocol": "zpl",
+            "binding_id": self.zpl_binding.id,
+            "active": True,
+        })
+        mock_picking = MagicMock()
+        mock_picking._name = model.model
+        mock_picking.id = 9993
+        mock_picking.company_id = self.branch
+        mock_picking.write_date = "2026-09-08 16:00:00"
+
+        intent_model = self.env["print_gateway.intent"]
+        key = intent_model.compute_intent_key(policy, mock_picking, "picking_validated")
+        self.assertFalse(intent_model.search([("intent_key", "=", key)]))
+        with patch.object(type(intent_model), "_dispatch_intent_postcommit") as mocked_dispatch:
+            try:
+                with self.env.cr.savepoint():
+                    intent_model.create_and_route(policy, mock_picking, "picking_validated")
+                    self.assertTrue(
+                        intent_model.search([("intent_key", "=", key)]),
+                        "intent must be visible inside the business transaction",
+                    )
+                    raise RuntimeError("simulated business rollback")
+            except RuntimeError:
+                pass
+            mocked_dispatch.assert_not_called()
+        self.assertFalse(
+            intent_model.search([("intent_key", "=", key)]),
+            "rolled-back business work must leave no orphan intent",
+        )

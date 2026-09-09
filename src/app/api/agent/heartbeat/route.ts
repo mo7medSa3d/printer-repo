@@ -1,7 +1,7 @@
 import { db } from "../../../../db";
 import { agents, printJobs, printers } from "../../../../db/schema";
 import { validateAgent } from "../../../../lib/agent-auth";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { DEVICE_CLASSES, PRINTER_TYPES, PRINTER_CONFIG_MAX_BYTES, PRINTER_CAPABILITIES_MAX_BYTES, validateConnectionConfig } from "../../../../lib/printer-model";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
@@ -96,24 +96,53 @@ export async function POST(req: Request) {
 
     await db.update(agents).set({ status, lastSeenAt: new Date() }).where(eq(agents.id, agent.id));
 
-    // Print-lease keep-alive: the agent reports the job ids it has taken
-    // (gateway status claimed/printing). While the agent is alive and
-    // working those jobs, their `updated_at` stays fresh, so the
-    // stale-printing sweep (10 min) cannot fail a legitimately long print.
-    // A dead agent stops heartbeating, so its jobs still time out as
-    // before. Scoped to this agent's own non-terminal delivery states.
+    // Print-lease keep-alive: the agent reports the (jobId, claimToken)
+    // pairs it is currently holding (gateway status claimed/printing).
+    // While the agent is alive and working those jobs, their `updated_at`
+    // stays fresh, so the stale-printing sweep (10 min) cannot fail a
+    // legitimately long print. A dead agent stops heartbeating, so its jobs
+    // still time out as before. Scoped to this agent's own non-terminal
+    // delivery states AND to the exact live claim: the UPDATE predicate
+    // requires (id, claim_token) to match, so a stale worker's heartbeat
+    // can never refresh the lease of a reclaimed attempt. Legacy bare job
+    // ids (no token, pre-fencing agents) only refresh rows that never
+    // received a token; they can never touch a tokenized claim.
     const rawKeepAlive: unknown[] = Array.isArray(body?.keepAliveJobIds) ? (body.keepAliveJobIds as unknown[]) : [];
-    const keepAliveJobIds = rawKeepAlive
-      .filter((v): v is string => typeof v === "string" && v.length > 0 && v.length <= 120)
-      .slice(0, MAX_KEEP_ALIVE_JOB_IDS);
-    if (keepAliveJobIds.length > 0) {
+    const pairs: Array<{ jobId: string; claimToken: string | null }> = [];
+    for (const entry of rawKeepAlive) {
+      if (typeof entry === "string") {
+        if (entry.length > 0 && entry.length <= 120) pairs.push({ jobId: entry, claimToken: null });
+      } else if (entry && typeof entry === "object") {
+        const rec = entry as Record<string, unknown>;
+        const jobId = typeof rec.jobId === "string" ? rec.jobId : typeof rec.id === "string" ? rec.id : "";
+        const claimToken = typeof rec.claimToken === "string" && rec.claimToken.length > 0 && rec.claimToken.length <= 120
+          ? rec.claimToken
+          : null;
+        if (jobId.length > 0 && jobId.length <= 120) pairs.push({ jobId, claimToken });
+      }
+      if (pairs.length >= MAX_KEEP_ALIVE_JOB_IDS) break;
+    }
+    const tokened = pairs.filter((p): p is { jobId: string; claimToken: string } => p.claimToken !== null);
+    const tokenless = pairs.filter((p) => p.claimToken === null);
+    if (tokened.length > 0) {
+      const tuples = tokened.map((p) => sql`(${p.jobId}, ${p.claimToken})`);
+      const list = tuples.length === 1 ? tuples[0]! : sql.join(tuples, sql`, `);
+      await db.execute(sql`
+        UPDATE print_jobs SET updated_at = now()
+        WHERE agent_id = ${agent.id}
+          AND status IN ('claimed', 'printing')
+          AND (id, claim_token) IN (${list})
+      `);
+    }
+    if (tokenless.length > 0) {
       await db.update(printJobs)
         .set({ updatedAt: new Date() })
         .where(
           and(
             eq(printJobs.agentId, agent.id),
             inArray(printJobs.status, ["claimed", "printing"]),
-            inArray(printJobs.id, keepAliveJobIds),
+            inArray(printJobs.id, tokenless.map((p) => p.jobId)),
+            isNull(printJobs.claimToken),
           ),
         );
     }

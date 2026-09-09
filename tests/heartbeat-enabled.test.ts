@@ -4,10 +4,13 @@ import {
   applyMigrations,
   truncateAll,
   seedFixture,
+  insertQueuedJob,
+  jobRow,
   closePool,
   pool,
   type Fixture,
 } from "./helpers/pg";
+import { claimJobForDelivery } from "../src/lib/job-delivery";
 import { POST as heartbeatPOST } from "../src/app/api/agent/heartbeat/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
@@ -113,5 +116,35 @@ suite("heartbeat validation and lifecycle preservation", () => {
 
     const agent = await pool().query(`SELECT status FROM agents WHERE id = $1`, [f.agentId]);
     expect(agent.rows[0].status).toBe("online");
+  });
+
+  it("fences keep-alive lease refresh to the live claim (stale worker TOCTOU)", async () => {
+    await insertQueuedJob(f, "job_hb_fence");
+    const claim = await claimJobForDelivery("job_hb_fence", f.agentId);
+    const liveToken = claim!.claimToken!;
+    expect(liveToken).toBeTruthy();
+    // Age the claim past the stale threshold so a refresh is observable.
+    await pool().query(`UPDATE print_jobs SET updated_at = now() - interval '200 seconds' WHERE id = 'job_hb_fence'`);
+    const staleAt = (await jobRow("job_hb_fence")).updated_at as Date;
+
+    const beat = (auth: string, keepAliveJobIds: unknown) => heartbeatPOST(new Request("http://gateway.test/api/agent/heartbeat", {
+      method: "POST",
+      headers: { Authorization: auth, "content-type": "application/json" },
+      body: JSON.stringify({ status: "online", printers: [], keepAliveJobIds }),
+    }));
+
+    // 1. A stale worker echoing a forged/superseded token refreshes nothing.
+    expect((await beat(f.agentAuth, [{ jobId: "job_hb_fence", claimToken: "forged-token" }])).status).toBe(200);
+    expect(new Date((await jobRow("job_hb_fence")).updated_at).getTime()).toBe(new Date(staleAt).getTime());
+    // 2. A legacy tokenless id refreshes nothing on a tokenized claim.
+    expect((await beat(f.agentAuth, ["job_hb_fence"])).status).toBe(200);
+    expect(new Date((await jobRow("job_hb_fence")).updated_at).getTime()).toBe(new Date(staleAt).getTime());
+    // 3. Another agent's heartbeat (even with the right token) is scoped out.
+    const other = await seedFixture();
+    expect((await beat(other.agentAuth, [{ jobId: "job_hb_fence", claimToken: liveToken }])).status).toBe(200);
+    expect(new Date((await jobRow("job_hb_fence")).updated_at).getTime()).toBe(new Date(staleAt).getTime());
+    // 4. The live claim holder's pair refreshes the lease.
+    expect((await beat(f.agentAuth, [{ jobId: "job_hb_fence", claimToken: liveToken }])).status).toBe(200);
+    expect(new Date((await jobRow("job_hb_fence")).updated_at).getTime()).toBeGreaterThan(new Date(staleAt).getTime());
   });
 });

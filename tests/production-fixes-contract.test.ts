@@ -24,14 +24,19 @@ describe("production fixes contracts (2026-09)", () => {
     expect(getSection).not.toContain('json({ payload');
   });
 
-  it("heartbeat print-lease keep-alive: bounded job id list only, scoped to claimed/printing", () => {
+  it("heartbeat print-lease keep-alive: bounded (jobId, claimToken) pairs, fenced to the live claim", () => {
     const hb = read("src/app/api/agent/heartbeat/route.ts");
     const normalized = hb.replace(/\s+/g, " ");
     expect(normalized).toContain("const MAX_KEEP_ALIVE_JOB_IDS = 64;");
-    expect(normalized).toContain(".slice(0, MAX_KEEP_ALIVE_JOB_IDS)");
+    expect(normalized).toContain("claimToken");
+    // The refresh predicate must bind the lease to the exact live claim…
+    expect(normalized).toContain("(id, claim_token) IN");
+    // …and legacy tokenless ids may only touch rows that never got a token.
+    expect(normalized).toContain("isNull(printJobs.claimToken)");
     expect(normalized).toContain("eq(printJobs.agentId, agent.id)");
-    expect(normalized).toContain('inArray(printJobs.status, ["claimed", "printing"])');
-    expect(normalized).toContain("db.update(printJobs) .set({ updatedAt: new Date() })");
+    expect(normalized).toContain("inArray(printJobs.status, [\"claimed\", \"printing\"])");
+    // Lease refresh mutates updatedAt only - never status, never ownership.
+    expect(normalized).toContain("UPDATE print_jobs SET updated_at = now()");
     expect(normalized).not.toContain("db.update(printJobs) .set({ status");
   });
 

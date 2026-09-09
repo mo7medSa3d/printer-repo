@@ -197,7 +197,19 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def _persist_durable_job(self, values):
-        """Create the durable Odoo outbox row in an independent transaction."""
+        """Create the durable Odoo outbox row in an independent transaction.
+
+        TRANSACTION CONTRACT (do not weaken): every production caller
+        invokes this from a standalone print request (report download,
+        POS receipt/kitchen/sale-details, test page) or from post-commit
+        intent dispatch - i.e. there is deliberately NO enclosing business
+        mutation that could roll back afterwards and orphan a submitted
+        print. Business-event flows must go through print_gateway.intent
+        (created atomically inside the business transaction, dispatched
+        via cr.postcommit), never by nesting this call inside business
+        writes. If a future caller needs business-atomicity, it must create
+        the row in the caller's own transaction and defer submission to
+        postcommit instead of using this helper."""
         durable_values = dict(values)
         for key in ("company", "gateway_config", "report", "fallback_binding"):
             record = durable_values.get(key)

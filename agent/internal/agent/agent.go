@@ -86,8 +86,12 @@ type Agent struct {
 	execSem      chan struct{}       // limits concurrently executing jobs
 	pendingSlots chan struct{}       // limits accepted (executing + waiting) jobs
 	inFlight     map[string]struct{} // job ids currently in the executor
-	inFlightMu   sync.Mutex
-	wg           sync.WaitGroup
+	// inFlightTokens carries the claim token of each in-flight delivery
+	// attempt, under the same mutex. Heartbeat keep-alives echo the token
+	// so the gateway can fence the lease refresh to the live claim.
+	inFlightTokens map[string]string
+	inFlightMu     sync.Mutex
+	wg             sync.WaitGroup
 
 	// Guards making heartbeat/poll ticks non-reentrant. A slow tick (offline
 	// printers probing at 2s, slow gateway) must never let ticks pile up.
@@ -217,6 +221,7 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		execSem:        make(chan struct{}, maxConcurrentJobs),
 		pendingSlots:   make(chan struct{}, maxPendingJobs),
 		inFlight:       make(map[string]struct{}),
+		inFlightTokens: make(map[string]string),
 		shutdownCh:     make(chan struct{}),
 		discoverySem:   make(chan struct{}, 1),
 	}
@@ -827,6 +832,10 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 		return
 	}
 	a.inFlight[jobID] = struct{}{}
+	if a.inFlightTokens == nil {
+		a.inFlightTokens = make(map[string]string)
+	}
+	a.inFlightTokens[jobID] = jobClaimToken(job)
 	a.wg.Add(1)
 	a.inFlightMu.Unlock()
 
@@ -879,13 +888,17 @@ func jobClaimToken(job map[string]interface{}) string {
 func (a *Agent) forgetJob(id string) {
 	a.inFlightMu.Lock()
 	delete(a.inFlight, id)
+	delete(a.inFlightTokens, id)
 	a.inFlightMu.Unlock()
 }
 
 // inFlightJobIDs returns up to limit ids of jobs currently held by the
 // executor (waiting for an execution slot, running, or at the printer).
 // Used for the heartbeat keep-alive (gateway print-lease extension).
-func (a *Agent) inFlightJobIDs(limit int) []string {
+// Each entry carries the delivery attempt's claim token: the gateway
+// refreshes a lease ONLY when (jobId, claimToken) still matches the live
+// claim, so a stale worker's heartbeat can never extend a reclaimed lease.
+func (a *Agent) inFlightJobIDs(limit int) []map[string]string {
 	if limit <= 0 {
 		return nil
 	}
@@ -894,9 +907,9 @@ func (a *Agent) inFlightJobIDs(limit int) []string {
 	if len(a.inFlight) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(a.inFlight))
+	ids := make([]map[string]string, 0, len(a.inFlight))
 	for id := range a.inFlight {
-		ids = append(ids, id)
+		ids = append(ids, map[string]string{"jobId": id, "claimToken": a.inFlightTokens[id]})
 		if len(ids) >= limit {
 			break
 		}
@@ -1314,13 +1327,14 @@ func (a *Agent) sendHeartbeat() {
 		"status":   "online",
 		"printers": a.printerStatusPayload(),
 	}
-	// Print-lease keep-alive: report every job id this agent currently holds
-	// (accepted + executing + physically printing). While this agent is
-	// alive and working those jobs, the gateway keeps their updated_at
-	// fresh, so a legitimately long print (or a job waiting behind the
-	// per-printer serialization lock) is never force-failed by the
-	// stale-printing sweep. A dead agent stops heartbeating and its jobs
-	// time out exactly as before. Capped: the gateway accepts at most 64.
+	// Print-lease keep-alive: report every (jobId, claimToken) pair this
+	// agent currently holds (accepted + executing + physically printing).
+	// While this agent is alive and working those jobs, the gateway keeps
+	// their updated_at fresh, so a legitimately long print (or a job
+	// waiting behind the per-printer serialization lock) is never
+	// force-failed by the stale-printing sweep. A dead agent stops
+	// heartbeating and its jobs time out exactly as before. Capped: the
+	// gateway accepts at most 64.
 	if ids := a.inFlightJobIDs(64); len(ids) > 0 {
 		payload["keepAliveJobIds"] = ids
 	}

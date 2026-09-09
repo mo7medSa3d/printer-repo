@@ -5,9 +5,30 @@ import WebSocket from "ws";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, jobRow, closePool, pool, type Fixture } from "./helpers/pg";
 import { attachAgentWSS, claimAndPushJobToAgent } from "../src/server/ws";
 import { db } from "../src/db";
-import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, markJobDelivered, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
+import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
+import type { ClaimedJobRow } from "../src/lib/job-delivery";
 import { sweepPrintJobs } from "../src/lib/job-maintenance";
 import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
+
+// Delivery-evidence hook: claimAndPushJobToAgent must report "delivered"
+// ONLY when the delivered_at write persists for the same claim token -
+// never on socket success alone. Tests redirect the evidence write here.
+// (The real implementation is stashed on globalThis because this file's own
+// static import resolves through the mock below.)
+type MarkFn = (jobId: string, agentId: string, claimToken: string | null) => Promise<boolean>;
+vi.mock("../src/lib/job-delivery", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/lib/job-delivery")>();
+  (globalThis as unknown as { __realMarkJobDelivered: MarkFn }).__realMarkJobDelivered = mod.markJobDelivered;
+  return {
+    ...mod,
+    markJobDelivered: async (...args: Parameters<MarkFn>) => {
+      const hook = (globalThis as unknown as { __markEvidenceImpl?: MarkFn }).__markEvidenceImpl;
+      return hook ? hook(...args) : mod.markJobDelivered(...args);
+    },
+  };
+});
+const realMarkJobDelivered = (...args: Parameters<MarkFn>): Promise<boolean> =>
+  (globalThis as unknown as { __realMarkJobDelivered: MarkFn }).__realMarkJobDelivered(...args);
 
 const suite = describe.skipIf(!hasTestDatabase);
 function agentRequest(f: Fixture, method: "GET" | "PATCH", body?: unknown) {
@@ -147,6 +168,28 @@ suite("WS claim-before-delivery", () => {
     expect((await jobRow("job_t3d")).retries).toBe(1);
   });
 
+  it("socket success without persisted evidence is NOT a delivery", async () => {
+    // The socket write succeeds, but the delivered_at evidence write for
+    // the same claim token fails (row expired/terminal mid-send). The
+    // gateway must NOT report "delivered" on the socket alone: it falls
+    // back to the fenced release path instead of stranding a phantom
+    // delivery that the agent actually holds.
+    const ws = await connectAgent();
+    const messages: unknown[] = [];
+    ws.on("message", (data) => messages.push(JSON.parse(String(data))));
+    await insertQueuedJob(f, "job_phantom");
+    (globalThis as unknown as { __markEvidenceImpl?: MarkFn }).__markEvidenceImpl = async () => false;
+    try {
+      expect(await claimAndPushJobToAgent({ id: "job_phantom", agentId: f.agentId })).toBe("requeued");
+    } finally {
+      delete (globalThis as unknown as { __markEvidenceImpl?: MarkFn }).__markEvidenceImpl;
+    }
+    const row = await jobRow("job_phantom");
+    expect(row.status).toBe("queued");
+    expect(row.delivered_at).toBeNull();
+    expect(row.claim_token).toBeNull();
+  });
+
   it("duplicate push cannot deliver the same job twice", async () => {
     const ws = await connectAgent();
     const messages: any[] = [];
@@ -196,7 +239,7 @@ suite("WS claim-before-delivery", () => {
   it("a DELIVERED stale claim is never re-queued; it fails with an unknown-outcome marker", async () => {
     await insertQueuedJob(f, "job_del_stale");
     const claim = await claimJobForDelivery("job_del_stale", f.agentId);
-    await markJobDelivered("job_del_stale", f.agentId, claim!.claimToken);
+    await realMarkJobDelivered("job_del_stale", f.agentId, claim!.claimToken);
     await pool().query(`UPDATE print_jobs SET claimed_at = now() - interval '200 seconds', delivered_at = now() - interval '200 seconds', updated_at = now() - interval '200 seconds' WHERE id = 'job_del_stale'`);
     const sweep = await sweepPrintJobs({ agentId: f.agentId });
     expect(sweep.silentDeliveries).toBeGreaterThanOrEqual(1);

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, pool, closePool, type Fixture } from "./helpers/pg";
+import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, jobRow, pool, closePool, type Fixture } from "./helpers/pg";
 import { PATCH as jobStatusPATCH } from "../src/app/api/agent/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
@@ -68,6 +68,18 @@ suite("atomic Agent job status transitions", () => {
     await insertQueuedJob(f, "job_late_stale");
     await pool().query(`UPDATE print_jobs SET status='failed', error='AGENT_RESTART_DURING_PRINT: crashed', updated_at=now() - interval '25 hours' WHERE id='job_late_stale'`);
     expect((await patch("job_late_stale", "success")).status).toBe(409);
+    // 4. Late success is bound to the EXACT attempt that produced the
+    // marker: the row below failed while token-A held the claim. A report
+    // carrying any other token (or none) is rejected even though the
+    // marker and TTL would otherwise qualify.
+    await insertQueuedJob(f, "job_late_attempt");
+    await pool().query(`UPDATE print_jobs SET status='failed', claim_token='tok-attempt-a', error='AGENT_EXECUTION_TIMEOUT: agent execution lease expired', updated_at=now() WHERE id='job_late_attempt'`);
+    expect((await patch("job_late_attempt", "success", "tok-attempt-b")).status).toBe(409);
+    expect((await patch("job_late_attempt", "success")).status).toBe(409);
+    expect((await jobRow("job_late_attempt")).status).toBe("failed");
+    const lateOwn = await patch("job_late_attempt", "success", "tok-attempt-a");
+    expect(lateOwn.status).toBe(200);
+    expect(((await lateOwn.json()) as { physicalOutcome?: string }).physicalOutcome).toBe("printed");
   });
 
 });

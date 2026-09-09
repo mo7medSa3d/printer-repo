@@ -94,6 +94,12 @@ describe("runtime routing capability and availability", () => {
     expect(validatePayloadForPrinter({ type: "image" }, { protocol: "unknown", connectionType: "spooler" }).ok).toBe(true);
     expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "unknown", connectionType: "ipp" }).ok).toBe(true);
     expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, { protocol: "unknown", connectionType: "spooler" }).ok).toBe(false);
+    // ipp and ipps are the same document transport everywhere they are
+    // checked: explicit caps, transport default, and unknown fallback.
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "ipps", connectionType: "ipps" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "raw", connectionType: "network", capabilities: { supported_protocols: ["ipps"] } }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "image" }, { protocol: "raw", connectionType: "network", capabilities: { supported_protocols: ["ipps"] } }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "image" }, { protocol: "raw", connectionType: "network", capabilities: { supported_protocols: ["ipp"] } }).ok).toBe(true);
   });
 
   it("treats lifecycle and online telemetry as hard availability gates", () => {

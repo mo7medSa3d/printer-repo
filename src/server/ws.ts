@@ -186,7 +186,20 @@ export async function claimAndPushJobToAgent(job: { id: string; agentId: string 
     const outcome = await releaseUndeliveredClaim(job.id, job.agentId, claimed.claimToken, "websocket delivery failed after claim; job requeued for redelivery");
     return outcome === "failed" ? "failed" : "requeued";
   }
-  await markJobDelivered(job.id, job.agentId, claimed.claimToken);
+  // "Delivered" is a DATABASE fact, not a socket fact: only when the
+  // delivered_at evidence write lands for THIS claim token does the gateway
+  // consider the job handed over. A socket success whose evidence write
+  // misses (row expired, terminal, or reclaimed mid-send) falls back to the
+  // undelivered-release path instead of stranding a phantom delivery.
+  const evidenced = await markJobDelivered(job.id, job.agentId, claimed.claimToken);
+  if (!evidenced) {
+    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, claimed.claimToken, "websocket delivery evidence did not persist; job requeued for redelivery");
+    // "noop" here means the row left the claimable states entirely between
+    // claim and evidence (expired/terminal/cascade-deleted): there is
+    // nothing left to deliver or requeue.
+    if (outcome === "noop") return "not_claimable";
+    return outcome === "failed" ? "failed" : "requeued";
+  }
   return "delivered";
 }
 

@@ -557,3 +557,38 @@ func TestSingleFlightProbeGuard(t *testing.T) {
 		t.Fatal("CAS after store(false) must succeed")
 	}
 }
+
+func TestKeepAliveEchoesClaimTokens(t *testing.T) {
+	// The heartbeat keep-alive must carry (jobId, claimToken) pairs so the
+	// gateway can fence the lease refresh to the live claim. A bare job id
+	// would let a stale worker extend a reclaimed lease.
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	p := &fakePrinter{blocked: release, startedCh: started}
+	ag := newTestAgent(t, "p1", p)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	job := map[string]interface{}{
+		"id":         "job-ka-1",
+		"printerId":  "p1",
+		"payload":    makeJobPayload("job-ka-1"),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "tok-live-9",
+	}
+	go ag.dispatchJob(ctx, job)
+	select {
+	case got := <-started:
+		if got != "job-ka-1" {
+			t.Fatalf("unexpected job started: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("job never reached the printer")
+	}
+	pairs := ag.inFlightJobIDs(64)
+	if len(pairs) != 1 || pairs[0]["jobId"] != "job-ka-1" || pairs[0]["claimToken"] != "tok-live-9" {
+		t.Fatalf("keep-alive must echo the live claim token, got %v", pairs)
+	}
+	close(release)
+	ag.waitForJobs()
+	assertNoInFlight(t, ag)
+}

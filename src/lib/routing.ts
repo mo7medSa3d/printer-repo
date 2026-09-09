@@ -62,7 +62,7 @@ export function validatePayloadForPrinter(
     if (payloadProto) {
       return { ok: false, reason: "CAPABILITY_MISMATCH: pdf payloads cannot specify a printer protocol" };
     }
-    if (anyCap("pdf", "spooler", "ipp") || transport("spooler", "ipp", "ipps")) return { ok: true };
+    if (anyCap("pdf", "spooler", "ipp", "ipps") || transport("spooler", "ipp", "ipps")) return { ok: true };
     return { ok: false, reason: "CAPABILITY_MISMATCH: pdf requires spooler or IPP transport" };
   }
 
@@ -72,7 +72,7 @@ export function validatePayloadForPrinter(
     if (payloadProto) {
       return { ok: false, reason: "CAPABILITY_MISMATCH: image payloads cannot specify a printer protocol" };
     }
-    if (anyCap("image", "jpeg", "spooler", "ipp", "escpos") || transport("spooler", "escpos")) return { ok: true };
+    if (anyCap("image", "jpeg", "spooler", "ipp", "ipps", "escpos") || transport("spooler", "escpos")) return { ok: true };
     return { ok: false, reason: "CAPABILITY_MISMATCH: image payload not supported by printer" };
   }
 
