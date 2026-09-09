@@ -1,7 +1,7 @@
 import type { AgentStatus, PrinterInfo, RuntimePaths } from "./lib/ipc";
 
 export type Page = "dashboard" | "printers" | "jobs" | "agents" | "settings";
-export type JobTab = "all" | "pending" | "printing" | "completed" | "failed";
+export type JobTab = "all" | "queued" | "printing" | "printed" | "failed" | "unknown" | "expired";
 export type PrinterStatusFilter = "all" | "online" | "offline";
 
 export type AgentStatusView = Partial<AgentStatus> & { error?: string };
@@ -93,6 +93,9 @@ export interface DesktopState {
   busy: boolean;
   msg: ToastMessage;
   setMsg: (m: ToastMessage) => void;
-  fleetTotal: number;
-  fleetOnline: number;
+  // null = the health endpoint does not report fleet counts (it reports
+  // liveness only). Rendering "0 / 0" for unknown data was a lie; consumers
+  // must render an explicit dash instead.
+  fleetTotal: number | null;
+  fleetOnline: number | null;
 }

@@ -53,9 +53,9 @@ export function AgentsPage({ s }: { s: DesktopState }) {
         />
         <StatCard
           label="Gateway fleet"
-          value={s.gatewayUrl ? `${s.fleetOnline} / ${s.fleetTotal}` : "—"}
+          value={s.gatewayUrl && s.fleetOnline !== null ? `${s.fleetOnline} / ${s.fleetTotal}` : "—"}
           sub={s.gatewayUrl ? "Agents online" : "Gateway not configured"}
-          tone={s.gatewayUrl && s.fleetOnline > 0 ? "ok" : "neutral"}
+          tone={s.gatewayUrl && s.fleetOnline !== null && s.fleetOnline > 0 ? "ok" : "neutral"}
           icon={<Server className="h-[22px] w-[22px]" aria-hidden />}
         />
       </div>
@@ -206,7 +206,7 @@ export function AgentsPage({ s }: { s: DesktopState }) {
                 message={friendlyPrinterError(s.healthError)}
                 retry={s.checkHealth}
               />
-            ) : s.fleetTotal > 0 ? (
+            ) : s.fleetTotal !== null && s.fleetTotal > 0 ? (
               <div className="space-y-5">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="card p-5">
@@ -220,7 +220,7 @@ export function AgentsPage({ s }: { s: DesktopState }) {
                   <div className="card p-5">
                     <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.06em] text-ink-3">
                       Online
-                      <StatusDot tone={s.fleetOnline > 0 ? "ok" : "bad"} />
+                      <StatusDot tone={(s.fleetOnline ?? 0) > 0 ? "ok" : "bad"} />
                     </div>
                     <div className="mt-2 flex items-baseline gap-2">
                       <span className="text-[28px] font-bold leading-none tabular-nums text-ink">

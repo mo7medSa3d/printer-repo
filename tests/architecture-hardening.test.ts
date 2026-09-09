@@ -67,14 +67,20 @@ describe("architecture hardening", () => {
     expect(src).toContain("Strict-Transport-Security");
   });
 
-  it("keeps agent lifecycle changes transactional", () => {
-    const src = readFileSync("src/app/actions.ts", "utf8");
-    const start = src.indexOf("export async function setAgentLifecycle");
-    const end = src.indexOf('revalidatePath("/dashboard")', start);
-    const block = src.slice(start, end);
+  it("keeps agent lifecycle changes transactional in ONE shared implementation", () => {
+    // The lifecycle flow lives in exactly one place (src/lib/agent-lifecycle.ts)
+    // which BOTH the route and the server action call; a second divergent copy
+    // reintroduced the credential-destroying no-op bug once already.
+    const src = readFileSync("src/lib/agent-lifecycle.ts", "utf8");
+    const block = src.slice(src.indexOf("export async function transitionAgentLifecycle"));
     expect(block).toContain("db.transaction");
     expect(block).toContain("tx.update(agents)");
     expect(block).toContain("tx.update(printers)");
+    // No-op guard: current === next must not rotate credentials.
+    expect(block).toContain("if (agent.lifecycle === next)");
+    for (const consumer of ["src/app/actions.ts", "src/app/api/agents/[id]/route.ts"]) {
+      expect(readFileSync(consumer, "utf8")).toContain("transitionAgentLifecycle");
+    }
   });
 
   it("keeps permanent agent deletion transactional with row-level locking and audit protection", () => {

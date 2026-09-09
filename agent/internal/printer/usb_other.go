@@ -7,8 +7,17 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 )
 
+func discoverUSBPrinters() ([]DeviceInfo, error) {
+	log.Printf("[discovery] USB discovery: not available on non-Windows (requires SetupDi on Windows)")
+	return nil, nil
+}
+
+// USBPrinter on non-Windows platforms has no raw USB printing capability.
+// The truthful default is a failure. File writes happen only under the
+// explicit ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1 development opt-in.
 type USBPrinter struct {
 	ID           string
 	Name         string
@@ -38,33 +47,27 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 		return ctx.Err()
 	default:
 	}
-	if p.DevicePath == "" {
-		return fmt.Errorf("USB device discovered (%s) but no Windows device path is available and direct USB printing is unavailable on this platform; install on Windows and use spooler (device path: %q)", p.Identify(), p.DevicePath)
-	}
-	if len(p.DevicePath) > 5 && (p.DevicePath[:5] == "/tmp/" || p.DevicePath[:5] == "/var/") {
-		if err := os.WriteFile(p.DevicePath, data, 0644); err == nil {
-			log.Printf("Direct USB (simulated) printed %d bytes to %s (%s)", len(data), p.DevicePath, p.Identify())
-			return nil
+	if simulatedTransportAllowed() && p.DevicePath != "" && filepath.IsAbs(p.DevicePath) {
+		if err := os.WriteFile(p.DevicePath, data, 0600); err != nil {
+			return fmt.Errorf("SIMULATED_TRANSPORT: USB write to %s failed: %w", p.DevicePath, err)
 		}
+		return fmt.Errorf("SIMULATED_TRANSPORT: USB payload written to %s instead of hardware (ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1)", p.DevicePath)
 	}
-	return fmt.Errorf("USB device discovered (%s) but direct USB printing is only available on Windows with a valid device path %q; install as Windows spooler queue", p.Identify(), p.DevicePath)
+	return fmt.Errorf("ERR_UNSUPPORTED_TRANSPORT: direct USB printing is only available on Windows with a valid device path; install %s as a Windows spooler queue and route the job there; nothing was sent", p.Identify())
 }
 
 func (p *USBPrinter) Test(ctx context.Context) error {
-	return p.Print(ctx, []byte("\x1b\x40USB Test Print\n\n\x1d\x56\x01"))
+	return p.Print(ctx, []byte("USB Test Print"))
 }
 
 func (p *USBPrinter) Status() string {
+	if simulatedTransportAllowed() {
+		return "online"
+	}
+	// Unprovable from this platform.
 	return "unknown"
 }
 
-func discoverUSBPrinters() ([]DeviceInfo, error) {
-	log.Printf("[discovery] USB discovery: not available on non-Windows (requires SetupDi on Windows)")
-	return nil, nil
-}
-
-// SupportsKind: a raw USB endpoint is a byte stream with no renderer, exactly
-// like RAW TCP — PDF documents must not be written to it.
 func (p *USBPrinter) SupportsKind(kind string) bool {
 	switch NormalizeKind(kind) {
 	case KindRaw, KindESCPOS:
@@ -74,11 +77,9 @@ func (p *USBPrinter) SupportsKind(kind string) bool {
 	}
 }
 
-// PrintDocument refuses non byte-stream documents instead of writing
-// unrenderable bytes to the device.
 func (p *USBPrinter) PrintDocument(ctx context.Context, doc Document) error {
 	if !p.SupportsKind(doc.Kind) {
-		return CapabilityMismatchf("USB printer %s cannot render %s payloads; install it as a Windows printer and route the job to the spooler queue", p.Name, NormalizeKind(doc.Kind))
+		return CapabilityMismatchf("USB printer %s cannot render %s payloads", p.Name, NormalizeKind(doc.Kind))
 	}
 	return p.Print(ctx, doc.Data)
 }

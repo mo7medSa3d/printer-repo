@@ -36,7 +36,8 @@ Sent only after the job has been claimed (`status='claimed'` committed). Exact s
     "status": "claimed",
     "payload": { "type": "pdf", "encoding": "base64", "data": "JVBERi0xLjQK…" },
     "expiresAt": "2026-09-01T12:00:00.000Z",
-    "retries": 0
+    "retries": 0,
+    "claimToken": "a3f9c2e1-…"
   },
   "id": "job_V1StGXR8Z5jd",
   "printerId": "printer_spooler_9ab1",
@@ -44,6 +45,12 @@ Sent only after the job has been claimed (`status='claimed'` committed). Exact s
   "expiresAt": "2026-09-01T12:00:00.000Z"
 }
 ```
+
+Every claim mints a fresh `claim_token` (`print_jobs.claim_token`, migration 0024).
+The agent must echo it as `claimToken` on every `PATCH /api/agent/jobs` status
+report for that delivery attempt. Reports carrying a superseded or forged token
+are rejected with `409 STALE_CLAIM` by a database ownership predicate, so a
+stalled worker can never finalize a job that has been reclaimed.
 
 The flat `id` / `printerId` / `payload` / `expiresAt` keys are aliases retained for backwards
 compatibility with older agents. The agent parser accepts both the current envelope and a legacy
@@ -89,8 +96,15 @@ is written. "Sent" is therefore never confused with "executed".
 * When the socket is down, the agent polls `GET /api/agent/jobs` every 10 s.
 * While the socket is up, the agent still polls every third tick (~30 s) as a safety net for a lost
   WebSocket delivery.
-* **Delivery lease:** a silent `claimed` job may be reclaimed after `STALE_CLAIM_SECONDS` (90 s).
-  This is a transport-recovery lease only; it does not classify physical printing.
+* A poll claim IS a delivery: the claimed rows are stamped `delivered_at` in
+  the same transaction, because the response carries the payload bytes.
+* **Delivery lease:** a silent `claimed` job with NO delivery evidence
+  (`delivered_at`/`acked_at` both NULL) may be reclaimed under a fresh claim
+  token after `STALE_CLAIM_SECONDS` (90 s). A silent `claimed` job WITH
+  delivery evidence is NEVER requeued - it becomes terminal `failed` with an
+  `UNKNOWN_PARTIAL_DELIVERY` marker (the printer may have received it).
+  The lease is a transport-recovery mechanism only; it does not classify
+  physical printing.
 * **Execution lease:** a silent `printing` job uses the separate `STALE_PRINTING_SECONDS` backstop
   (10 minutes). It is intentionally longer than the normal agent print timeout and is refreshed by
   heartbeat keep-alives while the agent legitimately holds the job.
@@ -105,8 +119,14 @@ is written. "Sent" is therefore never confused with "executed".
   result for a job already succeeded locally instead of physically printing it again.
 * A process crash while the printer is active yields `AGENT_RESTART_DURING_PRINT`; the physical output is
   **UNKNOWN** (full, partial, or none).
-* `agent.reprint_after_crash=false` is the safe default and prevents automatic reprinting of the interrupted
-  operation. `true` explicitly opts into at-least-once reprinting and possible duplicate paper.
+* `agent.reprint_after_crash=false` is the safe default: a duplicate delivery
+  of a job whose previous attempt had an unknown outcome is refused with a
+  re-reported failure, never reprinted. `true` explicitly opts into
+  at-least-once behaviour for duplicate deliveries the gateway still issues
+  (e.g. an undelivered reclaim) and possible duplicate paper. Note the
+  gateway never auto-redelivers a DELIVERED-but-silent claim - those become
+  terminal unknown outcomes that only a deliberate operator reprint may
+  re-issue.
 * The protocol does not claim exactly-once physical printing.
 
 ## 8. Tests

@@ -3,7 +3,7 @@ import { db } from "../../../db";
 import { printJobs } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { isJobStatus } from "../../../lib/job-status";
+import { isJobStatus, derivePhysicalOutcome } from "../../../lib/job-status";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +52,11 @@ export async function GET(req: Request) {
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(printJobs.createdAt))
     .limit(limit);
-  return NextResponse.json(rows);
+  // physicalOutcome is part of the job truth contract (shared with
+  // derivePhysicalOutcome on the agent protocol): "failed" alone must never be
+  // shown as "definitely not printed" when an unknown-outcome marker proves
+  // the printer may have received the job.
+  return NextResponse.json(rows.map((row) => ({ ...row, physicalOutcome: derivePhysicalOutcome(row.status, row.error) })));
 }
 
 export async function DELETE(req: Request) {

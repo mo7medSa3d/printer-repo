@@ -37,10 +37,16 @@ describe("print-job cleanup contract", () => {
     expect(command).toContain('arg("cleanup")');
   });
 
-  it("only deletes terminal records from the Agent local queue", () => {
+  it("only deletes PROVABLY terminal records from the Agent local queue", () => {
     const queue = read("agent/internal/queue/cleanup.go");
-    expect(queue).toContain("status IN ('success', 'failed')");
-    expect(queue).toContain("Queued and");
-    expect(queue).toContain("printing jobs are deliberately preserved");
+    // Unknown-outcome evidence survives cleanup: deleting a row whose last
+    // error carries an UNKNOWN marker would erase the local duplicate-print
+    // protection and the operator's reconciliation record.
+    expect(queue).toContain("status = 'success'");
+    expect(queue).toContain("NOT LIKE 'UNKNOWN_PARTIAL_DELIVERY%'");
+    expect(queue).toContain("NOT LIKE 'AGENT_RESTART_DURING_PRINT%'");
+    const purge = read("agent/cmd/cli/cleanup.go");
+    // purging unknown-outcome evidence is a separate deliberate operation.
+    expect(purge).toContain("--include-unknown");
   });
 });

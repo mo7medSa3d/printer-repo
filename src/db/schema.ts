@@ -26,7 +26,7 @@ export const printers = pgTable("printers", {
   printerType: text("printer_type").notNull().default("physical"),
   deviceClass: text("device_class").notNull().default("unknown"),
   connectionType: text("connection_type").notNull().default("network"),
-  protocol: text("protocol").notNull().default("raw"),
+  protocol: text("protocol").notNull().default("unknown"),
   status: text("status").notNull().default("unknown"),
   lifecycle: text("lifecycle").notNull().default("active"),
   config: jsonb("config").$type<{ ip?: string; port?: number; vid?: number; pid?: number; serial?: string; address?: string; spooler_name?: string; paper_widths?: number[]; color_capable?: boolean; duplex_capable?: boolean; }>(),
@@ -42,7 +42,7 @@ export const printers = pgTable("printers", {
   printerTypeCheck: check("printers_type_check", sql`${table.printerType} in ('physical','virtual','redirected')`),
   deviceClassCheck: check("printers_device_class_check", sql`${table.deviceClass} in ('thermal','laser','inkjet','label','other','unknown')`),
   connectionTypeCheck: check("printers_connection_type_check", sql`${table.connectionType} in ('network','usb','spooler','ipp','ipps')`),
-  protocolCheck: check("printers_protocol_check", sql`${table.protocol} in ('raw','escpos','ipp','ipps','spooler')`),
+  protocolCheck: check("printers_protocol_check", sql`${table.protocol} in ('raw','escpos','zpl','tspl','ipp','ipps','spooler','unknown')`),
   statusCheck: check("printers_status_check", sql`${table.status} in ('online','offline','busy','error','unknown')`),
 }));
 
@@ -141,6 +141,7 @@ export const printJobs = pgTable("print_jobs", {
   idempotencyKey: text("idempotency_key"),
   retries: integer("retries").notNull().default(0),
   claimedAt: timestamp("claimed_at"),
+  claimToken: text("claim_token"),
   deliveryAttempts: integer("delivery_attempts").notNull().default(0),
   deliveredAt: timestamp("delivered_at"),
   ackedAt: timestamp("acked_at"),
@@ -158,6 +159,16 @@ export const printJobs = pgTable("print_jobs", {
   statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
   retriesCheck: check("print_jobs_retries_check", sql`${table.retries} >= 0`),
   deliveryAttemptsCheck: check("print_jobs_delivery_attempts_check", sql`${table.deliveryAttempts} >= 0`),
+  // Mirrors validatePrintJobPayload: the type/protocol contract is enforced at
+  // the database boundary too (0024, NOT VALID so pre-existing rows are kept).
+  // COALESCE keeps this predicate two-valued: an absent/NULL protocol must
+  // FAIL raw/escpos rows, never evaluate to UNKNOWN (CHECKs accept UNKNOWN).
+  payloadContractCheck: check("print_jobs_payload_contract_check", sql`jsonb_typeof(${table.payload}) = 'object' AND (
+    (${table.payload}->>'type' = 'raw' AND COALESCE(${table.payload}->>'protocol', '') in ('raw','escpos','zpl','tspl'))
+    OR (${table.payload}->>'type' = 'escpos' AND COALESCE(${table.payload}->>'protocol', '') = 'escpos')
+    OR (${table.payload}->>'type' = 'pdf' AND COALESCE(${table.payload}->>'protocol', '') = '')
+    OR (${table.payload}->>'type' = 'image' AND COALESCE(${table.payload}->>'protocol', '') = '')
+  )`),
 }));
 
 // Operational Prometheus counter store. Created by migration 0015 and written

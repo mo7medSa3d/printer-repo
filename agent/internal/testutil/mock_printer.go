@@ -134,9 +134,9 @@ func (m *MockTCPPrinter) Reset() {
 	m.mu.Unlock()
 }
 
-func (m *MockTCPPrinter) SetDelay(d time.Duration) { m.delay = d }
-func (m *MockTCPPrinter) SetAcceptFail(v bool)    { m.acceptFail = v }
-func (m *MockTCPPrinter) SetDisconnectAfter(n int) { m.disconnectAfter = n }
+func (m *MockTCPPrinter) SetDelay(d time.Duration)  { m.delay = d }
+func (m *MockTCPPrinter) SetAcceptFail(v bool)      { m.acceptFail = v }
+func (m *MockTCPPrinter) SetDisconnectAfter(n int)  { m.disconnectAfter = n }
 func (m *MockTCPPrinter) SetPartialReadLimit(n int) { m.partialReadLimit = n }
 
 func (m *MockTCPPrinter) Close() error {

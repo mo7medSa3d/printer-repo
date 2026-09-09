@@ -124,7 +124,7 @@ export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expire
       const schema = getOrCreateWorkerSchema();
       if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
       await client.query("BEGIN");
-      await client.query(`INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, 'receipt', $3, $4, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($5 || ' milliseconds')::interval)`, [jobId, f.destination, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
+      await client.query(`INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, 'receipt', $3, $4, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($5 || ' milliseconds')::interval)`, [jobId, f.destination, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
       await client.query("COMMIT");
     } catch (error) { try { await client.query("ROLLBACK"); } catch {} throw error; }
     finally { try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {} }

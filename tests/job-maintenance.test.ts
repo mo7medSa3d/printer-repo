@@ -32,7 +32,7 @@ suite("server-side print job maintenance", () => {
   async function insertJob(id: string, status: string, retries = 0, ageSeconds = 120, expiresOffsetSeconds = 3600) {
     await pool().query(
       `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, retries, claimed_at, delivered_at, acked_at, expires_at, created_at, updated_at)
-       VALUES ($1, $2, 'receipt', $3, $4, $5, '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, $6, now() - make_interval(secs => $7), NULL, NULL, now() + make_interval(secs => $8), now() - make_interval(secs => $7), now() - make_interval(secs => $7))`,
+       VALUES ($1, $2, 'receipt', $3, $4, $5, '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, $6, now() - make_interval(secs => $7), NULL, NULL, now() + make_interval(secs => $8), now() - make_interval(secs => $7), now() - make_interval(secs => $7))`,
       [id, f.destination, f.agentId, f.printerId, status, retries, ageSeconds, expiresOffsetSeconds],
     );
   }

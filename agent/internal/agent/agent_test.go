@@ -114,7 +114,9 @@ func (f *fakePrinter) Print(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (f *fakePrinter) Test(ctx context.Context) error { return f.Print(ctx, []byte(jobIDPrefix+"test")) }
+func (f *fakePrinter) Test(ctx context.Context) error {
+	return f.Print(ctx, []byte(jobIDPrefix+"test"))
+}
 
 func (f *fakePrinter) Status() string {
 	if f.status != "" {
@@ -167,7 +169,7 @@ func newTestAgent(t *testing.T, printerID string, p printer.Printer) *Agent {
 		t.Fatalf("New: %v", err)
 	}
 	ag.printers = map[string]printer.Printer{printerID: p}
-	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100"}}
+	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}}
 	t.Cleanup(func() {
 		server.Close()
 		if err := ag.Close(); err != nil {
@@ -253,8 +255,8 @@ func TestDifferentPrintersConcurrent(t *testing.T) {
 	defer func() { _ = ag.Close() }()
 	ag.printers = map[string]printer.Printer{"p1": p1, "p2": p2}
 	ag.printerConfigs = map[string]config.PrinterConfig{
-		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100"},
-		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101"},
+		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"},
+		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101", Protocol: "raw"},
 	}
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -435,9 +437,9 @@ func TestDifferentJobsAcrossThreePrintersConcurrent(t *testing.T) {
 	defer func() { _ = ag.Close() }()
 	ag.printers = map[string]printer.Printer{"p1": p1, "p2": p2, "p3": p3}
 	ag.printerConfigs = map[string]config.PrinterConfig{
-		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100"},
-		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101"},
-		"p3": {ID: "p3", Name: "P3", Type: "network", Endpoint: "127.0.0.1:9102"},
+		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"},
+		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101", Protocol: "raw"},
+		"p3": {ID: "p3", Name: "P3", Type: "network", Endpoint: "127.0.0.1:9102", Protocol: "raw"},
 	}
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -508,7 +510,7 @@ func TestTTLExpiredSkipped(t *testing.T) {
 	ctx := context.Background()
 	job := map[string]interface{}{
 		"id": "expired_job", "printerId": "p1",
-		"payload": makeJobPayload("expired_job"),
+		"payload":   makeJobPayload("expired_job"),
 		"expiresAt": time.Now().Add(-time.Minute).Format(time.RFC3339),
 	}
 	ag.processJob(ctx, job)
@@ -523,7 +525,7 @@ func TestDuplicateSkippedAfterSuccess(t *testing.T) {
 	ctx := context.Background()
 	job := map[string]interface{}{
 		"id": "dup_job", "printerId": "p1",
-		"payload": makeJobPayload("dup_job"),
+		"payload":   makeJobPayload("dup_job"),
 		"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
 	}
 	ag.processJob(ctx, job)

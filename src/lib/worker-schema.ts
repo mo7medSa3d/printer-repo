@@ -14,9 +14,10 @@ export function getWorkerSchema(): string | null {
   // Only the multi-instance integration test may explicitly hand a worker
   // schema to a spawned production-like Gateway. Never let an arbitrary
   // production environment silently redirect normal traffic to another
-  // PostgreSQL schema.
+  // PostgreSQL schema: BOTH explicit opt-in flags must be set and the
+  // schema name is restricted to the test_* convention below.
   const forced = process.env.TEST_WORKER_SCHEMA?.trim();
-  const forcedTestRun = process.env.RUN_MULTI_INSTANCE_TEST === "1" && process.env.CI === "true";
+  const forcedTestRun = process.env.RUN_MULTI_INSTANCE_TEST === "1";
   if (forced && forcedTestRun) {
     if (!/^test_[a-z0-9_]+$/i.test(forced) || forced.length > 63) {
       throw new Error("Invalid TEST_WORKER_SCHEMA");

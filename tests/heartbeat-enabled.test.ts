@@ -101,6 +101,7 @@ suite("heartbeat validation and lifecycle preservation", () => {
           deviceClass: "other",
           connectionType: "spooler",
           protocol: "spooler",
+          config: { spooler_name: "NormalizedQueue" },
           status: " OFFLINE ",
         }],
       }),

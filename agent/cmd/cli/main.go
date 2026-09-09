@@ -160,7 +160,7 @@ func handlePrintersSubcommand(args []string, defaultConfigPath string) {
 }
 
 func loadConfigForCLI(configPath string) *struct {
-	cfg *config.Config
+	cfg  *config.Config
 	path string
 } {
 	// Ensure registry dir exists
@@ -170,7 +170,7 @@ func loadConfigForCLI(configPath string) *struct {
 		log.Fatalf("Failed to load config %s: %v", configPath, err)
 	}
 	return &struct {
-		cfg *config.Config
+		cfg  *config.Config
 		path string
 	}{cfg: cfg, path: configPath}
 }
@@ -254,7 +254,7 @@ func handlePrintersAdd(configPath string, args []string) {
 	id := fs.String("id", "", "Stable printer ID (optional, auto-generated)")
 	typ := fs.String("type", "network", "Connection type: network/tcp/usb/spooler/ipp")
 	endpoint := fs.String("endpoint", "", "Endpoint: ip:port for network, spooler name for spooler, usb path for usb")
-	protocol := fs.String("protocol", "raw", "Protocol: raw/escpos/ipp/spooler")
+	protocol := fs.String("protocol", "", "Protocol (REQUIRED for network/usb): raw/escpos/zpl/tspl/ipp/spooler/unknown. No default is guessed")
 	spoolerName := fs.String("spooler-name", "", "Windows spooler name (for spooler type)")
 	printerType := fs.String("device-class", "unknown", "Device class: thermal/laser/inkjet/label/unknown")
 	vid := fs.String("vid", "", "USB VID hex (e.g., 03f0)")

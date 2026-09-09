@@ -23,11 +23,11 @@ type Config struct {
 		URL string `yaml:"url"`
 	} `yaml:"server"`
 	Agent struct {
-		ID               string   `yaml:"id"`
-		Secret           string   `yaml:"secret"`
-		Name             string   `yaml:"name"`
-		PDFPrintCommand  []string `yaml:"pdf_print_command,omitempty"`
-		ReprintAfterCrash *bool   `yaml:"reprint_after_crash,omitempty"`
+		ID                string   `yaml:"id"`
+		Secret            string   `yaml:"secret"`
+		Name              string   `yaml:"name"`
+		PDFPrintCommand   []string `yaml:"pdf_print_command,omitempty"`
+		ReprintAfterCrash *bool    `yaml:"reprint_after_crash,omitempty"`
 	} `yaml:"agent"`
 	Printers []PrinterConfig `yaml:"printers"`
 }
@@ -325,15 +325,59 @@ func (p PrinterConfig) NormalizedType() string {
 	}
 }
 
-func (p PrinterConfig) NormalizedProtocol() string {
+// NormalizedProtocol returns the EXPLICITLY declared protocol for the
+// device. An empty protocol is an error, never a silent default: inventing
+// "raw" would turn an unconfigured device into a routable byte sink and
+// would skip ESC/POS status preflight (see the strict protocol contract in
+// docs/ and src/lib/routing.ts on the gateway side, which mirrors this).
+func (p PrinterConfig) NormalizedProtocol() (string, error) {
 	proto := strings.ToLower(strings.TrimSpace(p.Protocol))
 	if proto == "" {
-		return "raw"
+		switch nt := p.NormalizedConnectionTypeStrict(); nt {
+		case "spooler":
+			// A spooler queue carries its own transport identity.
+			return "spooler", nil
+		case "ipp", "ipps":
+			return nt, nil
+		default:
+			return "", fmt.Errorf("printer %s: protocol must be declared explicitly (raw, escpos, zpl, tspl, ipp, ipps, spooler, or unknown)", p.ID)
+		}
 	}
 	if proto == "windows_spooler" {
-		return "spooler"
+		return "spooler", nil
+	}
+	switch proto {
+	case "raw", "escpos", "zpl", "tspl", "ipp", "ipps", "spooler", "unknown":
+		return proto, nil
+	default:
+		return "", fmt.Errorf("printer %s: unsupported protocol %q", p.ID, p.Protocol)
+	}
+}
+
+// NormalizedProtocolOrUnknown is used by REPORTING paths (heartbeat,
+// diagnostics) that must never fail the whole agent because ONE printer has
+// an undeclared protocol: undeclared reports honestly as "unknown", which
+// the gateway capability model refuses to route to.
+func (p PrinterConfig) NormalizedProtocolOrUnknown() string {
+	proto, err := p.NormalizedProtocol()
+	if err != nil {
+		return "unknown"
 	}
 	return proto
+}
+
+// NormalizedConnectionTypeStrict returns the declared connection type
+// WITHOUT inventing one for the empty case.
+func (p PrinterConfig) NormalizedConnectionTypeStrict() string {
+	t := p.ConnectionType
+	if t == "" {
+		t = p.Type
+	}
+	t = strings.ToLower(strings.TrimSpace(t))
+	if t == "tcp" {
+		return "network"
+	}
+	return t
 }
 
 func (p PrinterConfig) IsEnabled() bool {
@@ -359,12 +403,11 @@ func ValidatePrinterConfig(p PrinterConfig) error {
 	default:
 		return fmt.Errorf("printer %s: type must be network/usb/spooler/ipp/ipps, got %q", p.ID, p.Type)
 	}
-	proto := p.NormalizedProtocol()
-	switch proto {
-	case "raw", "escpos", "ipp", "ipps", "spooler", "":
-	default:
-		return fmt.Errorf("printer %s: protocol must be raw/escpos/ipp/ipps/spooler, got %q", p.ID, p.Protocol)
+	proto, perr := p.NormalizedProtocol()
+	if perr != nil {
+		return perr
 	}
+	_ = proto
 	if nt == "network" || nt == "ipp" || nt == "ipps" {
 		ep := p.Endpoint
 		if nt == "ipp" && ep == "" {

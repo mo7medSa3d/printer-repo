@@ -59,7 +59,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.27.1'
+          # Pinned to agent/go.mod so the CI toolchain can never drift from
+          # the module's declared Go version.
+          go-version-file: agent/go.mod
           cache: true
           cache-dependency-path: agent/go.sum
       - name: Install dependencies
@@ -142,6 +144,10 @@ jobs:
         run: npm run test:integration -- --run tests/multi-instance-gateway.test.ts
       - name: Run complete test suite
         run: npm test
+      - name: Go formatting gate
+        working-directory: agent
+        run: |
+          test -z "$(gofmt -l .)" || { echo 'gofmt required on:'; gofmt -l .; exit 1; }
       - name: Go vet
         working-directory: agent
         run: go vet ./...
@@ -185,7 +191,10 @@ jobs:
       - name: Install and test addon on Odoo 19 Community
         run: |
           docker pull odoo:19.0
-          docker run --rm --network host \
+          # The container's exit code alone is NOT sufficient evidence: a
+          # regression that collects ZERO tests also exits 0. The log is
+          # asserted below for the unittest summary line.
+          docker run --rm --network host --name odoo19_test_run \
             --add-host=db:127.0.0.1 \
             -v "$GITHUB_WORKSPACE/odoo_addons:/mnt/extra-addons:ro" \
             odoo:19.0 \
@@ -196,9 +205,36 @@ jobs:
               --db_user=odoo \
               --db_password=odoo \
               --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
-              --without-demo=1 \
+              --without-demo=all \
               --http-interface=127.0.0.1 \
               --init=print_gateway \
               --test-tags=/print_gateway \
               --stop-after-init \
-              --log-level=test
+              --log-level=test 2>&1 | tee /tmp/odoo19_test.log
+      - name: Assert the Odoo addon tests actually ran and passed
+        run: |
+          set -euo pipefail
+          # unittest prints "Ran N tests in ...s" exactly once when the suite
+          # executed. Missing summary or zero tests = vacuous green.
+          ran_line="$(grep -E 'Ran [0-9]+ tests' /tmp/odoo19_test.log | tail -1 || true)"
+          if [ -z "$ran_line" ]; then
+            echo 'ERROR: no unittest summary found - the Odoo test suite did not run.'
+            tail -50 /tmp/odoo19_test.log || true
+            exit 1
+          fi
+          count="$(echo "$ran_line" | grep -oE '[0-9]+' | head -1)"
+          echo "$ran_line"
+          if [ "$count" -lt 20 ]; then
+            echo "ERROR: only $count Odoo tests ran; expected the full print_gateway suite (>=20)."
+            exit 1
+          fi
+          # A skip that never runs the production assertion is a silent
+          # coverage hole: unittest prints OK (skipped=N) and exits 0.
+          if grep -Eo 'skipped=[0-9]+' /tmp/odoo19_test.log | grep -Ev 'skipped=0$'; then
+            echo 'ERROR: the Odoo suite skipped tests; required production tests must not silently disappear.'
+            exit 1
+          fi
+          if grep -E '^(FAILED|CRITICAL)' /tmp/odoo19_test.log; then
+            echo 'ERROR: Odoo test suite reported failures.'
+            exit 1
+          fi

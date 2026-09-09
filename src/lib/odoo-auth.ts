@@ -31,10 +31,6 @@ export function generateOdooApiKey(): { raw: string; hashed: string; id: string 
   return { raw, hashed: hashKey(raw), id: `key_${randomBytes(8).toString("hex")}` };
 }
 
-export function hashOdooKey(raw: string): string {
-  return hashKey(raw);
-}
-
 function normalizeDocumentType(value: string | null | undefined): string {
   return String(value ?? "").trim().toLowerCase();
 }

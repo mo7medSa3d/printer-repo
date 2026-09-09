@@ -7,22 +7,25 @@ import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { generatePairingCode, hashPairingCode } from "../lib/agent-auth";
-import { buildTestPrintPayload } from "../lib/payload";
+import { buildTestPrintPayloadForPrinter } from "../lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../lib/manager-auth";
 import { createPrintJobForPrinter } from "../lib/print-job-service";
+import { isTerminal, type JobStatus } from "../lib/job-status";
 import { canTransitionLifecycle } from "../lib/lifecycle";
+import { transitionAgentLifecycle, LifecycleConflict } from "../lib/agent-lifecycle";
 import { hasOpenAgentSocket, closeAgentSockets, publishAgentSessionClose } from "../server/ws";
+import { ActionError } from "../lib/action-error";
 
 async function requireManager() {
   const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
   const claims = await validateManagerClaims(token ? verifyManagerToken(token) : null);
-  if (!claims) throw new Error("Unauthorized");
+  if (!claims) throw new ActionError("Your manager session has expired. Sign in again.", 401);
   return claims;
 }
 
 export async function createAgent(name: string) {
   await requireManager();
-  if (typeof name !== "string" || !name.trim() || name.trim().length > 200) throw new Error("invalid agent name");
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 200) throw new ActionError("Agent name must be 1-200 characters.", 400);
   const pairingCode = generatePairingCode();
   const id = `agt_${nanoid(8)}`;
   const expiresAt = new Date(Date.now() + 1000 * 60 * 10);
@@ -38,12 +41,12 @@ export async function createAgent(name: string) {
 
 export async function deleteAgent(id: string) {
   await requireManager();
-  if (typeof id !== "string" || !id.trim()) throw new Error("agent id is required");
+  if (typeof id !== "string" || !id.trim()) throw new ActionError("agent id is required", 400);
   const agentId = id.trim();
 
   // In-memory WebSocket guard: if the agent is actively connected, refuse deletion
   if (hasOpenAgentSocket(agentId)) {
-    throw new Error("Online agents cannot be deleted. The agent must be offline first.");
+    throw new ActionError("This agent is still connected. Stop the agent service first, then delete it.", 409);
   }
 
   await db.transaction(async (tx) => {
@@ -54,13 +57,13 @@ export async function deleteAgent(id: string) {
       WHERE id = ${agentId}
       FOR UPDATE
     `);
-    const agent = (locked as any).rows?.[0] as { id: string; status: string; lifecycle: string } | undefined;
-    if (!agent) throw new Error("Agent not found");
+    const agent = (locked as unknown as { rows?: { id: string; status: string; lifecycle: string }[] }).rows?.[0];
+    if (!agent) throw new ActionError("Agent not found", 404);
     if (agent.status === "online") {
-      throw new Error("Online agents cannot be deleted. The agent must be offline first.");
+      throw new Error("This agent is still connected. Stop the agent service first, then delete it.");
     }
     if (agent.lifecycle === "retired") {
-      throw new Error("Retired agents are kept for audit history and cannot be deleted.");
+      throw new ActionError("Retired agents are kept for audit history and cannot be deleted.", 409);
     }
 
     // Referential integrity: check if this agent or any of its printers have historical print jobs
@@ -76,7 +79,7 @@ export async function deleteAgent(id: string) {
       .where(or(...jobConditions));
 
     if (Number(jobCount ?? 0) > 0) {
-      throw new Error("This agent has print history and cannot be deleted. Retire the agent instead to preserve audit history.");
+      throw new ActionError("This agent has print history and cannot be deleted. Choose Retire instead to preserve the audit history.", 409);
     }
 
     // Clean removable transient discovery runtime records
@@ -92,9 +95,7 @@ export async function deleteAgent(id: string) {
 
   // Terminate any remaining socket connections and publish revocation across cluster
   try { closeAgentSockets(agentId); } catch {}
-  void publishAgentSessionClose(agentId).catch((error) => {
-    console.warn(`[agents] failed to publish session close for ${agentId}:`, error);
-  });
+  void publishAgentSessionClose(agentId).catch(() => { /* best-effort revocation */ });
 
   revalidatePath("/dashboard");
   return { ok: true };
@@ -110,24 +111,67 @@ export async function createPrintJob(printerId: string, payload: unknown) {
 export async function createTestPrintJob(printerId: string) {
   await requireManager();
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
-  if (!printer) throw new Error("Printer not found");
+  if (!printer) throw new ActionError("Printer not found", 404);
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (!agent) throw new Error("Printer owner agent not found");
-  const payload = buildTestPrintPayload(printer.name, agent.name ?? printer.agentId);
-  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager-test" });
+  if (!agent) throw new ActionError("The agent that owns this printer is missing.", 500);
+  const payload = buildTestPrintPayloadForPrinter(printer.name, agent.name ?? printer.agentId, {
+    protocol: printer.protocol,
+    connectionType: printer.connectionType,
+    capabilities: printer.capabilities,
+  });
+  const result = await createPrintJobForPrinter(printerId, payload, {
+    requestedBy: "manager-test",
+    documentType: "test_page",
+  });
   revalidatePath("/dashboard");
   return { id: result.id };
+}
+
+/**
+ * Deliberate operator reprint of an ORIGINAL document after a terminal,
+ * possibly-printed outcome. This re-queues the job's stored payload — it is
+ * NOT a test page — under a deterministic derived idempotency key
+ * ("gw-reprint:{jobId}:{n}") so a double-click cannot create two reprints:
+ * concurrent attempts compute the same key and PostgreSQL's idempotency
+ * unique index collapses them. Like Odoo's action_force_reprint, physical
+ * reprints of unknown outcomes are always an explicit operator action.
+ */
+export async function reprintJob(jobId: string) {
+  await requireManager();
+  if (typeof jobId !== "string" || !jobId.trim()) throw new ActionError("job id is required", 400);
+  const job = await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId.trim()) });
+  if (!job) throw new ActionError("Job not found", 404);
+  if (!isTerminal(job.status as JobStatus)) {
+    throw new ActionError("Only finished, failed, or expired jobs can be reprinted. The current job is still in progress.", 409);
+  }
+  const [attempts] = await db
+    .select({ c: count() })
+    .from(printJobs)
+    .where(sql`idempotency_key LIKE ${`gw-reprint:${job.id}:%`}`);
+  const derivedKey = `gw-reprint:${job.id}:${Number(attempts?.c ?? 0) + 1}`;
+  const result = await createPrintJobForPrinter(job.printerId, job.payload, {
+    requestedBy: "manager-reprint",
+    idempotencyKey: derivedKey,
+    destination: job.destination,
+    documentType: job.documentType ?? undefined,
+  });
+  revalidatePath("/dashboard");
+  return { id: result.id, reused: result.isReused === true };
 }
 
 export async function setPrinterLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
   await requireManager();
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
-  if (!printer) throw new Error("Printer not found");
-  if (!canTransitionLifecycle(printer.lifecycle, lifecycle)) throw new Error(`invalid lifecycle transition: ${printer.lifecycle} -> ${lifecycle}`);
+  if (!printer) throw new ActionError("Printer not found", 404);
+  if (printer.lifecycle === lifecycle) {
+    revalidatePath("/dashboard");
+    return;
+  }
+  if (!canTransitionLifecycle(printer.lifecycle, lifecycle)) throw new ActionError(`This printer cannot go from ${printer.lifecycle} to ${lifecycle}.`, 409);
   if (lifecycle === "active") {
     const owner = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-    if (!owner) throw new Error("Printer owner agent not found");
-    if (owner.lifecycle !== "active") throw new Error(`cannot activate printer while agent is ${owner.lifecycle}`);
+    if (!owner) throw new ActionError("The agent that owns this printer no longer exists.", 404);
+    if (owner.lifecycle !== "active") throw new ActionError(`The agent owning this printer is ${owner.lifecycle}; reactivate the agent first.`, 409);
   }
   await db.update(printers).set({ lifecycle, updatedAt: new Date() }).where(eq(printers.id, id));
   revalidatePath("/dashboard");
@@ -135,30 +179,13 @@ export async function setPrinterLifecycle(id: string, lifecycle: "active" | "dis
 
 export async function setAgentLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
   await requireManager();
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
-  if (!agent) throw new Error("Agent not found");
-  if (agent.lifecycle === "retired" && lifecycle !== "retired") throw new Error("retired agent is terminal");
-  if (!canTransitionLifecycle(agent.lifecycle, lifecycle)) throw new Error(`invalid lifecycle transition: ${agent.lifecycle} -> ${lifecycle}`);
-  const reenable = agent.lifecycle === "disabled" && lifecycle === "active";
-  const pairingCode = reenable ? generatePairingCode() : null;
-  const pairingCodeHash = pairingCode ? hashPairingCode(pairingCode) : null;
-  await db.transaction(async (tx) => {
-    await tx.update(agents).set({
-      lifecycle, secret: null,
-      pairingCodeHash,
-      pairingCodeExpiresAt: pairingCode ? new Date(Date.now() + 1000 * 60 * 10) : null,
-      status: "offline", updatedAt: new Date(),
-    }).where(eq(agents.id, id));
-    if (lifecycle !== "active") {
-      await tx.update(printers).set({ lifecycle: "disabled", updatedAt: new Date() }).where(eq(printers.agentId, id));
-    }
-  });
-  if (lifecycle !== "active") {
-    try { closeAgentSockets(id); } catch {}
-    void publishAgentSessionClose(id).catch((error) => {
-      console.warn(`[agents] failed to publish session close for ${id}:`, error);
-    });
+  try {
+    const result = await transitionAgentLifecycle(id, lifecycle);
+    if (!result) throw new ActionError("Agent not found", 404);
+    revalidatePath("/dashboard");
+    return { lifecycle: result.lifecycle, pairingCode: result.pairingCode };
+  } catch (error) {
+    if (error instanceof LifecycleConflict) throw new ActionError(error.message, 409);
+    throw error;
   }
-  revalidatePath("/dashboard");
-  return reenable ? { pairingCode } : undefined;
 }

@@ -4,15 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	_ "image/jpeg"
 	"image/color"
 	"image/jpeg"
+	_ "image/jpeg"
 	"math"
 )
 
 const (
-	maxRasterWidth           = 576
-	DefaultRasterSliceHeight = 256
+	maxRasterWidth             = 576
+	DefaultRasterSliceHeight   = 256
 	LowBufferRasterSliceHeight = 128
 )
 

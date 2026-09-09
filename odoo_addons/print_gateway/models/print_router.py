@@ -474,12 +474,14 @@ class PrintGatewayRouter(models.AbstractModel):
             target_binding = binding
             target_destination = binding.destination_ref or destination
 
-        # Binding Protocol Authorization
+        # Binding Protocol Authorization: EXACT match. A 'raw' binding is a
+        # generic byte sink; it does not thereby accept zpl/tspl/escpos. An
+        # 'unknown' binding is never routable.
         if target_binding and getattr(target_binding, "printer_protocol", False):
             binding_proto = target_binding.printer_protocol
-            if binding_proto and binding_proto != "raw" and binding_proto != protocol:
+            if binding_proto != protocol:
                 raise ValidationError(
-                    _("Protocol mismatch: Binding '%s' expects %s but job requested %s.")
+                    _("Protocol mismatch: Binding '%s' is declared %s but this job is %s; protocols must match exactly (there is no wildcard).")
                     % (target_binding.display_name, binding_proto, protocol)
                 )
 
@@ -494,12 +496,13 @@ class PrintGatewayRouter(models.AbstractModel):
             "data": base64.b64encode(raw_bytes).decode("ascii"),
             "protocol": protocol,
         }
-        if target_binding:
-            payload["peripherals"] = {
-                "drawer": target_binding.drawer_kick_mode if target_binding.drawer_kick_mode != "none" else "none",
-                "cutter": target_binding.cutter_mode if target_binding.cutter_mode != "none" else "none",
-                "buzzer": target_binding.buzzer_mode if target_binding.buzzer_mode != "none" else "none",
-            }
+        # Peripherals are ESC/POS hardware commands: they are attached ONLY
+        # for escpos jobs, and ONLY the ACTIVE settings (inactive ones are
+        # omitted entirely rather than serialized as "none" actions).
+        if target_binding and protocol == "escpos":
+            periph = target_binding.get_peripheral_payload()
+            if periph:
+                payload["peripherals"] = periph
 
         # P0.3 Deterministic raw idempotency key
         if not idempotency_key:
@@ -546,7 +549,10 @@ class PrintGatewayRouter(models.AbstractModel):
         if not proto:
             raise ValidationError(_("Printer protocol is required on binding '%s' to send a diagnostic test ticket.") % binding.display_name)
         if proto not in ("zpl", "tspl", "raw", "escpos"):
-            raise ValidationError(_("Unsupported printer protocol '%s' for diagnostic test ticket.") % proto)
+            raise ValidationError(
+                _("No canned diagnostic ticket exists for protocol '%s'. Declare an escpos/zpl/tspl/raw protocol on the printer, or print a real report through the Gateway.")
+                % (proto or "unknown")
+            )
         now_str = fields.Datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         company_name = binding.company_id.name
         branch_name = binding.branch_id.name if binding.branch_id else "Default / Root"

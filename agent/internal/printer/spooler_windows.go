@@ -300,9 +300,18 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	select {
 	case <-ctx.Done():
 		close(cancelNotice)
-		// Return immediately without touching Win32 handle.
-		// Worker manages its own handle lifecycle and closes it safely upon return.
-		return fmt.Errorf("spooler print cancelled: %w", ctx.Err())
+		// The worker may already be past WritePrinter. Wait a bounded time
+		// for its authoritative result; whatever it reports (including
+		// UNKNOWN_PARTIAL_DELIVERY from a mid-write cancel) is returned as
+		// is. If the Win32 call never returns, the outcome is unknown BY
+		// DEFINITION and must be reported as such — never as a clean
+		// not-printed failure, which would invite a duplicate reprint.
+		select {
+		case res := <-resultCh:
+			return res.err
+		case <-time.After(30 * time.Second):
+			return MarkUnknown("spooler session on %q still active after cancellation (bytes written unknown): %v", p.SpoolerName, ctx.Err())
+		}
 	case res := <-resultCh:
 		if res.err != nil {
 			return res.err
@@ -391,27 +400,27 @@ func (p *SpoolerPrinter) Status() string {
 }
 
 type printerInfo2 struct {
-	pServerName          *uint16
-	pPrinterName         *uint16
-	pShareName           *uint16
-	pPortName            *uint16
-	pDriverName          *uint16
-	pComment             *uint16
-	pLocation            *uint16
-	pDevMode             uintptr
-	pSepFile             *uint16
-	pPrintProcessor      *uint16
-	pDatatype            *uint16
-	pParameters          *uint16
-	pSecurityDescriptor  uintptr
-	Attributes           uint32
-	Priority             uint32
-	DefaultPriority      uint32
-	StartTime            uint32
-	UntilTime            uint32
-	Status               uint32
-	cJobs                uint32
-	AveragePPM           uint32
+	pServerName         *uint16
+	pPrinterName        *uint16
+	pShareName          *uint16
+	pPortName           *uint16
+	pDriverName         *uint16
+	pComment            *uint16
+	pLocation           *uint16
+	pDevMode            uintptr
+	pSepFile            *uint16
+	pPrintProcessor     *uint16
+	pDatatype           *uint16
+	pParameters         *uint16
+	pSecurityDescriptor uintptr
+	Attributes          uint32
+	Priority            uint32
+	DefaultPriority     uint32
+	StartTime           uint32
+	UntilTime           uint32
+	Status              uint32
+	cJobs               uint32
+	AveragePPM          uint32
 }
 
 func utf16PtrToString(p *uint16) string {

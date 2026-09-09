@@ -291,5 +291,3 @@ func TestNetworkPrinterPreFlightCheckScenarios(t *testing.T) {
 		})
 	}
 }
-
-

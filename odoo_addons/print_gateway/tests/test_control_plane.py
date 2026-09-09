@@ -331,6 +331,7 @@ class TestControlPlane(TransactionCase):
             "destination_type": "report",
             "destination_report_id": self.primary_binding.destination_report_id.id,
             "report_id": self.primary_binding.report_id.id,
+            "printer_protocol": "escpos",
             "runtime_agent_id": "agent-cp-01",
             "printer_id": "printer-disabled",
             "enabled": False,

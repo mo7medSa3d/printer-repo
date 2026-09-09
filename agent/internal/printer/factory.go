@@ -24,7 +24,7 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 	}
 
 	t := cfg.NormalizedType()
-	proto := cfg.NormalizedProtocol()
+	proto, protoErr := cfg.NormalizedProtocol()
 
 	switch t {
 	case "network":
@@ -37,9 +37,12 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 		case "ipp", "ipps":
 			// Network printer explicitly using IPP protocol -> treat as IPP
 			return NewIPPPrinter(cfg.Endpoint, cfg.Name)
-		case "":
-			return nil, fmt.Errorf("printer %s: network printer requires an explicit protocol (raw, escpos, zpl, tspl, ipp)", cfg.ID)
+		case "unknown":
+			return nil, fmt.Errorf("printer %s: protocol is not declared; the device is inventoried but NOT routable until an operator declares its protocol in agent.yaml", cfg.ID)
 		default:
+			if protoErr != nil {
+				return nil, protoErr
+			}
 			return nil, fmt.Errorf("printer %s: unsupported protocol %q for network printer", cfg.ID, cfg.Protocol)
 		}
 
@@ -54,6 +57,9 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 		return NewSpooler(spoolerName, cfg.Name), nil
 
 	case "usb":
+		if protoErr != nil {
+			return nil, protoErr
+		}
 		// CASE A: USB device has a Windows spooler queue -> use spooler (preferred)
 		if cfg.SpoolerName != "" {
 			return NewSpooler(cfg.SpoolerName, cfg.Name), nil

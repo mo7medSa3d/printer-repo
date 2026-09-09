@@ -61,6 +61,9 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 	for written < len(data) {
 		select {
 		case <-ctx.Done():
+			if written > 0 {
+				return MarkUnknown("print cancelled after %d/%d bytes: %v", written, len(data), ctx.Err())
+			}
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 		default:
 		}
@@ -71,9 +74,15 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 		}
 		err := windows.WriteFile(h, chunk, &n, nil)
 		if err != nil {
+			if written > 0 {
+				return MarkUnknown("WriteFile to %s failed after %d/%d bytes: %v", p.DevicePath, written, len(data), err)
+			}
 			return fmt.Errorf("WriteFile to %s failed after %d/%d bytes: %w", p.DevicePath, written, len(data), err)
 		}
 		if n == 0 {
+			if written > 0 {
+				return MarkUnknown("WriteFile to %s wrote 0 bytes after %d/%d", p.DevicePath, written, len(data))
+			}
 			return fmt.Errorf("WriteFile to %s wrote 0 bytes", p.DevicePath)
 		}
 		written += int(n)

@@ -22,7 +22,6 @@ func getCurrentUserSID() (string, error) {
 	return u.User.Sid.String(), nil
 }
 
-
 // BuildSecureSDDL returns the appropriate SDDL depending on whether the directory is
 // a per-user directory (%LOCALAPPDATA% / %USERPROFILE%) or a system-wide service directory (%ProgramData%).
 func BuildSecureSDDL(path string) (string, error) {

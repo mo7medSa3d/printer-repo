@@ -96,8 +96,16 @@ class PrintGatewayBinding(models.Model):
         ("zpl", "Zebra ZPL-II"),
         ("tspl", "TSC TSPL"),
         ("raw", "Raw Text/Binary"),
-    ], string="Printer Protocol", default="escpos", required=True,
-       help="Hardware control language understood by the printer.")
+        ("spooler", "Windows/macOS Document Spool (driver-rendered)"),
+        ("ipp", "IPP"),
+        ("ipps", "IPP over TLS"),
+        ("unknown", "Not declared (not routable)"),
+    ], string="Printer Protocol", required=True,
+       help="Hardware control language the printer ACTUALLY understands. "
+            "There is deliberately no default: declaring the protocol is an "
+            "explicit operator statement, and 'unknown' keeps the binding "
+            "inventoried but unroutable. Byte protocols never wildcard: a "
+            "'raw' printer does not accept zpl/tspl/escpos jobs.")
     fallback_binding_id = fields.Many2one(
         "print_gateway.binding", string="Failover Backup Binding", ondelete="set null",
         domain="['&', ('id', '!=', id), ('company_id', '=', company_id)]",
@@ -247,7 +255,7 @@ class PrintGatewayBinding(models.Model):
             raise ValidationError(_("The selected Gateway Runtime Agent is not found."))
         if agent_match.get("lifecycle") != "active":
             raise ValidationError(
-                _("Agent '%s' cannot be assigned because its status is '%s'. Only active agents are allowed.")
+                _("Agent '%s' cannot be assigned because its lifecycle is '%s'. Only agents with lifecycle 'active' may receive print jobs.")
                 % (agent_match.get("name") or self.runtime_agent_id, agent_match.get("lifecycle"))
             )
         try:
@@ -265,7 +273,7 @@ class PrintGatewayBinding(models.Model):
             raise ValidationError(_("The selected Gateway Runtime Printer is not found."))
         if printer_match.get("lifecycle") != "active":
             raise ValidationError(
-                _("Printer '%s' cannot be assigned because its status is '%s'. Only active printers are allowed.")
+                _("Printer '%s' cannot be assigned because its lifecycle is '%s'. Only printers with lifecycle 'active' may receive print jobs.")
                 % (printer_match.get("name") or self.printer_id, printer_match.get("lifecycle"))
             )
         selected_printer = printer_match
@@ -343,14 +351,21 @@ class PrintGatewayBinding(models.Model):
         }
 
     def action_verify_remote_hardware(self):
+        """Validate the CONTROL-PLANE registration, not hardware reachability.
+
+        This checks that the agent and printer exist on the Gateway with
+        lifecycle 'active' and belong together. It deliberately does not
+        claim anything about the device being powered on or answering -
+        that is what Send Test Page is for.
+        """
         self.ensure_one()
         self._validate_runtime_target()
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",
             "params": {
-                "title": _("Hardware Verification"),
-                "message": _("Gateway runtime agent (%s) and printer (%s) are reachable and verified active.") % (self.runtime_agent_id, self.printer_id),
+                "title": _("Registration Validated"),
+                "message": _("Gateway registration is consistent: agent '%s' and printer '%s' are registered and active. This is a control-plane check, not a live hardware test - use Send Test Page to validate the physical path.") % (self.runtime_agent_id, self.printer_id),
                 "type": "success",
                 "sticky": False,
             },
@@ -542,7 +557,7 @@ class PrintGatewayBinding(models.Model):
                 "dispatched": False,
                 "success": False,
                 "has_binding": True,
-                "error": "An error occurred during print dispatch.",
+                "error": "Print dispatch failed. Open Print Jobs for the reason; the document was not sent.",
                 "fail_closed": True,
             }
 

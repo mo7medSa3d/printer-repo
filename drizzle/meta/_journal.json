@@ -25,6 +25,8 @@
     {"idx":20,"version":"7","when":1788739200002,"tag":"0020_remove_gateway_business_ownership","breakpoints":false},
     {"idx":21,"version":"7","when":1788739200003,"tag":"0021_scope_print_jobs_to_api_key","breakpoints":false},
     {"idx":22,"version":"7","when":1788739200004,"tag":"0022_pairing_code_hash","breakpoints":false},
-    {"idx":23,"version":"7","when":1788739200005,"tag":"0023_internal_print_job_idempotency","breakpoints":false}
+    {"idx":23,"version":"7","when":1788739200005,"tag":"0023_internal_print_job_idempotency","breakpoints":false},
+    {"idx":24,"version":"7","when":1788825600000,"tag":"0024_claim_fencing_and_payload_contract","breakpoints":false},
+    {"idx":25,"version":"7","when":1788825600001,"tag":"0025_constraint_scope_and_protocol_contract_fix","breakpoints":false}
   ]
 }

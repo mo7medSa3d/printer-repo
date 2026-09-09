@@ -53,8 +53,13 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
 
     ws.send(JSON.stringify({ type: "job_ack", jobId: created.jobId }));
     await expect.poll(async () => (await jobRow(created.jobId)).acked_at !== null, { timeout: 5000 }).toBe(true);
-    const patch = (status: string) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status }) }));
+    // Execution fencing: every status report must carry the claim token the
+    // gateway attached to THIS delivery attempt.
+    expect(envelope.job.claimToken).toMatch(/.{8,}/);
+    const patch = (status: string, token: string | null = envelope.job.claimToken) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status, ...(token ? { claimToken: token } : {}) }) }));
     expect((await patch("printing")).status).toBe(200);
+    // A superseded/forged token can never finalize the job.
+    expect((await patch("success", "stale-token-from-a-dead-attempt")).status).toBe(409);
     expect((await patch("success")).status).toBe(200);
     const statusRes = await printJobsGET(new Request(`http://gateway.test/api/print/jobs?id=${created.jobId}`, { headers: { Authorization: `Bearer ${f.odooKey}` } }));
     expect(statusRes.status).toBe(200);
@@ -95,8 +100,15 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0].id).toBe(created.jobId);
     expect(jobs[0].status).toBe("claimed");
-    expect((await jobRow(created.jobId)).delivered_at).toBeNull();
-    expect((await agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status: "printing" }) }))).status).toBe(200);
+    expect(jobs[0].claimToken).toMatch(/.{8,}/);
+    // The poll response itself IS the delivery: claimed rows are stamped
+    // delivered_at so the stale-claim sweep can never silently re-deliver a
+    // job the agent already holds (double-print protection).
+    expect((await jobRow(created.jobId)).delivered_at).not.toBeNull();
+    const pollPatch = (status: string, token?: string) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status, ...(token ? { claimToken: token } : {}) }) }));
+    // Fenced: reporting without the claim token is rejected.
+    expect((await pollPatch("printing")).status).toBe(409);
+    expect((await pollPatch("printing", jobs[0].claimToken)).status).toBe(200);
     await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId }));
     const row = await jobRow(created.jobId);
     expect(row.acked_at).not.toBeNull();

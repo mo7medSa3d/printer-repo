@@ -14,6 +14,11 @@ var (
 	ErrPrinterPaperOut  = fmt.Errorf("%w: ERR_PRINTER_PAPER_OUT", ErrPrinterNotReady)
 	ErrPrinterOffline   = fmt.Errorf("%w: ERR_PRINTER_OFFLINE", ErrPrinterNotReady)
 	ErrPrinterCoverOpen = fmt.Errorf("%w: ERR_PRINTER_COVER_OPEN", ErrPrinterNotReady)
+	// ErrPrinterStatusUnsupported means the device accepted TCP but the
+	// status inquiry produced no usable answer (unidirectional transport,
+	// print server that swallows the back-channel, or a hung device). It is
+	// explicitly NOT health: callers must never map it to "ready".
+	ErrPrinterStatusUnsupported = errors.New("ERR_PRINTER_STATUS_UNSUPPORTED")
 )
 
 // ESC/POS DLE EOT status inquiry command bytes.
@@ -133,11 +138,15 @@ func PreFlightHealthCheck(ctx context.Context, address string) error {
 
 	_, err = QueryHealthStatus(conn)
 	if err != nil {
-		// If TCP connection succeeded but status query read timed out,
-		// the printer or print server is unidirectional. Do not block delivery.
+		// The device answered TCP but not the status inquiry (timeout). This
+		// is NOT proof of health — it is reported honestly as
+		// status-unsupported. The caller may still choose to transmit (a
+		// hung device will then surface as a write failure classified with
+		// UNKNOWN_PARTIAL_DELIVERY), but it can never pretend the device was
+		// verified ready, and Status()/heartbeat report "unknown".
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil
+			return fmt.Errorf("%w: status inquiry on %s got no usable answer: %v", ErrPrinterStatusUnsupported, address, err)
 		}
 		return err
 	}

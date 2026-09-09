@@ -1,17 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { validatePayloadForPrinter, isPrinterAvailableForJob, isAgentAvailableForPrinter } from "../src/lib/routing";
 
+/**
+ * The capability model is EXPLICIT: protocols never wildcard, missing
+ * protocols never default, and byte-stream payloads are accepted only by
+ * devices that declare that same protocol (directly or via
+ * supported_protocols capabilities).
+ */
 describe("runtime routing capability and availability", () => {
-  it("allows image payloads for printers that advertise image support", () => {
-    expect(validatePayloadForPrinter("image", {
+  it("rejects a raw payload that does not declare an explicit protocol", () => {
+    const result = validatePayloadForPrinter({ type: "raw" }, {
+      protocol: "raw",
+      connectionType: "network",
+      capabilities: { supported_protocols: ["raw"] },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("must declare an explicit protocol");
+  });
+
+  it("accepts image payloads for printers whose transport can render them", () => {
+    expect(validatePayloadForPrinter({ type: "image" }, {
       protocol: "ipp",
       connectionType: "ipp",
       capabilities: { supported_protocols: ["pdf", "image"] },
     }).ok).toBe(true);
+    // An explicitly ESC/POS device raster-converts JPEGs.
+    expect(validatePayloadForPrinter({ type: "image" }, {
+      protocol: "escpos",
+      connectionType: "network",
+      capabilities: null,
+    }).ok).toBe(true);
   });
 
   it("rejects image payloads when the printer explicitly lacks image support", () => {
-    const result = validatePayloadForPrinter("image", {
+    const result = validatePayloadForPrinter({ type: "image" }, {
       protocol: "ipp",
       connectionType: "ipp",
       capabilities: { supported_protocols: ["pdf"] },
@@ -20,15 +42,46 @@ describe("runtime routing capability and availability", () => {
     if (!result.ok) expect(result.reason).toContain("CAPABILITY_MISMATCH");
   });
 
-  it("allows raw and escpos bytes for raw/spooler-compatible transports", () => {
-    expect(validatePayloadForPrinter("raw", { protocol: "raw", connectionType: "network" }).ok).toBe(true);
-    expect(validatePayloadForPrinter("escpos", { protocol: "raw", connectionType: "network" }).ok).toBe(true);
-    expect(validatePayloadForPrinter("raw", { protocol: "spooler", connectionType: "spooler" }).ok).toBe(true);
+  it("never lets a raw device act as a protocol wildcard", () => {
+    // Generic RAW bytes require a device declared raw.
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "raw" }, { protocol: "raw", connectionType: "network" }).ok).toBe(true);
+    // ...but ZPL/TSPL/ESC/POS bytes do NOT ride the generic raw channel.
+    for (const proto of ["zpl", "tspl", "escpos"]) {
+      const r = validatePayloadForPrinter({ type: "raw", protocol: proto }, {
+        protocol: "raw",
+        connectionType: "network",
+        capabilities: { supported_protocols: ["raw"] },
+      });
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it("requires ESC/POS devices for ESC/POS payloads (no spooler wildcard)", () => {
+    expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, { protocol: "escpos", connectionType: "network" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "escpos" }, { protocol: "escpos", connectionType: "network" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, { protocol: "zpl", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, { protocol: "spooler", connectionType: "spooler" }).ok).toBe(false);
+    // unless the operator explicitly declares the capability:
+    expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, {
+      protocol: "spooler", connectionType: "spooler", capabilities: { supported_protocols: ["escpos"] },
+    }).ok).toBe(true);
+  });
+
+  it("requires ZPL/TSPL devices for ZPL/TSPL payloads", () => {
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "zpl" }, { protocol: "zpl", connectionType: "network" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "tspl" }, { protocol: "tspl", connectionType: "network" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "zpl" }, { protocol: "tspl", connectionType: "network" }).ok).toBe(false);
   });
 
   it("requires spooler or IPP transport for PDF", () => {
-    expect(validatePayloadForPrinter("pdf", { protocol: "ipp", connectionType: "ipp" }).ok).toBe(true);
-    expect(validatePayloadForPrinter("pdf", { protocol: "raw", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "ipp", connectionType: "ipp" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "spooler", connectionType: "spooler" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "raw", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "pdf", protocol: "raw" }, { protocol: "spooler", connectionType: "spooler" }).ok).toBe(false);
+  });
+
+  it("treats an undeclared printer protocol as unroutable", () => {
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "raw" }, { protocol: "unknown", connectionType: "network" }).ok).toBe(false);
   });
 
   it("treats lifecycle and online telemetry as hard availability gates", () => {

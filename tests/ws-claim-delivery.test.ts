@@ -4,7 +4,8 @@ import { AddressInfo } from "net";
 import WebSocket from "ws";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, jobRow, closePool, pool, type Fixture } from "./helpers/pg";
 import { attachAgentWSS, claimAndPushJobToAgent } from "../src/server/ws";
-import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
+import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, markJobDelivered, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
+import { sweepPrintJobs } from "../src/lib/job-maintenance";
 import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
 
 const suite = describe.skipIf(!hasTestDatabase);
@@ -82,11 +83,14 @@ suite("WS claim-before-delivery", () => {
     expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "success" }))).status).toBe(409);
     expect((await jobRow("job_t2")).status).toBe("queued");
     const ws = await connectAgent();
-    const delivered = new Promise<void>((resolve) => ws.once("message", resolve));
+    const delivered = new Promise<string>((resolve) => ws.once("message", (d) => resolve(JSON.parse(d.toString()).job.claimToken as string)));
     expect(await claimAndPushJobToAgent({ id: "job_t2", agentId: f.agentId })).toBe("delivered");
-    await delivered;
-    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "printing" }))).status).toBe(200);
-    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "success" }))).status).toBe(200);
+    const token = await delivered;
+    // Reports without (or with a wrong) claim token are fenced out.
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "printing" }))).status).toBe(409);
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "printing", claimToken: token + "wrong" }))).status).toBe(409);
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "printing", claimToken: token }))).status).toBe(200);
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "success", claimToken: token }))).status).toBe(200);
   });
 
   it("without a connected agent, job remains queued", async () => {
@@ -147,6 +151,51 @@ suite("WS claim-before-delivery", () => {
     const [a, b] = await Promise.all([claimJobForDelivery("job_t5", f.agentId), claimJobForDelivery("job_t5", f.agentId)]);
     expect([a, b].filter(Boolean)).toHaveLength(1);
     expect((await jobRow("job_t5")).delivery_attempts).toBe(1);
+  });
+
+  it("fencing: a stale worker cannot finalize a job re-claimed by a new attempt", async () => {
+    // Phase-9 scenario across independent transactions:
+    // worker A claims (token A) and stalls undelivered -> lease expires ->
+    // poll reclaims with a FRESH token -> A's stale reports are rejected by
+    // the DB ownership predicate, while the new holder remains authoritative.
+    await insertQueuedJob(f, "job_fence");
+    const claimA = await claimJobForDelivery("job_fence", f.agentId);
+    expect(claimA?.claimToken).toBeTruthy();
+    await pool().query(`UPDATE print_jobs SET claimed_at = now() - interval '200 seconds', updated_at = now() - interval '200 seconds' WHERE id = 'job_fence'`);
+    const pollRes = await agentJobsGET(agentRequest(f, "GET"));
+    const rows = await pollRes.json();
+    const reclaimed = rows.find((r: any) => r.id === "job_fence");
+    expect(reclaimed).toBeDefined();
+    expect(reclaimed.claimToken).toBeTruthy();
+    expect(reclaimed.claimToken).not.toBe(claimA!.claimToken);
+    // The dead attempt reports success -> rejected, and it does not move the job.
+    const stale = await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_fence", status: "printing", claimToken: claimA!.claimToken }));
+    expect(stale.status).toBe(409);
+    const staleBody = await stale.json();
+    expect(staleBody.code).toBe("STALE_CLAIM");
+    expect((await jobRow("job_fence")).status).toBe("claimed");
+    // The live attempt proceeds normally.
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_fence", status: "printing", claimToken: reclaimed.claimToken }))).status).toBe(200);
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_fence", status: "success", claimToken: reclaimed.claimToken }))).status).toBe(200);
+    expect((await jobRow("job_fence")).status).toBe("success");
+  });
+
+  it("a DELIVERED stale claim is never re-queued; it fails with an unknown-outcome marker", async () => {
+    await insertQueuedJob(f, "job_del_stale");
+    const claim = await claimJobForDelivery("job_del_stale", f.agentId);
+    await markJobDelivered("job_del_stale", f.agentId);
+    await pool().query(`UPDATE print_jobs SET claimed_at = now() - interval '200 seconds', delivered_at = now() - interval '200 seconds', updated_at = now() - interval '200 seconds' WHERE id = 'job_del_stale'`);
+    const sweep = await sweepPrintJobs({ agentId: f.agentId });
+    expect(sweep.silentDeliveries).toBeGreaterThanOrEqual(1);
+    const row = await jobRow("job_del_stale");
+    expect(row.status).toBe("failed");
+    // The marker is what keeps Odoo/desktop from ever calling this "definitely
+    // not printed": it must be terminal and unknown-outcome.
+    expect(row.error).toMatch(/^UNKNOWN_PARTIAL_DELIVERY/);
+    expect(claim?.claimToken).toBeTruthy();
+    // And the poll path must not re-deliver it either.
+    const poll = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    expect(poll.find((r: any) => r.id === "job_del_stale")).toBeUndefined();
   });
 
   it("two concurrent polls do not duplicate jobs", async () => {

@@ -132,7 +132,7 @@ func newAgentAgainst(t *testing.T, serverURL, printerID string, p printer.Printe
 		t.Fatalf("New: %v", err)
 	}
 	ag.printers = map[string]printer.Printer{printerID: p}
-	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100"}}
+	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}}
 	t.Cleanup(func() {
 		if err := ag.Close(); err != nil {
 			t.Logf("Agent.Close: %v", err)

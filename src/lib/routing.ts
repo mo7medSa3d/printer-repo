@@ -8,8 +8,26 @@ export interface PayloadSpec {
   protocol?: string | null;
 }
 
+const BYTE_PROTOCOLS = ["raw", "escpos", "zpl", "tspl"] as const;
+
+/**
+ * Canonical payload/protocol → printer-capability table. This is the ONE
+ * authoritative definition on the gateway side; the Go agent mirrors it
+ * exactly in agent/internal/printer/capability.go, and both sides must be
+ * changed together.
+ *
+ * Precedence rules:
+ *  - An explicit `capabilities.supported_protocols` list is AUTHORITATIVE:
+ *    a device either declares the payload's protocol/capability or it does
+ *    not. There is no wildcard and no protocol inference from absence.
+ *  - Without an explicit list, the device's declared transport protocol
+ *    decides (escpos/zpl/tspl/raw byte sinks; spooler/ipp/ipps document
+ *    transports; escpos devices additionally raster-convert JPEGs).
+ *  - A raw payload with NO protocol is invalid input and never becomes
+ *    "generic compatible" by default — the contract requires explicitness.
+ */
 export function validatePayloadForPrinter(
-  payloadInput: PayloadSpec | string | null | undefined,
+  payloadInput: PayloadSpec | null | undefined,
   printer: {
     protocol?: string | null;
     capabilities?: { supported_protocols?: string[] } | null;
@@ -18,78 +36,62 @@ export function validatePayloadForPrinter(
   },
 ): CapabilityCheckResult {
   if (!payloadInput) return { ok: true };
-  const pt = (typeof payloadInput === "string" ? payloadInput : payloadInput.type).toLowerCase();
-  const payloadProto = typeof payloadInput === "object" && payloadInput?.protocol ? payloadInput.protocol.toLowerCase() : null;
+  const pt = (payloadInput.type ?? "").toLowerCase();
+  const payloadProto = payloadInput.protocol ? payloadInput.protocol.toLowerCase() : null;
   const proto = (printer.protocol ?? "").toLowerCase();
   const conn = (printer.connectionType ?? "").toLowerCase();
-  const supported = printer.capabilities?.supported_protocols?.map((value) => value.toLowerCase());
+  const supported = printer.capabilities?.supported_protocols?.map((value) => String(value).toLowerCase());
+  const hasExplicitCaps = Array.isArray(supported) && supported.length > 0;
+  // The declared protocol is the device's transport family. "unknown"
+  // (undeclared) falls back to the connection type, but NEVER to a
+  // byte-stream default.
+  const family = proto && proto !== "unknown" ? proto : conn;
+  const anyCap = (...names: string[]) => hasExplicitCaps
+    ? names.some((name) => supported!.includes(name))
+    : false;
+  const transport = (...names: string[]) => !hasExplicitCaps && names.includes(family);
 
-  // PDF
+  // PDF: requires a transport that can actually consume/render a document.
   if (pt === "pdf") {
     if (payloadProto) {
       return { ok: false, reason: "CAPABILITY_MISMATCH: pdf payloads cannot specify a printer protocol" };
     }
-    const canSpool = proto === "spooler" || conn === "spooler";
-    const canIpp = ["ipp", "ipps"].includes(proto) || ["ipp", "ipps"].includes(conn);
-    const explicitlySupported = supported?.includes("pdf") || supported?.includes("spooler") || supported?.includes("ipp");
-    if (canSpool || canIpp || explicitlySupported) return { ok: true };
+    if (anyCap("pdf", "spooler", "ipp") || transport("spooler", "ipp", "ipps")) return { ok: true };
     return { ok: false, reason: "CAPABILITY_MISMATCH: pdf requires spooler or IPP transport" };
   }
 
-  // Image
+  // Image: rendered by a driver-backed transport, or raster-converted by an
+  // explicitly ESC/POS-capable device.
   if (pt === "image") {
     if (payloadProto) {
       return { ok: false, reason: "CAPABILITY_MISMATCH: image payloads cannot specify a printer protocol" };
     }
-    const canSpool = proto === "spooler" || conn === "spooler";
-    const explicitlySupported = supported?.includes("image") || supported?.includes("jpeg") || supported?.includes("spooler");
-    if (canSpool || explicitlySupported) return { ok: true };
+    if (anyCap("image", "jpeg", "spooler", "ipp", "escpos") || transport("spooler", "escpos")) return { ok: true };
     return { ok: false, reason: "CAPABILITY_MISMATCH: image payload not supported by printer" };
   }
 
-  // ESC/POS
+  // ESC/POS payload types must declare the escpos protocol — explicitly.
   if (pt === "escpos") {
     if (payloadProto && payloadProto !== "escpos") {
       return { ok: false, reason: `CAPABILITY_MISMATCH: escpos payload cannot use protocol ${payloadProto}` };
     }
-    if (supported?.length) {
-      if (supported.includes("escpos") || supported.includes("spooler") || supported.includes("raw")) return { ok: true };
-      return { ok: false, reason: "CAPABILITY_MISMATCH: printer capabilities do not support escpos" };
-    }
-    return ["escpos", "raw", "spooler"].includes(proto) || conn === "spooler"
-      ? { ok: true }
-      : { ok: false, reason: `CAPABILITY_MISMATCH: escpos incompatible with printer protocol ${proto}` };
+    if (anyCap("escpos") || transport("escpos")) return { ok: true };
+    return { ok: false, reason: `CAPABILITY_MISMATCH: printer does not explicitly support ESC/POS (protocol=${proto || "unknown"})` };
   }
 
-  // RAW
+  // RAW byte streams require an EXPLICIT protocol; there is no default and no
+  // wildcard. The device must declare that same protocol explicitly.
   if (pt === "raw") {
-    const targetProto = payloadProto || "raw";
-    if (targetProto === "zpl" || targetProto === "tspl") {
-      if (supported?.length) {
-        if (supported.includes(targetProto)) return { ok: true };
-        return { ok: false, reason: `CAPABILITY_MISMATCH: printer does not support ${targetProto.toUpperCase()}` };
-      }
-      return proto === targetProto
-        ? { ok: true }
-        : { ok: false, reason: `CAPABILITY_MISMATCH: printer protocol ${proto} does not match required ${targetProto.toUpperCase()}` };
+    if (!payloadProto) {
+      return { ok: false, reason: "CAPABILITY_MISMATCH: raw payloads must declare an explicit protocol (raw, escpos, zpl, or tspl)" };
     }
-    if (targetProto === "escpos") {
-      if (supported?.length) {
-        if (supported.includes("escpos") || supported.includes("spooler") || supported.includes("raw")) return { ok: true };
-        return { ok: false, reason: "CAPABILITY_MISMATCH: printer does not support ESC/POS" };
-      }
-      return ["escpos", "raw", "spooler"].includes(proto) || conn === "spooler"
-        ? { ok: true }
-        : { ok: false, reason: `CAPABILITY_MISMATCH: raw escpos incompatible with printer protocol ${proto}` };
+    if (!(BYTE_PROTOCOLS as readonly string[]).includes(payloadProto)) {
+      return { ok: false, reason: `CAPABILITY_MISMATCH: unsupported raw protocol ${payloadProto}` };
     }
-    // Generic RAW
-    if (supported?.length) {
-      if (supported.includes("raw") || supported.includes("spooler")) return { ok: true };
-      return { ok: false, reason: "CAPABILITY_MISMATCH: printer does not support raw payload" };
-    }
-    return ["raw", "spooler"].includes(proto) || conn === "spooler"
-      ? { ok: true }
-      : { ok: false, reason: `CAPABILITY_MISMATCH: raw incompatible with printer protocol ${proto}` };
+    // raw+escpos is exactly an escpos payload; every other byte protocol is
+    // accepted only by devices that declare it.
+    if (anyCap(payloadProto) || transport(payloadProto)) return { ok: true };
+    return { ok: false, reason: `CAPABILITY_MISMATCH: printer does not explicitly support ${payloadProto.toUpperCase()} (protocol=${proto || "unknown"})` };
   }
 
   return { ok: false, reason: `CAPABILITY_MISMATCH: unsupported payload type ${pt}` };

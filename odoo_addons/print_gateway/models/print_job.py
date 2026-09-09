@@ -84,35 +84,91 @@ class PrintGatewayJob(models.Model):
         "unknown": {"unknown"},
     }
 
+    # Payload kinds recognized in the canonical contract. A payload whose
+    # type is not one of these is malformed input and must fail - it is
+    # never "repaired" into a PDF job.
+    _PAYLOAD_TYPE_MAP = {
+        "raw": "raw_cmd",
+        "escpos": "raw_cmd",
+        "image": "raster_jpeg",
+        "jpeg": "raster_jpeg",
+        "raster_jpeg": "raster_jpeg",
+        "pdf": "pdf",
+    }
+
+    @api.model
+    def _resolve_payload_kind(self, payload_json):
+        """Parse a persisted payload string and resolve its declared kind.
+
+        Strict by contract: unparseable JSON, a non-object, or an unknown
+        ``type`` all raise. There is no silent default.
+        """
+        try:
+            parsed = json.loads(payload_json) if isinstance(payload_json, str) else payload_json
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(_("Print payload is not valid JSON: %s") % exc) from exc
+        if not isinstance(parsed, dict):
+            raise ValidationError(_("Print payload must be a JSON object."))
+        ptype = str(parsed.get("type") or "").strip().lower()
+        if ptype not in self._PAYLOAD_TYPE_MAP:
+            raise ValidationError(
+                _("Unsupported payload type '%s'. Expected one of: %s.")
+                % (ptype or "(missing)", ", ".join(sorted(self._PAYLOAD_TYPE_MAP)))
+            )
+        return parsed, self._PAYLOAD_TYPE_MAP[ptype]
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
+            payload_json = vals.get("payload")
             if "payload_type" not in vals:
-                if "payload" in vals:
-                    try:
-                        p = json.loads(vals["payload"]) if isinstance(vals["payload"], str) else vals["payload"]
-                        pt = p.get("type") if isinstance(p, dict) else None
-                        if pt in ("raw", "escpos"):
-                            vals["payload_type"] = "raw_cmd"
-                            if "protocol" not in vals:
-                                proto = p.get("protocol") if isinstance(p, dict) else None
-                                if pt == "escpos" and not proto:
-                                    proto = "escpos"
-                                vals["protocol"] = proto or False
-                        elif pt in ("image", "jpeg", "raster_jpeg"):
-                            vals["payload_type"] = "raster_jpeg"
-                            vals["protocol"] = False
-                        else:
-                            vals["payload_type"] = "pdf"
-                            vals["protocol"] = False
-                    except Exception:
-                        vals["payload_type"] = "pdf"
-                        vals["protocol"] = False
+                if not payload_json:
+                    raise ValidationError(_("A print job requires a payload."))
+                parsed, resolved_type = self._resolve_payload_kind(payload_json)
+                vals["payload_type"] = resolved_type
+                if resolved_type == "raw_cmd":
+                    # Protocol must be stated explicitly - by the payload,
+                    # by the caller's vals, or not at all (which fails the
+                    # constraint below). It is never inferred from the type.
+                    if "protocol" not in vals or not vals.get("protocol"):
+                        proto = parsed.get("protocol")
+                        if not proto:
+                            raise ValidationError(_(
+                                "Native command payloads require an explicit protocol "
+                                "(raw, escpos, zpl, or tspl); none was declared."
+                            ))
+                        vals["protocol"] = proto
+                    payload_proto = parsed.get("protocol")
+                    if payload_proto and payload_proto != vals["protocol"]:
+                        raise ValidationError(_(
+                            "Payload protocol '%s' contradicts job protocol '%s'."
+                        ) % (payload_proto, vals["protocol"]))
                 else:
-                    vals["payload_type"] = "pdf"
                     vals["protocol"] = False
             elif vals.get("payload_type") in ("pdf", "raster_jpeg"):
+                if payload_json:
+                    _parsed, resolved_type = self._resolve_payload_kind(payload_json)
+                    if resolved_type != vals["payload_type"]:
+                        raise ValidationError(_(
+                            "Payload content (type '%s') contradicts the declared "
+                            "payload_type '%s'."
+                        ) % (resolved_type, vals["payload_type"]))
+                # Absent/False protocol is legal; an actual protocol on a
+                # pdf/raster job is a contradiction and must fail, not be
+                # silently stripped.
+                if vals.get("protocol"):
+                    raise ValidationError(_("PDF and Raster payloads cannot specify a printer protocol."))
                 vals["protocol"] = False
+            elif vals.get("payload_type") == "raw_cmd":
+                if payload_json:
+                    parsed, resolved_type = self._resolve_payload_kind(payload_json)
+                    if resolved_type != "raw_cmd":
+                        raise ValidationError(_(
+                            "Payload content (type '%s') contradicts the declared "
+                            "payload_type 'raw_cmd'."
+                        ) % resolved_type)
+                    if not vals.get("protocol"):
+                        raise ValidationError(_("Native command payloads require a valid printer protocol."))
         return super().create(vals_list)
 
     def write(self, vals):
@@ -126,6 +182,26 @@ class PrintGatewayJob(models.Model):
                             _("Invalid print job state transition from '%s' to '%s'.")
                             % (job.status, target_status)
                         )
+        if "payload_type" in vals and vals["payload_type"] in ("pdf", "raster_jpeg") and vals.get("protocol"):
+            raise ValidationError(_("PDF and Raster payloads cannot specify a printer protocol."))
+        if "payload" in vals and not vals.get("payload_type"):
+            # A re-written payload must still resolve to a valid kind and,
+            # for this row's payload_type, stay consistent with it.
+            parsed, resolved_type = self._resolve_payload_kind(vals["payload"])
+            for job in self:
+                if job.payload_type and resolved_type != job.payload_type:
+                    raise ValidationError(_(
+                        "New payload content (type '%s') contradicts this job's "
+                        "payload_type '%s'."
+                    ) % (resolved_type, job.payload_type))
+                if job.payload_type == "raw_cmd":
+                    payload_proto = parsed.get("protocol")
+                    if not payload_proto:
+                        raise ValidationError(_("Native command payloads require an explicit protocol in the payload."))
+                    if job.protocol and payload_proto != job.protocol:
+                        raise ValidationError(_(
+                            "Payload protocol '%s' contradicts job protocol '%s'."
+                        ) % (payload_proto, job.protocol))
         if "payload_type" in vals and vals["payload_type"] in ("pdf", "raster_jpeg"):
             vals["protocol"] = False
         return super().write(vals)
@@ -140,16 +216,30 @@ class PrintGatewayJob(models.Model):
                 if not job.protocol:
                     raise ValidationError(_("Native command payloads require a valid printer protocol."))
 
+    # Marker prefixes the Gateway uses to say "execution reached an
+    # ambiguous physical boundary". These MUST stay in lockstep with
+    # PHYSICAL_OUTCOME_UNKNOWN_MARKERS in src/lib/job-status.ts; the
+    # contract test test_gateway_marker_parity asserts both lists match.
+    _GATEWAY_UNKNOWN_MARKERS = (
+        "AGENT_EXECUTION_TIMEOUT",
+        "AGENT_RESTART_DURING_PRINT",
+        "JOB_EXPIRED_DURING_PRINT",
+        "UNKNOWN_PARTIAL_DELIVERY",
+        "UNKNOWN_SUBMISSION_OUTCOME",
+    )
+
     @api.depends("status", "last_error")
     def _compute_physical_outcome(self):
         for job in self:
             if job.status == "success":
                 job.physical_outcome = "printed"
-            elif (
-                job.status in ("unknown", "partial")
-                or "UNKNOWN_PARTIAL_DELIVERY" in str(job.last_error or "")
-                or str(job.last_error or "").startswith("UNKNOWN_SUBMISSION_OUTCOME")
-            ):
+            elif job.status in ("unknown", "partial"):
+                job.physical_outcome = "unknown"
+            elif any(str(job.last_error or "").startswith(marker) for marker in self._GATEWAY_UNKNOWN_MARKERS):
+                # A gateway "failed" carrying an unknown-outcome marker must
+                # NEVER present as "definitely not printed" - that is what
+                # would enable the safe-looking Retry button on a job whose
+                # paper may already exist.
                 job.physical_outcome = "unknown"
             else:
                 job.physical_outcome = "not_printed"
@@ -172,6 +262,14 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Destination is required."))
         if not document_type or not str(document_type).strip():
             raise ValidationError(_("Document type is required."))
+        # Phase 13 canonical peripheral representation: INACTIVE peripherals
+        # are omitted entirely rather than serialized as "none" actions.
+        if isinstance(payload, dict) and isinstance(payload.get("peripherals"), dict):
+            active = {k: v for k, v in payload["peripherals"].items() if v and v != "none"}
+            if active:
+                payload = dict(payload, peripherals=active)
+            else:
+                payload = {k: v for k, v in payload.items() if k != "peripherals"}
         try:
             payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         except (TypeError, ValueError) as exc:
@@ -179,31 +277,35 @@ class PrintGatewayJob(models.Model):
         if len(payload_json.encode("utf-8")) > 8 * 1024 * 1024:
             raise ValidationError(_("Print payload exceeds the 8 MiB safety limit."))
 
-        parsed_payload = payload
-        if isinstance(payload, str):
-            try:
-                parsed_payload = json.loads(payload)
-            except Exception:
-                pass
+        # Strict kind resolution with NO defaults: a malformed payload fails
+        # HERE, at creation, exactly as it would before submission. Persisted
+        # content is validated to the same standard as external API input.
+        parsed_payload, derived_type = self._resolve_payload_kind(payload_json)
 
-        if not payload_type:
-            if isinstance(parsed_payload, dict) and parsed_payload.get("type") in ("raw", "escpos"):
-                payload_type = "raw_cmd"
-            elif isinstance(parsed_payload, dict) and parsed_payload.get("type") in ("image", "jpeg", "raster_jpeg"):
-                payload_type = "raster_jpeg"
-            else:
-                payload_type = "pdf"
+        if payload_type:
+            if payload_type != derived_type:
+                raise ValidationError(_(
+                    "Payload content (type '%s') contradicts the declared payload_type '%s'."
+                ) % (derived_type, payload_type))
+        else:
+            payload_type = derived_type
 
         if payload_type in ("pdf", "raster_jpeg"):
             if protocol:
                 raise ValidationError(_("PDF and Raster payloads cannot specify a printer protocol."))
             effective_protocol = False
         else:
-            effective_protocol = protocol or (parsed_payload.get("protocol") if isinstance(parsed_payload, dict) else None)
-            if not effective_protocol and isinstance(parsed_payload, dict) and parsed_payload.get("type") == "escpos":
-                effective_protocol = "escpos"
+            payload_protocol = parsed_payload.get("protocol")
+            if protocol and payload_protocol and protocol != payload_protocol:
+                raise ValidationError(_(
+                    "Protocol argument '%s' contradicts the payload's own protocol '%s'."
+                ) % (protocol, payload_protocol))
+            effective_protocol = protocol or payload_protocol
             if not effective_protocol:
-                raise ValidationError(_("Native command payloads require an explicit printer protocol."))
+                raise ValidationError(_(
+                    "Native command payloads require an explicit printer protocol; "
+                    "none was declared (protocol is never inferred from the payload type)."
+                ))
 
         key = (idempotency_key or uuid.uuid4().hex).strip()
 
@@ -242,7 +344,12 @@ class PrintGatewayJob(models.Model):
         }
         try:
             with self.env.cr.savepoint():
-                return self.create(values)
+                job = self.create(values)
+                # Creation performs the SAME strict persisted-payload
+                # validation as submission: malformed content can never be
+                # stored and dispatched later.
+                job._validate_persisted_payload(json.loads(payload_json))
+                return job
         except IntegrityError:
             existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
             if existing:
@@ -268,6 +375,9 @@ class PrintGatewayJob(models.Model):
         ptype = payload.get("type")
         if not ptype:
             raise ValidationError(_("Stored print payload is missing 'type'."))
+        encoding = payload.get("encoding")
+        if encoding != "base64":
+            raise ValidationError(_("Stored print payload must declare encoding 'base64', got '%s'.") % encoding)
 
         if self.payload_type == "pdf":
             if ptype != "pdf":
@@ -282,11 +392,23 @@ class PrintGatewayJob(models.Model):
         elif self.payload_type == "raw_cmd":
             if ptype not in ("raw", "escpos"):
                 raise ValidationError(_("Payload type mismatch: expected raw/escpos, got '%s'.") % ptype)
-            if self.protocol and payload.get("protocol") and payload.get("protocol") != self.protocol:
+            payload_proto = payload.get("protocol")
+            if not payload_proto:
+                # The WIRE contract requires the protocol inside the payload
+                # too; the column alone is not enough (the agent validates
+                # the submitted JSON, not this row).
+                raise ValidationError(_("Raw/escpos payloads must declare their protocol inside the payload."))
+            if ptype == "escpos" and payload_proto != "escpos":
+                raise ValidationError(_("ESC/POS payloads require protocol 'escpos', got '%s'.") % payload_proto)
+            if payload_proto not in ("raw", "escpos", "zpl", "tspl"):
+                raise ValidationError(_("Unsupported payload protocol '%s'.") % payload_proto)
+            if self.protocol and payload_proto != self.protocol:
                 raise ValidationError(
                     _("Payload protocol mismatch: expected '%s', got '%s'.")
-                    % (self.protocol, payload.get("protocol"))
+                    % (self.protocol, payload_proto)
                 )
+        else:
+            raise ValidationError(_("Unknown payload type column '%s'.") % self.payload_type)
 
         raw_data = payload.get("data") or payload.get("base64")
         if not raw_data or not isinstance(raw_data, str):
@@ -299,6 +421,17 @@ class PrintGatewayJob(models.Model):
             raise ValidationError(_("Stored print payload data is not valid base64.")) from exc
         if len(decoded) > 8 * 1024 * 1024:
             raise ValidationError(_("Stored print payload exceeds the 8 MiB safety limit."))
+        # Content/signature parity with the Gateway and agent validators:
+        # what claims to be a PDF must start with %PDF-, a raster must be a
+        # JPEG, and byte streams must not smuggle PDF headers.
+        looks_like_pdf = decoded[:5] == b"%PDF-"
+        looks_like_jpeg = len(decoded) >= 3 and decoded[0] == 0xFF and decoded[1] == 0xD8 and decoded[2] == 0xFF
+        if self.payload_type == "pdf" and not looks_like_pdf:
+            raise ValidationError(_("PDF payload must start with the %%PDF- signature."))
+        if self.payload_type == "raster_jpeg" and not looks_like_jpeg:
+            raise ValidationError(_("Raster payload must be a JPEG."))
+        if self.payload_type == "raw_cmd" and looks_like_pdf:
+            raise ValidationError(_("PDF bytes cannot be labeled as raw/escpos; the Gateway would reject this submission."))
 
         peripherals = payload.get("peripherals")
         if peripherals is not None:
@@ -347,7 +480,11 @@ class PrintGatewayJob(models.Model):
     def action_submit(self, raise_on_failure=False):
         MAX_FAILOVER_DEPTH = 3
         for job in self:
-            if job.status in self._TERMINAL and job.gateway_job_id:
+            # Terminal is terminal, with OR without a remote id: a job that
+            # failed before ever receiving a gateway id must not be silently
+            # re-submitted (attempts, state and audit would be rewritten).
+            # Only an explicit operator reprint creates a NEW operation.
+            if job.status in self._TERMINAL:
                 continue
 
             current_binding = job.fallback_binding_id
@@ -363,21 +500,67 @@ class PrintGatewayJob(models.Model):
                         timeout=(5, 20), allow_redirects=False,
                     )
                     if response.status_code not in (200, 201):
+                        # Deterministic client-side rejections (invalid
+                        # payload semantics, capability mismatch, idempotency
+                        # conflict, forbidden document type) will never
+                        # succeed on retry. Terminalize immediately with the
+                        # Gateway's (safe, typed) reason instead of burning
+                        # the exponential-backoff budget.
+                        if response.status_code in (400, 403, 404, 409, 422):
+                            try:
+                                reason = str(response.json().get("error") or "")[:2000] or "GATEWAY_REJECTED"
+                            except ValueError:
+                                reason = "GATEWAY_HTTP_%s" % response.status_code
+                            terminal_error = "GATEWAY_REJECTED_%s: %s" % (response.status_code, reason)
+                            values = {
+                                "status": "failed",
+                                "attempts": job.attempts + 1,
+                                "last_error": terminal_error,
+                                "next_retry_at": False,
+                                "completed_at": fields.Datetime.now(),
+                            }
+                            if raise_on_failure:
+                                job._persist_state(values)
+                            else:
+                                job.write(values)
+                            _logger.warning("Gateway rejected job %s deterministically (%s): %s", job.idempotency_key[:8], response.status_code, reason[:300])
+                            if raise_on_failure:
+                                raise ValidationError(_("The Gateway rejected this print job: %s") % reason[:500])
+                            break
                         raise RuntimeError("GATEWAY_HTTP_%s" % response.status_code)
                     body = response.json()
                     remote_id = body.get("jobId") or body.get("id")
                     if not remote_id:
                         raise RuntimeError("GATEWAY_INVALID_RESPONSE")
                     remote_status = str(body.get("status") or "queued").strip().lower()
+                    remote_error = body.get("error")
                     if remote_status == "completed":
                         remote_status = "success"
+                    if remote_status == "expired":
+                        # The Gateway terminalized the job (its lease window
+                        # elapsed). Mirror the physical outcome honestly.
+                        expired_error = remote_error or "GATEWAY_JOB_EXPIRED: the Gateway release window elapsed before the job was claimed"
+                        expired_status = "unknown" if str(expired_error).startswith(job._GATEWAY_UNKNOWN_MARKERS) or "JOB_EXPIRED_DURING_PRINT" in str(expired_error) else "failed"
+                        job.write({
+                            "gateway_job_id": str(remote_id),
+                            "status": expired_status,
+                            "attempts": job.attempts + 1,
+                            "last_error": expired_error,
+                            "next_retry_at": False,
+                            "completed_at": fields.Datetime.now(),
+                        })
+                        job._post_source_audit(_("Print Job #%s expired at the Gateway (%s).") % (remote_id or job.id, expired_status))
+                        break
                     if remote_status not in {"queued", "submitted", "claimed", "printing", "success", "failed", "unknown"}:
                         remote_status = "submitted"
-                    job.write({
+                    values = {
                         "gateway_job_id": str(remote_id),
                         "status": "submitted" if remote_status == "queued" else remote_status,
                         "attempts": job.attempts + 1, "last_error": False, "next_retry_at": False,
-                    })
+                    }
+                    if remote_status == "failed" and remote_error:
+                        values["last_error"] = str(remote_error)[:4000]
+                    job.write(values)
                     job._post_source_audit(_("Print Job #%s queued to Gateway for '%s'") % (remote_id or job.id, job.printer_id))
                     break  # Success
                 except requests.exceptions.Timeout as exc:
@@ -405,17 +588,17 @@ class PrintGatewayJob(models.Model):
                             binding_company == job.company_id
                             or (not current_binding.branch_id and current_binding.company_id == (job.company_id.parent_id or job.company_id))
                         )
-                        protocol_compatible = True
-                        fallback_proto = getattr(current_binding, "printer_protocol", False)
-                        if job.payload_type in ("pdf", "raster_jpeg"):
-                            if fallback_proto in ("zpl", "tspl"):
-                                protocol_compatible = False
+                        # Phase 11: failover requires EXACT protocol/capability
+                        # parity - never a broadened match to "make failover work".
+                        fallback_proto = getattr(current_binding, "printer_protocol", False) or ""
+                        if job.payload_type == "pdf":
+                            protocol_compatible = fallback_proto in ("spooler", "ipp", "ipps")
+                        elif job.payload_type == "raster_jpeg":
+                            protocol_compatible = fallback_proto in ("spooler", "escpos")
                         elif job.payload_type == "raw_cmd" and job.protocol:
-                            protocol_compatible = (
-                                not fallback_proto
-                                or fallback_proto == "raw"
-                                or fallback_proto == job.protocol
-                            )
+                            protocol_compatible = fallback_proto == job.protocol
+                        else:
+                            protocol_compatible = False
                         if (
                             current_binding.enabled
                             and next_printer
@@ -516,6 +699,17 @@ class PrintGatewayJob(models.Model):
                     timeout=(5, 10), allow_redirects=False,
                 )
                 if response.status_code == 404:
+                    # The Gateway no longer knows this job (release window
+                    # elapsed / cleanup ran). Its physical outcome can no
+                    # longer be proven from either side: terminalize as
+                    # unknown so no automatic path can reprint it silently.
+                    job.write({
+                        "status": "unknown",
+                        "last_error": "GATEWAY_JOB_NOT_FOUND: the Gateway no longer has this job (expired or cleaned up). Physical outcome unknown - verify at the printer, then use Force Reprint if needed.",
+                        "next_retry_at": False,
+                        "completed_at": fields.Datetime.now(),
+                    })
+                    job._post_source_audit(_("Print Job #%s is no longer known to the Gateway; outcome marked UNKNOWN for manual reconciliation.") % (job.gateway_job_id or job.id))
                     failed_count += 1
                     continue
                 response.raise_for_status()
@@ -523,11 +717,20 @@ class PrintGatewayJob(models.Model):
                 status = str(body.get("status") or "").strip().lower()
                 if status in ("completed", "success"):
                     status = "success"
+                elif status == "queued":
+                    # The canonical Gateway pre-dispatch state. It is the
+                    # same fact as our "submitted": queued for pickup.
+                    status = "submitted"
                 elif status == "expired":
-                    status = "failed"
-                    if not body.get("error"):
-                        body["error"] = "GATEWAY_JOB_EXPIRED: Gateway lease or expiration window elapsed before job was claimed or printed"
-                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
+                    gateway_error = str(body.get("error") or "")
+                    if gateway_error.startswith("JOB_EXPIRED_DURING_PRINT") or gateway_error.startswith("UNKNOWN_PARTIAL_DELIVERY"):
+                        status = "unknown"
+                        body.setdefault("error", "JOB_EXPIRED_DURING_PRINT: physical output is unknown (full, partial or none)")
+                    else:
+                        status = "failed"
+                        if not body.get("error"):
+                            body["error"] = "GATEWAY_JOB_EXPIRED: The Gateway no longer holds the job (never claimed within its release window); nothing reached the agent"
+                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown", "partial"}:
                     failed_count += 1
                     continue
                 err_msg = body.get("error") or False

@@ -145,6 +145,7 @@ export type JobDeliveryEnvelope = {
     payload: unknown;
     expiresAt: string;
     retries: number;
+    claimToken: string | null;
   };
   id: string;
   printerId: string;
@@ -165,6 +166,7 @@ export function buildJobEnvelope(job: ClaimedJobRow): JobDeliveryEnvelope {
       payload: job.payload,
       expiresAt,
       retries: job.retries,
+      claimToken: job.claimToken ?? null,
     },
     id: job.id,
     printerId: job.printerId,

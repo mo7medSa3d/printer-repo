@@ -25,11 +25,17 @@ describe("runtime printer routing regressions", () => {
   });
 
   it("does not silently accept a payload capability the printer does not advertise", () => {
-    const result = validatePayloadForPrinter("image", {
+    const result = validatePayloadForPrinter({ type: "image" }, {
+      protocol: "raw",
+      connectionType: "network",
+      capabilities: { supported_protocols: ["raw"] },
+    });
+    expect(result.ok).toBe(false);
+    // Once escpos IS explicitly declared, JPEG raster conversion is allowed.
+    expect(validatePayloadForPrinter({ type: "image" }, {
       protocol: "raw",
       connectionType: "network",
       capabilities: { supported_protocols: ["raw", "escpos"] },
-    });
-    expect(result.ok).toBe(false);
+    }).ok).toBe(true);
   });
 });

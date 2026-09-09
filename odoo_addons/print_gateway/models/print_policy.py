@@ -77,6 +77,16 @@ class PrintGatewayPolicy(models.Model):
     )
     priority = fields.Integer(default=10, help="Lower numbers execute first.")
 
+    @api.model
+    def _sanitize_template_field(self, field_name):
+        if field_name is None:
+            return
+        # Only bare allow-listed scalar names may appear: no attribute
+        # chains, no subscripts, no dunders (record.env, record._fields,
+        # __class__ traversal are all impossible by construction).
+        if "." in field_name or "[" in field_name or "__" in field_name:
+            raise ValueError("Attribute and index access are strictly forbidden in raw print templates.")
+
     def render_raw_template(self, record):
         """Deterministically render raw template string using safe scalar record attributes."""
         self.ensure_one()
@@ -96,10 +106,28 @@ class PrintGatewayPolicy(models.Model):
             import string
             formatter = string.Formatter()
             for literal_text, field_name, format_spec, conversion in formatter.parse(template):
-                if field_name is not None:
-                    if "." in field_name or "[" in field_name or "__" in field_name:
-                        raise ValueError("Attribute and index access are strictly forbidden in raw print templates.")
-            return template.format(**values)
+                self._sanitize_template_field(field_name)
+                # str.format evaluates NESTED replacement fields inside a
+                # format spec (e.g. {x:{a.__class__}}) - the classic escape
+                # from a field-name-only sandbox. Format specs must stay
+                # literal constants; any nested field inside one is rejected.
+                if format_spec:
+                    for _lit, nested_field, nested_spec, _conv in formatter.parse(format_spec):
+                        if nested_field is not None:
+                            raise ValueError("Nested replacement fields inside format specifications are forbidden.")
+                        if not nested_spec:
+                            continue
+                        # recurse for the rare double-nested case
+                        stack = [nested_spec]
+                        while stack:
+                            spec = stack.pop()
+                            for _l, nf, ns, _c in formatter.parse(spec):
+                                if nf is not None:
+                                    raise ValueError("Nested replacement fields inside format specifications are forbidden.")
+                                if ns:
+                                    stack.append(ns)
+            rendered = template.format(**values)
+            return rendered
         except Exception as exc:
             raise ValidationError(
                 _("Failed to render raw template for policy '%s': %s")
@@ -152,12 +180,13 @@ class PrintGatewayPolicy(models.Model):
                 if not policy.raw_protocol or policy.raw_protocol not in ("zpl", "tspl", "escpos"):
                     raise ValidationError(_("A valid raw protocol (ZPL, TSPL, or ESC/POS) must be specified."))
 
-                # 3. Binding protocol compatibility
+                # 3. Binding protocol compatibility: EXACT match only. A raw
+                # binding is not a wildcard for label or receipt languages.
                 if policy.binding_id and getattr(policy.binding_id, "printer_protocol", False):
                     bproto = policy.binding_id.printer_protocol
-                    if bproto and bproto != "raw" and bproto != policy.raw_protocol:
+                    if bproto != policy.raw_protocol:
                         raise ValidationError(
-                            _("Target binding '%s' protocol '%s' is incompatible with policy raw protocol '%s'.")
+                            _("Target binding '%s' protocol '%s' is incompatible with policy raw protocol '%s' (protocols must match exactly).")
                             % (policy.binding_id.display_name, bproto, policy.raw_protocol)
                         )
 

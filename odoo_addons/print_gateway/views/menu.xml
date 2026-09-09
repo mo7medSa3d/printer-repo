@@ -30,4 +30,10 @@
               action="action_print_gateway_jobs"
               sequence="30"
               groups="base.group_user"/>
+    <menuitem id="menu_print_gateway_intents"
+              name="Print Intents"
+              parent="menu_print_gateway_main"
+              action="action_print_gateway_intents"
+              sequence="35"
+              groups="base.group_user"/>
 </odoo>

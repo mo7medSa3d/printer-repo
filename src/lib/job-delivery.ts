@@ -1,5 +1,6 @@
 import { db } from "../db";
 import { sql } from "drizzle-orm";
+import { STALE_CLAIM_SECONDS } from "./job-maintenance";
 
 /**
  * Ownership rules for handing a job to an agent.
@@ -8,8 +9,13 @@ import { sql } from "drizzle-orm";
  * its owning agent and runtime printer are still active and online at the
  * delivery boundary. Odoo business entities are intentionally not part of
  * this transaction.
+ *
+ * Every claim mints a fresh `claim_token` (see migration 0024). Agents must
+ * echo it on status updates so a stale worker — an attempt whose lease
+ * expired and was reclaimed — is rejected by a DB-enforced ownership
+ * predicate, not by an in-memory convention.
  */
-export const CLAIM_LEASE_SECONDS = 90;
+export const CLAIM_LEASE_SECONDS = STALE_CLAIM_SECONDS;
 export const MAX_DELIVERY_ATTEMPTS = 5;
 
 export type ClaimedJobRow = {
@@ -22,10 +28,11 @@ export type ClaimedJobRow = {
   expiresAt: Date;
   retries: number;
   deliveryAttempts: number;
+  claimToken: string | null;
   error?: string | null;
 };
 
-const CLAIM_RETURNING = sql`
+export const CLAIM_RETURNING = sql`
   print_jobs.id AS id,
   print_jobs.agent_id AS "agentId",
   print_jobs.printer_id AS "printerId",
@@ -35,6 +42,7 @@ const CLAIM_RETURNING = sql`
   print_jobs.expires_at AS "expiresAt",
   print_jobs.retries AS retries,
   print_jobs.delivery_attempts AS "deliveryAttempts",
+  print_jobs.claim_token AS "claimToken",
   print_jobs.error AS error
 `;
 
@@ -43,7 +51,8 @@ const CLAIM_RETURNING = sql`
  *
  * Eligibility is checked again at the delivery boundary while the runtime
  * owner rows are locked. PostgreSQL's `FOR UPDATE SKIP LOCKED` pattern keeps
- * concurrent agents from claiming the same job.
+ * concurrent agents from claiming the same job. The delivery-attempt budget is
+ * enforced HERE so no path can claim a job past its attempt ceiling.
  */
 export async function claimJobForDelivery(jobId: string, agentId: string): Promise<ClaimedJobRow | null> {
   return db.transaction(async (tx) => {
@@ -56,6 +65,7 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
         AND p.agent_id = ${agentId}
         AND p.status = 'queued'
         AND p.expires_at > now()
+        AND p.delivery_attempts < ${MAX_DELIVERY_ATTEMPTS}
         AND a.lifecycle = 'active'
         AND a.status = 'online'
         AND pr.lifecycle = 'active'
@@ -69,6 +79,9 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
       SET status = 'claimed',
           claimed_at = now(),
           updated_at = now(),
+          claim_token = gen_random_uuid()::text,
+          delivered_at = NULL,
+          acked_at = NULL,
           delivery_attempts = print_jobs.delivery_attempts + 1
       WHERE id = ${jobId}
         AND agent_id = ${agentId}
@@ -85,6 +98,7 @@ export async function markJobDelivered(jobId: string, agentId: string): Promise<
     UPDATE print_jobs
     SET delivered_at = now(), updated_at = now()
     WHERE id = ${jobId} AND agent_id = ${agentId} AND status IN ('claimed', 'printing')
+      AND delivered_at IS NULL
   `);
 }
 
@@ -109,12 +123,14 @@ export async function releaseUndeliveredClaim(jobId: string, agentId: string, re
     UPDATE print_jobs
     SET status = 'queued',
         claimed_at = NULL,
+        claim_token = NULL,
         updated_at = now(),
         error = ${reason}
     WHERE id = ${jobId}
       AND agent_id = ${agentId}
       AND status = 'claimed'
       AND delivered_at IS NULL
+      AND acked_at IS NULL
       AND delivery_attempts < ${MAX_DELIVERY_ATTEMPTS}
     RETURNING id
   `);
@@ -129,6 +145,7 @@ export async function releaseUndeliveredClaim(jobId: string, agentId: string, re
       AND agent_id = ${agentId}
       AND status = 'claimed'
       AND delivered_at IS NULL
+      AND acked_at IS NULL
       AND delivery_attempts >= ${MAX_DELIVERY_ATTEMPTS}
     RETURNING id
   `);

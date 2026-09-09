@@ -4,6 +4,15 @@ import { apiKeys } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
 import { generateOdooApiKey } from "../../../../lib/odoo-auth";
 import { eq, desc } from "drizzle-orm";
+import { z } from "zod";
+
+const keyInputSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(500).optional(),
+  scope: z.enum(["standard", "read_only"]).default("standard"),
+  // Empty/omitted list = all document types (installation-scoped key).
+  allowedDocumentTypes: z.array(z.string().trim().min(1).max(120)).max(64).optional(),
+}).strict();
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +24,8 @@ export async function GET(req: Request) {
       id: apiKeys.id,
       name: apiKeys.name,
       description: apiKeys.description,
+      scope: apiKeys.scope,
+      allowedDocumentTypes: apiKeys.allowedDocumentTypes,
       createdAt: apiKeys.createdAt,
       lastUsedAt: apiKeys.lastUsedAt,
       revokedAt: apiKeys.revokedAt,
@@ -29,18 +40,30 @@ export async function POST(req: Request) {
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let body: unknown = {};
-  try { body = await req.json(); } catch { /* empty body uses defaults */ }
-  const input = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 120) : "Odoo";
-  const description = typeof input.description === "string" ? input.description.trim().slice(0, 500) || null : null;
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+  const parsed = keyInputSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid key settings" }, { status: 400 });
+  }
+  const name = parsed.data.name ?? "Odoo";
+  const description = parsed.data.description?.trim() || null;
   const { raw, hashed, id } = generateOdooApiKey();
 
-  await db.insert(apiKeys).values({ id, name, description, hashedKey: hashed });
+  await db.insert(apiKeys).values({
+    id,
+    name,
+    description,
+    hashedKey: hashed,
+    scope: parsed.data.scope,
+    allowedDocumentTypes: parsed.data.allowedDocumentTypes?.length ? parsed.data.allowedDocumentTypes : null,
+  });
 
   return NextResponse.json({
     id,
     name,
     description,
+    scope: parsed.data.scope,
+    allowedDocumentTypes: parsed.data.allowedDocumentTypes ?? null,
     apiKey: raw,
     note: "Copy this key now. The raw key will never be shown again.",
   }, { status: 201 });

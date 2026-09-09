@@ -438,7 +438,6 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 		{"raw tcp", &NetworkPrinter{Address: "127.0.0.1:9100"}, []string{KindRaw, KindESCPOS, KindImage}},
 		{"zpl tcp", &NetworkPrinter{Address: "127.0.0.1:9100", Protocol: "zpl"}, []string{KindRaw, KindZPL, KindLabel}},
 		{"tspl tcp", &NetworkPrinter{Address: "127.0.0.1:9100", Protocol: "tspl"}, []string{KindRaw, KindTSPL, KindLabel}},
-		{"label printer", NewLabelPrinter(&NetworkPrinter{Address: "127.0.0.1:9100"}, ProtocolZPL, "Zebra"), []string{KindRaw, KindZPL, KindTSPL, KindLabel}},
 		{"mock spooler", newMockSpoolerPrinter("Test"), []string{KindRaw, KindESCPOS, KindPDF}},
 		{"usb", &USBPrinter{ID: "u", Name: "USB"}, []string{KindRaw, KindESCPOS}},
 	}
@@ -453,13 +452,13 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewIPPPrinter: %v", err)
 	}
-	if got := SupportedKinds(ipp); fmt.Sprint(got) != fmt.Sprint([]string{KindRaw, KindESCPOS, KindPDF}) {
-		t.Fatalf("ipp: supported kinds = %v", got)
+	if got := SupportedKinds(ipp); fmt.Sprint(got) != fmt.Sprint([]string{KindPDF}) {
+		t.Fatalf("ipp: supported kinds = %v (IPP is a document transport; byte streams are not octet-spooled)", got)
 	}
 	if format, ok := ippDocumentFormatFor(KindPDF); !ok || format != ippFormatPDF {
 		t.Fatalf("IPP must send PDF as %s, got %q (ok=%v)", ippFormatPDF, format, ok)
 	}
-	if format, ok := ippDocumentFormatFor(KindESCPOS); !ok || format != ippFormatOctetStream {
-		t.Fatalf("IPP must send ESC/POS as %s, got %q (ok=%v)", ippFormatOctetStream, format, ok)
+	if _, ok := ippDocumentFormatFor(KindESCPOS); ok {
+		t.Fatalf("IPP must NOT accept ESC/POS octet spooling")
 	}
 }

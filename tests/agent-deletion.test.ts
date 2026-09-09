@@ -52,10 +52,10 @@ suite("permanent agent deletion lifecycle & invariants", () => {
 
   it("rejects deletion when unauthenticated or called with invalid manager token", async () => {
     currentManagerToken = null;
-    await expect(deleteAgent("agt_offline_1")).rejects.toThrow("Unauthorized");
+    await expect(deleteAgent("agt_offline_1")).rejects.toThrow("manager session has expired");
 
     currentManagerToken = "tampered.jwt.token";
-    await expect(deleteAgent("agt_offline_1")).rejects.toThrow("Unauthorized");
+    await expect(deleteAgent("agt_offline_1")).rejects.toThrow("manager session has expired");
   });
 
   it("rejects empty or whitespace agent ID", async () => {
@@ -78,7 +78,7 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     );
 
     await expect(deleteAgent(agentId)).rejects.toThrow(
-      "Online agents cannot be deleted. The agent must be offline first.",
+      "This agent is still connected. Stop the agent service first, then delete it.",
     );
 
     // Verify agent was NOT deleted
@@ -119,12 +119,12 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     );
     await pool().query(
       `INSERT INTO print_jobs (id, agent_id, printer_id, destination, status, payload, expires_at)
-       VALUES ($1, $2, $3, 'POS-1', 'success', '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`,
+       VALUES ($1, $2, $3, 'POS-1', 'success', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`,
       [jobId, agentId, printerId],
     );
 
     await expect(deleteAgent(agentId)).rejects.toThrow(
-      "This agent has print history and cannot be deleted. Retire the agent instead to preserve audit history.",
+      "This agent has print history and cannot be deleted. Choose Retire instead to preserve the audit history.",
     );
 
     // Verify neither agent, printer, nor print job was deleted

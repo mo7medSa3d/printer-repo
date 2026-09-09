@@ -47,4 +47,27 @@ suite("atomic Agent job status transitions", () => {
     expect(["success", "failed"]).toContain(row.rows[0].status);
   });
 
+  it("late success through the route requires the unknown-wait marker AND a fresh failure", async () => {
+    const patch = (jobId: string, status: string, claimToken?: string) => jobStatusPATCH(new Request("http://gateway.test/api/agent/jobs", {
+      method: "PATCH",
+      headers: { Authorization: f.agentAuth, "content-type": "application/json" },
+      body: JSON.stringify({ jobId, status, ...(claimToken ? { claimToken } : {}) }),
+    }));
+    // 1. Plain failures can never become successes.
+    await insertQueuedJob(f, "job_late_plain");
+    await pool().query(`UPDATE print_jobs SET status='failed', error='CONNECTION_ERROR: refused', updated_at=now() WHERE id='job_late_plain'`);
+    expect((await patch("job_late_plain", "success")).status).toBe(409);
+    // 2. A gateway-timeout failure WITHIN 24h may be overridden by the true
+    // physical outcome the agent reports.
+    await insertQueuedJob(f, "job_late_ok");
+    await pool().query(`UPDATE print_jobs SET status='failed', error='AGENT_EXECUTION_TIMEOUT: agent execution lease expired (physical output is unknown; manual reconciliation required)', updated_at=now() WHERE id='job_late_ok'`);
+    const ok = await patch("job_late_ok", "success");
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { physicalOutcome?: string }).physicalOutcome).toBe("printed");
+    // 3. The same marker past the 24h TTL is no longer overridable.
+    await insertQueuedJob(f, "job_late_stale");
+    await pool().query(`UPDATE print_jobs SET status='failed', error='AGENT_RESTART_DURING_PRINT: crashed', updated_at=now() - interval '25 hours' WHERE id='job_late_stale'`);
+    expect((await patch("job_late_stale", "success")).status).toBe(409);
+  });
+
 });

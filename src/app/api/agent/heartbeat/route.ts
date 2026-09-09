@@ -3,14 +3,17 @@ import { agents, printJobs, printers } from "../../../../db/schema";
 import { validateAgent } from "../../../../lib/agent-auth";
 import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { DEVICE_CLASSES, PRINTER_TYPES } from "../../../../lib/printer-model";
+import { DEVICE_CLASSES, PRINTER_TYPES, PRINTER_CONFIG_MAX_BYTES, PRINTER_CAPABILITIES_MAX_BYTES, validateConnectionConfig } from "../../../../lib/printer-model";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
 const MAX_KEEP_ALIVE_JOB_IDS = 64;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
-const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]);
+// "unknown" is the HONEST value for a device whose protocol has not been
+// declared; the routing capability model never matches it, so such a printer
+// is inventoried but not routable until an operator declares its protocol.
+const VALID_PROTOCOLS = new Set(["raw", "escpos", "zpl", "tspl", "ipp", "ipps", "spooler", "windows_spooler", "unknown"]);
 const VALID_AGENT_STATUSES = new Set(["online", "offline"]);
 
 type ReportedPrinter = {
@@ -64,6 +67,11 @@ function sanitizePrinter(p: ReportedPrinter): {
   const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status.trim().toLowerCase())
     ? p.status.trim().toLowerCase()
     : "unknown";
+  // Same metadata rules the manager create path applies; a malformed or
+  // oversized report must not land in the routing tables.
+  if (JSON.stringify(config).length > PRINTER_CONFIG_MAX_BYTES) return null;
+  if (capabilities && JSON.stringify(capabilities).length > PRINTER_CAPABILITIES_MAX_BYTES) return null;
+  if (validateConnectionConfig(connectionType, config)) return null;
   return { id: p.id.trim(), name: p.name.trim(), printerType, deviceClass, connectionType, protocol, status, config, capabilities };
 }
 

@@ -1,6 +1,12 @@
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+try:
+    from odoo.exceptions import ValidationError
+except ImportError:
+    ValidationError = Exception
 
 try:
     from odoo.tests.common import TransactionCase
@@ -207,6 +213,62 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         self.assertIn("from werkzeug.exceptions import Forbidden", source)
         self.assertIn("raise Forbidden", source)
         self.assertIn(".sudo().search", source)
+
+    def test_binding_model_defines_effective_company_id(self):
+        source = (MODELS / "binding.py").read_text(encoding="utf-8")
+        self.assertIn("effective_company_id = fields.Many2one(", source)
+        self.assertIn("def _compute_effective_company_id(self):", source)
+        self.assertIn("record.effective_company_id = record.branch_id or record.company_id", source)
+
+    def test_print_job_state_machine_transition_matrix(self):
+        """BEHAVIORAL: the ORM must reject illegal transitions (no copy of the
+        table under test - deleting the model's guard must make THIS red)."""
+        source = (MODELS / "print_job.py").read_text(encoding="utf-8")
+        self.assertIn("_VALID_TRANSITIONS", source)
+        self.assertIn("Invalid print job state transition", source)
+
+        # Real enforced behavior: writing an illegal transition raises, and
+        # the row is unchanged afterwards. Terminal rows cannot regress,
+        # successes cannot be rewritten, unknown outcomes cannot be revived.
+        if not hasattr(self, "env"):
+            self.skipTest("Odoo runtime environment not available")
+        root_company = self.env.company
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
+        if not config:
+            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+                config = self.env["print_gateway.gateway_config"].create({
+                    "company_id": root_company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                })
+        base_vals = {
+            "company_id": root_company.id,
+            "gateway_config_id": config.id,
+            "printer_id": "printer-state-machine",
+            "destination": "State Machine Dest",
+            "document_type": "label",
+            "payload": json.dumps({"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_state_machine_behavioral_01",
+        }
+        job = self.env["print_gateway.print_job"].create(base_vals)
+
+        # queued -> claimed is legal; claimed -> queued is NOT (regression).
+        job.write({"status": "submitted"})
+        job.write({"status": "claimed"})
+        with self.assertRaises(ValidationError):
+            job.write({"status": "queued"})
+        self.assertEqual(job.status, "claimed")
+
+        # printing -> success is the only exit to success...
+        job.write({"status": "printing"})
+        with self.assertRaises(ValidationError):
+            job.write({"status": "queued"})
+        job.write({"status": "success"})
+        # ...and success is terminal: nothing can leave it.
+        for illegal in ("queued", "submitted", "claimed", "printing", "failed", "partial", "unknown"):
+            with self.assertRaises(ValidationError):
+                job.write({"status": illegal})
+        self.assertEqual(job.status, "success")
 
     def test_binding_model_defines_effective_company_id(self):
         source = (MODELS / "binding.py").read_text(encoding="utf-8")

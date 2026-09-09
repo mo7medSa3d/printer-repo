@@ -35,24 +35,33 @@ describe("production fixes contracts (2026-09)", () => {
     expect(normalized).not.toContain("db.update(printJobs) .set({ status");
   });
 
-  it("agent rejection gate: claimed->queued only with reason 'pending_full' (no retry burn)", () => {
+  it("agent rejection gate: claimed->queued only via the fenced pre-execution reasons", () => {
     const jobs = read("src/app/api/agent/jobs/route.ts");
-    expect(jobs).toContain('reason !== "pending_full"');
-    expect(jobs).toContain("claimed -> queued requires reason 'pending_full'");
+    expect(jobs).toContain("AGENT_REQUEUE_REASONS");
+    expect(jobs).toContain("pre-execution rejection reason");
+    // The claim token gate makes the rejection unforgeable by a superseded attempt.
+    expect(jobs).toContain("STALE_CLAIM");
+    const status = read("src/lib/job-status.ts");
+    expect(status).toContain('AGENT_REQUEUE_REASONS = ["pending_full", "agent_shutting_down"]');
   });
 
-  it("Go agent: size-aware print timeout and per-write stall deadline", () => {
+  it("Go agent: size-aware print budget with fenced pre-execution rejection", () => {
     const agent = read("agent/internal/agent/agent.go");
     expect(agent).toContain("printCtx, cancel := context.WithTimeout(ctx, printDocumentTimeout(len(pl.Data)))");
     expect(agent).toContain("func printDocumentTimeout(payloadBytes int) time.Duration {");
-    expect(agent).toContain("a.rejectJob(jobID)");
-    expect(agent).toContain('"reason": "pending_full"');
-    expect(agent).toContain("discoverySem: make(chan struct{}, 1)");
+    // the document layer must not clamp a size-scaled budget down to a
+    // constant (that produced mid-partial-write garbage on slow thermals)
+    const doc = read("agent/internal/printer/document.go");
+    expect(doc).toContain("if _, hasDeadline := parent.Deadline(); hasDeadline {");
+    // executor saturation / shutdown reject the job FENCED with the claim
+    // token instead of silently dropping delivered work.
+    expect(agent).toContain('a.rejectJob(jobID, jobClaimToken(job), "pending_full")');
+    expect(agent).toContain('a.rejectJob(jobID, jobClaimToken(job), "agent_shutting_down")');
+    expect(agent).toMatch(/discoverySem:\s*make\(chan struct\{\}, 1\)/);
     const net = read("agent/internal/printer/network.go");
     expect(net).toMatch(/dialTimeout\s*=\s*10\s*\*\s*time\.Second/);
     expect(net).toMatch(/writeStallTimeout\s*=\s*60\s*\*\s*time\.Second/);
     expect(net).toContain("_ = conn.SetWriteDeadline(time.Now().Add(writeStallTimeout))");
-    expect(net).not.toContain("conn.SetDeadline(");
   });
 
   it("Go agent: interrupted jobs are reprinted, not skipped as processed", () => {

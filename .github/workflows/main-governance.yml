@@ -25,3 +25,19 @@ jobs:
             exit 1
           fi
           echo "main branch protection is enabled."
+          # Protection WITHOUT required checks is vacuous: every other
+          # workflow would be advisory. Assert the required gatework is
+          # actually listed (classic protection exposes contexts; rulesets
+          # expose required status check rules).
+          required=$(gh api "repos/${REPOSITORY}/branches/main" --jq '.required_status_checks.contexts | join(",")' 2>/dev/null || echo "")
+          if [ -z "$required" ]; then
+            required=$(gh api "repos/${REPOSITORY}/rules/branches/main" --jq '[.[] | ((.parameters.required_status_checks // []) | if type == "array" then [.[].context] else [] end)] | flatten | join(",")' 2>/dev/null || echo "")
+          fi
+          echo "required checks: ${required:-<none>}"
+          for expected in ci odoo19; do
+            if ! grep -qw "$expected" <<< "$required"; then
+              echo "ERROR: required status check '$expected' is not configured on main. Merge gating is advisory only."
+              exit 1
+            fi
+          done
+          echo "required checks for ci and odoo19 are configured."

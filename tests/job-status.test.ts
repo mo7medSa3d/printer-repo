@@ -1,14 +1,33 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
 import {
   canTransition,
   isTerminal,
   isJobStatus,
   isLateSuccessAllowed,
   LATE_SUCCESS_MAX_AGE_MS,
+  PHYSICAL_OUTCOME_UNKNOWN_MARKERS,
+  derivePhysicalOutcome,
   type JobStatus,
 } from "../src/lib/job-status";
 
 describe("job-status", () => {
+  it("unknown-outcome markers stay in lockstep across all layers", () => {
+    // The marker TEXT is the wire protocol between the Go agent, this
+    // gateway, Odoo, and the desktop UX: a marker renamed in one layer
+    // silently converts unknown outcomes into auto-retryable failures in
+    // another (physical double prints). This is the one place a literal
+    // comparison is the correct test: it locks the three independent lists
+    // to identical values. (Odoo's _GATEWAY_UNKNOWN_MARKERS is locked by
+    // test_marker_parity in the addon suite.)
+    const go = readFileSync("agent/internal/printer/outcome.go", "utf8");
+    for (const marker of PHYSICAL_OUTCOME_UNKNOWN_MARKERS) {
+      expect(go).toContain(`"${marker}"`);
+    }
+    expect(PHYSICAL_OUTCOME_UNKNOWN_MARKERS).toHaveLength(5);
+    expect(derivePhysicalOutcome("failed", "UNKNOWN_SUBMISSION_OUTCOME: x")).toBe("unknown");
+    expect(derivePhysicalOutcome("failed", "CONNECTION_ERROR: x")).toBe("not_printed");
+  });
   it("terminal states block further transitions", () => {
     expect(isTerminal("success")).toBe(true);
     expect(isTerminal("failed")).toBe(true);
@@ -17,12 +36,17 @@ describe("job-status", () => {
     expect(canTransition("success", "printing")).toBe(false);
     expect(canTransition("success", "failed")).toBe(false);
     expect(canTransition("expired", "success")).toBe(false);
-    // failed is terminal EXCEPT the documented late-physical-outcome
-    // override failed -> success, which is only honoured by the API when
-    // isLateSuccessAllowed() also passes (error marker + 24h recency).
+    // failed is terminal. The ONLY exception is the explicitly authorized
+    // late-physical-outcome override (failed -> success), which the API
+    // grants solely when isLateSuccessAllowed() also passes (error marker +
+    // 24h recency). The general table must say NO without that opt-in, so a
+    // second consumer of canTransition cannot silently rewrite failures.
     expect(canTransition("failed", "printing")).toBe(false);
     expect(canTransition("failed", "failed")).toBe(false);
-    expect(canTransition("failed", "success")).toBe(true);
+    expect(canTransition("failed", "success")).toBe(false);
+    expect(canTransition("failed", "success", { allowLateSuccess: true })).toBe(true);
+    expect(canTransition("failed", "printing", { allowLateSuccess: true })).toBe(false);
+    expect(canTransition("success", "success", { allowLateSuccess: true })).toBe(false);
   });
   it("allowed: claimed->printing and printing->terminal", () => {
     expect(canTransition("claimed", "printing")).toBe(true);
@@ -30,7 +54,7 @@ describe("job-status", () => {
     expect(canTransition("printing", "failed")).toBe(true);
   });
   it("agent rejection path: claimed->queued", () => {
-    // The route gates this on reason "pending_full" (see PATCH /api/agent/jobs).
+    // The route gates this on an explicit fenced reason (AGENT_REQUEUE_REASONS).
     expect(canTransition("claimed", "queued")).toBe(true);
   });
   it("expired jobs may be finalized by an agent after local TTL observation", () => {

@@ -17,6 +17,7 @@ export default defineConfig({
       "tests/agent-registration.test.ts",
       "tests/migration-upgrade.integration.test.ts",
       "tests/multi-instance-gateway.test.ts",
+      "tests/ci-tripwire.check.ts",
     ],
     pool: "forks",
     fileParallelism: false,

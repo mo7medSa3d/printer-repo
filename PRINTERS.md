@@ -29,10 +29,10 @@ printer produces pages of garbage, so it is refused with `CAPABILITY_MISMATCH`.
 |---|---|---|---|---|---|
 | Network RAW TCP (usually :9100) | `network.go` | ✅ | ✅ | ❌ `CAPABILITY_MISMATCH` (a 9100 byte stream has no renderer) | **NOT VERIFIED** (tested against a local mock listener — VERIFIED at socket level) |
 | Windows spooler | `spooler_windows.go` | ✅ RAW datatype (`StartDocPrinterW`) | ✅ RAW datatype | ✅ PDF pipeline (§4) | **COMPILE VERIFIED** only |
-| Windows spooler (non-Windows build) | `spooler_stub.go` | writes `<tmp>/spooler_*.prn` | same | validates the PDF and writes `<tmp>/spooler_*.pdf`, logged as SIMULATED | **SIMULATED** |
-| IPP / IPPS | `ipp.go` | ✅ `application/octet-stream` | ✅ `application/octet-stream` | ✅ `application/pdf` | **NOT VERIFIED** against a real IPP printer (`httptest` coverage only) |
+| Windows spooler (non-Windows build) | `spooler_stub.go` | `ERR_UNSUPPORTED_TRANSPORT` (simulated file write only under explicit opt-in, still reported as failure) | same | `ERR_UNSUPPORTED_TRANSPORT` (same opt-in rule) | **SIMULATED** |
+| IPP / IPPS | `ipp.go` | ❌ `CAPABILITY_MISMATCH` (IPP is a document transport here) | ❌ `CAPABILITY_MISMATCH` | ✅ `application/pdf` | **NOT VERIFIED** against a real IPP printer (`httptest` coverage only) |
 | USB raw (`CreateFile` + `WriteFile`) | `usb_windows.go` | ✅ | ✅ | ❌ `CAPABILITY_MISMATCH` — install the device as a Windows printer and route to the spooler queue | **COMPILE VERIFIED** only |
-| USB raw (non-Windows build) | `usb_other.go` | simulated file write | same | ❌ | **SIMULATED** |
+| USB raw (non-Windows build) | `usb_other.go` | `ERR_UNSUPPORTED_TRANSPORT` (simulated file write only under explicit opt-in, still reported as failure) | same | ❌ | **SIMULATED** |
 
 Each backend declares what it accepts through `SupportsKind`, and
 `printer.SupportedKinds()` is reported to the gateway in the heartbeat as
@@ -128,10 +128,10 @@ maps configuration to a backend is `agent/internal/printer/factory.go`.
 
 | Aspect | Detail |
 |---|---|
-| Purpose | Lets the full agent pipeline run in CI and on developer machines without a Windows spooler |
-| Behaviour | `raw`/`escpos` are written to `<tmp>/spooler_<name>_<ts>.prn`; `pdf` is **validated first** and written to `<tmp>/spooler_<name>_<ts>.pdf`, and the log line says the print was SIMULATED |
-| Document kinds | Same matrix as the real spooler, so routing behaves identically in CI |
-| Status probe | Always `online` (documented simulation, not a probe) |
+| Purpose | Lets the full agent pipeline link and run in CI and on developer machines without a Windows spooler |
+| Behaviour | By default every print fails with `ERR_UNSUPPORTED_TRANSPORT` - nothing pretends to have printed. Only when the operator explicitly sets `ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1`, `raw`/`escpos` are written to `<tmp>/spooler_<name>_<ts>.prn` and `pdf` is validated then written to `<tmp>/spooler_<name>_<ts>.pdf`; even the simulated write is reported back as a `SIMULATED_TRANSPORT` failure, never as success |
+| Document kinds | Same matrix as the real spooler, so capability routing behaves identically in CI |
+| Status probe | `unknown` without a probe (an unreadable state, never healthy); `"online"` only under the explicit simulation opt-in |
 | Physical verification | **SIMULATED** — never counts as evidence of printing |
 
 ### 5.4 IPP / IPPS — `IPPPrinter` (`ipp.go`)
@@ -158,7 +158,7 @@ maps configuration to a backend is `agent/internal/printer/factory.go`.
 | Capability reporting | `supported_protocols: [raw, escpos]` |
 | Error handling | Without a device path the job fails with an explicit diagnostic telling the administrator to install the printer as a Windows printer and use `type: spooler`; `CreateFile`/`WriteFile` errors are wrapped with the device identity |
 | Identity | `Identify()` prefers serial → USB location → `VID:PID` |
-| Platform limits | Windows only. On other platforms the backend writes to a `/tmp` or `/var` path when one was configured (**SIMULATED**) and otherwise returns an explicit "only available on Windows" error; `Status()` is `unknown` |
+| Platform limits | Windows only. On other platforms the backend fails with `ERR_UNSUPPORTED_TRANSPORT` (`Status()` is `unknown`) unless the operator explicitly sets `ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1` for development diagnostics; simulated writes are then reported as failures prefixed `SIMULATED_TRANSPORT`, never as success |
 | Discovery | `SetupDiGetClassDevsW` (`DIGCF_PRESENT|ALLCLASSES`) with VID/PID/serial parsing and a device-interface path map; not available on non-Windows |
 | Physical verification | **COMPILE VERIFIED** only |
 
@@ -245,7 +245,7 @@ implemented.
 * Payload: 1 B … 5 MiB decoded, enforced on both sides (`payload.go`, `payload.ts`).
 * One `sync.Mutex` per printer: jobs for the same printer are serialised, different
   printers run concurrently (max 8 executing, 64 accepted — `agent.go`).
-* Physical print timeout: 20 s context per job (PDF submission has its own 120 s bound).
+* Physical print timeout: a size-scaled budget (2 min base + 30 s per MiB) bounds one physical print; the document layer never clamps it down to a constant, and finer per-write stall detection applies inside the transports. A permanently stuck device still fails, but a legitimate multi-hundred-KB raster on a slow thermal is never cut mid-payload. PDF submission has its own 120 s bound.
 * Crash window: a job that was printing when the agent stopped has an unknown physical
   outcome. The agent now reports it explicitly (`AGENT_RESTART_DURING_PRINT`) and
   `agent.reprint_after_crash` decides whether it may be printed again. This is

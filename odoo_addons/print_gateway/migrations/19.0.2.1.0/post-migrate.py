@@ -31,7 +31,7 @@ def migrate(cr, version):
         )
         SELECT 
             c.company_id, NULL, c.runtime_agent_id, 'unassigned', 'pos',
-            'escpos', 'none', 'none', 'none',
+            'unknown', 'none', 'none', 'none',
             FALSE, 999, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC'
         FROM print_gateway_gateway_config c
         WHERE c.runtime_agent_id IS NOT NULL AND c.runtime_agent_id != ''

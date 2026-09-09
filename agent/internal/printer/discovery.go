@@ -174,13 +174,21 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("config discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("config discovery panic: %v", r))
+			}
+		}()
 		add(discoverFromConfig(cfg))
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("spooler discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("spooler discovery panic: %v", r))
+			}
+		}()
 		infos, err := discoverSpoolerPrinters()
 		if err != nil {
 			addErr(fmt.Sprintf("spooler discovery: %v", err))
@@ -191,7 +199,11 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("registry discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("registry discovery panic: %v", r))
+			}
+		}()
 		infos, err := loadRegistryPrinters(registryPath)
 		if err != nil {
 			if !strings.Contains(err.Error(), "no such file") {
@@ -215,9 +227,9 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 				all[i].ConnectionType = "network"
 			}
 		}
-		if all[i].Protocol == "" {
-			all[i].Protocol = "raw"
-		}
+		// Protocol stays EMPTY (undeclared) when discovery could not prove
+		// one. Empty is reported as "unknown" upstream and the gateway never
+		// routes to it — inventing "raw" here was the wildcard bug.
 		if all[i].Type == "" {
 			all[i].Type = all[i].ConnectionType
 		}
@@ -232,6 +244,7 @@ func DiscoverQuick(cfg *config.Config, registryPath string) DiscoveryResult {
 //   - Registry (printers.json)
 //   - Network (active TCP 9100 scan, bounded, additive)
 //   - USB (SetupDi enumeration, Windows only)
+//
 // It deduplicates by stable ID and returns idempotent results.
 func Discover(cfg *config.Config, registryPath string) DiscoveryResult {
 	return DiscoverWithContext(context.Background(), cfg, registryPath)
@@ -473,7 +486,11 @@ func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath s
 		if ctx.Err() != nil {
 			return
 		}
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("lpr discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("lpr discovery panic: %v", r))
+			}
+		}()
 		log.Printf("[discovery] starting LPR discovery")
 		subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
@@ -514,7 +531,11 @@ func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath s
 		if ctx.Err() != nil {
 			return
 		}
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("snmp discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("snmp discovery panic: %v", r))
+			}
+		}()
 		log.Printf("[discovery] starting SNMP discovery")
 		subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
@@ -554,7 +575,11 @@ func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath s
 		if ctx.Err() != nil {
 			return
 		}
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("wsd discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("wsd discovery panic: %v", r))
+			}
+		}()
 		log.Printf("[discovery] starting WSD discovery")
 		subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
@@ -569,7 +594,11 @@ func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath s
 		if ctx.Err() != nil {
 			return
 		}
-		defer func() { if r := recover(); r != nil { addErr(fmt.Sprintf("mdns discovery panic: %v", r)) } }()
+		defer func() {
+			if r := recover(); r != nil {
+				addErr(fmt.Sprintf("mdns discovery panic: %v", r))
+			}
+		}()
 		log.Printf("[discovery] starting mDNS discovery")
 		subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
@@ -594,9 +623,9 @@ func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath s
 				all[i].ConnectionType = "network"
 			}
 		}
-		if all[i].Protocol == "" {
-			all[i].Protocol = "raw"
-		}
+		// Protocol stays EMPTY (undeclared) when discovery could not prove
+		// one. Empty is reported as "unknown" upstream and the gateway never
+		// routes to it — inventing "raw" here was the wildcard bug.
 		if all[i].Type == "" {
 			all[i].Type = all[i].ConnectionType
 		}
@@ -617,7 +646,7 @@ func discoverFromConfig(cfg *config.Config) []DeviceInfo {
 			DisplayName:    pc.Name,
 			PrinterType:    "unknown",
 			ConnectionType: pc.NormalizedType(),
-			Protocol:       pc.NormalizedProtocol(),
+			Protocol:       pc.NormalizedProtocolOrUnknown(),
 			Endpoint:       pc.Endpoint,
 			SpoolerName:    pc.SpoolerName,
 			Status:         "unknown",

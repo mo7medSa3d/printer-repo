@@ -280,7 +280,7 @@ func TestEndpointParsing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		// Use factory helper isNetworkEndpoint (unexported, test via config validation)
-		pc := config.PrinterConfig{ID: "p1", Name: "Test", Type: "network", Endpoint: tc.endpoint}
+		pc := config.PrinterConfig{ID: "p1", Name: "Test", Type: "network", Protocol: "raw", Endpoint: tc.endpoint}
 		if tc.isNet {
 			if err := config.ValidatePrinterConfig(pc); err != nil {
 				t.Errorf("endpoint %q should be valid network: %v", tc.endpoint, err)
@@ -297,7 +297,7 @@ func TestEndpointParsing(t *testing.T) {
 }
 
 func TestFactoryUSBWithoutSpoolerReturnsUSBPrinter(t *testing.T) {
-	pc := config.PrinterConfig{ID: "usb1", Name: "USB Direct", Type: "usb", Endpoint: "", USBVID: "03f0", USBPID: "0c17", USBSerial: "SN123"}
+	pc := config.PrinterConfig{ID: "usb1", Name: "USB Direct", Type: "usb", Protocol: "raw", Endpoint: "", USBVID: "03f0", USBPID: "0c17", USBSerial: "SN123"}
 	p, err := New(pc)
 	if err != nil {
 		t.Fatalf("expected USBPrinter not error, got %v", err)

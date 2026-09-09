@@ -59,6 +59,7 @@ class TestBranchRuntimeBinding(TransactionCase):
         vals = {
             "company_id": self.company.id, "branch_id": self.branch.id,
             "destination_type": "report", "destination_report_id": report.id, "report_id": report.id,
+            "printer_protocol": "escpos",
             "runtime_agent_id": "agent-a", "printer_id": "printer-a", "enabled": True, "priority": 10,
         }
         vals.update(extra)

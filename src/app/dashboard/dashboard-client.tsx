@@ -5,6 +5,7 @@ import {
   createAgent,
   createTestPrintJob,
   deleteAgent,
+  reprintJob,
   setAgentLifecycle,
   setPrinterLifecycle,
 } from "../actions";
@@ -45,9 +46,16 @@ import {
   Modal,
   CopyButton,
   agentTone,
-  jobTone,
-  printerTone,
 } from "../../components/ui";
+import {
+  agentLiveView,
+  deriveOutcome,
+  jobGuidance,
+  jobLabel,
+  jobTone as sharedJobTone,
+  printerLabel,
+  printerTone as sharedPrinterTone,
+} from "../../shared/job-vocabulary";
 
 export type Agent = {
   id: string;
@@ -143,6 +151,16 @@ export default function DashboardClient({
   const [copiedCode, setCopiedCode] = useState(false);
   const [countdownText, setCountdownText] = useState("10:00");
   const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
+  const [pendingAgentAction, setPendingAgentAction] = useState<{ agent: Agent; next: "disabled" | "retired" } | null>(null);
+  const [reprintCandidate, setReprintCandidate] = useState<Job | null>(null);
+  // Wall-clock used ONLY for heartbeat freshness (stale agents are not
+  // shown as online). Kept in state + refreshed on an interval so render
+  // stays pure for the react-hooks/purity rule.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Filter & view states
   const [printerViewMode, setPrinterViewMode] = useState<"grid" | "table">("grid");
@@ -169,7 +187,9 @@ export default function DashboardClient({
   // KPI calculations
   const kpis = useMemo(() => {
     const totalAgents = initialAgents.length;
-    const onlineAgents = initialAgents.filter((a) => a.status.toLowerCase() === "online").length;
+    // A stale heartbeat is NOT an online agent: availability follows the
+    // same 90s rule the gateway itself enforces.
+    const onlineAgents = initialAgents.filter((a) => agentLiveView(a, nowMs).tone === "ok").length;
 
     const totalPrinters = initialPrinters.length;
     const onlinePrinters = initialPrinters.filter((p) => p.status.toLowerCase() === "online").length;
@@ -179,17 +199,16 @@ export default function DashboardClient({
       return s === "queued" || s === "printing" || s === "claimed";
     }).length;
 
-    const completedJobs = initialJobs.filter((j) => {
-      const s = j.status.toLowerCase();
-      return s === "success" || s === "completed";
-    }).length;
+    const completedJobs = initialJobs.filter((j) => j.status.toLowerCase() === "success").length;
 
-    const attentionJobs = initialJobs.filter((j) => {
-      const s = j.status.toLowerCase();
-      return s === "unknown_partial_delivery" || s === "partial";
-    }).length;
+    // "Needs attention" = the physical outcome is UNKNOWN (paper may exist),
+    // regardless of whether the row says failed or expired.
+    const attentionJobs = initialJobs.filter(
+      (j) => deriveOutcome(j.status, j.error) === "unknown"
+    ).length;
 
-    const failedJobs = initialJobs.filter((j) => j.status.toLowerCase() === "failed").length;
+    const failedJobs = initialJobs.filter((j) => j.status.toLowerCase() === "failed" && deriveOutcome(j.status, j.error) === "not_printed").length;
+    const expiredJobs = initialJobs.filter((j) => j.status.toLowerCase() === "expired").length;
 
     const successRate =
       initialJobs.length > 0 ? Math.round((completedJobs / initialJobs.length) * 100) : 100;
@@ -203,24 +222,44 @@ export default function DashboardClient({
       completedJobs,
       attentionJobs,
       failedJobs,
+      expiredJobs,
       successRate,
     };
-  }, [initialAgents, initialPrinters, initialJobs]);
+  }, [initialAgents, initialPrinters, initialJobs, nowMs]);
 
-  const runAction = async (operation: () => Promise<unknown>, successMsg: string) => {
+  const runAction = async (operation: () => Promise<unknown>, successMsg?: string) => {
     setBusy(true);
     setMessage(null);
     try {
-      await operation();
-      setMessage({ text: successMsg, type: "ok" });
-      setTimeout(() => window.location.reload(), 600);
+      const result = await operation();
+      // Server actions revalidatePath themselves; a location.reload() here
+      // used to unmount this banner before the operator could read it.
+      if (successMsg) setMessage({ text: successMsg, type: "ok" });
+      return result;
     } catch (error) {
       setMessage({
-        text: error instanceof Error ? error.message : "Operation failed",
+        text: error instanceof Error ? error.message : "Operation failed. Try again, and check the Gateway logs if it persists.",
         type: "err",
       });
+      return undefined;
     } finally {
       setBusy(false);
+    }
+  };
+
+  const confirmAgentAction = async () => {
+    if (!pendingAgentAction) return;
+    const { agent, next } = pendingAgentAction;
+    setPendingAgentAction(null);
+    const result = await runAction(() => setAgentLifecycle(agent.id, next));
+    if (result && next === "disabled") {
+      setMessage({
+        text: `Agent ${agent.name} disabled: its credentials were revoked and its ${agent.printerCount} printer(s) no longer receive jobs. Re-enabling requires pairing it again with a new code.`,
+        type: "ok",
+      });
+    }
+    if (result && next === "retired") {
+      setMessage({ text: `Agent ${agent.name} retired. It is kept for audit history and cannot receive jobs.`, type: "ok" });
     }
   };
 
@@ -278,12 +317,13 @@ export default function DashboardClient({
   const filteredJobs = useMemo(() => {
     return initialJobs.filter((j) => {
       const s = j.status.toLowerCase();
-      if (jobStatusFilter === "active" && !(s === "printing" || s === "claimed")) return false;
+      const outcome = deriveOutcome(s, j.error);
+      if (jobStatusFilter === "active" && !(s === "printing" || s === "claimed" || s === "queued")) return false;
       if (jobStatusFilter === "queued" && s !== "queued") return false;
-      if (jobStatusFilter === "attention" && !(s === "unknown_partial_delivery" || s === "partial"))
-        return false;
-      if (jobStatusFilter === "success" && !(s === "success" || s === "completed")) return false;
-      if (jobStatusFilter === "failed" && s !== "failed") return false;
+      if (jobStatusFilter === "attention" && outcome !== "unknown") return false;
+      if (jobStatusFilter === "success" && s !== "success") return false;
+      if (jobStatusFilter === "expired" && s !== "expired") return false;
+      if (jobStatusFilter === "failed" && !(s === "failed" && outcome === "not_printed")) return false;
 
       if (jobSearch.trim()) {
         const q = jobSearch.toLowerCase();
@@ -356,8 +396,12 @@ export default function DashboardClient({
           value={`${kpis.successRate}%`}
           subtitle={
             kpis.attentionJobs > 0
-              ? `${kpis.attentionJobs} need attention`
-              : `${kpis.failedJobs} failed jobs`
+              ? `${kpis.attentionJobs} with unknown outcome - verify the printer`
+              : kpis.failedJobs > 0
+                ? `${kpis.failedJobs} failed before printing`
+                : kpis.expiredJobs > 0
+                  ? `${kpis.expiredJobs} expired unclaimed`
+                  : "All jobs accounted for"
           }
           icon={<CheckCircle2 className="h-5 w-5 text-ok" />}
           tone={kpis.attentionJobs > 0 ? "warn" : kpis.successRate >= 90 ? "ok" : "warn"}
@@ -508,11 +552,16 @@ export default function DashboardClient({
                             {meta?.os && <span>· {meta.os}</span>}
                           </div>
                         </div>
-                        <StatusBadge
-                          label={agent.status}
-                          tone={agentTone(agent.status)}
-                          pulse={agent.status.toLowerCase() === "online"}
-                        />
+                        {(() => {
+                          const view = agentLiveView(agent);
+                          return (
+                            <StatusBadge
+                              label={view.label}
+                              tone={view.tone}
+                              pulse={view.tone === "ok"}
+                            />
+                          );
+                        })()}
                       </div>
 
                       <div className="mt-3 flex items-center justify-between border-t border-edge/60 pt-3 text-xs text-ink-3">
@@ -527,12 +576,7 @@ export default function DashboardClient({
                           <Button
                             size="sm"
                             variant="secondary"
-                            onClick={() =>
-                              void runAction(
-                                () => setAgentLifecycle(agent.id, "disabled"),
-                                "Agent disabled."
-                              )
-                            }
+                            onClick={() => setPendingAgentAction({ agent, next: "disabled" })}
                             disabled={busy}
                             icon={<PauseCircle className="h-3.5 w-3.5" />}
                           >
@@ -542,12 +586,18 @@ export default function DashboardClient({
                           <Button
                             size="sm"
                             variant="secondary"
-                            onClick={() =>
-                              void runAction(
-                                () => setAgentLifecycle(agent.id, "active"),
-                                "Agent re-enabled."
-                              )
-                            }
+                            onClick={async () => {
+                              const result = (await runAction(() => setAgentLifecycle(agent.id, "active"))) as
+                                | { pairingCode?: string | null }
+                                | undefined;
+                              if (result?.pairingCode) {
+                                setActivePairing({ code: result.pairingCode, expiresAt: new Date(Date.now() + 1000 * 60 * 10) });
+                                setMessage({
+                                  text: `Agent ${agent.name} re-enabled. Pair it within 10 minutes using the code below - the old credentials no longer work.`,
+                                  type: "ok",
+                                });
+                              }
+                            }}
                             disabled={busy}
                             icon={<PlayCircle className="h-3.5 w-3.5" />}
                           >
@@ -555,19 +605,15 @@ export default function DashboardClient({
                           </Button>
                         ) : null}
 
-                        {agent.pairingCode && (
+                        {agent.lifecycle !== "retired" && (
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => {
-                              const expiresAt = agent.pairingCodeExpiresAt
-                                ? new Date(agent.pairingCodeExpiresAt)
-                                : new Date(Date.now() + 600000);
-                              setActivePairing({ code: agent.pairingCode!, expiresAt });
-                            }}
-                            icon={<Key className="h-3.5 w-3.5 text-brand" />}
+                            onClick={() => setPendingAgentAction({ agent, next: "retired" })}
+                            disabled={busy}
+                            title="Retire keeps the agent and its print history for auditing; it can no longer receive jobs."
                           >
-                            Pair Code
+                            Retire
                           </Button>
                         )}
 
@@ -683,8 +729,8 @@ export default function DashboardClient({
                             </div>
                           </div>
                           <StatusBadge
-                            label={printer.status}
-                            tone={printerTone(printer.status)}
+                            label={printerLabel(printer.status)}
+                            tone={sharedPrinterTone(printer.status)}
                           />
                         </div>
 
@@ -713,13 +759,13 @@ export default function DashboardClient({
                           onClick={() =>
                             void runAction(
                               () => createTestPrintJob(printer.id),
-                              `Test print job dispatched to ${printer.name}.`
+                              `Test page queued for ${printer.name} - watch it in the job list.`
                             )
                           }
                           disabled={busy || printer.lifecycle !== "active"}
                           icon={<CheckCircle2 className="h-3.5 w-3.5 text-ok" />}
                         >
-                          Test Print
+                          Send Test Page
                         </Button>
                         {printer.lifecycle === "active" ? (
                           <Button
@@ -796,8 +842,8 @@ export default function DashboardClient({
                           </td>
                           <td className="px-4 py-3">
                             <StatusBadge
-                              label={printer.status}
-                              tone={printerTone(printer.status)}
+                              label={printerLabel(printer.status)}
+                              tone={sharedPrinterTone(printer.status)}
                             />
                           </td>
                           <td className="px-4 py-3 text-right">
@@ -807,12 +853,12 @@ export default function DashboardClient({
                               onClick={() =>
                                 void runAction(
                                   () => createTestPrintJob(printer.id),
-                                  `Test print sent to ${printer.name}.`
+                                  `Test page queued for ${printer.name} - watch it in the job list.`
                                 )
                               }
                               disabled={busy || printer.lifecycle !== "active"}
                             >
-                              Test Print
+                              Send Test Page
                             </Button>
                           </td>
                         </tr>
@@ -861,10 +907,11 @@ export default function DashboardClient({
               {[
                 { id: "all", label: "All Jobs" },
                 { id: "active", label: "In Flight" },
-                { id: "attention", label: "Attention Needed" },
+                { id: "attention", label: "Unknown Outcome" },
                 { id: "queued", label: "Queued" },
-                { id: "success", label: "Success" },
+                { id: "success", label: "Printed" },
                 { id: "failed", label: "Failed" },
+                { id: "expired", label: "Expired" },
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -901,9 +948,7 @@ export default function DashboardClient({
                 </thead>
                 <tbody className="divide-y divide-edge">
                   {filteredJobs.map((job) => {
-                    const isPartial =
-                      job.status.toLowerCase() === "unknown_partial_delivery" ||
-                      job.status.toLowerCase() === "partial";
+                    const outcome = deriveOutcome(job.status, job.error);
                     return (
                       <tr
                         key={job.id}
@@ -926,12 +971,8 @@ export default function DashboardClient({
                         </td>
                         <td className="px-4 py-3">
                           <StatusBadge
-                            label={
-                              isPartial
-                                ? "Attention Needed"
-                                : job.status.toUpperCase()
-                            }
-                            tone={jobTone(job.status)}
+                            label={jobLabel(job.status, outcome)}
+                            tone={sharedJobTone(job.status, outcome)}
                             pulse={
                               job.status.toLowerCase() === "printing" ||
                               job.status.toLowerCase() === "claimed"
@@ -971,7 +1012,10 @@ export default function DashboardClient({
         title={selectedJob ? `Job ${selectedJob.id}` : "Job Details"}
         description="Full runtime execution parameters and payload inspection"
       >
-        {selectedJob && (
+        {selectedJob && (() => {
+          const outcome = deriveOutcome(selectedJob.status, selectedJob.error);
+          const isTerminal = ["success", "failed", "expired"].includes(selectedJob.status.toLowerCase());
+          return (
           <div className="space-y-6">
             {/* Status Callout Banner */}
             <div className="flex items-center justify-between rounded-xl border border-edge bg-surface-2 p-4">
@@ -980,12 +1024,15 @@ export default function DashboardClient({
                   Current State
                 </span>
                 <div className="text-lg font-bold text-ink">
-                  {selectedJob.status.replace(/_/g, " ").toUpperCase()}
+                  {jobLabel(selectedJob.status, outcome)}
                 </div>
+                {jobGuidance(selectedJob.status, outcome) && (
+                  <p className="text-xs text-ink-3 max-w-md">{jobGuidance(selectedJob.status, outcome)}</p>
+                )}
               </div>
               <StatusBadge
-                label={selectedJob.status.toUpperCase()}
-                tone={jobTone(selectedJob.status)}
+                label={jobLabel(selectedJob.status, outcome)}
+                tone={sharedJobTone(selectedJob.status, outcome)}
                 pulse={
                   selectedJob.status.toLowerCase() === "printing" ||
                   selectedJob.status.toLowerCase() === "claimed"
@@ -993,18 +1040,18 @@ export default function DashboardClient({
               />
             </div>
 
-            {/* Unknown Partial Delivery Warning Banner */}
-            {(selectedJob.status.toLowerCase() === "unknown_partial_delivery" ||
-              selectedJob.status.toLowerCase() === "partial") && (
+            {/* Unknown outcome: physical ambiguity is a DELIBERATE action */}
+            {outcome === "unknown" && isTerminal && (
               <div className="rounded-xl border border-warn-edge bg-warn-bg p-4 space-y-3">
                 <div className="flex items-start gap-2.5 text-warn">
                   <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="font-bold text-sm">Attention Needed: Partial Delivery Detected</h4>
+                    <h4 className="font-bold text-sm">Print status is unknown</h4>
                     <p className="text-xs leading-relaxed mt-1 text-ink-2">
-                      The printer agent reported a connection loss after partial data was written.
-                      Physical paper may or may not have partially printed. Use Force Reprint only if
-                      the physical document did not complete.
+                      The printer may have received part or all of the job. Automatic retry is paused
+                      to prevent duplicate printing. Verify the printer (paper tray, last page) before
+                      reprinting. Reprinting sends the ORIGINAL document again - you may get a second
+                      copy.
                     </p>
                   </div>
                 </div>
@@ -1012,18 +1059,32 @@ export default function DashboardClient({
                   <Button
                     size="sm"
                     variant="primary"
-                    onClick={() =>
-                      void runAction(
-                        () => createTestPrintJob(selectedJob.printerId),
-                        `Force reprint dispatched to ${selectedJob.printerId}.`
-                      )
-                    }
+                    onClick={() => setReprintCandidate(selectedJob)}
                     disabled={busy}
                     icon={<RotateCcw className="h-3.5 w-3.5" />}
                   >
-                    Force Reprint
+                    Reprint original document...
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* Provable pre-dispatch failure: retry is safe and honest */}
+            {selectedJob.status.toLowerCase() === "failed" && outcome === "not_printed" && (
+              <div className="rounded-xl border border-edge bg-surface-2 p-4 space-y-3">
+                <p className="text-xs leading-relaxed text-ink-2">
+                  This job failed before the printer started, so nothing was printed. Reprinting
+                  queues the original document again under a new operation key.
+                </p>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setReprintCandidate(selectedJob)}
+                  disabled={busy}
+                  icon={<RotateCcw className="h-3.5 w-3.5" />}
+                >
+                  Retry print...
+                </Button>
               </div>
             )}
 
@@ -1092,8 +1153,105 @@ export default function DashboardClient({
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
       </Drawer>
+
+      {/* Reprint confirmation: a physical operation deserves a deliberate one */}
+      <Modal
+        open={Boolean(reprintCandidate)}
+        onClose={() => { if (!busy) setReprintCandidate(null); }}
+        title="Reprint this document?"
+        description="This sends the ORIGINAL document to the printer again."
+        footer={
+          <div className="flex items-center justify-end gap-3">
+            <Button variant="secondary" onClick={() => setReprintCandidate(null)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={busy}
+              loading={busy}
+              onClick={async () => {
+                const job = reprintCandidate;
+                setReprintCandidate(null);
+                if (!job) return;
+                await runAction(
+                  () => reprintJob(job.id),
+                  `Reprint queued for ${job.printerId} - watch it in the job list.`
+                );
+              }}
+              icon={<RotateCcw className="h-4 w-4" />}
+            >
+              Reprint original document
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-3 text-sm text-ink-2">
+          <p>
+            Printer: <strong className="text-ink">{reprintCandidate?.printerId}</strong>
+            {" "}· Document: {reprintCandidate?.documentType || "standard"}
+          </p>
+          {reprintCandidate && deriveOutcome(reprintCandidate.status, reprintCandidate.error) === "unknown" && (
+            <div className="rounded-xl border border-warn-edge bg-warn-bg/60 p-3 text-xs text-ink-2">
+              The previous attempt has an <strong>unknown outcome</strong>. If any pages already
+              printed, this reprint produces a duplicate. Confirm only after checking the printer.
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Disable / Retire agent confirmation */}
+      <Modal
+        open={Boolean(pendingAgentAction)}
+        onClose={() => { if (!busy) setPendingAgentAction(null); }}
+        title={pendingAgentAction?.next === "retired" ? "Retire this agent?" : "Disable this agent?"}
+        description={
+          pendingAgentAction?.next === "retired"
+            ? "Retirement is permanent and keeps the agent for audit history."
+            : "Disabling revokes the agent's credentials immediately."
+        }
+        footer={
+          <div className="flex items-center justify-end gap-3">
+            <Button variant="secondary" onClick={() => setPendingAgentAction(null)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              variant={pendingAgentAction?.next === "retired" ? "danger" : "primary"}
+              disabled={busy}
+              loading={busy}
+              onClick={async () => { await confirmAgentAction(); }}
+            >
+              {pendingAgentAction?.next === "retired" ? "Retire agent" : "Disable agent"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-3 text-sm text-ink-2">
+          {pendingAgentAction?.next === "disabled" ? (
+            <>
+              <p>
+                Disabling <strong className="text-ink">{pendingAgentAction.agent.name}</strong>:
+              </p>
+              <ul className="list-disc pl-5 text-xs space-y-1">
+                <li>Revokes the agent&apos;s secret - it cannot reconnect or receive jobs.</li>
+                <li>Disables its {pendingAgentAction.agent.printerCount} printer(s).</li>
+                <li>Re-enabling requires pairing again with a fresh single-use code.</li>
+              </ul>
+            </>
+          ) : (
+            <>
+              <p>
+                Retiring <strong className="text-ink">{pendingAgentAction?.agent.name}</strong> keeps
+                the agent and its print history for auditing. A retired agent cannot be re-activated
+                or deleted.
+              </p>
+              <p className="text-xs text-ink-3">If you only need to pause it temporarily, use Disable instead.</p>
+            </>
+          )}
+        </div>
+      </Modal>
 
       {/* Permanent Agent Deletion Confirmation Modal */}
       <Modal

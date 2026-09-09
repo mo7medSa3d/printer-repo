@@ -25,8 +25,8 @@
         <field name="arch" type="xml">
             <form string="Print Gateway Binding" class="o_pg_view o_pg_form">
                 <header>
-                    <button name="action_send_test_print" type="object" string="Print Test Page" class="btn btn-primary" icon="fa-print" invisible="not runtime_agent_id or not printer_id"/>
-                    <button name="action_verify_remote_hardware" type="object" string="Test Hardware Reachability" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
+                    <button name="action_send_test_print" type="object" string="Send Test Page" class="btn btn-primary" icon="fa-print" invisible="not runtime_agent_id or not printer_id"/>
+                    <button name="action_verify_remote_hardware" type="object" string="Validate Registration (Gateway)" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
                 </header>
                 <sheet>
                     <div class="o_pg_record_header">

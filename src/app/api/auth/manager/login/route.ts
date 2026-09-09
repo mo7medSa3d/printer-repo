@@ -7,7 +7,7 @@ import {
   recordAuthSuccess,
 } from "../../../../../lib/auth-rate-limit";
 import { hasBodyOverLimit } from "../../../../../lib/request-limits";
-import { logWarn, logInfo, requestIdFrom } from "../../../../../lib/log";
+import { logWarn, logInfo, logError, requestIdFrom } from "../../../../../lib/log";
 
 const INVALID = "Invalid credentials";
 
@@ -74,8 +74,8 @@ export async function POST(req: Request) {
   try {
     sess = await createManagerSession();
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "session error";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    logError("auth.login.session_failed", { requestId, error: e instanceof Error ? e.message : "unknown" });
+    return NextResponse.json({ error: "Sign-in is temporarily unavailable. Try again in a moment." }, { status: 500 });
   }
 
   logInfo("auth.login.success", { requestId, ip });

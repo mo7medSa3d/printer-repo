@@ -14,6 +14,8 @@ import { X, Check, Loader2, Copy, AlertTriangle } from "lucide-react";
 
 export { BrandMark } from "./brand";
 
+import { jobTone as sharedJobTone, printerTone as sharedPrinterTone } from "../shared/job-vocabulary";
+
 export type Tone = "ok" | "warn" | "bad" | "info" | "neutral" | "brand";
 
 export const toneBg: Record<Tone, string> = {
@@ -46,22 +48,15 @@ export function agentTone(status: string): Tone {
   return "neutral";
 }
 
+// Tone vocabulary is defined ONCE in src/shared/job-vocabulary.ts and shared
+// with the desktop app; these wrappers only adapt it to this module's Tone
+// union (which additionally allows "brand").
 export function printerTone(status: string): Tone {
-  const s = String(status).toLowerCase();
-  if (s === "online") return "ok";
-  if (s === "busy" || s === "printing") return "warn";
-  if (s === "offline" || s === "error" || s === "failed") return "bad";
-  return "neutral";
+  return sharedPrinterTone(String(status)) as Tone;
 }
 
 export function jobTone(status: string): Tone {
-  const s = String(status).toLowerCase();
-  if (s === "success" || s === "completed") return "ok";
-  if (s === "unknown_partial_delivery" || s === "partial" || s === "partial_delivery") return "warn";
-  if (s === "failed" || s === "expired" || s === "canceled" || s === "cancelled") return "bad";
-  if (s === "printing" || s === "processing" || s === "claimed") return "info";
-  if (s === "queued" || s === "pending") return "neutral";
-  return "neutral";
+  return sharedJobTone(String(status)) as Tone;
 }
 
 /* ---------- Buttons ---------- */
@@ -692,6 +687,9 @@ export function Toast({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!toast) return;
+    // Errors stay until dismissed: a 5-second error toast disappears before
+    // the operator can read or act on it.
+    if (toast.type === "error") return;
     timer.current = setTimeout(onDismiss, 5000);
     return () => {
       if (timer.current) clearTimeout(timer.current);

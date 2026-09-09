@@ -10,7 +10,7 @@
                 <field name="destination" string="Destination"/>
                 <field name="gateway_job_id" string="Gateway Job ID"/>
 
-                <filter name="filter_attention" string="Attention Needed (Partial Delivery)" domain="['|', ('status', '=', 'partial'), ('status', '=', 'unknown')]"/>
+                <filter name="filter_attention" string="Needs Attention - May Have Printed" domain="['|', ('status', '=', 'partial'), ('status', '=', 'unknown')]"/>
                 <filter name="filter_failed" string="Failed" domain="[('status', '=', 'failed')]"/>
                 <filter name="filter_active" string="In-Flight" domain="[('status', 'in', ['claimed', 'printing', 'submitted'])]"/>
                 <filter name="filter_success" string="Success" domain="[('status', '=', 'success')]"/>
@@ -31,7 +31,7 @@
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
             <list string="Print Jobs" create="0" delete="0" class="o_pg_list">
-                <field name="create_date" string="Queued At"/>
+                <field name="create_date" string="Created"/>
                 <field name="company_id" optional="hide"/>
                 <field name="destination" string="Destination"/>
                 <field name="document_type" string="Format" optional="show"/>
@@ -51,12 +51,12 @@
         <field name="arch" type="xml">
             <form string="Print Job" create="0" delete="0" class="o_pg_view o_pg_form">
                 <header>
-                    <button name="action_force_reprint" type="object" string="Force Reprint" class="btn-warning"
+                    <button name="action_force_reprint" type="object" string="Force Reprint" class="btn-warning" groups="base.group_system"
                             confirm="Are you sure you want to force a reprint? A partial delivery was recorded for this job. Confirming will dispatch a fresh print job to the physical printer."
                             invisible="status not in ('partial', 'unknown') and physical_outcome != 'unknown'"/>
-                    <button name="action_retry" type="object" string="Retry" class="oe_highlight" invisible="status != 'failed' or physical_outcome != 'not_printed'"/>
-                    <button name="action_sync_status" type="object" string="Refresh Status" invisible="not gateway_job_id"/>
-                    <field name="status" widget="statusbar" statusbar_visible="queued,submitted,claimed,printing,success"/>
+                    <button name="action_retry" type="object" string="Retry" class="oe_highlight" groups="base.group_system" invisible="status != 'failed' or physical_outcome != 'not_printed'"/>
+                    <button name="action_sync_status" type="object" string="Refresh Status" groups="base.group_system" invisible="not gateway_job_id"/>
+                    <field name="status" widget="statusbar" statusbar_visible="queued,submitted,claimed,printing,success" decoration-danger="status in ('failed', 'unknown', 'partial')"/>
                 </header>
                 <sheet>
                     <!-- Amber Callout for UNKNOWN_PARTIAL_DELIVERY -->
@@ -64,8 +64,8 @@
                         <div class="o_pg_partial_content">
                             <span class="o_pg_partial_icon">⚠️</span>
                             <div>
-                                <h4>Attention: Partial Delivery Detected</h4>
-                                <p>Transmission was interrupted after data began transmitting to the printer hardware. The physical paper may be partially printed. Automated retry is halted to avoid duplicates. Check the physical printer tray before clicking Force Reprint.</p>
+                                <h4>Print status is unknown - the printer may have received part or all of the job</h4>
+                                <p>Automatic retry is paused to prevent duplicate printing. Verify the printer (paper tray, last pages) before reprinting. If nothing came out, use Force Reprint - it deliberately re-sends the original document under a new operation key.</p>
                             </div>
                         </div>
                     </div>

@@ -119,4 +119,3 @@ func TestParsePeripherals(t *testing.T) {
 		t.Fatalf("unexpected peripherals: %+v", pl.Peripherals)
 	}
 }
-

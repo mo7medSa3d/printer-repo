@@ -393,3 +393,21 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             submit.assert_called_once()
         finally:
             cr.close()
+
+    def test_gateway_unknown_outcome_marker_parity(self):
+        """Cross-layer parity: unknown-outcome markers must match the Gateway
+        (src/lib/job-status.ts) and the Go agent
+        (agent/internal/printer/outcome.go) verbatim. A renamed marker in one
+        layer silently converts ambiguous outcomes into auto-retryable
+        failures in another (physical double prints)."""
+        expected = (
+            "AGENT_EXECUTION_TIMEOUT",
+            "AGENT_RESTART_DURING_PRINT",
+            "JOB_EXPIRED_DURING_PRINT",
+            "UNKNOWN_PARTIAL_DELIVERY",
+            "UNKNOWN_SUBMISSION_OUTCOME",
+        )
+        self.assertEqual(
+            tuple(self.env["print_gateway.print_job"]._GATEWAY_UNKNOWN_MARKERS),
+            expected,
+        )

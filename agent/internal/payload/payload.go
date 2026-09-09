@@ -135,9 +135,16 @@ func Parse(raw interface{}) (*Payload, error) {
 		}
 	}
 
-	hasPeripherals := periph.Drawer != "" || periph.Cutter != "" || periph.Buzzer != ""
+	// "none" is an INACTIVE setting, not an action: it must never count as
+	// a configured peripheral (serializing inactive peripherals as active
+	// semantic values would make e.g. {drawer:"none"} a zpl payload killer).
+	active := func(v string) bool { return v != "" && v != "none" }
+	hasPeripherals := active(periph.Drawer) || active(periph.Cutter) || active(periph.Buzzer)
 	if hasPeripherals && protocol != "escpos" {
 		return nil, fmt.Errorf("peripherals are only supported for escpos protocol")
+	}
+	if !hasPeripherals {
+		periph = Peripherals{}
 	}
 
 	return &Payload{

@@ -63,11 +63,13 @@ with the claim instead of being protected by an in-memory pre-check.
 |---|---|---|
 | No agent socket | job remains queued | not_printed |
 | WS write fails before delivery | same job requeued | not_printed |
-| Stale `claimed` lease | requeue until retry budget | not_printed |
-| Stale `claimed` after retry budget | terminal `failed` | not_printed |
+| Stale `claimed` lease WITHOUT delivery evidence | requeue under a fresh claim token until retry budget | not_printed |
+| Stale `claimed` lease WITH delivery evidence | terminal `failed` with `UNKNOWN_PARTIAL_DELIVERY` | unknown |
+| Stale undelivered `claimed` after retry budget | terminal `failed` | not_printed |
 | Agent crashes during printing | interruption marker recorded | unknown |
 | Stale `printing` execution lease | terminal `failed` with `AGENT_EXECUTION_TIMEOUT` | unknown |
 | TTL expires while `printing` | terminal `expired` with `JOB_EXPIRED_DURING_PRINT` | unknown |
+| TTL expires after delivery without execution report | terminal `expired` with `UNKNOWN_PARTIAL_DELIVERY` | unknown |
 | Capability/transport rejection before handoff | terminal `failed` | not_printed |
 | Successful agent result | terminal `success` | printed* |
 

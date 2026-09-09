@@ -54,6 +54,8 @@ export function OverviewPage({ s }: { s: DesktopState }) {
   const offline = shownPrinters.filter(
     (p) => p.status === "offline" || p.status === "error"
   ).length;
+  // Unreadable state is NOT healthy: it needs attention of its own kind.
+  const unknownPrinters = shownPrinters.filter((p) => p.status === "unknown").length;
 
   const banner = (() => {
     if (!s.gatewayUrl) {
@@ -110,9 +112,10 @@ export function OverviewPage({ s }: { s: DesktopState }) {
         </StatusNotice>
       );
     }
-    if (offline > 0 || s.failedJobs > 0) {
+    if (offline > 0 || unknownPrinters > 0 || s.failedJobs > 0) {
       const parts: string[] = [];
       if (offline > 0) parts.push(`${offline} printer${offline > 1 ? "s" : ""} need attention`);
+      if (unknownPrinters > 0) parts.push(`${unknownPrinters} printer${unknownPrinters > 1 ? "s" : ""} status unreadable`);
       if (s.failedJobs > 0) parts.push(`${s.failedJobs} job${s.failedJobs > 1 ? "s" : ""} failed`);
       return (
         <StatusNotice
@@ -129,6 +132,23 @@ export function OverviewPage({ s }: { s: DesktopState }) {
           }
         >
           {parts.join(" · ")}
+        </StatusNotice>
+      );
+    }
+    if (unknownPrinters > 0) {
+      return (
+        <StatusNotice
+          tone="warn"
+          icon={<AlertTriangle className="h-6 w-6" aria-hidden />}
+          title={`${unknownPrinters} printer${unknownPrinters === 1 ? "" : "s"} could not be checked`}
+          action={
+            <Button variant="secondary" onClick={() => s.navigate("printers")}>
+              Review printers
+            </Button>
+          }
+        >
+          The agent could not read their status. They are not treated as healthy until a probe
+          succeeds. Open the Printers page for details.
         </StatusNotice>
       );
     }
@@ -336,28 +356,27 @@ export function OverviewPage({ s }: { s: DesktopState }) {
                 },
               ]}
             />
-            {/* Local Queue Buffer Gauge */}
+            {/* Gateway queue depth (from /api/jobs, most recent 50) */}
             <div className="section-rule mt-5 pt-5 space-y-2">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold uppercase tracking-wider text-ink-3">
-                  Local Queue Buffer
+                  Gateway Queue
                 </span>
                 <span className={`font-semibold ${s.pendingJobs > 20 ? "text-warn" : s.pendingJobs > 0 ? "text-brand" : "text-ok"}`}>
-                  {s.pendingJobs > 20 ? "Backlogged" : s.pendingJobs > 0 ? "In Flight" : "Ready"}
+                  {s.pendingJobs > 20 ? "Backlogged" : s.pendingJobs > 0 ? "In Flight" : "Clear"}
                 </span>
               </div>
               <div className="flex items-baseline justify-between text-xs">
-                <span className="text-ink font-bold text-sm">{s.pendingJobs} <span className="text-ink-3 font-normal">/ 50 jobs</span></span>
-                <span className="text-ink-3">{Math.min(100, Math.round((s.pendingJobs / 50) * 100))}%</span>
+                <span className="text-ink font-bold text-sm">
+                  {s.pendingJobs}
+                  <span className="text-ink-3 font-normal"> waiting at the Gateway</span>
+                </span>
+                <span className="text-ink-3">last 50 jobs shown</span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2 border border-edge">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${
-                    s.pendingJobs > 20 ? "bg-warn-solid" : "bg-brand"
-                  }`}
-                  style={{ width: `${Math.max(4, Math.min(100, (s.pendingJobs / 50) * 100))}%` }}
-                />
-              </div>
+              <p className="text-[11px] text-ink-3">
+                Counts jobs queued, claimed or printing at the Gateway. The agent accepts up to
+                500 in-flight jobs per printer batch.
+              </p>
             </div>
             <div className="section-rule mt-5 pt-5">
               <div className="mb-3 text-[12px] font-semibold uppercase tracking-[0.06em] text-ink-3">
