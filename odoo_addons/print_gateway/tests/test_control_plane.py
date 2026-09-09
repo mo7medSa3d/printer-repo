@@ -371,52 +371,34 @@ class TestControlPlane(TransactionCase):
         recovery cron for multi-branch setups. The raw_template branch never
         performed this assert, so only report intents were affected.
 
-        Fixtures are COMMITTED on an independent cursor first: production
-        `_execute_dispatched_route` opens its own cursor, which - like any
-        independent transaction - cannot see uncommitted test data (this is
-        the same cursor-visibility contract proven by test_26b and
-        test_branch_restricted_user_raw_command_submits_without_access_error).
+        Production `_execute_dispatched_route` opens its own cursor; the
+        registry is put in TEST MODE so that cursor shares this test's
+        transaction (the official Odoo harness - cross-cursor DURABILITY of
+        the durable-persist path is separately proven by test_26b and the
+        architecture-contract committed-fixture tests).
         """
-        suffix = uuid.uuid4().hex[:8]
-        picking_model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
-        picking_report = self.env["ir.actions.report"].search(
-            [("model", "=", "stock.picking")], limit=1
-        )
-        self.assertTrue(picking_report, "A stock.picking report is required in the test database")
-        router = self.env["print_gateway.print_router"]
-        RouterClass = type(router)
-        scope_cr = self.env.registry.cursor()
-        scope_ids = {}
-        try:
-            senv = api.Environment(scope_cr, self.env.uid, dict(self.env.context))
-            root = senv["res.company"].create({"name": "Cron Recovery Root %s" % suffix})
-            branch = senv["res.company"].create({
-                "name": "Cron Recovery Branch %s" % suffix,
-                "parent_id": root.id,
-            })
-            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
-                config = senv["print_gateway.gateway_config"].create({
-                    "company_id": root.id,
-                    "gateway_url": "https://gateway.example.com",
-                    "gateway_api_key": "test_api_key_cron_recovery",
-                    "enabled": True,
-                })
-            binding = senv["print_gateway.binding"].create({
-                "company_id": root.id,
-                "branch_id": branch.id,
+        with self.enter_registry_test_mode():
+            picking_model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
+            picking_report = self.env["ir.actions.report"].search(
+                [("model", "=", "stock.picking")], limit=1
+            )
+            self.assertTrue(picking_report, "A stock.picking report is required in the test database")
+            binding = self.env["print_gateway.binding"].create({
+                "company_id": self.company.id,
+                "branch_id": self.branch.id,
                 "destination_type": "report",
                 "destination_report_id": picking_report.id,
                 "report_id": picking_report.id,
-                "runtime_agent_id": "agent-cron-recovery",
-                "printer_id": "printer-cron-recovery-%s" % suffix,
+                "runtime_agent_id": "agent-cp-01",
+                "printer_id": "printer-branch-recovery",
                 "printer_protocol": "escpos",
                 "enabled": True,
-                "priority": 10,
+                "priority": 5,
             })
-            policy = senv["print_gateway.policy"].create({
-                "name": "Cron Recovery Branch Report Policy %s" % suffix,
-                "company_id": root.id,
-                "branch_id": branch.id,
+            policy = self.env["print_gateway.policy"].create({
+                "name": "Cron Recovery Branch Report Policy",
+                "company_id": self.company.id,
+                "branch_id": self.branch.id,
                 "model_id": picking_model.id,
                 "event_type": "picking_validated",
                 "action_type": "report",
@@ -424,98 +406,57 @@ class TestControlPlane(TransactionCase):
                 "binding_id": binding.id,
                 "active": True,
             })
-            picking_type = senv["stock.picking.type"].search([
-                ("company_id", "=", branch.id),
+            picking_type = self.env["stock.picking.type"].search([
+                ("company_id", "=", self.branch.id),
                 ("default_location_src_id", "!=", False),
                 ("default_location_dest_id", "!=", False),
             ], limit=1)
-            self.assertTrue(picking_type, "A new company must provision picking types with locations")
-            picking = senv["stock.picking"].create({
+            self.assertTrue(picking_type, "Company provisioning must create picking types")
+            picking = self.env["stock.picking"].create({
                 "picking_type_id": picking_type.id,
                 "location_id": picking_type.default_location_src_id.id,
                 "location_dest_id": picking_type.default_location_dest_id.id,
             })
-            self.assertEqual(picking.company_id, branch)
-            outbox = senv["print_gateway.print_job"].create({
-                "company_id": branch.id,
-                "gateway_config_id": config.id,
+            self.assertEqual(picking.company_id, self.branch)
+            outbox = self.env["print_gateway.print_job"].create({
+                "company_id": self.branch.id,
+                "gateway_config_id": self.gateway_config.id,
                 "printer_id": binding.printer_id,
                 "destination": "Cron Recovery Destination",
                 "document_type": "delivery",
                 "status": "queued",
                 "payload": json.dumps({"type": "raw", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
-                "idempotency_key": "test_cron_recovery_key_%s" % suffix,
+                "idempotency_key": "test_cron_recovery_key_01",
             })
-            intent = senv["print_gateway.intent"].create({
-                "company_id": branch.id,
-                "intent_key": "cron_recovery_intent_%s" % suffix,
+            intent = self.env["print_gateway.intent"].create({
+                "company_id": self.branch.id,
+                "intent_key": "stale_branch_report_intent_key_01",
                 "policy_id": policy.id,
                 "res_model": picking_model.model,
                 "res_id": picking.id,
                 "event_type": "picking_validated",
-                "status": "claimed",
-                "claim_token": "fake_token_branch_1",
+                "status": "pending",
             })
-            scope_cr.commit()
-            scope_ids = {
-                "root_id": root.id,
-                "branch_id": branch.id,
-                "config_id": config.id,
-                "binding_id": binding.id,
-                "policy_id": policy.id,
-                "intent_id": intent.id,
-                "picking_id": picking.id,
-                "outbox_id": outbox.id,
-                "printer_id": binding.printer_id,
-            }
-        finally:
-            scope_cr.close()
-        try:
+            intent.write({"status": "claimed", "claim_token": "fake_token_branch_1"})
+            self.env.flush_all()
             # A cron-like env under the MAIN test company - deliberately not
             # the intent's branch company (exactly the pre-fix failure mode).
             cron_env = api.Environment(self.env.cr, self.env.uid, {"allowed_company_ids": [self.company.id]})
-            self.assertNotEqual(cron_env.company, self.env["res.company"].browse(scope_ids["branch_id"]))
+            RouterClass = type(self.env["print_gateway.print_router"])
             with patch.object(RouterClass, "_render_pdf_payload", return_value={"type": "pdf", "encoding": "base64", "data": "dGVzdA=="}), \
-                 patch.object(RouterClass, "_submit_route", return_value={"job_id": scope_ids["outbox_id"]}) as mock_submit, \
+                 patch.object(RouterClass, "_submit_route", return_value={"job_id": outbox.id}) as mock_submit, \
                  patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
                 self.env["print_gateway.intent"]._execute_dispatched_route(
-                    cron_env, scope_ids["intent_id"], picking_model.model, scope_ids["picking_id"], "fake_token_branch_1"
+                    cron_env, intent.id, picking_model.model, picking.id, "fake_token_branch_1"
                 )
                 # The branch record routed despite the cron env defaulting to
                 # the root company (the fix), reaching the (mocked) dispatch.
                 mock_submit.assert_called_once()
-            check_cr = self.env.registry.cursor()
-            try:
-                intent_check = api.Environment(check_cr, self.env.uid, {})["print_gateway.intent"].browse(scope_ids["intent_id"])
-                # Fenced finalize committed the outcome on its own cursor:
-                # dispatched (NOT failed) proves the company assert passed.
-                self.assertEqual(intent_check.status, "dispatched")
-                self.assertEqual(intent_check.print_job_id.id, scope_ids["outbox_id"])
-            finally:
-                check_cr.close()
-        finally:
-            if scope_ids:
-                cleanup_cr = self.env.registry.cursor()
-                try:
-                    cleanup_env = api.Environment(cleanup_cr, self.env.uid, {})
-                    for model_name, key in (
-                        ("print_gateway.intent", "intent_id"),
-                        ("stock.picking", "picking_id"),
-                        ("print_gateway.print_job", "outbox_id"),
-                        ("print_gateway.policy", "policy_id"),
-                        ("print_gateway.binding", "binding_id"),
-                        ("print_gateway.gateway_config", "config_id"),
-                    ):
-                        rec = cleanup_env[model_name].sudo().browse(scope_ids.get(key))
-                        if rec.exists():
-                            rec.unlink()
-                    for key in ("branch_id", "root_id"):
-                        rec = cleanup_env["res.company"].sudo().browse(scope_ids.get(key))
-                        if rec.exists():
-                            rec.write({"active": False})
-                    cleanup_cr.commit()
-                finally:
-                    cleanup_cr.close()
+            intent.invalidate_recordset(["status", "print_job_id", "last_error"])
+            # Fenced finalize landed `dispatched` (NOT `failed`): the company
+            # assert passed because routing switched to the record's company.
+            self.assertEqual(intent.status, "dispatched")
+            self.assertEqual(intent.print_job_id.id, outbox.id)
 
     def test_07_failover_cycle_safety(self):
         """Verify cycle in fallback bindings terminates without infinite recursion."""
@@ -1567,10 +1508,15 @@ class TestControlPlane(TransactionCase):
         })
         user = self._operator_user()  # restricted to self.branch, not sibling
         binding = self.env["print_gateway.binding"].with_user(user)
-        with self.assertRaises(AccessError):
-            binding.dispatch_report_action(
-                report_name=report.report_name, res_ids=[hidden_picking.id]
-            )
+        # Registry test mode: if the authorization guard ever regresses, the
+        # dispatch would continue into the durable-persist path and open its
+        # own cursor; sharing the test transaction keeps the failure loud
+        # (AssertionError below) instead of a cross-transaction lock wait.
+        with self.enter_registry_test_mode():
+            with self.assertRaises(AccessError):
+                binding.dispatch_report_action(
+                    report_name=report.report_name, res_ids=[hidden_picking.id]
+                )
         # Rejected at the authorization boundary: no outbox row was created.
         self.assertFalse(self.env["print_gateway.print_job"].search_count([
             ("source_model", "=", "stock.picking"),

@@ -834,8 +834,20 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 	default:
 	}
 	if _, dup := a.inFlight[jobID]; dup {
+		// A redelivery of a job this agent is ALREADY executing (the exact
+		// shape of a gateway reclaim after a lost delivery-evidence write):
+		// never print it a second time, but ADOPT the newer claim token.
+		// Otherwise the keep-alive heartbeats and the eventual terminal
+		// report would stay bound to the superseded attempt's token, the
+		// gateway would fence-reject them as stale, and a physically real
+		// result would strand as an unknown outcome. (The maps are first
+		// initialized by the normal registration below; a duplicate can only
+		// follow a successful registration, so they already exist here.)
+		if tok := jobClaimToken(job); tok != "" && a.inFlightTokens != nil {
+			a.inFlightTokens[jobID] = tok
+		}
 		a.inFlightMu.Unlock()
-		log.Printf("Job %s is already in flight; duplicate delivery ignored.", jobID)
+		log.Printf("Job %s is already in flight; duplicate delivery ignored (latest claim token adopted).", jobID)
 		return
 	}
 	a.inFlight[jobID] = struct{}{}
@@ -1003,6 +1015,9 @@ func (a *Agent) inFlightJobIDs(limit int) []map[string]string {
 // 'exceeded max retries'. Best-effort — the gateway's 90s claim-lease
 // reclaim remains the backstop if this request fails or races.
 func (a *Agent) rejectJob(jobID, token, reason string) {
+	if live := a.currentClaimToken(jobID); live != "" {
+		token = live
+	}
 	reqURL := fmt.Sprintf("%s/api/agent/jobs", a.cfg.Server.URL)
 	body := map[string]interface{}{
 		// status "queued" + an explicit pre-execution reason is the
@@ -1704,7 +1719,21 @@ var ErrStaleClaim = errors.New("gateway rejected claim fence: stale or reclaimed
 // evaluated our transition and refused it, so physical dispatch must stop.
 var ErrTransitionRejected = errors.New("gateway rejected status transition")
 
+// currentClaimToken returns the claim token most recently delivered to this
+// agent for an in-flight job. A redelivery (e.g. a gateway reclaim after a
+// lost delivery-evidence write) adopts its newer token, so status reports
+// must be authenticated with the token the gateway CURRENTLY holds rather
+// than the one the attempt started with.
+func (a *Agent) currentClaimToken(jobID string) string {
+	a.inFlightMu.Lock()
+	defer a.inFlightMu.Unlock()
+	return a.inFlightTokens[jobID]
+}
+
 func (a *Agent) updateJobStatus(jobID, status, errMsg, claimToken string) error {
+	if live := a.currentClaimToken(jobID); live != "" {
+		claimToken = live
+	}
 	reqURL := fmt.Sprintf("%s/api/agent/jobs", a.cfg.Server.URL)
 	body := map[string]interface{}{
 		"jobId":  jobID,

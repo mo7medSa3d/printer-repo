@@ -2,9 +2,113 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/odoo-print-agent/agent/internal/config"
+	"github.com/odoo-print-agent/agent/internal/printer"
 )
+
+// TestRedeliveryAdoptsLiveClaimTokenForReports proves the full loop of the
+// WS-send/evidence-loss race on the agent side:
+//
+//  1. delivery #1 (token A) reaches the printer and parks mid-print;
+//  2. the Gateway (after a lost delivered_at write + release) re-claims and
+//     redelivers the SAME job under token B while A is still executing;
+//  3. the duplicate must NOT cause a second physical write;
+//  4. keep-alive bookkeeping and the terminal report must switch to token B,
+//     otherwise the gateway fences them away and a real printed result
+//     strands as an unknown outcome.
+func TestRedeliveryAdoptsLiveClaimTokenForReports(t *testing.T) {
+	var mu sync.Mutex
+	var patches []map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/agent/jobs" && r.Method == http.MethodPatch {
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			patches = append(patches, body)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{}
+	cfg.Agent.ID = "agt_test"
+	cfg.Agent.Secret = "secret"
+	cfg.Server.URL = srv.URL
+	ag, err := New(cfg, filepath.Join(t.TempDir(), "config.yaml"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer ag.Close()
+	p := &fakePrinter{blocked: make(chan struct{}), startedCh: make(chan string, 1)}
+	ag.printers = map[string]printer.Printer{"p1": p}
+	ag.printerConfigs = map[string]config.PrinterConfig{"p1": {ID: "p1", Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}}
+
+	first := dispatchTestJob("reclaim_token_race", "p1")
+	first["claimToken"] = "tok-A"
+	ag.dispatchJob(context.Background(), first)
+	select {
+	case <-p.startedCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first print never reached the device")
+	}
+
+	// The "printing" report happened under the live token at the time (A).
+	mu.Lock()
+	sawPrintingA := false
+	for _, b := range patches {
+		if b["status"] == "printing" && b["claimToken"] == "tok-A" {
+			sawPrintingA = true
+		}
+	}
+	mu.Unlock()
+	if !sawPrintingA {
+		t.Fatal("expected a printing report fenced with tok-A before redelivery")
+	}
+
+	second := dispatchTestJob("reclaim_token_race", "p1")
+	second["claimToken"] = "tok-B"
+	ag.dispatchJob(context.Background(), second)
+
+	// Bookkeeping must have adopted the live token for keep-alives.
+	pairs := ag.inFlightJobIDs(64)
+	if len(pairs) != 1 || pairs[0]["jobId"] != "reclaim_token_race" || pairs[0]["claimToken"] != "tok-B" {
+		t.Fatalf("duplicate delivery must adopt the live claim token, got %v", pairs)
+	}
+
+	close(p.blocked)
+	ag.waitForJobs()
+
+	if got := p.callsByJob["reclaim_token_race"]; got != 1 {
+		t.Fatalf("redelivered in-flight job must physically print exactly once, got %d", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var successToken interface{}
+	var sawSuccess bool
+	for _, b := range patches {
+		if b["jobId"] == "reclaim_token_race" && b["status"] == "success" {
+			successToken = b["claimToken"]
+			sawSuccess = true
+		}
+	}
+	if !sawSuccess {
+		t.Fatal("no terminal success report was sent")
+	}
+	if successToken != "tok-B" {
+		t.Fatalf("terminal report must carry the gateway's CURRENT token tok-B, got %v", successToken)
+	}
+}
 
 func dispatchTestJob(id, printerID string) map[string]interface{} {
 	return map[string]interface{}{
