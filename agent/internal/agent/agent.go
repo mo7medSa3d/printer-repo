@@ -882,6 +882,12 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 		case a.execSem <- struct{}{}:
 			defer func() { <-a.execSem }()
 		case <-ctx.Done():
+			// Shutdown (or cancellation) reached this backlog job before an
+			// execution slot freed up: nothing was dispatched, so it is
+			// provably pre-execution. Tell the gateway (fenced rejection,
+			// not counted against retries) instead of silently dropping the
+			// job and waiting out the 90s lease reclaim.
+			a.rejectJob(jobID, jobClaimToken(job), "agent_shutting_down")
 			return
 		}
 
@@ -1379,9 +1385,14 @@ func endpointToConfig(pc config.PrinterConfig) map[string]interface{} {
 	default:
 		cfgMap["address"] = pc.Endpoint
 	}
-	// Include capabilities if present
+	// Include capabilities if present. Reserved identity keys declared on
+	// the printer config must never be overwritten by a capability bag.
 	if pc.Capabilities != nil {
 		for k, v := range pc.Capabilities {
+			switch k {
+			case "protocol", "address", "ip", "port", "printer_type":
+				continue
+			}
 			cfgMap[k] = v
 		}
 	}
@@ -1657,9 +1668,16 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		if printer.OutcomeUnknown(printErr) && !printer.HasUnknownOutcomeMarker(failureMsg) {
 			failureMsg = "UNKNOWN_PARTIAL_DELIVERY: " + failureMsg
 		}
-		_ = a.queue.UpdateStatusWithError(jobID, "failed", failureMsg)
+		if err := a.queue.UpdateStatusWithError(jobID, "failed", failureMsg); err != nil {
+			log.Printf("Job %s: ledger write failed after print failure: %v", jobID, err)
+		}
 	} else {
-		_ = a.queue.UpdateStatus(jobID, "success")
+		if err := a.queue.UpdateStatus(jobID, "success"); err != nil {
+			// A lost success record is honest (restart marks it
+			// AGENT_RESTART_DURING_PRINT), but the operator should know the
+			// local evidence of a successful physical print was not stored.
+			log.Printf("Job %s: ledger write failed after successful print: %v", jobID, err)
+		}
 	}
 	lock.Unlock()
 

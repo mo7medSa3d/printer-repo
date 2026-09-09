@@ -117,7 +117,15 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 	if jobID == 0 {
 		return spoolerTaskResult{err: fmt.Errorf("StartDocPrinterW(%q) failed: %w", spoolerName, err)}
 	}
+	// EndDocPrinter must run on every path after StartDocPrinterW succeeded.
+	// On the success path it is called explicitly so its verdict can be
+	// classified honestly: a failed EndDocPrinter may cause the spooler to
+	// discard the job even though WritePrinter accepted every byte.
+	docCompleted := false
 	defer func() {
+		if docCompleted {
+			return
+		}
 		if _, _, e := procEndDocPrinter.Call(uintptr(hPrinter)); e != nil && e != syscall.Errno(0) {
 			log.Printf("EndDocPrinter warning for %s: %v", spoolerName, e)
 		}
@@ -179,6 +187,18 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 			return spoolerTaskResult{written: written, jobID: jobID, err: fmt.Errorf("WritePrinter(%q) wrote 0 bytes", spoolerName)}
 		}
 		written += bytesWritten
+	}
+
+	docCompleted = true
+	if _, _, endErr := procEndDocPrinter.Call(uintptr(hPrinter)); endErr != nil && endErr != syscall.Errno(0) {
+		// WritePrinter accepted all bytes, but the Win32 doc session did not
+		// close cleanly: the spooler may discard the job. "Printed" would be
+		// a false confirmation, so the outcome stays ambiguous.
+		return spoolerTaskResult{
+			written: written,
+			jobID:   jobID,
+			err:     MarkUnknown("spooler session for %q failed to close after writing %d/%d bytes (submission state unknown): %v", spoolerName, written, len(data), endErr),
+		}
 	}
 
 	return spoolerTaskResult{written: written, jobID: jobID, err: nil}

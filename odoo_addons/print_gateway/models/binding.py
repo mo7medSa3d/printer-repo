@@ -7,7 +7,7 @@ from psycopg2 import IntegrityError
 import requests
 
 from odoo import api, fields, models, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -338,6 +338,12 @@ class PrintGatewayBinding(models.Model):
     def action_send_test_print(self):
         """Construct a standardized diagnostic test page and submit via the Outbox pipeline."""
         self.ensure_one()
+        # A test page causes a PHYSICAL print side effect; the view hides the
+        # button from non-admins but the model is the authoritative boundary
+        # (the method is RPC-callable and binding ACLs are read-only for
+        # internal users, which would otherwise never fire here).
+        if not self.env.user.has_group("base.group_system"):
+            raise AccessError(_("Only Odoo system administrators can dispatch test pages."))
         self._validate_runtime_target()
         router = self.env["print_gateway.print_router"]
         res = router.route_test_page(self)
@@ -361,6 +367,8 @@ class PrintGatewayBinding(models.Model):
         that is what Send Test Page is for.
         """
         self.ensure_one()
+        if not self.env.user.has_group("base.group_system"):
+            raise AccessError(_("Only Odoo system administrators can validate hardware registration."))
         self._validate_runtime_target()
         return {
             "type": "ir.actions.client",
@@ -512,6 +520,13 @@ class PrintGatewayBinding(models.Model):
             return {"dispatched": False, "has_binding": False}
 
         records = self.env[report.model].browse(res_ids or []).exists()
+        # The rendered PDF leaves the Odoo perimeter (gateway + physical
+        # print), so the caller must hold READ access on every record it
+        # asked to render - exactly like the /report/download controller.
+        # Without this, an internal user could exfiltrate same-company
+        # documents they are not allowed to open via RPC dispatch.
+        if records:
+            records.check_access("read")
         router = self.env["print_gateway.print_router"]
         config = router._gateway_config(self.env.company)
         if not config:

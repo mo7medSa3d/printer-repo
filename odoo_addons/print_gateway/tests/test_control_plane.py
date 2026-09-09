@@ -10,31 +10,22 @@ Covers:
 """
 
 import json
-import unittest
 import uuid
 from unittest.mock import patch, MagicMock
 
-try:
-    from odoo import api
-    from odoo.tests.common import TransactionCase
-    from odoo.exceptions import AccessError, ValidationError
-    from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
-except ImportError:
-    api = None
-    class AccessError(Exception):
-        pass
-    class ValidationError(Exception):
-        pass
-    TransactionCase = unittest.TestCase
-    PrintGatewayConfig = None
+# Hard imports: this module only runs under the Odoo test runner. A fallback
+# to plain unittest previously turned every behavioral test into a silent
+# skip while the suite still exited green.
+from odoo import api
+from odoo.tests.common import TransactionCase
+from odoo.exceptions import AccessError, ValidationError
+from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 
 
 class TestControlPlane(TransactionCase):
 
     def setUp(self):
         super().setUp()
-        if not hasattr(self, "env") or api is None:
-            self.skipTest("Odoo runtime environment not available")
 
         self.company = self.env.company
         self.branch = self.env["res.company"].create({
@@ -369,6 +360,98 @@ class TestControlPlane(TransactionCase):
             recovered = intent_model.cron_recover_pending_intents()
             self.assertGreaterEqual(recovered, 1)
             mock_exec.assert_called()
+
+    def test_06b_cron_recovery_routes_branch_report_intents_under_their_own_company(self):
+        """Cron recovery must route under the target record's company.
+
+        The recovery cron runs under the cron user's default company. A
+        branch-scoped REPORT intent previously hit `_assert_current_company`
+        inside resolve_binding (record company != env.company), failed, and
+        stranded permanently as `failed` after max_attempts - defeating the
+        recovery cron for multi-branch setups. The raw_template branch never
+        performed this assert, so only report intents were affected. The
+        real contract: `_execute_dispatched_route` switches to the record's
+        own company, so a branch report intent routes even when env.company
+        is the root company.
+        """
+        intent_model = self.env["print_gateway.intent"]
+        router = self.env["print_gateway.print_router"]
+        picking_model = self.env["ir.model"].search([("model", "=", "stock.picking")], limit=1)
+        picking_report = self.env["ir.actions.report"].search(
+            [("model", "=", "stock.picking")], limit=1
+        )
+        self.assertTrue(picking_report, "A stock.picking report is required in the test database")
+        branch_binding = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": picking_report.id,
+            "report_id": picking_report.id,
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-branch-recovery",
+            "printer_protocol": "escpos",
+            "enabled": True,
+            "priority": 5,
+        })
+        policy = self.env["print_gateway.policy"].create({
+            "name": "Cron Recovery Branch Report Policy",
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "model_id": picking_model.id,
+            "event_type": "picking_validated",
+            "action_type": "report",
+            "report_id": picking_report.id,
+            "binding_id": branch_binding.id,
+            "active": True,
+        })
+        picking_type = (
+            self.env["stock.picking.type"].search([("company_id", "=", self.branch.id)], limit=1)
+            or self.env["stock.picking.type"].search([], limit=1)
+        )
+        self.assertTrue(picking_type, "A stock.picking.type is required in the test database")
+        picking = self.env["stock.picking"].create({
+            "picking_type_id": picking_type.id,
+            "location_id": picking_type.default_location_src_id.id,
+            "location_dest_id": picking_type.default_location_dest_id.id,
+        })
+        self.assertEqual(picking.company_id, self.branch)
+        intent = intent_model.create({
+            "intent_key": "stale_branch_report_intent_key_01",
+            "policy_id": policy.id,
+            "res_model": picking_model.model,
+            "res_id": picking.id,
+            "event_type": "picking_validated",
+            "status": "pending",
+        })
+        intent.write({"status": "claimed", "claim_token": "fake_token_branch_1"})
+        # A real outbox row: print_job_id is a Many2one (integer column), so
+        # the fenced finalize write must receive a durable row id.
+        outbox_job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": branch_binding.printer_id,
+            "destination": "Branch Recovery Destination",
+            "document_type": "delivery",
+            "status": "queued",
+            "payload": json.dumps({"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_branch_recovery_key_01",
+        })
+        # Simulate the recovery cron: fresh env under the ROOT company
+        # (the cron user's default), not the intent's branch company.
+        root_env = self.env["stock.picking"].with_company(self.company).env
+        RouterClass = type(router)
+        with patch.object(RouterClass, "_render_pdf_payload", return_value={"type": "pdf", "encoding": "base64", "data": "dGVzdA=="}), \
+             patch.object(RouterClass, "_submit_route", return_value={"job_id": outbox_job.id}) as mock_submit:
+            type(intent_model)._execute_dispatched_route(
+                root_env, intent.id, picking_model.model, picking.id, "fake_token_branch_1"
+            )
+            # The branch record routed successfully despite env.company
+            # being the root company (the fix), and the intent was fenced
+            # into the dispatched state with the job id.
+            mock_submit.assert_called_once()
+            intent.invalidate_recordset(["status", "print_job_id", "last_error"])
+            self.assertEqual(intent.status, "dispatched")
+            self.assertEqual(intent.print_job_id.id, outbox_job.id)
 
     def test_07_failover_cycle_safety(self):
         """Verify cycle in fallback bindings terminates without infinite recursion."""
@@ -1022,7 +1105,7 @@ class TestControlPlane(TransactionCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
         RouterClass = type(self.env["print_gateway.print_router"])
-        router = self.env["print_gateway.print_router"].with_user(user).with_context(allowed_company_ids=[self.branch.id])
+        router = self.env["print_gateway.print_router"].with_user(user).with_company(self.branch)
 
         def _operator_persist_job(values):
             durable_values = dict(values)
@@ -1040,16 +1123,14 @@ class TestControlPlane(TransactionCase):
                 else:
                     durable_values[key] = False
             target_company = durable_values.get("company")
-            model = self.env["print_gateway.print_job"].with_user(user).with_context(
-                allowed_company_ids=[target_company.id] if target_company else [self.branch.id]
-            )
+            model = self.env["print_gateway.print_job"].with_user(user)
+            if target_company:
+                model = model.with_company(target_company)
             job = model.create_operation(**durable_values)
             return job.id
 
         def _operator_submit_job(job_id):
-            job = self.env["print_gateway.print_job"].with_user(user).with_context(
-                allowed_company_ids=[self.branch.id]
-            ).browse(job_id)
+            job = self.env["print_gateway.print_job"].with_user(user).browse(job_id)
             with self.assertRaises(AccessError):
                 job.action_submit()
             job._action_submit_trusted(raise_on_failure=True)
@@ -1325,21 +1406,21 @@ class TestControlPlane(TransactionCase):
             "parent_id": self.company.id,
         })
         other_company = self.env["res.company"].create({"name": "Control Plane Other Co"})
-        test_companies = [self.company.id, self.branch.id, sibling_branch.id, other_company.id]
-        self.env = self.env(context=dict(self.env.context, allowed_company_ids=test_companies))
 
+        # Priorities start above the setUpClass fixtures (10/20/30): the
+        # UNIQUE(company_id, branch_id, destination_ref, document_type,
+        # priority) constraint would collide with primary_binding otherwise.
         pri_counter = [50]
 
         def _binding(company, branch, printer, protocol="escpos"):
             pri_counter[0] += 1
-            agent_id = "agent-cp-01" if branch == self.branch else ("agent-scope-%s" % printer)
             return self.env["print_gateway.binding"].create({
                 "company_id": company.id,
                 "branch_id": branch.id if branch else False,
                 "destination_type": "report",
                 "destination_report_id": report_id,
                 "report_id": report_id,
-                "runtime_agent_id": agent_id,
+                "runtime_agent_id": "agent-scope-%s" % printer,
                 "printer_id": printer,
                 "printer_protocol": protocol,
                 "enabled": True,

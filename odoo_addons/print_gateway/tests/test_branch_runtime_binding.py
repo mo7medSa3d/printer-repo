@@ -1,13 +1,9 @@
 from unittest.mock import patch
-import unittest
 
-try:
-    from odoo.exceptions import ValidationError
-    from odoo.tests.common import TransactionCase
-except ImportError:
-    class ValidationError(Exception):
-        pass
-    TransactionCase = unittest.TestCase
+# Hard imports: this module only runs under the Odoo test runner; a fallback
+# previously degraded the whole file into silent skips with a green exit.
+from odoo.exceptions import ValidationError
+from odoo.tests.common import TransactionCase
 
 
 class Response:
@@ -22,8 +18,6 @@ class Response:
 class TestBranchRuntimeBinding(TransactionCase):
     def setUp(self):
         super().setUp()
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         self.company = self.env.company
         self.branch = self.env["res.company"].create({"name": "Gateway Branch", "parent_id": self.company.id})
         self.other_company = self.env["res.company"].create({"name": "Other Company"})

@@ -1,21 +1,16 @@
 import json
-import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-try:
-    from odoo import api, fields
-    from odoo.exceptions import ValidationError
-except ImportError:
-    api = None  # type: ignore
-    fields = None  # type: ignore
-    ValidationError = Exception
-
-try:
-    from odoo.tests.common import TransactionCase
-except ImportError:
-    TransactionCase = unittest.TestCase
+# Odoo test modules are only loaded by the Odoo test runner, where the odoo
+# package is importable. Hard imports keep a stray plain-unittest run from
+# silently degrading this suite to a near-no-op green. (The remaining
+# `if api else None` expressions below are dead by construction and kept
+# only to avoid restructuring the cursor-visibility test they guard.)
+from odoo import api, fields
+from odoo.exceptions import ValidationError
+from odoo.tests.common import TransactionCase
 
 
 ADDON = Path(__file__).resolve().parents[1]
@@ -152,8 +147,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         """Test that a user restricted strictly to Branch B (company_ids=[branch.id])
         can read gateway config and execute routing without AccessError.
         """
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         root_company = self.env.company
         branch = self.env["res.company"].create({
             "name": "Branch Test Context",
@@ -182,8 +175,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
 
     def test_runtime_controller_cross_branch_idor_forbidden(self):
         """Test that user in Branch A requesting Branch B receives Forbidden (403)."""
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         from werkzeug.exceptions import Forbidden
         from odoo.addons.print_gateway.controllers.runtime_printers import PrintGatewayRuntimePrinterController
 
@@ -240,8 +231,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         # Real enforced behavior: writing an illegal transition raises, and
         # the row is unchanged afterwards. Terminal rows cannot regress,
         # successes cannot be rewritten, unknown outcomes cannot be revived.
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         root_company = self.env.company
         config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
         if not config:
@@ -292,8 +281,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         see committed rows (same as production). Uncommitted in-test rows
         are correctly refused - never silently used.
         """
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         from unittest.mock import MagicMock
         import uuid
         suffix = uuid.uuid4().hex[:8]
@@ -421,8 +408,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         ->printing->success); a direct queued->success write stays rejected
         even though the payload is identical. Failure/unknown targets write
         directly as explicit exits."""
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         root_company = self.env.company
         config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
         if not config:

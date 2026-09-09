@@ -155,26 +155,32 @@ export async function POST(req: Request) {
         continue;
       }
 
+      const printerUpdateSet = {
+        name: p.name,
+        printerType: p.printerType as typeof printers.$inferInsert.printerType,
+        deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
+        connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
+        protocol: p.protocol as typeof printers.$inferInsert.protocol,
+        status: p.status,
+        config: p.config as typeof printers.$inferInsert.config,
+        capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
+        lastSeenAt: new Date(),
+        updatedAt: new Date(),
+      };
+
       const existing = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
       if (existing) {
         if (existing.agentId !== agent.id) {
           skipped.push(p.id);
           continue;
         }
-        await db.update(printers).set({
-          name: p.name,
-          printerType: p.printerType as typeof printers.$inferInsert.printerType,
-          deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
-          connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
-          protocol: p.protocol as typeof printers.$inferInsert.protocol,
-          status: p.status,
-          config: p.config as typeof printers.$inferInsert.config,
-          capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
-          lastSeenAt: new Date(),
-          updatedAt: new Date(),
-        }).where(eq(printers.id, p.id));
+        await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
       } else {
-        await db.insert(printers).values({
+        // Two concurrent heartbeats may both report the same NEW printer
+        // id; a plain insert would send the loser into a 23505 PK violation
+        // that failed the whole heartbeat request. Insert atomically and
+        // fall back to the same-agent update when we lose that race.
+        const inserted = await db.insert(printers).values({
           id: p.id,
           agentId: agent.id,
           name: p.name,
@@ -187,7 +193,15 @@ export async function POST(req: Request) {
           config: p.config as typeof printers.$inferInsert.config,
           capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
           lastSeenAt: new Date(),
-        });
+        }).onConflictDoNothing({ target: printers.id }).returning({ id: printers.id });
+        if (inserted.length === 0) {
+          const raced = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
+          if (raced && raced.agentId === agent.id) {
+            await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
+          } else {
+            skipped.push(p.id);
+          }
+        }
       }
     }
 

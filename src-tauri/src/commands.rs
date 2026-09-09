@@ -97,8 +97,13 @@ fn normalize_gateway_url(raw: &str) -> Result<String, String> {
     }
     let parsed = url.parse::<url::Url>().map_err(|e| format!("invalid gateway URL: {e}"))?;
     let scheme = parsed.scheme();
-    if !(scheme == "http" || scheme == "https") {
-        return Err("gateway URL must use http:// or https://".into());
+    let is_loopback = matches!(parsed.host_str(), Some(h) if h == "localhost" || h == "127.0.0.1" || h == "::1");
+    // Pairing sends the agent secret over this connection: require TLS for
+    // every non-loopback host. The desktop UI (ipc.ts) already enforces
+    // https-only; keeping the Rust guard in parity closes the bypass where
+    // the URL is entered or edited outside the WebView form.
+    if !(scheme == "https" || (scheme == "http" && is_loopback)) {
+        return Err("gateway URL must use https:// (plain http is only allowed for localhost)".into());
     }
     if parsed.username() != "" || parsed.password().is_some() {
         return Err("gateway URL cannot include embedded credentials".into());
@@ -533,17 +538,25 @@ pub async fn discover_printers(app: tauri::AppHandle) -> Result<DiscoverResult, 
             return Err(format!("discover failed: {}", msg));
         }
         // CLI prints table; also try to read printers.json for structured result
+        let mut errors = if stderr.is_empty() { vec![] } else { vec![stderr] };
         let printers = {
             let p = root.join("printers.json");
             if p.exists() {
                 let raw = std::fs::read_to_string(&p).unwrap_or_default();
-                let v: Vec<PrinterInfo> = serde_json::from_str::<Vec<PrinterInfo>>(&raw).unwrap_or_default();
-                v.into_iter().filter(|x| is_valid_printer_for_ui(x)).collect::<Vec<_>>()
+                match serde_json::from_str::<Vec<PrinterInfo>>(&raw) {
+                    Ok(v) => v.into_iter().filter(|x| is_valid_printer_for_ui(x)).collect::<Vec<_>>(),
+                    Err(e) => {
+                        // A corrupt registry file must not silently look like
+                        // "no printers discovered"; surface it to the UI.
+                        errors.push(format!("parse {}: {}", p.display(), e));
+                        vec![]
+                    }
+                }
             } else {
                 vec![]
             }
         };
-        Ok(DiscoverResult { printers, errors: if stderr.is_empty() { vec![] } else { vec![stderr] } })
+        Ok(DiscoverResult { printers, errors })
     })
     .await
 }
@@ -608,10 +621,20 @@ pub struct RegisterPrinterRequest {
 
 #[tauri::command]
 pub async fn register_printer(request: RegisterPrinterRequest, app: tauri::AppHandle) -> Result<String, String> {
-    let name = request.name.trim().to_string();
-    if name.is_empty() {
-        return Err("printer name is required".into());
+    // A value starting with `-` would be parsed by the Go CLI as a FLAG, not
+    // a value (no shell is involved, so this is argument smuggling, not
+    // injection): reject leading-dash values at the trust boundary.
+    fn arg_value(name: &str, raw: &str) -> Result<String, String> {
+        let v = raw.trim().to_string();
+        if v.is_empty() {
+            return Err(format!("{name} must not be empty"));
+        }
+        if v.starts_with('-') {
+            return Err(format!("{name} must not start with '-'"));
+        }
+        Ok(v)
     }
+    let name = arg_value("printer name", &request.name)?;
     let conn = request.connection_type_alt.clone().unwrap_or(request.connection_type.clone());
     let conn_lower = conn.trim().to_lowercase();
     let valid_conns = ["spooler", "network", "tcp", "usb", "ipp", "ipps"];
@@ -627,25 +650,25 @@ pub async fn register_printer(request: RegisterPrinterRequest, app: tauri::AppHa
         let mut cmd = std::process::Command::new(&cli);
         cmd.arg("printers").arg("add").arg("--name").arg(&name).arg("--type").arg(&conn_lower);
         if let Some(ep) = request.endpoint.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--endpoint").arg(ep.trim());
+            cmd.arg("--endpoint").arg(arg_value("endpoint", ep)?);
         }
         if let Some(sn) = request.spooler_name.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--spooler-name").arg(sn.trim());
+            cmd.arg("--spooler-name").arg(arg_value("spooler name", sn)?);
         }
         if let Some(proto) = request.protocol.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--protocol").arg(proto.trim().to_lowercase());
+            cmd.arg("--protocol").arg(arg_value("protocol", proto)?.to_lowercase());
         }
         if let Some(pt) = request.printer_type.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--printer-type").arg(pt.trim().to_lowercase());
+            cmd.arg("--printer-type").arg(arg_value("printer type", pt)?.to_lowercase());
         }
         if let Some(vid) = request.usb_vid.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--vid").arg(vid.trim());
+            cmd.arg("--vid").arg(arg_value("USB VID", vid)?);
         }
         if let Some(pid) = request.usb_pid.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--pid").arg(pid.trim());
+            cmd.arg("--pid").arg(arg_value("USB PID", pid)?);
         }
         if let Some(serial) = request.usb_serial.as_ref().filter(|s| !s.trim().is_empty()) {
-            cmd.arg("--serial").arg(serial.trim());
+            cmd.arg("--serial").arg(arg_value("USB serial", serial)?);
         }
         cmd.arg("-config").arg(&config);
         cmd.env("ODOO_PRINT_AGENT_DATA_DIR", &root);

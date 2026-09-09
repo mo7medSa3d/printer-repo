@@ -8,7 +8,7 @@ import uuid
 
 from psycopg2 import IntegrityError
 from odoo import api, fields, models, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -167,6 +167,16 @@ class PrintGatewayIntent(models.Model):
                     last_error="Source record no longer exists",
                 )
                 return
+            # The routing boundary asserts env.company == record.company_id.
+            # In the post-commit path the operator's env already matches, but
+            # the cron recovery path runs under the cron user's default
+            # company, which permanently stranded branch-scoped intents
+            # (marked failed after max_attempts). Switch to the record's own
+            # company so recovery works for every scope; it is a no-op where
+            # the env already matches.
+            record_company = record.company_id if hasattr(record, "company_id") else False
+            if record_company:
+                new_env = new_env.with_company(record_company)
             router = new_env["print_gateway.print_router"]
             try:
                 route_res = router.route_intent(intent, record)
@@ -303,6 +313,13 @@ class PrintGatewayIntent(models.Model):
     @api.model
     def cron_recover_pending_intents(self):
         """Recover stranded or crashed print intents across worker/server restarts."""
+        # Recovery claims intents with raw SQL and dispatches them through
+        # the elevated service boundary; it is reserved for the scheduled
+        # action runner (administrator). An interactive RPC caller must not
+        # be able to trigger a dispatch wave outside the operator paths,
+        # which all enforce the outbox write ACL.
+        if not self.env.user.has_group("base.group_system"):
+            raise AccessError(_("Only scheduled actions (administrator) may run this method."))
         now = fields.Datetime.now()
         stale_threshold = now - datetime.timedelta(minutes=5)
 

@@ -27,6 +27,7 @@
     {"idx":22,"version":"7","when":1788739200004,"tag":"0022_pairing_code_hash","breakpoints":false},
     {"idx":23,"version":"7","when":1788739200005,"tag":"0023_internal_print_job_idempotency","breakpoints":false},
     {"idx":24,"version":"7","when":1788825600000,"tag":"0024_claim_fencing_and_payload_contract","breakpoints":false},
-    {"idx":25,"version":"7","when":1788825600001,"tag":"0025_constraint_scope_and_protocol_contract_fix","breakpoints":false}
+    {"idx":25,"version":"7","when":1788825600001,"tag":"0025_constraint_scope_and_protocol_contract_fix","breakpoints":false},
+    {"idx":26,"version":"7","when":1788912000000,"tag":"0026_printer_type_default_alignment","breakpoints":false}
   ]
 }

@@ -1199,8 +1199,17 @@ class PrintGatewayJob(models.Model):
             },
         }
 
+    def _require_cron_runner(self):
+        # Scheduled actions run under an administrator account; interactive
+        # RPC callers must not be able to trigger bulk submission/sync waves
+        # (each wave performs outbound HTTP to the Gateway). Fail closed
+        # before any search or dispatch happens.
+        if not self.env.user.has_group("base.group_system"):
+            raise AccessError(_("Only scheduled actions (administrator) may run this method."))
+
     @api.model
     def cron_submit_pending(self):
+        self._require_cron_runner()
         now = fields.Datetime.now()
         jobs = self.search([
             ("status", "=", "queued"), "|",
@@ -1215,6 +1224,7 @@ class PrintGatewayJob(models.Model):
 
     @api.model
     def cron_sync_status(self):
+        self._require_cron_runner()
         jobs = self.search([
             ("gateway_job_id", "!=", False),
             ("status", "not in", list(self._TERMINAL)),

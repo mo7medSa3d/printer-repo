@@ -132,6 +132,26 @@ jobs:
             ) THEN
               RAISE EXCEPTION 'print_jobs.destination is missing';
             END IF;
+
+            -- Corrective migration 0026: column defaults must match the
+            -- application contract (the 0001 defaults 'thermal'/'tcp' are
+            -- forbidden by the 0006 CHECK constraints).
+            IF EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='printers'
+                AND column_name='printer_type'
+                AND (column_default IS NULL OR column_default NOT LIKE '%physical%')
+            ) THEN
+              RAISE EXCEPTION 'printers.printer_type default does not match the application contract (physical)';
+            END IF;
+            IF EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='printers'
+                AND column_name='connection_type'
+                AND (column_default IS NULL OR column_default NOT LIKE '%network%')
+            ) THEN
+              RAISE EXCEPTION 'printers.connection_type default does not match the application contract (network)';
+            END IF;
           END $$;
           SQL
       - name: Run integration tests (PostgreSQL)

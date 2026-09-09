@@ -1,21 +1,14 @@
 from unittest.mock import patch
-import unittest
 
-try:
-    from odoo.exceptions import ValidationError
-    from odoo.tests.common import TransactionCase
-    from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
-except ImportError:
-    class ValidationError(Exception):
-        pass
-    TransactionCase = unittest.TestCase
-    PrintGatewayConfig = None
+# Hard imports: this module only runs under the Odoo test runner; a fallback
+# previously degraded the whole file into silent skips with a green exit.
+from odoo.exceptions import ValidationError
+from odoo.tests.common import TransactionCase
+from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 
 
 class TestPrintGatewayURLTransport(TransactionCase):
     def _config(self, url):
-        if not hasattr(self, 'env') or PrintGatewayConfig is None:
-            self.skipTest("Odoo runtime environment not available")
         with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
             return self.env['print_gateway.gateway_config'].create({
                 'company_id': self.env.company.id,

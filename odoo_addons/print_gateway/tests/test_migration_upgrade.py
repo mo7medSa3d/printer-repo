@@ -1,12 +1,10 @@
 import importlib.util
-import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-try:
-    from odoo.tests.common import TransactionCase
-except ImportError:
-    TransactionCase = unittest.TestCase
+# Hard imports: this module only runs under the Odoo test runner; a fallback
+# previously degraded the whole file into silent skips with a green exit.
+from odoo.tests.common import TransactionCase
 
 
 class TestPrintGatewayMigrationUpgrade(TransactionCase):
@@ -62,8 +60,6 @@ class TestPrintGatewayMigrationUpgrade(TransactionCase):
 
     def test_orm_gateway_config_runtime_agent_id_field_access(self):
         """Verify ORM model can access runtime_agent_id without UndefinedColumn errors."""
-        if not hasattr(self, "env"):
-            self.skipTest("Odoo runtime environment not available")
         config_model = self.env["print_gateway.gateway_config"]
         self.assertIn("runtime_agent_id", config_model._fields)
 

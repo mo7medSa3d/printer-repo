@@ -1,5 +1,23 @@
 package queue
 
+import "strings"
+
+// unknownMarkerSQL builds `last_error LIKE 'X%' OR last_error LIKE 'Y%' ...`
+// from UnknownOutcomeMarkers. Keeping ONE canonical list (queue.UnknownOutcomeMarkers)
+// prevents cleanup/purge from drifting behind the marker vocabulary: deleting
+// a row that carries ANY unknown-outcome marker destroys the evidence that a
+// document may have printed once already and lets a later duplicate delivery
+// reprint without local protection.
+func unknownMarkerSQL(column string) string {
+	clauses := make([]string, 0, len(UnknownOutcomeMarkers))
+	for _, marker := range UnknownOutcomeMarkers {
+		// marker values are compile-time constants from this package; the
+		// quote/percent escaping is therefore static and safe.
+		clauses = append(clauses, column+" LIKE '"+marker+"%'")
+	}
+	return strings.Join(clauses, " OR ")
+}
+
 // CleanupTerminal removes terminal local print-job records whose physical
 // outcome is PROVABLE (success, or a plain failure). Rows carrying an
 // unknown-outcome marker are deliberately preserved: they are the evidence
@@ -9,8 +27,7 @@ package queue
 func (q *Queue) CleanupTerminal() (int, error) {
 	result, err := q.db.Exec(`DELETE FROM print_jobs WHERE status = 'success'
 		OR (status = 'failed' AND (last_error IS NULL
-			OR (last_error NOT LIKE 'AGENT_RESTART_DURING_PRINT%'
-				AND last_error NOT LIKE 'UNKNOWN_PARTIAL_DELIVERY%')))`)
+			OR NOT (` + unknownMarkerSQL("last_error") + `)))`)
 	if err != nil {
 		return 0, err
 	}
@@ -27,7 +44,7 @@ func (q *Queue) CleanupTerminal() (int, error) {
 func (q *Queue) CountOutcomeUnknown() (int, error) {
 	var n int
 	err := q.db.QueryRow(`SELECT COUNT(*) FROM print_jobs WHERE status = 'failed' AND (
-		last_error LIKE 'AGENT_RESTART_DURING_PRINT%' OR last_error LIKE 'UNKNOWN_PARTIAL_DELIVERY%')`).Scan(&n)
+		` + unknownMarkerSQL("last_error") + `)`).Scan(&n)
 	return n, err
 }
 
@@ -36,7 +53,7 @@ func (q *Queue) CountOutcomeUnknown() (int, error) {
 // intentionally a separate, deliberate operation.
 func (q *Queue) PurgeOutcomeUnknown() (int, error) {
 	result, err := q.db.Exec(`DELETE FROM print_jobs WHERE status = 'failed' AND (
-		last_error LIKE 'AGENT_RESTART_DURING_PRINT%' OR last_error LIKE 'UNKNOWN_PARTIAL_DELIVERY%')`)
+		` + unknownMarkerSQL("last_error") + `)`)
 	if err != nil {
 		return 0, err
 	}

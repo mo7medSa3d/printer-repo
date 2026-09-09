@@ -121,7 +121,11 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 				conn, err := d.DialContext(connCtx, "tcp", target)
 				cancel()
 				if err != nil {
-					return
+					// Most hosts on a /24 refuse the connection: skipping
+					// the target must not kill this worker (a plain return
+					// here silently drained the worker pool after ~32
+					// refusals and truncated the scan).
+					continue
 				}
 				conn.Close()
 				port := 631

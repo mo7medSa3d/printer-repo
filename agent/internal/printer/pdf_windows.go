@@ -88,6 +88,8 @@ func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
 
 	ret, _, lastErr := procShellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
 	if ret == 0 {
+		// ShellExecuteExW failed before any handler process existed, so no
+		// page can have been rendered — provably pre-dispatch.
 		return fmt.Errorf(
 			"ShellExecuteExW(printto) failed for printer %q: %v — install a PDF handler that supports the printto verb (e.g. Adobe Reader, SumatraPDF) or configure pdf_print_command in agent.yaml",
 			printerName, lastErr,
@@ -115,15 +117,22 @@ func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
 		return fmt.Errorf("waiting for PDF handler of printer %q: %w", printerName, err)
 	}
 	if event == uint32(windows.WAIT_TIMEOUT) {
-		return fmt.Errorf("PDF handler for printer %q did not finish within %s", printerName, timeout)
+		// The PDF handler was killed by our own timeout while it may have
+		// been mid-render: pages can already be sitting in the physical
+		// spooler. Report an ambiguous outcome, never a plain retryable
+		// failure (LAW: no automatic retry after possible transmission).
+		return MarkUnknown("PDF handler for printer %q did not finish within %s (submission state unknown)", printerName, timeout)
 	}
 
 	var exitCode uint32
 	if err := windows.GetExitCodeProcess(info.hProcess, &exitCode); err != nil {
-		return fmt.Errorf("reading PDF handler exit code for printer %q: %w", printerName, err)
+		return MarkUnknown("reading PDF handler exit code for printer %q: %v (submission state unknown)", printerName, err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("PDF handler for printer %q exited with code %d", printerName, exitCode)
+		// The renderer reports failure, but whether it handed pages to the
+		// spooler before failing is not observable here. Post-launch
+		// ambiguity must never be reported as a plain retryable failure.
+		return MarkUnknown("PDF handler for printer %q exited with code %d (submission state unknown)", printerName, exitCode)
 	}
 	return nil
 }

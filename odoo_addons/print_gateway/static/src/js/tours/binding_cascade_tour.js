@@ -6,12 +6,12 @@ registry.category("web_tour.tours").add("binding_cascade_tour", {
     url: "/odoo",
     steps: () => [
         {
-            trigger: '.o_app[data-menu-xmlid="print_gateway.menu_print_gateway_root"], a[data-menu-xmlid="print_gateway.menu_print_gateway_root"]',
+            trigger: '.o_app[data-menu-xmlid="print_gateway.menu_print_gateway_main"], a[data-menu-xmlid="print_gateway.menu_print_gateway_main"]',
             content: "1. Open print_gateway.binding form view (via apps menu)",
             run: "click",
         },
         {
-            trigger: 'a[data-menu-xmlid="print_gateway.menu_print_gateway_binding"]',
+            trigger: 'a[data-menu-xmlid="print_gateway.menu_print_gateway_bindings"]',
             content: "Navigate to Hardware Print Bindings",
             run: "click",
         },
