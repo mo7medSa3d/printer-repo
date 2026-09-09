@@ -28,6 +28,22 @@ type Document struct {
 	JobID string
 }
 
+// sanitizeTestText strips C0 controls (incl. ESC) from user-controlled names
+// before they are embedded into a diagnostic ticket: a crafted name must not
+// be able to inject command bytes into the byte stream.
+func sanitizeTestText(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r >= ' ' && r != 0x7f {
+			out = append(out, r)
+		}
+		if len(out) >= 60 {
+			break
+		}
+	}
+	return string(out)
+}
+
 var ErrCapabilityMismatch = errors.New("CAPABILITY_MISMATCH")
 
 func CapabilityMismatchf(format string, args ...interface{}) error {

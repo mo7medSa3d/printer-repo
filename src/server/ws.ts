@@ -183,10 +183,10 @@ export async function claimAndPushJobToAgent(job: { id: string; agentId: string 
   if (!claimed) return "not_claimable";
   const delivered = sendToAgent(job.agentId, buildJobEnvelope(claimed));
   if (!delivered) {
-    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, "websocket delivery failed after claim; job requeued for redelivery");
+    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, claimed.claimToken, "websocket delivery failed after claim; job requeued for redelivery");
     return outcome === "failed" ? "failed" : "requeued";
   }
-  await markJobDelivered(job.id, job.agentId);
+  await markJobDelivered(job.id, job.agentId, claimed.claimToken);
   return "delivered";
 }
 
@@ -194,11 +194,12 @@ export async function handleAgentMessage(agentId: string, raw: string): Promise<
   let msg: unknown;
   try { msg = JSON.parse(raw); } catch { return; }
   if (!msg || typeof msg !== "object") return;
-  const { type, jobId } = msg as { type?: unknown; jobId?: unknown };
+  const { type, jobId, claimToken } = msg as { type?: unknown; jobId?: unknown; claimToken?: unknown };
   if (type !== "job_ack") return;
   if (typeof jobId !== "string" || !jobId) return;
-  const known = await recordJobAck(jobId, agentId);
-  if (!known) console.warn(`[ws] agent ${agentId} acked unknown job ${jobId}`);
+  const token = typeof claimToken === "string" && claimToken ? claimToken : null;
+  const known = await recordJobAck(jobId, agentId, token);
+  if (!known) console.warn(`[ws] agent ${agentId} acked a job with no matching live claim (unknown, terminal, or superseded): ${jobId}`);
 }
 
 async function startJobNotificationListener(): Promise<() => Promise<void>> {

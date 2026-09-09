@@ -1,5 +1,7 @@
 import { db } from "../db";
+import { printJobs } from "../db/schema";
 import { sql } from "drizzle-orm";
+import { fencedDeliveryWrite } from "./job-fencing";
 import { STALE_CLAIM_SECONDS } from "./job-maintenance";
 
 /**
@@ -93,32 +95,30 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
   });
 }
 
-export async function markJobDelivered(jobId: string, agentId: string): Promise<void> {
-  await db.execute(sql`
-    UPDATE print_jobs
-    SET delivered_at = now(), updated_at = now()
-    WHERE id = ${jobId} AND agent_id = ${agentId} AND status IN ('claimed', 'printing')
-      AND delivered_at IS NULL
-  `);
+export async function markJobDelivered(jobId: string, agentId: string, claimToken: string | null): Promise<void> {
+  // Fenced to THIS claim (the token returned by claimJobForDelivery): a
+  // superseded delivery attempt can never stamp evidence onto the row of
+  // the claim that replaced it.
+  await db.update(printJobs)
+    .set({ deliveredAt: new Date(), updatedAt: new Date() })
+    .where(fencedDeliveryWrite(jobId, agentId, claimToken, ["claimed", "printing"]));
 }
 
-export async function recordJobAck(jobId: string, agentId: string): Promise<boolean> {
-  const res = await db.execute(sql`
-    UPDATE print_jobs
-    SET acked_at = COALESCE(acked_at, now()),
-        delivered_at = COALESCE(delivered_at, now()),
-        updated_at = now()
-    WHERE id = ${jobId}
-      AND agent_id = ${agentId}
-      AND status IN ('claimed', 'printing')
-    RETURNING id
-  `);
-  return res.rows.length > 0;
+export async function recordJobAck(jobId: string, agentId: string, claimToken?: string | null): Promise<boolean> {
+  const res = await db.update(printJobs)
+    .set({ ackedAt: sql`COALESCE(${printJobs.ackedAt}, now())`, deliveredAt: sql`COALESCE(${printJobs.deliveredAt}, now())`, updatedAt: new Date() })
+    .where(fencedDeliveryWrite(jobId, agentId, claimToken, ["claimed", "printing"]))
+    .returning({ id: printJobs.id });
+  return res.length > 0;
 }
 
 export type ReleaseOutcome = "requeued" | "failed" | "noop";
 
-export async function releaseUndeliveredClaim(jobId: string, agentId: string, reason: string): Promise<ReleaseOutcome> {
+export async function releaseUndeliveredClaim(jobId: string, agentId: string, claimToken: string | null, reason: string): Promise<ReleaseOutcome> {
+  // Fenced by the claim token of the delivery attempt being released: if a
+  // concurrent reclaim already produced a newer claim, neither UPDATE may
+  // match it. The status='claimed' predicate alone would be re-claimable
+  // (a poll claim re-sets status to 'claimed' with a new token).
   const requeued = await db.execute(sql`
     UPDATE print_jobs
     SET status = 'queued',
@@ -129,6 +129,7 @@ export async function releaseUndeliveredClaim(jobId: string, agentId: string, re
     WHERE id = ${jobId}
       AND agent_id = ${agentId}
       AND status = 'claimed'
+      AND claim_token IS NOT DISTINCT FROM ${claimToken}
       AND delivered_at IS NULL
       AND acked_at IS NULL
       AND delivery_attempts < ${MAX_DELIVERY_ATTEMPTS}
@@ -144,6 +145,7 @@ export async function releaseUndeliveredClaim(jobId: string, agentId: string, re
     WHERE id = ${jobId}
       AND agent_id = ${agentId}
       AND status = 'claimed'
+      AND claim_token IS NOT DISTINCT FROM ${claimToken}
       AND delivered_at IS NULL
       AND acked_at IS NULL
       AND delivery_attempts >= ${MAX_DELIVERY_ATTEMPTS}

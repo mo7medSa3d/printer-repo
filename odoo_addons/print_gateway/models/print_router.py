@@ -19,6 +19,28 @@ REPORT_DOCUMENT_TYPES = {
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def _zpl_text(value):
+    """Sanitize free text for a ZPL ^FD field: strip command introducers
+    (^, ~) and C0 controls so company/printer names cannot inject additional
+    ZPL commands into the diagnostic stream."""
+    text = str(value or "")
+    return "".join(ch for ch in text if ch not in "^~" and (ch >= " " or ch in "\n\t")).strip()[:80]
+
+
+def _tspl_text(value):
+    """Sanitize free text for a TSPL quoted TEXT argument: strip quotes and
+    C0 controls so names cannot terminate the argument early."""
+    text = str(value or "")
+    return "".join(ch for ch in text if ch != '"' and (ch >= " " or ch in "\n\t")).strip()[:80]
+
+
+def _escpos_text(value):
+    """Sanitize free text for ESC/POS diagnostic tickets: the ticket builder
+    injects its own control bytes, so user content must carry none."""
+    text = str(value or "")
+    return "".join(ch for ch in text if ch >= " ").strip()[:80]
+
+
 class PrintGatewayRouter(models.AbstractModel):
     _name = "print_gateway.print_router"
     _description = "Print Gateway Central Router"
@@ -194,7 +216,14 @@ class PrintGatewayRouter(models.AbstractModel):
                 if not record_id:
                     durable_values[key] = False
                     continue
-                record = env[model_name].browse(record_id).exists()
+                # Elevated re-fetch: authorization for company/config/binding/
+                # report was already established by resolve_binding in the
+                # caller's context; this only proves the rows still exist.
+                # Requiring the operator's raw rights here as well would
+                # spuriously fail legitimate prints (e.g. a branch operator
+                # printing through a root-company Gateway config), and the
+                # create_operation service boundary performs its own checks.
+                record = env[model_name].sudo().browse(record_id).exists()
                 if not record:
                     raise ValidationError(_("The durable print operation references a record that is no longer available."))
                 durable_values[key] = record
@@ -436,10 +465,17 @@ class PrintGatewayRouter(models.AbstractModel):
 
     @api.model
     def route_raw_command(
-        self, raw_data, *, protocol="zpl", binding=None, destination=None,
+        self, raw_data, *, protocol, binding=None, destination=None,
         record=None, company=None, document_type="label", idempotency_key=None,
     ):
-        """Directly route raw printer commands (ZPL/TSPL/ESC-POS) without QWeb rendering."""
+        """Directly route raw printer commands (ZPL/TSPL/ESC-POS) without QWeb rendering.
+
+        `protocol` is REQUIRED (no default): a byte stream without an
+        explicitly declared language is malformed input, and guessing "zpl"
+        for it would misroute it to label hardware.
+        """
+        if protocol not in ("zpl", "tspl", "escpos", "raw"):
+            raise ValidationError(_("Unsupported raw protocol '%s'. Expected zpl, tspl, escpos, or raw.") % protocol)
         current_company = company or (record.company_id if record and hasattr(record, "company_id") else self.env.company)
         config = self._gateway_config(current_company)
         if not config:
@@ -554,8 +590,16 @@ class PrintGatewayRouter(models.AbstractModel):
                 % (proto or "unknown")
             )
         now_str = fields.Datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        company_name = binding.company_id.name
-        branch_name = binding.branch_id.name if binding.branch_id else "Default / Root"
+        # User-controlled metadata is sanitized per printer language before it
+        # is embedded into the command stream: a company named e.g.
+        # 'A^XZ\n^XA...' must not inject ZPL commands, and a '"' must not
+        # escape a TSPL argument. Plain-text "raw" tickets get control
+        # characters stripped as well.
+        sanitize = {"zpl": _zpl_text, "tspl": _tspl_text}.get(proto, _escpos_text)
+        company_name = sanitize(binding.company_id.name)
+        branch_name = sanitize(binding.branch_id.name) if binding.branch_id else "Default / Root"
+        agent_id = sanitize(binding.runtime_agent_id or "None")
+        printer_name = sanitize(binding.printer_id)
 
         if proto == "zpl":
             ticket_raw = (
@@ -564,15 +608,14 @@ class PrintGatewayRouter(models.AbstractModel):
                 "^FO50,100^GB700,2,2^FS\n"
                 f"^FO50,120^A0N,28,28^FDCompany : {company_name}^FS\n"
                 f"^FO50,160^A0N,28,28^FDBranch  : {branch_name}^FS\n"
-                f"^FO50,200^A0N,28,28^FDAgent ID: {binding.runtime_agent_id or 'None'}^FS\n"
-                f"^FO50,240^A0N,28,28^FDPrinter : {binding.printer_id}^FS\n"
+                f"^FO50,200^A0N,28,28^FDAgent ID: {agent_id}^FS\n"
+                f"^FO50,240^A0N,28,28^FDPrinter : {printer_name}^FS\n"
                 f"^FO50,280^A0N,28,28^FDProtocol: ZPL-II^FS\n"
                 "^FO50,320^GB700,2,2^FS\n"
                 f"^FO50,340^A0N,24,24^FDStatus: OK | {now_str}^FS\n"
                 "^XZ\n"
             )
         elif proto == "tspl":
-            agent_str = binding.runtime_agent_id or "None"
             ticket_raw = (
                 "SIZE 75 mm, 50 mm\n"
                 "GAP 2 mm, 0 mm\n"
@@ -581,22 +624,21 @@ class PrintGatewayRouter(models.AbstractModel):
                 'TEXT 50,40,"3",0,1,1,"ODOO PRINT GATEWAY DIAGNOSTIC"\n'
                 f'TEXT 50,80,"2",0,1,1,"Company : {company_name}"\n'
                 f'TEXT 50,110,"2",0,1,1,"Branch  : {branch_name}"\n'
-                f'TEXT 50,140,"2",0,1,1,"Agent ID: {agent_str}"\n'
-                f'TEXT 50,170,"2",0,1,1,"Printer : {binding.printer_id}"\n'
+                f'TEXT 50,140,"2",0,1,1,"Agent ID: {agent_id}"\n'
+                f'TEXT 50,170,"2",0,1,1,"Printer : {printer_name}"\n'
                 f'TEXT 50,200,"2",0,1,1,"Protocol: TSPL"\n'
                 f'TEXT 50,230,"1",0,1,1,"Status: OK | {now_str}"\n'
                 "PRINT 1,1\n"
             )
         elif proto == "raw":
-            agent_str = binding.runtime_agent_id or "None"
             ticket_raw = (
                 "================================\n"
                 "  ODOO PRINT GATEWAY DIAGNOSTIC  \n"
                 "================================\n"
                 f"Company : {company_name}\n"
                 f"Branch  : {branch_name}\n"
-                f"Agent ID: {agent_str}\n"
-                f"Printer : {binding.printer_id}\n"
+                f"Agent ID: {agent_id}\n"
+                f"Printer : {printer_name}\n"
                 f"Area    : {binding.destination_type.upper()}\n"
                 "Protocol: RAW\n"
                 "--------------------------------\n"
@@ -614,8 +656,8 @@ class PrintGatewayRouter(models.AbstractModel):
                 "\x1b\x61\x00",  # Left align
                 f"Company : {company_name}\n",
                 f"Branch  : {branch_name}\n",
-                f"Agent ID: {binding.runtime_agent_id}\n",
-                f"Printer : {binding.printer_id}\n",
+                f"Agent ID: {agent_id}\n",
+                f"Printer : {printer_name}\n",
                 f"Area    : {binding.destination_type.upper()}\n",
                 f"Protocol: {proto.upper()}\n",
                 f"Drawer  : {binding.drawer_kick_mode}\n",

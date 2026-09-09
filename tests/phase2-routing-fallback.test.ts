@@ -81,7 +81,19 @@ describe("runtime routing capability and availability", () => {
   });
 
   it("treats an undeclared printer protocol as unroutable", () => {
+    // Authoritative unknown rule: unknown+network/usb invents nothing (all
+    // byte protocols and pdf/image stay rejected); unknown+spooler/ipp
+    // behaves as that DOCUMENT transport because the connection itself is
+    // the explicit transport declaration.
     expect(validatePayloadForPrinter({ type: "raw", protocol: "raw" }, { protocol: "unknown", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "escpos" }, { protocol: "unknown", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, { protocol: "unknown", connectionType: "usb" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "unknown", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "image" }, { protocol: "unknown", connectionType: "network" }).ok).toBe(false);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "unknown", connectionType: "spooler" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "image" }, { protocol: "unknown", connectionType: "spooler" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "pdf" }, { protocol: "unknown", connectionType: "ipp" }).ok).toBe(true);
+    expect(validatePayloadForPrinter({ type: "escpos", protocol: "escpos" }, { protocol: "unknown", connectionType: "spooler" }).ok).toBe(false);
   });
 
   it("treats lifecycle and online telemetry as hard availability gates", () => {

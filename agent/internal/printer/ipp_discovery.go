@@ -222,13 +222,3 @@ func discoverMDNSPrinters(ctx context.Context) []DeviceInfo {
 	// For now, return empty
 	return nil
 }
-
-// buildMDNSQuery is a helper for future full mDNS implementation (currently stub).
-func buildMDNSQuery(service string) []byte {
-	// DNS query for PTR service._tcp.local
-	// Header: ID 0, flags 0, QDCOUNT 1
-	// Question: QNAME service, QTYPE PTR (12), QCLASS IN (1)
-	// This is a placeholder for future implementation.
-	_ = service
-	return nil
-}

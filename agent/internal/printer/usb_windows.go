@@ -92,7 +92,7 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 }
 
 func (p *USBPrinter) Test(ctx context.Context) error {
-	return p.Print(ctx, []byte("\x1b\x40USB Direct Test Print for Odoo Agent\nPrinter: "+p.Name+"\nVID:"+fmt.Sprintf("%04x", p.VID)+" PID:"+fmt.Sprintf("%04x", p.PID)+"\n\n\x1d\x56\x01"))
+	return p.Print(ctx, []byte("\x1b\x40USB Direct Test Print for Odoo Agent\nPrinter: "+sanitizeTestText(p.Name)+"\nVID:"+fmt.Sprintf("%04x", p.VID)+" PID:"+fmt.Sprintf("%04x", p.PID)+"\n\n\x1d\x56\x01"))
 }
 
 func (p *USBPrinter) Status() string {

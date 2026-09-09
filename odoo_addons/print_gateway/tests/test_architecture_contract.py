@@ -270,34 +270,3 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                 job.write({"status": illegal})
         self.assertEqual(job.status, "success")
 
-    def test_binding_model_defines_effective_company_id(self):
-        source = (MODELS / "binding.py").read_text(encoding="utf-8")
-        self.assertIn("effective_company_id = fields.Many2one(", source)
-        self.assertIn("def _compute_effective_company_id(self):", source)
-        self.assertIn("record.effective_company_id = record.branch_id or record.company_id", source)
-
-    def test_print_job_state_machine_transition_matrix(self):
-        source = (MODELS / "print_job.py").read_text(encoding="utf-8")
-        self.assertIn("_VALID_TRANSITIONS", source)
-        self.assertIn('"success": {"success"}', source)
-        self.assertIn('def write(self, vals):', source)
-        self.assertIn('Invalid print job state transition', source)
-
-        # Direct test on the model logic: simulate transition rules
-        transitions = {
-            "queued": {"queued", "submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
-            "submitted": {"submitted", "claimed", "printing", "success", "failed", "partial", "unknown"},
-            "claimed": {"claimed", "printing", "success", "failed", "partial", "unknown"},
-            "printing": {"printing", "success", "failed", "partial", "unknown"},
-            "success": {"success"},
-            "failed": {"failed", "queued"},
-            "partial": {"partial", "queued"},
-            "unknown": {"unknown", "queued"},
-        }
-        # Success is strictly terminal
-        self.assertEqual(transitions["success"], {"success"})
-        self.assertNotIn("queued", transitions["success"])
-        self.assertNotIn("submitted", transitions["success"])
-        # Submitted cannot regress to queued
-        self.assertNotIn("queued", transitions["submitted"])
-

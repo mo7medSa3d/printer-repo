@@ -8,6 +8,7 @@ import { logInfo, logWarn, requestIdFrom } from "../../../../lib/log";
 import { incrementMetric } from "../../../../lib/metrics";
 import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "../../../../lib/job-maintenance";
 import { CLAIM_RETURNING, MAX_DELIVERY_ATTEMPTS } from "../../../../lib/job-delivery";
+import { fencedJobWrite } from "../../../../lib/job-fencing";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 export const dynamic = "force-dynamic";
@@ -165,11 +166,10 @@ export async function PATCH(req: Request) {
 
   const currentStatus = job.status as JobStatus;
 
-  // DB-enforced execution fencing: a status report must carry the token of
-  // the claim that is CURRENTLY authoritative. A stale worker (its claim was
-  // reclaimed after a lease expiry) can never finalize or disturb the new
-  // attempt. Legacy rows claimed before migration 0024 have no token and
-  // remain transitional until their next (now tokenized) claim.
+  // Advisory in-memory pre-check for a clean 409 STALE_CLAIM response. It is
+  // NOT the security boundary: every lifecycle UPDATE below repeats the
+  // token inside its WHERE predicate (fencedJobWrite), so a token that
+  // changes between this read and the write matches zero rows atomically.
   if (job.claimToken && claimToken !== job.claimToken) {
     logWarn("job.status.stale_claim", { requestId, jobId, agentId: agent.id });
     return NextResponse.json({ error: "Stale claim token: this attempt was superseded by a newer claim", code: "STALE_CLAIM", status: currentStatus }, { status: 409 });
@@ -184,7 +184,7 @@ export async function PATCH(req: Request) {
         : null;
     const expired = await db.update(printJobs)
       .set({ status: "expired", error: expiryError, updatedAt: new Date() })
-      .where(and(whereClause, eq(printJobs.status, currentStatus)))
+      .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
       .returning({ status: printJobs.status, error: printJobs.error });
     if (expired.length === 1) {
       incrementMetric("print_jobs_expired_total");
@@ -203,7 +203,7 @@ export async function PATCH(req: Request) {
     }
     const updated = await db.update(printJobs)
       .set({ status: "queued", claimToken: null, error: `Agent returned job before execution (${reason})`, updatedAt: new Date() })
-      .where(and(whereClause, eq(printJobs.status, "claimed")))
+      .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
       .returning({ status: printJobs.status, error: printJobs.error });
     if (updated.length !== 1) {
       const winner = await db.query.printJobs.findFirst({ where: whereClause });
@@ -228,13 +228,17 @@ export async function PATCH(req: Request) {
   }
 
   const nextError = lateSuccess ? `LATE_SUCCESS: ${job.error ?? "AGENT_EXECUTION_TIMEOUT"}` : errorMessage;
+  // The authoritative write: id + agent + observed status + CLAIM TOKEN, all
+  // inside the UPDATE predicate. A stale worker whose claim was reclaimed
+  // (new token) matches zero rows here even if it passed the advisory read
+  // above - this is the TOCTOU-proof fence, not the in-memory compare.
   const updated = await db.update(printJobs)
     .set({
       status: requestedStatus,
       error: nextError,
       updatedAt: new Date(),
     })
-    .where(and(whereClause, eq(printJobs.status, currentStatus)))
+    .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
     .returning({ status: printJobs.status, error: printJobs.error });
 
   if (updated.length !== 1) {

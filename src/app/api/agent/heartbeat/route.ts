@@ -10,9 +10,11 @@ const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
 const MAX_KEEP_ALIVE_JOB_IDS = 64;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
-// "unknown" is the HONEST value for a device whose protocol has not been
-// declared; the routing capability model never matches it, so such a printer
-// is inventoried but not routable until an operator declares its protocol.
+// "unknown" is the HONEST value for a device whose byte-language protocol
+// has not been declared. Per the authoritative rule (src/lib/routing.ts):
+// unknown+network/usb is inventoried but never routable; unknown+spooler/
+// ipp behaves as that document transport because the connection itself is
+// the explicit transport declaration. Nothing here ever invents raw/escpos.
 const VALID_PROTOCOLS = new Set(["raw", "escpos", "zpl", "tspl", "ipp", "ipps", "spooler", "windows_spooler", "unknown"]);
 const VALID_AGENT_STATUSES = new Set(["online", "offline"]);
 

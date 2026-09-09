@@ -51,7 +51,7 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect(envelope.job.status).toBe("claimed");
     expect(envelope.job.payload.type).toBe("pdf");
 
-    ws.send(JSON.stringify({ type: "job_ack", jobId: created.jobId }));
+    ws.send(JSON.stringify({ type: "job_ack", jobId: created.jobId, claimToken: envelope.job.claimToken }));
     await expect.poll(async () => (await jobRow(created.jobId)).acked_at !== null, { timeout: 5000 }).toBe(true);
     // Execution fencing: every status report must carry the claim token the
     // gateway attached to THIS delivery attempt.
@@ -109,7 +109,7 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     // Fenced: reporting without the claim token is rejected.
     expect((await pollPatch("printing")).status).toBe(409);
     expect((await pollPatch("printing", jobs[0].claimToken)).status).toBe(200);
-    await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId }));
+    await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId, claimToken: jobs[0].claimToken }));
     const row = await jobRow(created.jobId);
     expect(row.acked_at).not.toBeNull();
     expect(row.delivered_at).not.toBeNull();

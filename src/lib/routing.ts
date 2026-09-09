@@ -42,9 +42,15 @@ export function validatePayloadForPrinter(
   const conn = (printer.connectionType ?? "").toLowerCase();
   const supported = printer.capabilities?.supported_protocols?.map((value) => String(value).toLowerCase());
   const hasExplicitCaps = Array.isArray(supported) && supported.length > 0;
-  // The declared protocol is the device's transport family. "unknown"
-  // (undeclared) falls back to the connection type, but NEVER to a
-  // byte-stream default.
+  // AUTHORITATIVE RULE for "unknown" protocol (mirrored in
+  // agent/internal/printer/capability.go and documented in ARCHITECTURE.md):
+  // "unknown" means "no byte language declared". The connection type is
+  // itself an explicit TRANSPORT declaration for transports that are
+  // physically complete (a Windows spooler queue renders documents; an IPP
+  // URL accepts document formats), so unknown+spooler/ipp behaves as that
+  // transport. For network/usb (byte pipes with no declared language) the
+  // family resolves to a name nothing matches: invented-but-routable is
+  // impossible, the device is inventoried but dark until declared.
   const family = proto && proto !== "unknown" ? proto : conn;
   const anyCap = (...names: string[]) => hasExplicitCaps
     ? names.some((name) => supported!.includes(name))

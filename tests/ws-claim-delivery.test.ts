@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { createServer, type Server } from "http";
 import { AddressInfo } from "net";
 import WebSocket from "ws";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, jobRow, closePool, pool, type Fixture } from "./helpers/pg";
 import { attachAgentWSS, claimAndPushJobToAgent } from "../src/server/ws";
+import { db } from "../src/db";
 import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, markJobDelivered, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
 import { sweepPrintJobs } from "../src/lib/job-maintenance";
 import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
@@ -58,19 +59,23 @@ suite("WS claim-before-delivery", () => {
   it("job_ack records receipt without changing print status", async () => {
     const ws = await connectAgent();
     await insertQueuedJob(f, "job_ack");
-    const delivered = new Promise<void>((resolve) => ws.once("message", resolve));
+    const delivered = new Promise<{ claimToken?: string }>((resolve) => ws.once("message", (d) => resolve(JSON.parse(String(d)).job ?? {})));
     expect(await claimAndPushJobToAgent({ id: "job_ack", agentId: f.agentId })).toBe("delivered");
-    await delivered;
-    ws.send(JSON.stringify({ type: "job_ack", jobId: "job_ack" }));
+    const envelope = await delivered;
+    // A tokenless ack (legacy/superseded frame) must NOT be adopted by a
+    // tokenized live claim.
+    expect(await recordJobAck("job_ack", f.agentId)).toBe(false);
+    expect((await jobRow("job_ack")).acked_at).toBeNull();
+    ws.send(JSON.stringify({ type: "job_ack", jobId: "job_ack", claimToken: envelope.claimToken }));
     await expect.poll(async () => (await jobRow("job_ack")).acked_at !== null, { timeout: 5000 }).toBe(true);
     expect((await jobRow("job_ack")).status).toBe("claimed");
   });
 
   it("late ACK cannot mutate terminal delivery bookkeeping", async () => {
     await insertQueuedJob(f, "job_late_ack");
-    await claimJobForDelivery("job_late_ack", f.agentId);
+    const lateClaim = await claimJobForDelivery("job_late_ack", f.agentId);
     await pool().query(`UPDATE print_jobs SET status='success', acked_at=NULL, delivered_at=NULL WHERE id='job_late_ack'`);
-    expect(await recordJobAck("job_late_ack", f.agentId)).toBe(false);
+    expect(await recordJobAck("job_late_ack", f.agentId, lateClaim!.claimToken)).toBe(false);
     const row = await jobRow("job_late_ack");
     expect(row.status).toBe("success");
     expect(row.acked_at).toBeNull();
@@ -81,6 +86,9 @@ suite("WS claim-before-delivery", () => {
     await insertQueuedJob(f, "job_t2");
     expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "printing" }))).status).toBe(409);
     expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "success" }))).status).toBe(409);
+    // Tokenless attempts against an UNDELIVERED queued claim: the row has a
+    // token from the claim, so these are STALE_CLAIM rejections too.
+    expect(((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_t2", status: "printing" }))) as Response).status).toBe(409);
     expect((await jobRow("job_t2")).status).toBe("queued");
     const ws = await connectAgent();
     const delivered = new Promise<string>((resolve) => ws.once("message", (d) => resolve(JSON.parse(d.toString()).job.claimToken as string)));
@@ -104,8 +112,12 @@ suite("WS claim-before-delivery", () => {
 
   it("delivery failure requeues under the same job id", async () => {
     await insertQueuedJob(f, "job_t3b");
-    expect((await claimJobForDelivery("job_t3b", f.agentId))?.status).toBe("claimed");
-    expect((await releaseUndeliveredClaim("job_t3b", f.agentId, "websocket delivery failed after claim"))).toBe("requeued");
+    const claim = await claimJobForDelivery("job_t3b", f.agentId);
+    expect(claim?.status).toBe("claimed");
+    // A WRONG token must not release someone else's claim.
+    expect(await releaseUndeliveredClaim("job_t3b", f.agentId, "forged-token", "websocket delivery failed after claim")).toBe("noop");
+    expect((await jobRow("job_t3b")).status).toBe("claimed");
+    expect(await releaseUndeliveredClaim("job_t3b", f.agentId, claim!.claimToken, "websocket delivery failed after claim")).toBe("requeued");
     const row = await jobRow("job_t3b");
     expect(row.id).toBe("job_t3b");
     expect(row.status).toBe("queued");
@@ -115,8 +127,9 @@ suite("WS claim-before-delivery", () => {
   it("undeliverable job fails when delivery budget is exhausted", async () => {
     await insertQueuedJob(f, "job_t3c");
     for (let i = 0; i < MAX_DELIVERY_ATTEMPTS; i += 1) {
-      expect(await claimJobForDelivery("job_t3c", f.agentId)).not.toBeNull();
-      expect(await releaseUndeliveredClaim("job_t3c", f.agentId, "websocket delivery failed after claim")).toBe(i === MAX_DELIVERY_ATTEMPTS - 1 ? "failed" : "requeued");
+      const claim = await claimJobForDelivery("job_t3c", f.agentId);
+      expect(claim).not.toBeNull();
+      expect(await releaseUndeliveredClaim("job_t3c", f.agentId, claim!.claimToken, "websocket delivery failed after claim")).toBe(i === MAX_DELIVERY_ATTEMPTS - 1 ? "failed" : "requeued");
     }
     const row = await jobRow("job_t3c");
     expect(row.status).toBe("failed");
@@ -183,7 +196,7 @@ suite("WS claim-before-delivery", () => {
   it("a DELIVERED stale claim is never re-queued; it fails with an unknown-outcome marker", async () => {
     await insertQueuedJob(f, "job_del_stale");
     const claim = await claimJobForDelivery("job_del_stale", f.agentId);
-    await markJobDelivered("job_del_stale", f.agentId);
+    await markJobDelivered("job_del_stale", f.agentId, claim!.claimToken);
     await pool().query(`UPDATE print_jobs SET claimed_at = now() - interval '200 seconds', delivered_at = now() - interval '200 seconds', updated_at = now() - interval '200 seconds' WHERE id = 'job_del_stale'`);
     const sweep = await sweepPrintJobs({ agentId: f.agentId });
     expect(sweep.silentDeliveries).toBeGreaterThanOrEqual(1);
@@ -196,6 +209,47 @@ suite("WS claim-before-delivery", () => {
     // And the poll path must not re-deliver it either.
     const poll = await (await agentJobsGET(agentRequest(f, "GET"))).json();
     expect(poll.find((r: any) => r.id === "job_del_stale")).toBeUndefined();
+  });
+
+  it("TOCTOU: a reclaim racing between the route read and its UPDATE cannot be clobbered", async () => {
+    // Deterministic reproduction of the adversarial sequence:
+    //   1. worker A claims (token A) and is still authoritative when the
+    //      route READS the row,
+    //   2. between that read and the route's UPDATE, the lease is reclaimed
+    //      by another attempt (token B, status back to 'claimed'),
+    //   3. A's "printing" UPDATE must match ZERO rows in PostgreSQL.
+    // If the claim_token predicate were removed from the production
+    // statement (fencedJobWrite), this UPDATE would clobber token B's claim
+    // and the test turns red with status=printing.
+    await insertQueuedJob(f, "job_toctou");
+    const claimA = await claimJobForDelivery("job_toctou", f.agentId);
+    const staleToken = claimA!.claimToken!;
+
+    const queryTarget = db.query.printJobs as unknown as { findFirst: (q?: unknown) => Promise<Record<string, unknown> | undefined> };
+    const originalFindFirst = queryTarget.findFirst.bind(db.query.printJobs);
+    let flipped = false;
+    queryTarget.findFirst = async (query?: unknown) => {
+      const row = await originalFindFirst(query);
+      if (!flipped) {
+        flipped = true;
+        // The reclaim lands AFTER the route's read and BEFORE its write.
+        await pool().query(
+          `UPDATE print_jobs SET status='claimed', claim_token='reclaim-worker-b', updated_at=now() WHERE id='job_toctou'`,
+        );
+      }
+      return row;
+    };
+    try {
+      const res = await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_toctou", status: "printing", claimToken: staleToken }));
+      expect(res.status).toBe(409);
+    } finally {
+      queryTarget.findFirst = originalFindFirst;
+    }
+    const row = await jobRow("job_toctou");
+    expect(row.status).toBe("claimed");
+    expect(row.claim_token).toBe("reclaim-worker-b");
+    // The live attempt (token B) still owns the job and can proceed.
+    expect((await agentJobsPATCH(agentRequest(f, "PATCH", { jobId: "job_toctou", status: "printing", claimToken: "reclaim-worker-b" }))).status).toBe(200);
   });
 
   it("two concurrent polls do not duplicate jobs", async () => {

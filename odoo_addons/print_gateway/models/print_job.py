@@ -12,7 +12,7 @@ import requests
 from psycopg2 import IntegrityError
 
 from odoo import api, fields, models, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
 
 
 _logger = logging.getLogger(__name__)
@@ -87,12 +87,16 @@ class PrintGatewayJob(models.Model):
     # Payload kinds recognized in the canonical contract. A payload whose
     # type is not one of these is malformed input and must fail - it is
     # never "repaired" into a PDF job.
+    # Canonical wire types, EXACTLY mirroring the Gateway
+    # (src/lib/payload.ts) and the Go agent
+    # (agent/internal/payload/payload.go): raw, escpos, image, pdf.
+    # "jpeg"/"raster_jpeg" are INTERNAL column names, never payload types -
+    # the drift that accepted them here but failed at the Gateway 422 is
+    # removed on purpose: a persisted job must always be submittable.
     _PAYLOAD_TYPE_MAP = {
         "raw": "raw_cmd",
         "escpos": "raw_cmd",
         "image": "raster_jpeg",
-        "jpeg": "raster_jpeg",
-        "raster_jpeg": "raster_jpeg",
         "pdf": "pdf",
     }
 
@@ -244,11 +248,23 @@ class PrintGatewayJob(models.Model):
             else:
                 job.physical_outcome = "not_printed"
 
+    @api.private
     @api.model
     def create_operation(self, *, company, gateway_config, printer_id, destination, document_type,
                          payload, source_model=None, source_record_id=None, report=None,
                          idempotency_key=None, payload_type=None, protocol=None,
                          raw_payload=None, printer_profile=None, fallback_binding=None):
+        # TRUSTED SERVICE BOUNDARY (not reachable via RPC):
+        # print_gateway.print_job is intentionally read-only for normal users
+        # (ACL: group_user has read only), yet the print flows run as those
+        # users. Creation therefore runs with sudo INSIDE this method only,
+        # AFTER the server-side scope/company/protocol validation above and
+        # below. The ONLY legal producers are server-side router code paths
+        # (report/POS/kitchen/intent/raw/test-page) and retry actions - all of
+        # which validated the caller's authorization before delegating here.
+        # Granting blanket create rights on the model instead would let any
+        # user forge arbitrary outbox rows (printer/protocol/data of choice).
+        self_su = self.sudo()
         if not company or not gateway_config:
             raise ValidationError(_("Gateway configuration is missing."))
         if company != self.env.company:
@@ -317,7 +333,7 @@ class PrintGatewayJob(models.Model):
                 and existing.payload == payload_json
             )
 
-        existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
+        existing = self_su.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
         if existing:
             if not same_operation(existing):
                 raise ValidationError(_("The idempotency key is already used for a different print operation."))
@@ -344,14 +360,14 @@ class PrintGatewayJob(models.Model):
         }
         try:
             with self.env.cr.savepoint():
-                job = self.create(values)
+                job = self_su.create(values)
                 # Creation performs the SAME strict persisted-payload
                 # validation as submission: malformed content can never be
                 # stored and dispatched later.
                 job._validate_persisted_payload(json.loads(payload_json))
                 return job
         except IntegrityError:
-            existing = self.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
+            existing = self_su.search([("company_id", "=", company.id), ("idempotency_key", "=", key)], limit=1)
             if existing:
                 if not same_operation(existing):
                     raise ValidationError(_("The idempotency key is already used for a different print operation."))
@@ -359,11 +375,15 @@ class PrintGatewayJob(models.Model):
             raise
 
     def _persist_state(self, values):
+        # Status/audit persistence for the submit path: runs elevated because
+        # the submitter may be a normal print operator (see create_operation's
+        # service-boundary note); the submitter's authorization was already
+        # established when the durable job was created.
         self.ensure_one()
         cr = self.env.registry.cursor()
         try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
-            env["print_gateway.print_job"].browse(self.id).write(values)
+            env["print_gateway.print_job"].sudo().browse(self.id).write(values)
             cr.commit()
         finally:
             cr.close()
@@ -385,8 +405,8 @@ class PrintGatewayJob(models.Model):
             if payload.get("protocol"):
                 raise ValidationError(_("PDF payloads cannot specify a printer protocol."))
         elif self.payload_type == "raster_jpeg":
-            if ptype not in ("image", "jpeg", "raster_jpeg"):
-                raise ValidationError(_("Payload type mismatch: expected image/raster, got '%s'.") % ptype)
+            if ptype != "image":
+                raise ValidationError(_("Payload type mismatch: expected 'image', got '%s'.") % ptype)
             if payload.get("protocol"):
                 raise ValidationError(_("Raster payloads cannot specify a printer protocol."))
         elif self.payload_type == "raw_cmd":
@@ -410,7 +430,10 @@ class PrintGatewayJob(models.Model):
         else:
             raise ValidationError(_("Unknown payload type column '%s'.") % self.payload_type)
 
-        raw_data = payload.get("data") or payload.get("base64")
+        # The wire contract names this field "data" only. The old
+        # "base64" alias is removed: a job submitting {"base64": ...} would
+        # pass here and then 422 at the Gateway.
+        raw_data = payload.get("data")
         if not raw_data or not isinstance(raw_data, str):
             raise ValidationError(_("Stored print payload data must be a non-empty string."))
         try:
@@ -477,7 +500,162 @@ class PrintGatewayJob(models.Model):
             except Exception as exc:
                 _logger.debug("Chatter audit logging skipped: %s", exc)
 
+    @api.model
+    def _is_pre_dispatch_error(self, exc):
+        """True ONLY when the exception chain proves the HTTP request never
+        left this host (connect refused / DNS failure / connect timeout).
+
+        requests wraps urllib3 errors whose meaning depends on the phase:
+        NewConnectionError / ConnectTimeoutError / NameResolutionError are
+        raised during connection establishment (zero bytes transmitted);
+        ProtocolError / RemoteDisconnected / ReadTimeoutError /
+        ConnectionResetError can all fire AFTER the request body reached the
+        Gateway. We never guess: anything not provably connect-phase is an
+        ambiguous dispatch, eligible for neither failover nor automatic
+        retry - the durable idempotency key protects a deliberate replay.
+        """
+        seen = set()
+        stack = [exc]
+        while stack:
+            current = stack.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            name = type(current).__name__
+            if name in (
+                "ConnectionRefusedError",
+                "gaierror",
+                "NewConnectionError",
+                "ConnectTimeoutError",
+                "NameResolutionError",
+            ):
+                return True
+            if name in (
+                "ProtocolError",
+                "ReadTimeoutError",
+                "RemoteDisconnected",
+                "ConnectionResetError",
+                "BrokenPipeError",
+                "TimeoutError",
+                "SSLError",
+                "CertificateError",
+            ):
+                return False
+            stack.append(getattr(current, "__cause__", None))
+            stack.append(getattr(current, "__context__", None))
+            for arg in getattr(current, "args", ()):
+                if isinstance(arg, BaseException):
+                    stack.append(arg)
+        return False
+
+    def _record_ambiguous_submission(self, job, exc, detail, raise_on_failure=False):
+        """Terminalize a submission whose outcome cannot be proven.
+
+        Used for post-dispatch timeouts AND for connection failures that are
+        not provably connect-phase. No failover, no automatic retry: the job
+        may already exist on the Gateway, and the durable idempotency key
+        makes a deliberate operator replay safe instead of a silent duplicate.
+        """
+        values = {
+            "status": "unknown",
+            "attempts": job.attempts + 1,
+            "last_error": "UNKNOWN_SUBMISSION_OUTCOME: %s (ambiguous dispatch)" % detail,
+            "next_retry_at": False,
+        }
+        if raise_on_failure:
+            job._persist_state(values)
+        else:
+            job.write(values)
+        job._post_source_audit(_("WARNING: Print Job #%s submission outcome is unknown on '%s'.") % (job.id, job.printer_id))
+        _logger.warning("Gateway submission outcome unknown for job %s: %s", job.idempotency_key[:8], detail)
+        if raise_on_failure:
+            raise ValidationError(_("Gateway submission outcome is unknown; physical outcome is ambiguous. Automated retries are paused to prevent duplicate prints. Operator reprint required.")) from exc
+
+    def _handle_pre_dispatch_failure(self, job, exc, current_binding, visited_bindings, failover_count, raise_on_failure):
+        """Retry/failover for failures PROVEN to precede any transmission.
+
+        The caller must have established _is_pre_dispatch_error(exc) first.
+        Returns (current_binding, failover_count, resume) where resume is
+        "continue" (failover engaged: re-enter the submission loop with the
+        backup printer) or "break" (job requeued/failed with backoff).
+
+        Bounded depth and cycle visited-set prevent failover loops
+        (A->B->C depth, A->B->A revisited target). Attempts still burn on
+        repeated pre-dispatch failures so a dead Gateway cannot spin the
+        cron forever.
+        """
+        MAX_FAILOVER_DEPTH = 3
+        # Pre-dispatch failure: zero bytes transmitted. Safe failover check!
+        if job.attempts == 0 and current_binding and failover_count < MAX_FAILOVER_DEPTH:
+            next_printer = current_binding.printer_id
+            binding_company = current_binding.branch_id or current_binding.company_id
+            company_compatible = (
+                binding_company == job.company_id
+                or (not current_binding.branch_id and current_binding.company_id == (job.company_id.parent_id or job.company_id))
+            )
+            # Phase 11: failover requires EXACT protocol/capability
+            # parity - never a broadened match to "make failover work".
+            fallback_proto = getattr(current_binding, "printer_protocol", False) or ""
+            if job.payload_type == "pdf":
+                protocol_compatible = fallback_proto in ("spooler", "ipp", "ipps")
+            elif job.payload_type == "raster_jpeg":
+                protocol_compatible = fallback_proto in ("spooler", "escpos")
+            elif job.payload_type == "raw_cmd" and job.protocol:
+                protocol_compatible = fallback_proto == job.protocol
+            else:
+                protocol_compatible = False
+            if (
+                current_binding.enabled
+                and next_printer
+                and next_printer not in visited_bindings
+                and company_compatible
+                and protocol_compatible
+            ):
+                visited_bindings.add(next_printer)
+                failover_count += 1
+                _logger.warning(
+                    "Primary printer %s connection failed; triggering safe pre-dispatch failover (%d/%d) to %s",
+                    job.printer_id, failover_count, MAX_FAILOVER_DEPTH, next_printer,
+                )
+                job.write({
+                    "printer_id": next_printer,
+                    "destination": current_binding.destination_ref.display_name if current_binding.destination_ref else current_binding.name,
+                    "last_error": "PRE_DISPATCH_FAILOVER: Routed to backup printer %s" % next_printer,
+                })
+                job._post_source_audit(_("Primary printer offline. Failover engaged: routed to backup printer '%s'") % next_printer)
+                current_binding = current_binding.fallback_binding_id
+                return current_binding, failover_count, "continue"
+
+        next_attempt = job.attempts + 1
+        terminal = next_attempt >= 5
+        retry_delay = min(300, 10 * (2 ** min(next_attempt - 1, 5)))
+        next_retry = False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=retry_delay)
+        values = {
+            "status": "failed" if terminal else "queued",
+            "attempts": next_attempt,
+            "last_error": "CONNECTION_ERROR: %s" % str(exc)[:4000],
+            "next_retry_at": next_retry,
+            "completed_at": fields.Datetime.now() if terminal else False,
+        }
+        if raise_on_failure:
+            job._persist_state(values)
+        else:
+            job.write(values)
+        _logger.warning("Gateway connection failed for job %s (attempt %s/5)", job.idempotency_key[:8], next_attempt)
+        if raise_on_failure:
+            raise ValidationError(_("Gateway connection failed: %s") % str(exc)[:500]) from exc
+        return current_binding, failover_count, "break"
+
+    def _require_outbox_write(self):
+        # The durable outbox is read-only for normal users; status-changing
+        # operator actions are privileged. Server-side flows (router submit,
+        # intent dispatch, cron) already run elevated and pass transparently.
+        # This guard keeps RPC access fail-closed for interactive users.
+        self.check_access_rights("write")
+        self.check_access_rule("write")
+
     def action_submit(self, raise_on_failure=False):
+        self._require_outbox_write()
         MAX_FAILOVER_DEPTH = 3
         for job in self:
             # Terminal is terminal, with OR without a remote id: a job that
@@ -564,6 +742,16 @@ class PrintGatewayJob(models.Model):
                     job._post_source_audit(_("Print Job #%s queued to Gateway for '%s'") % (remote_id or job.id, job.printer_id))
                     break  # Success
                 except requests.exceptions.Timeout as exc:
+                    if self._is_pre_dispatch_error(exc):
+                        # Connect-phase timeout only: the request provably
+                        # never left this host - same retry/failover path as
+                        # a refused connection. A read/ambiguous timeout
+                        # stays terminal-unknown below.
+                        current_binding, failover_count, resume = self._handle_pre_dispatch_failure(
+                            job, exc, current_binding, visited_bindings, failover_count, raise_on_failure)
+                        if resume == "continue":
+                            continue
+                        break
                     values = {
                         "status": "unknown",
                         "attempts": job.attempts + 1,
@@ -580,65 +768,21 @@ class PrintGatewayJob(models.Model):
                         raise ValidationError(_("Gateway submission timed out; physical outcome is unknown. Automated retries are paused to prevent duplicate prints. Operator reprint required.")) from exc
                     break
                 except requests.exceptions.ConnectionError as exc:
-                    # Pre-dispatch failure: zero bytes transmitted. Safe failover check!
-                    if job.attempts == 0 and current_binding and failover_count < MAX_FAILOVER_DEPTH:
-                        next_printer = current_binding.printer_id
-                        binding_company = current_binding.branch_id or current_binding.company_id
-                        company_compatible = (
-                            binding_company == job.company_id
-                            or (not current_binding.branch_id and current_binding.company_id == (job.company_id.parent_id or job.company_id))
-                        )
-                        # Phase 11: failover requires EXACT protocol/capability
-                        # parity - never a broadened match to "make failover work".
-                        fallback_proto = getattr(current_binding, "printer_protocol", False) or ""
-                        if job.payload_type == "pdf":
-                            protocol_compatible = fallback_proto in ("spooler", "ipp", "ipps")
-                        elif job.payload_type == "raster_jpeg":
-                            protocol_compatible = fallback_proto in ("spooler", "escpos")
-                        elif job.payload_type == "raw_cmd" and job.protocol:
-                            protocol_compatible = fallback_proto == job.protocol
-                        else:
-                            protocol_compatible = False
-                        if (
-                            current_binding.enabled
-                            and next_printer
-                            and next_printer not in visited_bindings
-                            and company_compatible
-                            and protocol_compatible
-                        ):
-                            visited_bindings.add(next_printer)
-                            failover_count += 1
-                            _logger.warning(
-                                "Primary printer %s connection failed; triggering safe pre-dispatch failover (%d/%d) to %s",
-                                job.printer_id, failover_count, MAX_FAILOVER_DEPTH, next_printer,
-                            )
-                            job.write({
-                                "printer_id": next_printer,
-                                "destination": current_binding.destination_ref.display_name if current_binding.destination_ref else current_binding.name,
-                                "last_error": "PRE_DISPATCH_FAILOVER: Routed to backup printer %s" % next_printer,
-                            })
-                            job._post_source_audit(_("Primary printer offline. Failover engaged: routed to backup printer '%s'") % next_printer)
-                            current_binding = current_binding.fallback_binding_id
-                            continue  # Retry submission loop with new printer
-
-                    next_attempt = job.attempts + 1
-                    terminal = next_attempt >= 5
-                    retry_delay = min(300, 10 * (2 ** min(next_attempt - 1, 5)))
-                    next_retry = False if terminal else fields.Datetime.now() + datetime.timedelta(seconds=retry_delay)
-                    values = {
-                        "status": "failed" if terminal else "queued",
-                        "attempts": next_attempt,
-                        "last_error": "CONNECTION_ERROR: %s" % str(exc)[:4000],
-                        "next_retry_at": next_retry,
-                        "completed_at": fields.Datetime.now() if terminal else False,
-                    }
-                    if raise_on_failure:
-                        job._persist_state(values)
-                    else:
-                        job.write(values)
-                    _logger.warning("Gateway connection failed for job %s (attempt %s/5)", job.idempotency_key[:8], next_attempt)
-                    if raise_on_failure:
-                        raise ValidationError(_("Gateway connection failed: %s") % str(exc)[:500]) from exc
+                    if not self._is_pre_dispatch_error(exc):
+                        # urllib3's ConnectionError also wraps mid-stream
+                        # failures (reset/abort AFTER request bytes were
+                        # sent). Without connect-phase proof the Gateway may
+                        # already hold this job: no failover (that would
+                        # create a second print) and no automatic retry.
+                        self._record_ambiguous_submission(
+                            job, exc,
+                            "connection broke after the request may have been transmitted",
+                            raise_on_failure)
+                        break
+                    current_binding, failover_count, resume = self._handle_pre_dispatch_failure(
+                        job, exc, current_binding, visited_bindings, failover_count, raise_on_failure)
+                    if resume == "continue":
+                        continue
                     break
                 except requests.RequestException as exc:
                     next_attempt = job.attempts + 1
@@ -676,6 +820,7 @@ class PrintGatewayJob(models.Model):
         return True
 
     def action_sync_status(self):
+        self._require_outbox_write()
         candidates = self.filtered(lambda row: row.gateway_job_id and row.status not in self._TERMINAL)
         if not candidates:
             return {
@@ -771,6 +916,7 @@ class PrintGatewayJob(models.Model):
         }
 
     def action_retry(self):
+        self._require_outbox_write()
         """Create a new logical print operation only from a definitely failed job.
 
         Unknown physical outcomes are never retried from the UI. A failed job that
@@ -823,6 +969,7 @@ class PrintGatewayJob(models.Model):
         }
 
     def action_force_reprint(self):
+        self._require_outbox_write()
         """Explicitly re-issue print operation for jobs with partial delivery or unknown physical outcome.
 
         This requires conscious operator action, preventing automated double printing of receipts/invoices.

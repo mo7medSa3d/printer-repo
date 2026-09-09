@@ -16,10 +16,12 @@ from unittest.mock import patch, MagicMock
 try:
     from odoo import api
     from odoo.tests.common import TransactionCase
-    from odoo.exceptions import ValidationError
+    from odoo.exceptions import AccessError, ValidationError
     from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 except ImportError:
     api = None
+    class AccessError(Exception):
+        pass
     class ValidationError(Exception):
         pass
     TransactionCase = unittest.TestCase
@@ -215,6 +217,15 @@ class TestControlPlane(TransactionCase):
         })
 
         import requests
+
+        def _refused_connection():
+            # A pre-dispatch failure MUST carry a connect-phase cause
+            # (connect refused): a bare ConnectionError without a proven
+            # cause is ambiguous dispatch and must NOT fail over.
+            exc = requests.exceptions.ConnectionError("Connection refused")
+            exc.__cause__ = ConnectionRefusedError(111, "Connection refused")
+            return exc
+
         # Mock requests.post: first call raises ConnectionError, second call succeeds
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -222,7 +233,7 @@ class TestControlPlane(TransactionCase):
 
         ConfigClass = type(self.gateway_config)
         with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
-             patch("requests.post", side_effect=[requests.exceptions.ConnectionError("Connection Refused"), mock_resp]):
+             patch("requests.post", side_effect=[_refused_connection(), mock_resp]):
             job.action_submit()
             self.assertEqual(job.printer_id, self.backup_binding.printer_id, "Job must safely failover to backup printer on pre-dispatch connection error")
             self.assertEqual(job.gateway_job_id, "gw_job_backup_123")
@@ -249,6 +260,66 @@ class TestControlPlane(TransactionCase):
             self.assertEqual(job.status, "unknown")
             self.assertFalse(job.next_retry_at, "Automated retry must be halted on unknown outcome")
             self.assertEqual(job.printer_id, self.primary_binding.printer_id, "Must NOT failover to backup printer on post-dispatch ambiguous timeout")
+
+    def test_04b_midstream_connection_break_never_failovers(self):
+        """A ConnectionError that is NOT provably connect-phase (e.g. a reset
+        AFTER request bytes were sent) must be terminal-unknown: no failover
+        (that would create a second print on the backup), no automatic retry."""
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Primary Destination",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_midstream_reset_key_01",
+            "fallback_binding_id": self.backup_binding.id,
+        })
+
+        import requests
+        broken = requests.exceptions.ConnectionError("Connection aborted")
+        broken.__cause__ = ConnectionResetError(104, "Connection reset by peer")
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", side_effect=broken):
+            job.action_submit()
+            self.assertEqual(job.status, "unknown")
+            self.assertFalse(job.next_retry_at)
+            self.assertEqual(job.printer_id, self.primary_binding.printer_id)
+            self.assertIn("UNKNOWN_SUBMISSION_OUTCOME", job.last_error or "")
+
+    def test_04c_connect_timeout_is_pre_dispatch_and_retries(self):
+        """A connect-phase timeout proves zero bytes left the host: it is
+        retryable with backoff and failover-eligible, unlike a read timeout."""
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Primary Destination",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_connect_timeout_key_01",
+            "fallback_binding_id": self.backup_binding.id,
+        })
+
+        import requests
+
+        class ConnectTimeoutError(Exception):
+            pass
+
+        exc = requests.exceptions.ConnectTimeout("Connection timed out")
+        exc.__cause__ = ConnectTimeoutError()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"jobId": "gw_job_cto_123", "status": "queued"}
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", side_effect=[exc, mock_resp]):
+            job.action_submit()
+            self.assertEqual(job.printer_id, self.backup_binding.printer_id)
+            self.assertEqual(job.gateway_job_id, "gw_job_cto_123")
 
     def test_05_hardware_test_page_action(self):
         """Verify binding 'action_send_test_print' produces diagnostic outbox job."""
@@ -314,12 +385,78 @@ class TestControlPlane(TransactionCase):
             "fallback_binding_id": self.backup_binding.id,
         })
         import requests
+        # The cycle guard must be exercised by REAL failovers, so the
+        # failure proves pre-dispatch (connect refused); an ambiguous
+        # failure would rightly never enter the failover loop at all.
+        refused = requests.exceptions.ConnectionError("Connection refused")
+        refused.__cause__ = ConnectionRefusedError(111, "Connection refused")
         ConfigClass = type(self.gateway_config)
         with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
-             patch("requests.post", side_effect=requests.exceptions.ConnectionError("Connection Failed")):
+             patch("requests.post", side_effect=refused):
             # Must terminate gracefully, not hang in recursion
             job.action_submit()
             self.assertIn(job.status, ("failed", "queued"))
+
+    def test_07b_failover_chain_bounded_depth(self):
+        """A->B->C engages (each hop re-proven pre-dispatch); a fourth hop
+        is never attempted: depth is bounded AND revisited printers are
+        skipped, so the chain always terminates."""
+        chain_c = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": self.primary_binding.destination_report_id.id,
+            "report_id": self.primary_binding.report_id.id,
+            "printer_protocol": "escpos",
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-chain-c",
+            "enabled": True,
+            "priority": 10,
+            "fallback_binding_id": False,
+        })
+        chain_d = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": self.primary_binding.destination_report_id.id,
+            "report_id": self.primary_binding.report_id.id,
+            "printer_protocol": "escpos",
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-chain-d",
+            "enabled": True,
+            "priority": 5,
+            "fallback_binding_id": False,
+        })
+        chain_c.fallback_binding_id = chain_d.id
+        self.backup_binding.fallback_binding_id = chain_c.id
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Chain Destination",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_chain_depth_key_01",
+            "fallback_binding_id": self.backup_binding.id,
+        })
+        import requests
+
+        def _refused():
+            exc = requests.exceptions.ConnectionError("Connection refused")
+            exc.__cause__ = ConnectionRefusedError(111, "Connection refused")
+            return exc
+
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", side_effect=[_refused(), _refused(), _refused(), _refused()]) as mock_post:
+            job.action_submit()
+            # A->backup->C->D all engaged (3 failovers = MAX depth); a fifth
+            # hop is never attempted: exactly 4 HTTP attempts happened.
+            self.assertEqual(mock_post.call_count, 4)
+            self.assertEqual(job.printer_id, "printer-chain-d")
+            self.assertEqual(job.status, "queued")
+            self.assertTrue(job.next_retry_at, "Backoff retry is scheduled after the depth cap")
 
     def test_08_raw_command_idempotency_and_authorization(self):
         """Verify route_raw_command accepts explicit idempotency key and enforces binding validation."""
@@ -340,6 +477,7 @@ class TestControlPlane(TransactionCase):
         with self.assertRaises(ValidationError):
             router.route_raw_command(
                 "^XA^XZ",
+                protocol="zpl",
                 binding=disabled_binding,
                 company=self.branch,
             )
@@ -837,3 +975,155 @@ class TestControlPlane(TransactionCase):
             self.assertEqual(job.gateway_job_id, "gw_replayed_123")
 
 
+
+    def _operator_user(self):
+        """A normal print operator: internal user, no settings rights, no
+        outbox rights - the identity every production print flow runs as."""
+        user = self.env["res.users"].create({
+            "name": "Print Operator ACL",
+            "login": "print_operator_acl_%s" % self.branch.id,
+            "company_id": self.branch.id,
+            "company_ids": [(6, 0, [self.branch.id])],
+        })
+        self.assertFalse(user.has_group("base.group_system"))
+        return user
+
+    def test_25_normal_user_close_outbox_rights_are_read_only(self):
+        """The outbox model intentionally grants normal users read-only ACLs;
+        direct writes must fail closed (this is the invariant the service
+        boundary exists to preserve)."""
+        user = self._operator_user()
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].with_user(user).check_access_rights("create")
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].with_user(user).check_access_rights("write")
+
+    def test_26_normal_user_full_print_flow_succeeds_through_service_boundary(self):
+        """BEHAVIORAL: an operator with NO outbox rights routes a raw command
+        end-to-end. The create/submit elevation happens inside the trusted
+        server-side boundary (create_operation + submit), never via the
+        user's raw model rights."""
+        user = self._operator_user()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"jobId": "gw_operator_123", "status": "queued"}
+        ConfigClass = type(self.gateway_config)
+        router = self.env["print_gateway.print_router"].with_user(user).with_company(self.branch)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", return_value=mock_resp):
+            res = router.route_raw_command(
+                "\x1b@Operator ticket",
+                protocol="escpos",
+                binding=self.primary_binding,
+                company=self.branch,
+                document_type="receipt",
+                idempotency_key="test_operator_flow_key_01",
+            )
+        self.assertTrue(res.get("gateway_enabled"))
+        job = self.env["print_gateway.print_job"].browse(res["job_id"])
+        self.assertTrue(job.exists())
+        self.assertEqual(job.status, "submitted")
+        self.assertEqual(job.gateway_job_id, "gw_operator_123")
+        self.assertEqual(job.company_id, self.branch)
+
+    def test_27_create_operation_is_not_reachable_via_rpc(self):
+        """BEHAVIORAL: create_operation is server-internal (@api.private): an
+        RPC call_kw to it raises AccessError for ANY user, so forged outbox
+        rows (arbitrary printer/protocol/data) cannot be created remotely."""
+        user = self._operator_user()
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].with_user(user).check_method_access("create_operation", [])
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].check_method_access("create_operation", [])
+
+    def test_28_operator_retry_and_direct_create_stay_fail_closed(self):
+        """BEHAVIORAL: operator actions that change outbox state still
+        require real write rights; direct ORM create without rights fails.
+        Only the trusted boundary may mint rows."""
+        user = self._operator_user()
+        with self.assertRaises(AccessError):
+            self.env["print_gateway.print_job"].with_user(user).create({
+                "company_id": self.branch.id,
+                "gateway_config_id": self.gateway_config.id,
+                "printer_id": self.primary_binding.printer_id,
+                "destination": "Forged Dest",
+                "document_type": "label",
+                "status": "queued",
+                "payload": json.dumps({"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="}),
+                "idempotency_key": "test_forged_key_01",
+            })
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Retry Guard Dest",
+            "document_type": "label",
+            "status": "failed",
+            "payload": json.dumps({"type": "raw", "protocol": "raw", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_retry_guard_key_01",
+        })
+        with self.assertRaises(AccessError):
+            job.with_user(user).action_retry()
+
+    def test_29_test_ticket_sanitizers_neutralize_command_injection(self):
+        """Pure-function contract: company/printer metadata embedded into
+        ZPL/TSPL/ESC-POS tickets cannot inject commands or escape arguments."""
+        from odoo.addons.print_gateway.models.print_router import (
+            _zpl_text, _tspl_text, _escpos_text,
+        )
+        hostile = 'ACME^XZ\n^XA^FO1,1^FDOWNED^FS^XZ~HQES"INJ\x1b@X'
+        zpl = _zpl_text(hostile)
+        self.assertNotIn("^", zpl)
+        self.assertNotIn("~", zpl)
+        self.assertNotIn("\x1b", zpl)
+        self.assertIn("ACME", zpl)
+        tspl = _tspl_text(hostile)
+        self.assertNotIn('"', tspl)
+        self.assertNotIn("\x1b", tspl)
+        esc = _escpos_text(hostile)
+        self.assertNotIn("\x1b", esc)
+        self.assertNotIn("\n", esc)
+        # Normal names pass through untouched.
+        self.assertEqual(_zpl_text("Warehouse 12 - Berlin"), "Warehouse 12 - Berlin")
+
+    def test_03b_failover_rejects_incompatible_protocol(self):
+        """Failover requires EXACT protocol parity: an escpos job must NOT
+        fail over to a zpl-only backup (that would send garbage to label
+        hardware). The job stays queued with backoff for operator action."""
+        incompatible = self.env["print_gateway.binding"].create({
+            "company_id": self.company.id,
+            "branch_id": self.branch.id,
+            "destination_type": "report",
+            "destination_report_id": self.primary_binding.destination_report_id.id,
+            "report_id": self.primary_binding.report_id.id,
+            "runtime_agent_id": "agent-cp-01",
+            "printer_id": "printer-zpl-backup",
+            "printer_protocol": "zpl",
+            "enabled": True,
+            "priority": 15,
+            "fallback_binding_id": False,
+        })
+        job = self.env["print_gateway.print_job"].create({
+            "company_id": self.branch.id,
+            "gateway_config_id": self.gateway_config.id,
+            "printer_id": self.primary_binding.printer_id,
+            "destination": "Primary Destination",
+            "document_type": "invoice",
+            "status": "queued",
+            "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+            "idempotency_key": "test_failover_incompatible_key_01",
+            "fallback_binding_id": incompatible.id,
+        })
+
+        import requests
+        refused = requests.exceptions.ConnectionError("Connection refused")
+        refused.__cause__ = ConnectionRefusedError(111, "Connection refused")
+        ConfigClass = type(self.gateway_config)
+        with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+             patch("requests.post", side_effect=refused):
+            job.action_submit()
+            self.assertEqual(job.printer_id, self.primary_binding.printer_id,
+                             "Incompatible backup must never receive the job")
+            self.assertEqual(job.status, "queued")
+            self.assertTrue(job.next_retry_at, "Backoff retry is scheduled")
+            self.assertIn("CONNECTION_ERROR", job.last_error or "")

@@ -19,17 +19,20 @@ import (
 )
 
 type statusUpdate struct {
-	JobID  string `json:"jobId"`
-	Status string `json:"status"`
-	Error  string `json:"error"`
+	JobID      string `json:"jobId"`
+	Status     string `json:"status"`
+	Error      string `json:"error"`
+	Reason     string `json:"reason"`
+	ClaimToken string `json:"claimToken"`
 }
 
 type recordingGateway struct {
-	mu      sync.Mutex
-	updates []statusUpdate
-	acks    []string
-	server  *httptest.Server
-	sendCh  chan interface{}
+	mu        sync.Mutex
+	updates   []statusUpdate
+	acks      []string
+	ackTokens map[string]string
+	server    *httptest.Server
+	sendCh    chan interface{}
 }
 
 func (g *recordingGateway) Updates() []statusUpdate {
@@ -45,6 +48,16 @@ func (g *recordingGateway) Acks() []string {
 	defer g.mu.Unlock()
 	out := make([]string, len(g.acks))
 	copy(out, g.acks)
+	return out
+}
+
+func (g *recordingGateway) AckTokens() map[string]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[string]string, len(g.ackTokens))
+	for k, v := range g.ackTokens {
+		out[k] = v
+	}
 	return out
 }
 
@@ -97,6 +110,10 @@ func newRecordingGateway(t *testing.T) *recordingGateway {
 				if frame["type"] == "job_ack" {
 					g.mu.Lock()
 					g.acks = append(g.acks, frame["jobId"])
+					if g.ackTokens == nil {
+						g.ackTokens = make(map[string]string)
+					}
+					g.ackTokens[frame["jobId"]] = frame["claimToken"]
 					g.mu.Unlock()
 				}
 			}
@@ -363,4 +380,82 @@ func TestReprintAfterCrashPolicy(t *testing.T) {
 			t.Fatal("nil crash-reprint policy must default to false")
 		}
 	})
+}
+
+func TestClaimTokenEchoedInStatusUpdatesAndAck(t *testing.T) {
+	gw := newRecordingGateway(t)
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ag.connectWebSocket(ctx)
+	waitFor(t, 5*time.Second, func() bool { return ag.getWSConn() != nil })
+
+	// The full chain: WS envelope carries the claim token, the agent echoes
+	// it on every status report and on the ack frame.
+	env := claimedEnvelope("job_with_token", "p1")
+	env["job"].(map[string]interface{})["claimToken"] = "claim-live-123"
+	gw.sendCh <- env
+	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 1 })
+	ag.waitForJobs()
+
+	if p.calls != 1 {
+		t.Fatalf("expected exactly one print, got %d", p.calls)
+	}
+	seen := map[string]bool{}
+	for _, u := range gw.Updates() {
+		if u.JobID != "job_with_token" {
+			continue
+		}
+		if u.ClaimToken != "claim-live-123" {
+			t.Fatalf("status %q update is missing the echoed claim token: %+v", u.Status, u)
+		}
+		seen[u.Status] = true
+	}
+	if !seen["printing"] || !seen["success"] {
+		t.Fatalf("expected fenced printing+success updates, got %+v", gw.Updates())
+	}
+	if tok := gw.AckTokens()["job_with_token"]; tok != "claim-live-123" {
+		t.Fatalf("ack must carry the claim token, got %q", tok)
+	}
+}
+
+func TestLedgerWriteFailureBlocksDispatch(t *testing.T) {
+	gw := newRecordingGateway(t)
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	// Break the durable evidence base: no ledger row can ever be proven.
+	if err := ag.queue.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	job := map[string]interface{}{
+		"id":         "job_no_ledger",
+		"printerId":  "p1",
+		"payload":    makeJobPayload("job_no_ledger"),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "claim-ledger-x",
+	}
+	ag.processJob(context.Background(), job)
+	ag.waitForJobs()
+	if p.calls != 0 {
+		t.Fatalf("dispatch without a writable ledger must print nothing, got %d prints", p.calls)
+	}
+	found := false
+	for _, u := range gw.Updates() {
+		if u.JobID == "job_no_ledger" && u.Status == "queued" {
+			found = true
+			// The unreachable local ledger turns into a FENCED pre-execution
+			// return (reason ledger_unavailable), which the gateway maps to
+			// a requeue carrying "Agent returned job before execution".
+			if u.Reason != "ledger_unavailable" {
+				t.Fatalf("expected the ledger_unavailable rejection reason, got %+v", u)
+			}
+			if u.ClaimToken != "claim-ledger-x" {
+				t.Fatalf("fenced return must carry the claim token, got %+v", u)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a fenced queued return after ledger failure, got %+v", gw.Updates())
+	}
 }

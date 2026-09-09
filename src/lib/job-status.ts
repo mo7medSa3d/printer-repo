@@ -4,9 +4,9 @@
 //
 //   queued -> claimed -> printing -> success
 //   claimed -> queued   ONLY via the agent's fenced, explicit rejection
-//                     ("pending_full" / "agent_shutting_down": the agent
-//                      received the job but provably did not touch the
-//                      printer; the claim token authenticates the claim)
+//                     reason (AGENT_REQUEUE_REASONS: the agent received the
+//                     job but provably did not touch the printer; the claim
+//                     token authenticates the claim)
 //   (any non-terminal state) -> expired   [once expiresAt has passed]
 //
 // success / failed / expired are terminal: no further transitions are
@@ -118,5 +118,11 @@ export function isLateSuccessAllowed(job: LateSuccessCandidate, nowMs: number): 
   return age >= 0 && age <= LATE_SUCCESS_MAX_AGE_MS;
 }
 
-/** Reasons an agent may hand a claimed job back pre-execution. */
-export const AGENT_REQUEUE_REASONS = ["pending_full", "agent_shutting_down"] as const;
+/**
+ * Reasons an agent may hand a claimed job back pre-execution (the agent has
+ * PROVEN it did not touch the printer): executor saturation, shutdown, or an
+ * unwritable local durable ledger (the agent's evidence base for whether a
+ * job printed). Adding a reason requires an agent-side call site that can
+ * only fire before any byte reaches hardware.
+ */
+export const AGENT_REQUEUE_REASONS = ["pending_full", "agent_shutting_down", "ledger_unavailable"] as const;

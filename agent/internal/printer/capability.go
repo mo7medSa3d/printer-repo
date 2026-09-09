@@ -19,8 +19,16 @@ import "strings"
 //   - peripherals            -> escpos only (enforced in payload.Parse)
 //
 // An explicit supported_protocols capability list is authoritative; without
-// one, the device's declared transport protocol decides. A device whose
-// protocol is undeclared ("unknown") is never routable.
+// one, the device's declared transport protocol decides.
+//
+// AUTHORITATIVE RULE for "unknown" protocol (mirrored in
+// src/lib/routing.ts): "unknown" means "no byte language declared". The
+// connection type is itself an explicit TRANSPORT declaration for transports
+// that are physically complete (a Windows spooler queue renders documents;
+// an IPP URL accepts document formats), so unknown+spooler/ipp behaves as
+// that transport. For network/usb (byte pipes with no declared language)
+// the family resolves to a name nothing matches: the device is inventoried
+// but dark until its protocol is declared.
 
 // DeviceFacts are the declared transport properties of one printer entry.
 type TransportFacts struct {

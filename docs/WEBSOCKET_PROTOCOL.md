@@ -59,11 +59,14 @@ bare job object with an `id`. Any other `type` is ignored.
 ## 3. Agent → Gateway: `job_ack`
 
 ```json
-{ "type": "job_ack", "jobId": "job_V1StGXR8Z5jd" }
+{ "type": "job_ack", "jobId": "job_V1StGXR8Z5jd", "claimToken": "a3f9c2e1-…" }
 ```
 
 * Sent immediately when the job is received, before printing.
 * Sent for duplicates too, including a job the agent will not print because it already completed locally.
+* Carries the delivery attempt's `claimToken`: the ack is fenced to the live
+  claim in PostgreSQL, so a superseded frame cannot stamp delivery evidence
+  onto a reclaimed row. A tokenless ack only matches legacy tokenless claims.
 * Effect on the gateway: `acked_at = now()` and `delivered_at = COALESCE(delivered_at, now())`.
 * It never changes logical job status and never means paper came out.
 * Writes are serialised with an agent-side mutex and use a 10 s write deadline.

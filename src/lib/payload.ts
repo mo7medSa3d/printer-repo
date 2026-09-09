@@ -66,12 +66,16 @@ export function validatePrintJobPayload(payload: unknown): PrintJobPayload {
 }
 
 export function buildTestPrintPayload(printerName: string, agentName: string): PrintJobPayload {
+  // Names are user-controlled: strip C0 controls (incl. ESC) so a crafted
+  // name cannot inject command bytes into the diagnostic ticket.
+  const safeName = String(printerName ?? "").replace(/[^\x20-\x7e]/g, "").slice(0, 60);
+  const safeAgent = String(agentName ?? "").replace(/[^\x20-\x7e]/g, "").slice(0, 60);
   const lines = [
     "\x1b\x40",
     "Odoo Print Agent\n",
     "Test Print\n",
-    `Printer: ${printerName}\n`,
-    `Agent: ${agentName}\n`,
+    `Printer: ${safeName}\n`,
+    `Agent: ${safeAgent}\n`,
     "------------------------\n",
     "Connection OK\n",
     "------------------------\n\n\n",

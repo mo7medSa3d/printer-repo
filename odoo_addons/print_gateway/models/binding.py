@@ -103,9 +103,11 @@ class PrintGatewayBinding(models.Model):
     ], string="Printer Protocol", required=True,
        help="Hardware control language the printer ACTUALLY understands. "
             "There is deliberately no default: declaring the protocol is an "
-            "explicit operator statement, and 'unknown' keeps the binding "
-            "inventoried but unroutable. Byte protocols never wildcard: a "
-            "'raw' printer does not accept zpl/tspl/escpos jobs.")
+            "explicit operator statement. 'unknown' keeps byte-stream jobs "
+            "unroutable (raw/zpl/tspl/escpos all require an exact match); "
+            "document (PDF/image) jobs additionally require the Gateway "
+            "printer itself to be a document transport. Byte protocols never "
+            "wildcard: a 'raw' printer does not accept zpl/tspl/escpos jobs.")
     fallback_binding_id = fields.Many2one(
         "print_gateway.binding", string="Failover Backup Binding", ondelete="set null",
         domain="['&', ('id', '!=', id), ('company_id', '=', company_id)]",

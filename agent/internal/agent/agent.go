@@ -721,7 +721,7 @@ func (a *Agent) handleWSMessages(ctx context.Context) error {
 		// "this agent has the job", never "the job printed"; the gateway only
 		// records delivery from it. Duplicates are acked too (see dispatchJob),
 		// so the gateway can distinguish a lost delivery from a duplicate one.
-		if err := a.sendJobAck(jobID); err != nil {
+		if err := a.sendJobAck(jobID, jobClaimToken(job)); err != nil {
 			log.Printf("Job %s: failed to send job_ack: %v", jobID, err)
 		}
 
@@ -759,13 +759,19 @@ func extractJobFromWSMessage(msg map[string]interface{}) (map[string]interface{}
 	}
 }
 
-// sendJobAck writes {"type":"job_ack","jobId":"..."} back to the gateway.
-func (a *Agent) sendJobAck(jobID string) error {
+// sendJobAck writes {"type":"job_ack","jobId":"...","claimToken":"..."} back
+// to the gateway. The claim token attributes the ack to THIS delivery attempt
+// so the gateway's fenced predicates can reject a superseded frame.
+func (a *Agent) sendJobAck(jobID, claimToken string) error {
 	conn := a.getWSConn()
 	if conn == nil {
 		return fmt.Errorf("no websocket connection")
 	}
-	payload, err := json.Marshal(map[string]string{"type": "job_ack", "jobId": jobID})
+	ack := map[string]string{"type": "job_ack", "jobId": jobID}
+	if claimToken != "" {
+		ack["claimToken"] = claimToken
+	}
+	payload, err := json.Marshal(ack)
 	if err != nil {
 		return err
 	}
@@ -1408,7 +1414,9 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		// protection. If it cannot be read we cannot prove this job has not
 		// printed; refuse before dispatch (no bytes sent, safe retry).
 		log.Printf("Job %s: local queue lookup failed; refusing dispatch: %v", jobID, err)
-		a.updateJobStatus(jobID, "queued", "ERR_LOCAL_LEDGER_UNAVAILABLE: local queue is not readable; job returned before any bytes were sent", claimToken)
+		// Fenced pre-execution return (never dispatched, zero bytes sent):
+		// the gateway requeues without burning the retry budget.
+		a.rejectJob(jobID, claimToken, "ledger_unavailable")
 		return
 	} else if found && localStatus == "success" {
 		log.Printf("Job %s already completed locally (success). Re-reporting terminal result instead of printing again.", jobID)
@@ -1498,7 +1506,9 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	if err := a.queue.BeginPrint(jobID, printerID, pl.Data, claimToken); err != nil {
 		lock.Unlock()
 		log.Printf("Job %s: local durable ledger unavailable; refusing dispatch (no bytes sent): %v", jobID, err)
-		a.updateJobStatus(jobID, "queued", "ERR_LOCAL_LEDGER_UNAVAILABLE: local queue write failed; job returned before any bytes were sent", claimToken)
+		// Fenced pre-execution return (never dispatched, zero bytes sent):
+		// the gateway requeues without burning the retry budget.
+		a.rejectJob(jobID, claimToken, "ledger_unavailable")
 		return
 	}
 	lock.Unlock()
