@@ -249,7 +249,10 @@ class PrintGatewayRouter(models.AbstractModel):
                 raise ValidationError(_("The durable print job is no longer available."))
             try:
                 job = job.with_company(job.company_id)
-                job.action_submit(raise_on_failure=True)
+                # Trusted internal submission: the outbox stays read-only
+                # for the print operator (see _action_submit_trusted); the
+                # guarded public action_submit() would AccessError here.
+                job._action_submit_trusted(raise_on_failure=True)
                 status = job.status
                 cr.commit()
                 return status

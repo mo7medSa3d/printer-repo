@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -31,8 +32,12 @@ type recordingGateway struct {
 	updates   []statusUpdate
 	acks      []string
 	ackTokens map[string]string
-	server    *httptest.Server
-	sendCh    chan interface{}
+	// rejectPrinting, when true, answers claimed->printing reports with the
+	// exact fence rejection a real gateway emits for a superseded claim.
+	// Tests the agent-side hard stop: zero bytes may follow such a response.
+	rejectPrinting bool
+	server         *httptest.Server
+	sendCh         chan interface{}
 }
 
 func (g *recordingGateway) Updates() []statusUpdate {
@@ -76,7 +81,14 @@ func newRecordingGateway(t *testing.T) *recordingGateway {
 			}
 			g.mu.Lock()
 			g.updates = append(g.updates, body)
+			reject := g.rejectPrinting && body.Status == "printing"
 			g.mu.Unlock()
+			if reject {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"Stale claim token: this attempt was superseded by a newer claim","code":"STALE_CLAIM","status":"claimed"}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"success":true}`))
 		case http.MethodGet:
@@ -457,5 +469,65 @@ func TestLedgerWriteFailureBlocksDispatch(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a fenced queued return after ledger failure, got %+v", gw.Updates())
+	}
+}
+
+func TestStalePrintingFenceHaltsBeforeHardware(t *testing.T) {
+	// P0: the gateway rejects the claimed->printing transition (the claim
+	// expired and was reassigned). processJob MUST NOT invoke the printer
+	// backend at all: zero PrintDocument calls, zero bytes written.
+	gw := newRecordingGateway(t)
+	gw.rejectPrinting = true
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	job := map[string]interface{}{
+		"id":         "job_stale_fence",
+		"printerId":  "p1",
+		"payload":    makeJobPayload("job_stale_fence"),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "claim-superseded-1",
+	}
+	ag.processJob(context.Background(), job)
+	ag.waitForJobs()
+	if p.calls != 0 {
+		t.Fatalf("fence-rejected claim must never reach hardware, got %d printer calls", p.calls)
+	}
+	// The local ledger row must not be left 'printing': BeginPrint marked
+	// it, the fence rejected it, and AbortPrint rolled it back - otherwise a
+	// later restart would misread it as "may have printed" and block the
+	// legitimate redelivery forever.
+	_, status, found, err := ag.queue.Get("job_stale_fence")
+	if err != nil {
+		t.Fatalf("queue.Get: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected a rolled-back ledger row for the aborted attempt")
+	}
+	if status == "printing" {
+		t.Fatalf("aborted attempt left the ledger in 'printing' - a restart would fake a crash-interrupt")
+	}
+	// And the stale token must have been cleared so recovery never reports
+	// with it.
+	if tok := ag.queue.ClaimTokenFor("job_stale_fence"); tok != "" {
+		t.Fatalf("aborted attempt must clear the superseded claim token, got %q", tok)
+	}
+}
+
+func TestUpdateJobStatusDetectsFenceRejection(t *testing.T) {
+	gw := newRecordingGateway(t)
+	gw.rejectPrinting = true
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	err := ag.updateJobStatus("job_x", "printing", "", "claim-dead")
+	if err == nil {
+		t.Fatalf("expected ErrStaleClaim, got nil")
+	}
+	if !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("expected ErrStaleClaim, got %v", err)
+	}
+	// Non-fence statuses still report normally through the same path.
+	gw.rejectPrinting = false
+	if err := ag.updateJobStatus("job_x", "printing", "", "claim-live"); err != nil {
+		t.Fatalf("expected nil error once the fence accepts, got %v", err)
 	}
 }

@@ -1,3 +1,18 @@
+// CANONICAL PHYSICAL-STATUS VOCABULARY (single source of truth; the Odoo
+// outbox documents the same contract on print_gateway.print_job, and the Go
+// agent mirrors the markers in agent/internal/printer/outcome.go):
+//
+// - Gateway DB status enum is CLOSED: queued, claimed, printing, success,
+//   failed, expired. Nothing else is ever persisted (PostgreSQL CHECK) and
+//   nothing else is accepted on the agent API (isJobStatus).
+// - Physical outcome metadata is CLOSED: printed, not_printed, unknown.
+//   success => printed; any UNKNOWN marker prefix => unknown; else
+//   not_printed (derivePhysicalOutcome). There is no "maybe printed" or
+//   "partially printed" outcome: ambiguity is always exactly `unknown`.
+// - Odoo maps a Gateway `failed` whose error starts with any
+//   _GATEWAY_UNKNOWN_MARKERS prefix to outbox status 'unknown' (never
+//   'failed', which would read as "definitely not printed").
+//
 // The print-job lifecycle. The server and the Go agent must agree on this
 // exact state machine (see agent/internal/agent/agent.go and
 // agent/internal/printer/outcome.go, which mirror the markers below).

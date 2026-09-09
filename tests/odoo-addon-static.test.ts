@@ -28,7 +28,7 @@ describe("Odoo addon static contracts", () => {
     const persist = router.indexOf("def _persist_durable_job");
     const create = router.indexOf("create_operation", persist);
     const commit = router.indexOf("cr.commit()", persist);
-    const submit = router.indexOf("job.action_submit", persist);
+    const submit = router.indexOf("job._action_submit_trusted", persist);
     expect(persist).toBeGreaterThan(-1);
     expect(create).toBeGreaterThan(persist);
     expect(commit).toBeGreaterThan(create);

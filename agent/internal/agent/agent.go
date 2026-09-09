@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1513,8 +1514,24 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	}
 	lock.Unlock()
 
-	// Report printing outside the per-printer lock (network I/O must not hold mutex)
-	a.updateJobStatus(jobID, "printing", "", claimToken)
+	// Report printing outside the per-printer lock (network I/O must not
+	// hold mutex) - AND gate physical dispatch on the gateway's answer.
+	// If our claim was superseded (STALE_CLAIM / 409 / 410), another worker
+	// owns this job now: abort the local ledger row and RETURN with zero
+	// bytes transmitted. A transport-level failure (gateway unreachable) is
+	// NOT a fence rejection: the claim cannot have been reassigned without
+	// the gateway, so offline-tolerant printing proceeds and the gateway
+	// sweep will mark the outcome unknown if we never report back.
+	if err := a.updateJobStatus(jobID, "printing", "", claimToken); err != nil {
+		if errors.Is(err, ErrStaleClaim) {
+			log.Printf("Job %s: claim fence rejected by gateway - another attempt owns this job; aborting before any byte is sent", jobID)
+			if aberr := a.queue.AbortPrint(jobID, "fence_rejected: gateway no longer recognizes this claim; zero bytes transmitted"); aberr != nil {
+				log.Printf("Job %s: failed to abort local ledger row: %v", jobID, aberr)
+			}
+			return
+		}
+		log.Printf("Job %s: printing report unacknowledged (%v); proceeding, outcome stays ledger-tracked", jobID, err)
+	}
 
 	// The document budget scales with size: a 5MB payload on a slow thermal
 	// legitimately needs minutes to transfer. Transports enforce finer
@@ -1576,7 +1593,13 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	a.updateJobStatus(jobID, "success", "", claimToken)
 }
 
-func (a *Agent) updateJobStatus(jobID, status, errMsg, claimToken string) {
+// ErrStaleClaim is returned by updateJobStatus when the gateway rejects a
+// status report at the claim fence (HTTP 409/410 or a STALE_CLAIM /
+// FENCE_REJECTED payload): this attempt no longer owns the job. processJob
+// treats it as a HARD STOP before any byte reaches the printer.
+var ErrStaleClaim = errors.New("gateway rejected claim fence: stale or reclaimed token")
+
+func (a *Agent) updateJobStatus(jobID, status, errMsg, claimToken string) error {
 	reqURL := fmt.Sprintf("%s/api/agent/jobs", a.cfg.Server.URL)
 	body := map[string]interface{}{
 		"jobId":  jobID,
@@ -1589,13 +1612,23 @@ func (a *Agent) updateJobStatus(jobID, status, errMsg, claimToken string) {
 	resp, err := a.doAuthorizedRequest("PATCH", reqURL, body)
 	if err != nil {
 		log.Printf("Job %s: failed to report status %q to server: %v", jobID, status, err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("Job %s: server rejected status update to %q (%d): %s", jobID, status, resp.StatusCode, string(respBody))
+		// Fence rejection: the gateway no longer recognizes this claim
+		// (expired and reassigned, or never valid). Callers MUST treat this
+		// as authoritative - especially the claimed->printing transition,
+		// which must never proceed to hardware afterwards.
+		if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusGone ||
+			strings.Contains(string(respBody), "STALE_CLAIM") || strings.Contains(string(respBody), "FENCE_REJECTED") {
+			return fmt.Errorf("%w: job %s status %q rejected (%d)", ErrStaleClaim, jobID, status, resp.StatusCode)
+		}
+		return fmt.Errorf("gateway rejected status update to %q (%d): %s", status, resp.StatusCode, string(respBody))
 	}
+	return nil
 }
 
 func (a *Agent) doAuthorizedRequest(method, url string, body interface{}) (*http.Response, error) {

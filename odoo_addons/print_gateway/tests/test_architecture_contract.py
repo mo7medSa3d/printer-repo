@@ -270,3 +270,66 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                 job.write({"status": illegal})
         self.assertEqual(job.status, "success")
 
+
+    def test_branch_restricted_user_raw_command_submits_without_access_error(self):
+        """A standard print operator (group_user, outbox read-only) must be
+        able to submit a raw print end-to-end: the trusted service boundary
+        elevates creation/submission internally while the model ACL stays
+        read-only. Any AccessError here is a P0 regression."""
+        if not hasattr(self, "env"):
+            self.skipTest("Odoo runtime environment not available")
+        from unittest.mock import MagicMock
+        root_company = self.env.company
+        branch = self.env["res.company"].create({
+            "name": "Branch Submit Context",
+            "parent_id": root_company.id,
+        })
+        config = self.env["print_gateway.gateway_config"].search([("company_id", "=", root_company.id)], limit=1)
+        if not config:
+            with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None):
+                config = self.env["print_gateway.gateway_config"].create({
+                    "company_id": root_company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                })
+        report = self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
+        self.assertTrue(report)
+        binding = self.env["print_gateway.binding"].create({
+            "company_id": root_company.id,
+            "branch_id": branch.id,
+            "destination_type": "report",
+            "destination_report_id": report.id,
+            "report_id": report.id,
+            "runtime_agent_id": "agt-branch-submit",
+            "printer_id": "printer-branch-submit",
+            "printer_protocol": "escpos",
+            "enabled": True,
+        })
+        branch_user = self.env["res.users"].create({
+            "name": "Branch Submit Operator",
+            "login": "branch_submit_%s" % branch.id,
+            "company_id": branch.id,
+            "company_ids": [(6, 0, [branch.id])],
+        })
+        self.assertFalse(branch_user.has_group("base.group_system"))
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"jobId": "gw_branch_submit_1", "status": "queued"}
+        router = self.env["print_gateway.print_router"].with_user(branch_user).with_company(branch)
+        with patch("odoo.addons.print_gateway.models.gateway_config.PrintGatewayConfig._validate_gateway_host", return_value=None), \
+             patch("requests.post", return_value=mock_resp):
+            res = router.route_raw_command(
+                "\x1b@Branch submit ticket",
+                protocol="escpos",
+                binding=binding,
+                company=branch,
+                document_type="receipt",
+                idempotency_key="test_branch_submit_key_01",
+            )
+        self.assertTrue(res.get("gateway_enabled"))
+        job = self.env["print_gateway.print_job"].browse(res["job_id"])
+        self.assertTrue(job.exists())
+        self.assertEqual(job.status, "submitted")
+        self.assertEqual(job.gateway_job_id, "gw_branch_submit_1")
+        self.assertEqual(job.company_id, branch)

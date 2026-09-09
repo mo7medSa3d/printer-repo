@@ -124,6 +124,24 @@ func (q *Queue) UpdateStatusWithError(id, status, lastErr string) error {
 	return err
 }
 
+// AbortPrint rolls a 'printing' ledger row back to 'queued' when the attempt
+// is cancelled BEFORE any byte reached hardware (currently: the gateway
+// rejected our claim at the fence, so another attempt owns the job).
+//
+// This is the inverse of BeginPrint and exists for crash-safety honesty: a
+// row left in 'printing' would be misread by MarkInterrupted after a restart
+// as "may have printed", permanently blocking legitimate redelivery. Aborting
+// clears the superseded claim token as well, so crash recovery never reports
+// with a dead token. The status predicate keeps this from clobbering a row
+// that concurrently reached a terminal state.
+func (q *Queue) AbortPrint(id, reason string) error {
+	_, err := q.db.Exec(
+		`UPDATE print_jobs SET status = 'queued', last_error = ?, claim_token = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'printing'`,
+		reason, id,
+	)
+	return err
+}
+
 // BeginPrint records the durable local ledger entry for a delivery attempt
 // and marks it as physically printing. It MUST succeed before any byte is
 // sent to hardware: if the local ledger cannot be written, the agent cannot

@@ -415,3 +415,53 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             tuple(self.env["print_gateway.print_job"]._GATEWAY_UNKNOWN_MARKERS),
             expected,
         )
+
+    def test_sync_maps_failed_with_unknown_markers_to_unknown(self):
+        """BEHAVIORAL: a Gateway 'failed' whose error starts with any
+        UNKNOWN_* marker must land in outbox status 'unknown' - never
+        'failed' (which would read as definitely-not-printed and offer
+        ordinary Retry) and never 'partial'. A markerless failed stays
+        'failed'."""
+        from unittest.mock import MagicMock
+        markers = [
+            "AGENT_EXECUTION_TIMEOUT",
+            "AGENT_RESTART_DURING_PRINT",
+            "JOB_EXPIRED_DURING_PRINT",
+            "UNKNOWN_PARTIAL_DELIVERY",
+            "UNKNOWN_SUBMISSION_OUTCOME",
+        ]
+        cases = [(m, "unknown") for m in markers]
+        cases.append((None, "failed"))
+        for marker, expected in cases:
+            key = "sync-marker-%s" % (marker or "plain")
+            job_id = self._job(key)
+            cr = self.env.registry.cursor()
+            try:
+                env = api.Environment(cr, self.env.uid, dict(self.env.context))
+                company = env["res.company"].browse(self.durable_company_id).exists()
+                model_env = env["print_gateway.print_job"].with_company(company).env
+                job = model_env["print_gateway.print_job"].browse(job_id).exists()
+                job.write({"gateway_job_id": "gw-%s" % key, "status": "submitted"})
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                if marker:
+                    mock_resp.json.return_value = {
+                        "status": "failed",
+                        "error": "%s: simulated ambiguous execution" % marker,
+                    }
+                else:
+                    mock_resp.json.return_value = {
+                        "status": "failed",
+                        "error": "CONNECTION_ERROR: simulated refused connection",
+                    }
+                with patch.object(PrintGatewayConfig, "_validate_gateway_host"), patch(
+                    "odoo.addons.print_gateway.models.print_job.requests.get",
+                    return_value=mock_resp,
+                ):
+                    job.action_sync_status()
+                self.assertEqual(
+                    job.status, expected,
+                    "marker=%r must map to %r" % (marker, expected),
+                )
+            finally:
+                cr.close()

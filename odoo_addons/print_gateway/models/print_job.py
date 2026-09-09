@@ -29,6 +29,17 @@ class PrintGatewayJob(models.Model):
     printer_id = fields.Char(string="Printer", required=True, index=True, readonly=True)
     destination = fields.Char(required=True, readonly=True)
     document_type = fields.Char(required=True, readonly=True)
+    # Canonical status vocabulary (mirrors the Gateway DB status enum
+    # queued/claimed/printing/success/failed/expired in
+    # src/lib/job-status.ts, plus Odoo-side 'submitted' for "accepted by the
+    # Gateway, awaiting agent claim" and 'partial' as an operator-side
+    # terminal state). Terminal: success/failed/partial/unknown - enforced
+    # by _VALID_TRANSITIONS and write(). Physical outcome metadata is
+    # exactly printed/not_printed/unknown (_compute_physical_outcome):
+    # 'success' => printed; 'unknown'/'partial' => unknown; anything else
+    # carrying a _GATEWAY_UNKNOWN_MARKERS prefix => unknown; otherwise
+    # not_printed. action_sync_status maps a Gateway 'failed' whose error
+    # starts with any _GATEWAY_UNKNOWN_MARKERS prefix to 'unknown'.
     status = fields.Selection([
         ("queued", "Queued"), ("submitted", "Submitted"), ("claimed", "Claimed"),
         ("printing", "Printing"), ("success", "Success"), ("failed", "Failed"),
@@ -656,6 +667,25 @@ class PrintGatewayJob(models.Model):
 
     def action_submit(self, raise_on_failure=False):
         self._require_outbox_write()
+        return self._action_submit_trusted(raise_on_failure=raise_on_failure)
+
+    @api.private
+    def _action_submit_trusted(self, raise_on_failure=False):
+        """Trusted internal submission (not reachable via RPC).
+
+        Runs the full submit flow elevated: the durable outbox is
+        intentionally read-only for normal users (group_user has no write
+        right), yet every legitimate print flow - report download, POS,
+        intents, retry - executes as the print operator. The router
+        (print_router._submit_durable_job) is the only production caller and
+        delegates here AFTER resolving and validating company/branch/binding/
+        printer scope. Interactive/admin callers keep using the guarded
+        public action_submit(); cron already runs elevated.
+        """
+        # Elevate for the whole flow. Re-applied after with_company below:
+        # with_company() rebuilds the environment and must never be allowed
+        # to silently drop the trusted context on any Odoo version.
+        self = self.sudo()
         MAX_FAILOVER_DEPTH = 3
         for job in self:
             # Terminal is terminal, with OR without a remote id: a job that
@@ -879,8 +909,20 @@ class PrintGatewayJob(models.Model):
                     failed_count += 1
                     continue
                 err_msg = body.get("error") or False
-                if err_msg and "UNKNOWN_PARTIAL_DELIVERY" in str(err_msg):
-                    status = "partial"
+                if status == "failed" and any(
+                    str(err_msg or "").startswith(marker) for marker in self._GATEWAY_UNKNOWN_MARKERS
+                ):
+                    # Canonical rule: a Gateway FAILED carrying any
+                    # UNKNOWN_* outcome marker lands in 'unknown' - never
+                    # 'failed' (which would read as "definitely not printed"
+                    # and wrongly offer ordinary Retry) and never a silent
+                    # pass-through. The physical outcome is ambiguous until
+                    # an operator verifies the printer; only Force Reprint
+                    # may re-issue it. ('partial' stays a legal terminal
+                    # state for operator-side use but the Gateway sync never
+                    # produces it: every ambiguous Gateway outcome is
+                    # 'unknown'.)
+                    status = "unknown"
                 values = {"status": status, "last_error": err_msg}
                 if status in self._TERMINAL:
                     values["completed_at"] = fields.Datetime.now()
