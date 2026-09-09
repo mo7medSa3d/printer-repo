@@ -857,11 +857,12 @@ func (a *Agent) dispatchJob(ctx context.Context, job map[string]interface{}) {
 		a.wg.Done() // undo the reservation; no goroutine will run
 		log.Printf("Job %s dropped: %d jobs already in flight; handing it back to the gateway queue (pending_full).", jobID, maxPendingJobs)
 		// Tell the gateway NOW so the job is requeued immediately instead of
-		// sitting 'claimed' for the 90s lease. The gateway does NOT count
-		// this against the retry budget, so a saturated agent holding a big
-		// backlog cannot burn jobs into 'failed' (see the reject gate in
-		// src/app/api/agent/jobs). Best-effort: the lease reclaim is the
-		// backstop if this PATCH fails.
+		// sitting 'claimed' for the 90s lease. The gateway refunds the
+		// delivery-attempt charge for this provably pre-execution return
+		// (zero bytes sent) and consumes one retry instead, so a saturated
+		// agent holding a big backlog cannot burn jobs into a delivery-budget
+		// failure (see the reject gate in src/app/api/agent/jobs).
+		// Best-effort: the lease reclaim is the backstop if this PATCH fails.
 		a.rejectJob(jobID, jobClaimToken(job), "pending_full")
 		return
 	}

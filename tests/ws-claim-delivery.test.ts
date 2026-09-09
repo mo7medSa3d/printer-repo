@@ -400,4 +400,126 @@ suite("WS claim-before-delivery", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(await claimJobForDelivery("job_ttl", f.agentId)).toBeNull();
   });
+
+  it("pre-execution rejection refunds the delivery budget and consumes the retry budget", async () => {
+    // LAW 9: a rejected job transmitted ZERO bytes, so it must not burn the
+    // physical-delivery-attempt ceiling. It DOES consume one retry (bounded).
+    await insertQueuedJob(f, "job_budget");
+    const claim = await claimJobForDelivery("job_budget", f.agentId);
+    expect(claim).not.toBeNull();
+    expect((await jobRow("job_budget")).delivery_attempts).toBe(1);
+    const reject = () => agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_budget", status: "queued", reason: "pending_full", claimToken: claim!.claimToken,
+    }));
+    // token cleared after first rejection: second reject carries the NEW token
+    expect((await reject()).status).toBe(200);
+    let row = await jobRow("job_budget");
+    expect(row.status).toBe("queued");
+    expect(row.delivery_attempts).toBe(0);
+    expect(row.retries).toBe(1);
+    const claim2 = await claimJobForDelivery("job_budget", f.agentId);
+    expect(claim2).not.toBeNull();
+    row = await jobRow("job_budget");
+    expect(row.delivery_attempts).toBe(1);
+    expect(row.retries).toBe(1);
+    // a stale duplicate rejection with the superseded token cannot refund twice
+    await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_budget", status: "queued", reason: "pending_full", claimToken: claim!.claimToken,
+    }));
+    row = await jobRow("job_budget");
+    expect(row.status).toBe("claimed");
+    expect(row.retries).toBe(1);
+    // the fresh-token rejection refunds and counts again
+    const reject2 = await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_budget", status: "queued", reason: "agent_shutting_down", claimToken: claim2!.claimToken,
+    }));
+    expect(reject2.status).toBe(200);
+    row = await jobRow("job_budget");
+    expect(row.delivery_attempts).toBe(0);
+    expect(row.retries).toBe(2);
+  });
+
+  it("rejections cannot exhaust the delivery budget but stay bounded by retries", async () => {
+    await insertQueuedJob(f, "job_bounded");
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      const claim = await claimJobForDelivery("job_bounded", f.agentId);
+      expect(claim, `cycle ${cycle} must be claimable`).not.toBeNull();
+      const res = await agentJobsPATCH(agentRequest(f, "PATCH", {
+        jobId: "job_bounded", status: "queued", reason: "pending_full", claimToken: claim!.claimToken,
+      }));
+      expect(res.status).toBe(200);
+    }
+    const row = await jobRow("job_bounded");
+    expect(row.delivery_attempts).toBe(0);
+    expect(row.retries).toBe(5);
+    // 6th cycle blocked by the retry budget - and the delivery budget stayed
+    // intact, so a healthy agent returning within TTL still gets the job.
+    expect(await claimJobForDelivery("job_bounded", f.agentId)).toBeNull();
+    const poll = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    expect(poll.find((r: any) => r.id === "job_bounded")).toBeUndefined();
+    expect((await jobRow("job_bounded")).status).toBe("queued");
+  });
+
+  it("undelivered-claim release still consumes the delivery budget", async () => {
+    // Contrast case: a claim whose socket send FAILED is a real (ambiguous)
+    // delivery hand-off and must burn delivery_attempts, never retries.
+    await insertQueuedJob(f, "job_release");
+    const claim = await claimJobForDelivery("job_release", f.agentId);
+    const outcome = await releaseUndeliveredClaim("job_release", f.agentId, claim!.claimToken, "websocket delivery failed after claim; job requeued for redelivery");
+    expect(outcome).toBe("requeued");
+    const row = await jobRow("job_release");
+    expect(row.status).toBe("queued");
+    expect(row.delivery_attempts).toBe(1);
+    expect(row.retries).toBe(0);
+  });
+
+  it("expiry never fabricates delivery evidence", async () => {
+    // LAW 8: no evidence -> no delivered_at, regardless of which path expires.
+    await insertQueuedJob(f, "job_exp_qu");
+    await insertQueuedJob(f, "job_exp_cl");
+    await insertQueuedJob(f, "job_exp_ev");
+    const c2 = await claimJobForDelivery("job_exp_cl", f.agentId);
+    expect(c2).not.toBeNull();
+    const c3 = await claimJobForDelivery("job_exp_ev", f.agentId);
+    expect(c3).not.toBeNull();
+    await realMarkJobDelivered("job_exp_ev", f.agentId, c3!.claimToken);
+    await pool().query(`UPDATE print_jobs SET expires_at = now() - interval '1 second' WHERE id IN ('job_exp_qu','job_exp_cl','job_exp_ev')`);
+    await sweepPrintJobs();
+    const q = await jobRow("job_exp_qu");
+    expect(q.status).toBe("expired");
+    expect(q.delivered_at).toBeNull();
+    expect(q.error).toBeNull();
+    const cl = await jobRow("job_exp_cl");
+    expect(cl.status).toBe("expired");
+    expect(cl.delivered_at).toBeNull(); // claimed but provably never delivered
+    expect(cl.error).toBeNull();
+    const ev = await jobRow("job_exp_ev");
+    expect(ev.status).toBe("expired");
+    expect(ev.error).toMatch(/^UNKNOWN_PARTIAL_DELIVERY/);
+    expect(ev.delivered_at).not.toBeNull(); // pre-existing evidence survives, not fabricated
+  });
+
+  it("agent-observed expiry of a held claim stamps evidence and marks unknown", async () => {
+    // A fenced agent report PROVES possession (LAW 8: real evidence source),
+    // so the expiry branch may stamp delivered_at; a printing row that then
+    // expires past its TTL is terminal with the unknown outcome marker.
+    await insertQueuedJob(f, "job_exp_print");
+    const claim = await claimJobForDelivery("job_exp_print", f.agentId);
+    const printing = await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_exp_print", status: "printing", claimToken: claim!.claimToken,
+    }));
+    expect(printing.status).toBe(200);
+    await pool().query(`UPDATE print_jobs SET expires_at = now() - interval '1 second' WHERE id = 'job_exp_print'`);
+    const expired = await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_exp_print", status: "success", claimToken: claim!.claimToken,
+    }));
+    expect(expired.status).toBe(409); // expiry branch, not the success write
+    const body = await expired.json();
+    expect(body.status).toBe("expired");
+    expect(body.physicalOutcome).toBe("unknown");
+    const row = await jobRow("job_exp_print");
+    expect(row.status).toBe("expired");
+    expect(row.error).toMatch(/^JOB_EXPIRED_DURING_PRINT/);
+    expect(row.delivered_at).not.toBeNull(); // justified: fenced report proved the hold
+  });
 });

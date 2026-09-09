@@ -1208,6 +1208,7 @@ class PrintGatewayJob(models.Model):
             raise AccessError(_("Only scheduled actions (administrator) may run this method."))
 
     @api.model
+    @api.private
     def cron_submit_pending(self):
         self._require_cron_runner()
         now = fields.Datetime.now()
@@ -1223,6 +1224,7 @@ class PrintGatewayJob(models.Model):
         return len(jobs)
 
     @api.model
+    @api.private
     def cron_sync_status(self):
         self._require_cron_runner()
         jobs = self.search([

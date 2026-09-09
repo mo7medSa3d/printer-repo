@@ -87,6 +87,7 @@ export async function GET(req: Request) {
           AND p.expires_at > now()
           AND p.status = 'queued'
           AND p.delivery_attempts < ${MAX_DELIVERY_ATTEMPTS}
+          AND p.retries < ${MAX_RETRIES}
           AND ${queuedLimit} > 0
           AND a.lifecycle = 'active'
           AND a.status = 'online'
@@ -210,10 +211,26 @@ export async function PATCH(req: Request) {
     const updated = await db.update(printJobs)
       // A fenced pre-execution return proves nothing was dispatched, so the
       // row must carry NO attempt-specific delivery evidence afterwards:
-      // token, delivered_at, acked_at and claimed_at are all cleared. The
-      // resulting state unambiguously means "safe to redeliver" - the next
-      // claim mints a fresh token and the sweep may requeue it.
-      .set({ status: "queued", claimToken: null, deliveredAt: null, ackedAt: null, claimedAt: null, error: `Agent returned job before execution (${reason})`, updatedAt: new Date() })
+      // token, delivered_at, acked_at and claimed_at are all cleared.
+      //
+      // Counter semantics (LAW 9): a rejection is NOT a physical delivery
+      // attempt - zero bytes were sent - so the claim's delivery-attempt
+      // charge is refunded. It DOES consume the retry budget (one bounded
+      // hand-back per rejection) so a saturated or misbehaving agent cannot
+      // loop a job through claim/reject forever; once retries are spent the
+      // claim gates below refuse further delivery and the job terminalizes
+      // by TTL expiry, never by a burned delivery budget.
+      .set({
+        status: "queued",
+        claimToken: null,
+        deliveredAt: null,
+        ackedAt: null,
+        claimedAt: null,
+        error: `Agent returned job before execution (${reason})`,
+        updatedAt: new Date(),
+        deliveryAttempts: sql`GREATEST(${printJobs.deliveryAttempts} - 1, 0)`,
+        retries: sql`${printJobs.retries} + 1`,
+      })
       .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
       .returning({ status: printJobs.status, error: printJobs.error });
     if (updated.length !== 1) {

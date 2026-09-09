@@ -92,6 +92,7 @@ class PrintGatewayRouter(models.AbstractModel):
         raise ValidationError(_("Print document type cannot be determined for this print action."))
 
     @api.model
+    @api.private
     def destination_for(self, *, report=None, record=None, explicit_destination=None):
         return self.env["print_gateway.binding"].destination_for(
             record=record,
@@ -100,6 +101,7 @@ class PrintGatewayRouter(models.AbstractModel):
         )
 
     @api.model
+    @api.private
     def resolve_binding(self, *, report=None, record=None, document_type=None, company=None, explicit_destination=None):
         current_company = self.env.company
         requested_company = company or current_company
@@ -316,6 +318,7 @@ class PrintGatewayRouter(models.AbstractModel):
         }
 
     @api.model
+    @api.private
     def route_report(self, report, records, data=None):
         report.ensure_one()
         records = records.exists()
@@ -342,6 +345,7 @@ class PrintGatewayRouter(models.AbstractModel):
         )
 
     @api.model
+    @api.private
     def route_render_target(
         self, report_ref, render_target, *, company=None, document_type=None,
         explicit_destination=None, context_values=None,
@@ -366,6 +370,7 @@ class PrintGatewayRouter(models.AbstractModel):
         return self._submit_route(route=route, payload=payload, company=company, report=report, source_model=report.model)
 
     @api.model
+    @api.private
     def route_pos_receipt(self, order, image_base64):
         order.ensure_one()
         self._assert_current_company(order.company_id, record=order)
@@ -379,6 +384,7 @@ class PrintGatewayRouter(models.AbstractModel):
         )
 
     @api.model
+    @api.private
     def route_kitchen_print(self, order, native_printer, image_base64, *, reprint=False, idempotency_key=None):
         order.ensure_one()
         native_printer.ensure_one()
@@ -399,6 +405,7 @@ class PrintGatewayRouter(models.AbstractModel):
         )
 
     @api.model
+    @api.private
     def route_pos_sale_details(self, session, image_base64):
         session.ensure_one()
         self._assert_current_company(session.company_id, record=session)
@@ -416,6 +423,7 @@ class PrintGatewayRouter(models.AbstractModel):
         )
 
     @api.model
+    @api.private
     def route_intent(self, intent, record=None):
         """Route an automated print policy intent to the Outbox."""
         policy = intent.policy_id
@@ -479,6 +487,7 @@ class PrintGatewayRouter(models.AbstractModel):
         raise ValidationError(_("No valid action configured for policy %s (action_type: %s)") % (policy.name, policy.action_type))
 
     @api.model
+    @api.private
     def route_raw_command(
         self, raw_data, *, protocol, binding=None, destination=None,
         record=None, company=None, document_type="label", idempotency_key=None,
@@ -611,6 +620,7 @@ class PrintGatewayRouter(models.AbstractModel):
         }
 
     @api.model
+    @api.private
     def route_test_page(self, binding):
         """Send a standardized diagnostic test ticket to the target printer."""
         binding.ensure_one()

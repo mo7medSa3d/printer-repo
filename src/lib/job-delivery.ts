@@ -2,7 +2,7 @@ import { db } from "../db";
 import { printJobs } from "../db/schema";
 import { sql } from "drizzle-orm";
 import { fencedDeliveryWrite } from "./job-fencing";
-import { STALE_CLAIM_SECONDS } from "./job-maintenance";
+import { STALE_CLAIM_SECONDS, MAX_RETRIES } from "./job-maintenance";
 
 /**
  * Ownership rules for handing a job to an agent.
@@ -53,8 +53,12 @@ export const CLAIM_RETURNING = sql`
  *
  * Eligibility is checked again at the delivery boundary while the runtime
  * owner rows are locked. PostgreSQL's `FOR UPDATE SKIP LOCKED` pattern keeps
- * concurrent agents from claiming the same job. The delivery-attempt budget is
- * enforced HERE so no path can claim a job past its attempt ceiling.
+ * concurrent agents from claiming the same job. BOTH attempt budgets are
+ * enforced HERE so no path can claim a job past its ceilings:
+ * `delivery_attempts` bounds real hand-offs to the agent, `retries` bounds
+ * safe returns to the queue (pre-execution rejections and stale-claim
+ * re-deliveries refund/consume the RETRY budget, never the delivery budget -
+ * zero bytes transmitted must not exhaust the physical-delivery allowance).
  */
 export async function claimJobForDelivery(jobId: string, agentId: string): Promise<ClaimedJobRow | null> {
   return db.transaction(async (tx) => {
@@ -68,6 +72,7 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
         AND p.status = 'queued'
         AND p.expires_at > now()
         AND p.delivery_attempts < ${MAX_DELIVERY_ATTEMPTS}
+        AND p.retries < ${MAX_RETRIES}
         AND a.lifecycle = 'active'
         AND a.status = 'online'
         AND pr.lifecycle = 'active'

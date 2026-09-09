@@ -171,12 +171,15 @@ class PrintGatewayIntent(models.Model):
             # In the post-commit path the operator's env already matches, but
             # the cron recovery path runs under the cron user's default
             # company, which permanently stranded branch-scoped intents
-            # (marked failed after max_attempts). Switch to the record's own
-            # company so recovery works for every scope; it is a no-op where
-            # the env already matches.
+            # (marked failed after max_attempts). Route under the record's
+            # own company so recovery works for every scope; it is a no-op
+            # where the env already matches. Odoo 19 resolves env.company
+            # from allowed_company_ids[0] (Environment has no with_company),
+            # and narrowing the allowed list below the operator's own scope
+            # can only ever restrict access, never widen it.
             record_company = record.company_id if hasattr(record, "company_id") else False
-            if record_company:
-                new_env = new_env.with_company(record_company)
+            if record_company and record_company.id != new_env.company.id:
+                new_env = new_env(context=dict(new_env.context, allowed_company_ids=[record_company.id]))
             router = new_env["print_gateway.print_router"]
             try:
                 route_res = router.route_intent(intent, record)
@@ -225,6 +228,7 @@ class PrintGatewayIntent(models.Model):
         cls._execute_dispatched_route(env, intent_id, res_model, res_id, claim_token)
 
     @api.model
+    @api.private
     def create_and_route(self, policy, record, event_type):
         """Idempotently creates intent or re-arms retryable intent and registers post-commit callback."""
         key = self.compute_intent_key(policy, record, event_type)
@@ -311,6 +315,7 @@ class PrintGatewayIntent(models.Model):
         }
 
     @api.model
+    @api.private
     def cron_recover_pending_intents(self):
         """Recover stranded or crashed print intents across worker/server restarts."""
         # Recovery claims intents with raw SQL and dispatches them through

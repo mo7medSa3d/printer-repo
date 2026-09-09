@@ -111,21 +111,30 @@ func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
 			timeout = remaining
 		}
 	}
+	return waitPDFHandlerExit(info.hProcess, printerName, timeout)
+}
+
+// waitPDFHandlerExit waits for an ALREADY-LAUNCHED PDF handler process and
+// classifies its terminal state. The handler owns the spool submission, so
+// anything observed after launch is ambiguous: a timeout, a killed process,
+// a failed exit-code read, or a non-zero exit code must NEVER be reported
+// as a provably-not-printed (auto-retryable) failure. Only a clean zero
+// exit is a definitive "submitted" (LAW: no retry after possible
+// transmission).
+func waitPDFHandlerExit(hProcess windows.Handle, printerName string, timeout time.Duration) error {
 	waitMillis := uint32(timeout / time.Millisecond)
-	event, err := windows.WaitForSingleObject(info.hProcess, waitMillis)
+	event, err := windows.WaitForSingleObject(hProcess, waitMillis)
 	if err != nil {
-		return fmt.Errorf("waiting for PDF handler of printer %q: %w", printerName, err)
+		return MarkUnknown("waiting for PDF handler of printer %q: %v (submission state unknown)", printerName, err)
 	}
 	if event == uint32(windows.WAIT_TIMEOUT) {
-		// The PDF handler was killed by our own timeout while it may have
-		// been mid-render: pages can already be sitting in the physical
-		// spooler. Report an ambiguous outcome, never a plain retryable
-		// failure (LAW: no automatic retry after possible transmission).
+		// The PDF handler may have been mid-render when our budget expired:
+		// pages can already be sitting in the physical spooler.
 		return MarkUnknown("PDF handler for printer %q did not finish within %s (submission state unknown)", printerName, timeout)
 	}
 
 	var exitCode uint32
-	if err := windows.GetExitCodeProcess(info.hProcess, &exitCode); err != nil {
+	if err := windows.GetExitCodeProcess(hProcess, &exitCode); err != nil {
 		return MarkUnknown("reading PDF handler exit code for printer %q: %v (submission state unknown)", printerName, err)
 	}
 	if exitCode != 0 {

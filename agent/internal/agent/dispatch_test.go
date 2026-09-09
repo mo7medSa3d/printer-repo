@@ -10,9 +10,7 @@ func dispatchTestJob(id, printerID string) map[string]interface{} {
 	return map[string]interface{}{
 		"id":        id,
 		"printerId": printerID,
-		"payload": map[string]interface{}{
-			"type": "raw", "protocol": "raw", "encoding": "base64", "data": "aGVsbG8=", // "hello"
-		},
+		"payload":   makeJobPayload(id),
 		"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
 	}
 }
@@ -52,6 +50,44 @@ func TestDispatchDeduplicatesInFlightJobs(t *testing.T) {
 	ag.waitForJobs()
 	if p.calls != 1 {
 		t.Fatalf("expected exactly 1 print for duplicate deliveries, got %d", p.calls)
+	}
+}
+
+// PHASE 3 (mandatory): a job physically delivered over WebSocket whose
+// Gateway-side delivered_at evidence write LOST is requeued and redelivered
+// under a FRESH claim token. If the agent is still executing the first
+// delivery, the second (differently-tokened) envelope must NOT produce a
+// second physical write. This is the exact race the gateway's
+// releaseUndeliveredClaim path can trigger, proven end-to-end on the agent
+// side with a counting transport: physical dispatch is at-most-once.
+func TestDuplicateDeliveryWithFreshClaimTokenDoesNotReprint(t *testing.T) {
+	p := &fakePrinter{
+		blocked:   make(chan struct{}),
+		startedCh: make(chan string, 1),
+	}
+	ag := newTestAgent(t, "p1", p)
+
+	// First delivery, claim token A; it parks mid-print.
+	first := dispatchTestJob("evidence_loss_race", "p1")
+	first["claimToken"] = "token-A"
+	ag.dispatchJob(context.Background(), first)
+	select {
+	case <-p.startedCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first print never started")
+	}
+
+	// Redelivery with a DIFFERENT token (the reclaim that follows a lost
+	// evidence write). Same job id.
+	second := dispatchTestJob("evidence_loss_race", "p1")
+	second["claimToken"] = "token-B"
+	ag.dispatchJob(context.Background(), second)
+
+	close(p.blocked) // release the first print
+	ag.waitForJobs()
+
+	if got := p.callsByJob["evidence_loss_race"]; got != 1 {
+		t.Fatalf("redelivery with a fresh claim token must NOT reprint: physical writes=%d, want 1", got)
 	}
 }
 
