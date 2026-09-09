@@ -187,21 +187,27 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         from werkzeug.exceptions import Forbidden
         from odoo.addons.print_gateway.controllers.runtime_printers import PrintGatewayRuntimePrinterController
 
-        root_company = self.env.company
-        branch_a = self.env["res.company"].create({
-            "name": "Branch Alpha",
-            "parent_id": root_company.id,
-        })
-        branch_b = self.env["res.company"].create({
-            "name": "Branch Beta",
-            "parent_id": root_company.id,
-        })
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context)) if api else self.env
+            root_company = env.company
+            branch_a = env["res.company"].create({
+                "name": "Branch Alpha",
+                "parent_id": root_company.id,
+            })
+            branch_b = env["res.company"].create({
+                "name": "Branch Beta",
+                "parent_id": root_company.id,
+            })
 
-        controller = PrintGatewayRuntimePrinterController()
+            controller = PrintGatewayRuntimePrinterController()
 
-        env_a = self.env(context=dict(self.env.context, allowed_company_ids=[branch_a.id]))
-        with self.assertRaises(Forbidden):
-            controller._scope(company_id=root_company.id, branch_id=branch_b.id, env=env_a)
+            env_a = env(context=dict(env.context, allowed_company_ids=[branch_a.id]))
+            with self.assertRaises(Forbidden):
+                controller._scope(company_id=root_company.id, branch_id=branch_b.id, env=env_a)
+        finally:
+            cr.rollback()
+            cr.close()
 
     def test_binding_constraints_do_not_contain_network_calls(self):
         source = (MODELS / "binding.py").read_text(encoding="utf-8")
@@ -308,6 +314,7 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                 scope_config = scope_env["print_gateway.gateway_config"].create({
                     "company_id": scope_root.id,
                     "gateway_url": "https://gateway.example.com",
+                    "gateway_api_key": "test_api_key_branch_submit",
                     "enabled": True,
                 })
             report = scope_env.ref("sale.action_report_saleorder", raise_if_not_found=False)
@@ -404,9 +411,6 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
                     raise
                 finally:
                     cleanup_cr.close()
-            # Roll back self.cr so its PostgreSQL snapshot is refreshed for
-            # subsequent tests in this TransactionCase class.
-            self.cr.rollback()
 
     def test_status_advance_records_replay_hop_by_hop_without_shortcuts(self):
         """BEHAVIORAL: an idempotent replay observed beyond 'submitted' must

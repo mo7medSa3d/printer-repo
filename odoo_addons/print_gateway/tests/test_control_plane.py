@@ -1325,6 +1325,8 @@ class TestControlPlane(TransactionCase):
             "parent_id": self.company.id,
         })
         other_company = self.env["res.company"].create({"name": "Control Plane Other Co"})
+        test_companies = [self.company.id, self.branch.id, sibling_branch.id, other_company.id]
+        self.env = self.env(context=dict(self.env.context, allowed_company_ids=test_companies))
 
         def _binding(company, branch, printer, protocol="escpos"):
             agent_id = "agent-cp-01" if branch == self.branch else ("agent-scope-%s" % printer)
