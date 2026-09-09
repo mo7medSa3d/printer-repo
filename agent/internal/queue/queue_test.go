@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -188,5 +189,78 @@ func TestUnknownOutcomeMarkersMatchCanonicalContract(t *testing.T) {
 	}
 	if q.WasOutcomeUnknown("job_plain_fail") {
 		t.Fatal("WasOutcomeUnknown(job_plain_fail) = true, want false for a provably pre-dispatch failure")
+	}
+}
+
+// FIX-2 regression: BeginPrint must be state-safe at the PRIMITIVE level.
+// Terminal or unknown local ledger states must never be reopened into
+// 'printing' by the normal dispatch path - the duplicate-print defense may
+// not rely on callers (processJob) checking first.
+func TestBeginPrintCannotReopenTerminalOrUnknownStates(t *testing.T) {
+	dbPath := t.TempDir() + "/agent.db"
+	q, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer q.Close()
+
+	settle := func(id, status, lastErr string) {
+		if err := q.Push(id, "printer-1", []byte("payload")); err != nil {
+			t.Fatalf("Push(%s): %v", id, err)
+		}
+		if _, err := q.db.Exec(`UPDATE print_jobs SET status = ?, last_error = ? WHERE id = ?`, status, lastErr, id); err != nil {
+			t.Fatalf("settle(%s): %v", id, err)
+		}
+	}
+
+	cases := []struct {
+		name        string
+		id          string
+		status      string // "" => brand-new row (no Push); otherwise settled state
+		lastErr     string
+		allowReopen bool
+		wantErr     bool
+		wantStatus  string
+	}{
+		{name: "new job begins", id: "bp_new", status: "", wantErr: false, wantStatus: "printing"},
+		{name: "queued begins", id: "bp_queued", status: "queued", wantErr: false, wantStatus: "printing"},
+		{name: "printing re-begins (in-session idempotency)", id: "bp_printing", status: "printing", wantErr: false, wantStatus: "printing"},
+		{name: "provable failure retries", id: "bp_failed_plain", status: "failed", lastErr: "paper jam before transmission", wantErr: false, wantStatus: "printing"},
+		{name: "success never reopens", id: "bp_success", status: "success", wantErr: true, wantStatus: "success"},
+		{name: "success never reopens even with reopen flag", id: "bp_success_flag", status: "success", allowReopen: true, wantErr: true, wantStatus: "success"},
+		{name: "unknown partial refuses normal path", id: "bp_unknown", status: "failed", lastErr: "UNKNOWN_PARTIAL_DELIVERY: write failed after 3/9 bytes", wantErr: true, wantStatus: "failed"},
+		{name: "restart interrupt refuses normal path", id: "bp_interrupt", status: "failed", lastErr: InterruptedMarker + ": process died mid-print", wantErr: true, wantStatus: "failed"},
+		{name: "unknown reopens ONLY via explicit reprint opt-in", id: "bp_unknown_optin", status: "failed", lastErr: "UNKNOWN_PARTIAL_DELIVERY: ambiguous", allowReopen: true, wantErr: false, wantStatus: "printing"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.status != "" {
+				settle(tc.id, tc.status, tc.lastErr)
+			}
+			err := q.BeginPrint(tc.id, "printer-1", []byte("payload"), "token-"+tc.id, tc.allowReopen)
+			if tc.wantErr {
+				if !errors.Is(err, ErrTerminalState) {
+					t.Fatalf("BeginPrint error = %v, want ErrTerminalState", err)
+				}
+				// the row must be untouched: still terminal, still not printing
+				if _, status, found, err := q.Get(tc.id); err != nil || !found || status != tc.wantStatus {
+					t.Fatalf("after refusal row = %q found=%v err=%v, want unchanged %q", status, found, err, tc.wantStatus)
+				}
+				if claim := q.ClaimTokenFor(tc.id); claim == "token-"+tc.id {
+					t.Fatal("refused BeginPrint must not overwrite the stored claim token")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BeginPrint: unexpected error %v", err)
+			}
+			if _, status, _, err := q.Get(tc.id); err != nil || status != "printing" {
+				t.Fatalf("after allow: status=%q err=%v, want printing", status, err)
+			}
+			if claim := q.ClaimTokenFor(tc.id); claim != "token-"+tc.id {
+				t.Fatalf("allowed BeginPrint must record the attempt's claim token, got %q", claim)
+			}
+		})
 	}
 }

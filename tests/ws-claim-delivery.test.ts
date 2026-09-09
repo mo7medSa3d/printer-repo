@@ -522,4 +522,50 @@ suite("WS claim-before-delivery", () => {
     expect(row.error).toMatch(/^JOB_EXPIRED_DURING_PRINT/);
     expect(row.delivered_at).not.toBeNull(); // justified: fenced report proved the hold
   });
+
+  it("poll stale-reclaim refuses a job at the delivery-attempt ceiling without claiming it", async () => {
+    // FIX-1 regression: stale_candidates enforced only the RETRY budget, so
+    // a reclaim could push delivery_attempts past MAX_DELIVERY_ATTEMPTS -
+    // the ceiling every other claim path enforces ("no path can claim a job
+    // past its ceilings"). Reclaiming beyond the ceiling re-opens ambiguous
+    // hand-offs indefinitely.
+    await insertQueuedJob(f, "job_stale_ceiling");
+    await insertQueuedJob(f, "job_ceiling_other");
+    const staleClaim = await claimJobForDelivery("job_stale_ceiling", f.agentId);
+    expect(staleClaim).not.toBeNull();
+    const tokenBefore = staleClaim!.claimToken;
+    await pool().query(
+      `UPDATE print_jobs SET delivery_attempts = ${MAX_DELIVERY_ATTEMPTS}, retries = 0, updated_at = now() - interval '2 minutes' WHERE id = 'job_stale_ceiling'`,
+    );
+    const rows = await (await agentJobsGET(agentRequest(f, "GET"))).json();
+    // Not (re)claimed by the poll - no envelope for it in this response.
+    expect(rows.find((r: any) => r.id === "job_stale_ceiling")).toBeUndefined();
+    const after = await jobRow("job_stale_ceiling");
+    // delivery_attempts was NOT incremented past the ceiling.
+    expect(Number(after.delivery_attempts)).toBe(MAX_DELIVERY_ATTEMPTS);
+    // And the attempt was never re-tokenized: either the lease sweep
+    // returned it to 'queued' (token cleared - also blocked from claiming
+    // by this very ceiling) or it remains the ORIGINAL claim untouched.
+    if (after.status === "claimed") {
+      expect(after.claim_token).toBe(tokenBefore);
+    } else {
+      expect(after.status).toBe("queued");
+      expect(after.claim_token).toBeNull();
+    }
+    // Unrelated eligible jobs are still claimable by the same poll.
+    expect(rows.find((r: any) => r.id === "job_ceiling_other")).toBeTruthy();
+  });
+
+  it("WebSocket claim refuses at the ceiling and leaves the row untouched", async () => {
+    // FIX-3 ceiling enforcement proof for the WS boundary (the contract
+    // documented in job-delivery.ts): a job whose hand-off budget is spent
+    // cannot be claimed, and the refusal mutates nothing.
+    await insertQueuedJob(f, "job_ws_ceiling");
+    await pool().query(`UPDATE print_jobs SET delivery_attempts = ${MAX_DELIVERY_ATTEMPTS} WHERE id = 'job_ws_ceiling'`);
+    expect(await claimJobForDelivery("job_ws_ceiling", f.agentId)).toBeNull();
+    const row = await jobRow("job_ws_ceiling");
+    expect(row.status).toBe("queued");
+    expect(Number(row.delivery_attempts)).toBe(MAX_DELIVERY_ATTEMPTS);
+    expect(row.claim_token).toBeNull();
+  });
 });

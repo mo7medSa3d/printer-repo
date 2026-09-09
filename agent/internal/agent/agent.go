@@ -1613,14 +1613,33 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 	log.Printf("Printing job %s on printer %s (%d bytes, type=%s, path=%s)", jobID, printerID, len(pl.Data), pl.Type, kind)
 
 	// The durable local ledger is a PRECONDITION for dispatch: BeginPrint
-	// atomically records the attempt (with its claim token) as 'printing'.
-	// If that write fails, we could never prove after a crash whether this
-	// job physically printed, so we refuse BEFORE sending a single byte.
-	if err := a.queue.BeginPrint(jobID, printerID, pl.Data, claimToken); err != nil {
+	// atomically records the attempt (with its claim token) as 'printing'
+	// AND refuses to reopen a terminal/unknown row at the primitive level.
+	// If the write fails outright, we could never prove after a crash
+	// whether this job physically printed, so we refuse BEFORE sending a
+	// single byte (LAW: no dispatch without durable local evidence).
+	if err := a.queue.BeginPrint(jobID, printerID, pl.Data, claimToken, a.cfg.ReprintAfterCrashEnabled()); err != nil {
 		lock.Unlock()
+		if errors.Is(err, queue.ErrTerminalState) {
+			// Primitive-level duplicate-print defense: the ledger already
+			// holds a terminal physical outcome for this job id. Re-report
+			// the stored result with the CURRENT claim token (never dispatch
+			// again; zero bytes were sent by this delivery).
+			log.Printf("Job %s: local ledger is terminal; refusing dispatch and re-reporting stored outcome", jobID)
+			if _, storedStatus, found, _ := a.queue.Get(jobID); found && storedStatus == "success" {
+				a.updateJobStatus(jobID, "success", "", claimToken)
+			} else {
+				marker := "UNKNOWN_PARTIAL_DELIVERY"
+				if a.queue.WasInterrupted(jobID) {
+					marker = queue.InterruptedMarker
+				}
+				a.updateJobStatus(jobID, "failed", marker+": local ledger terminal with an unknown outcome; this delivery was not dispatched (agent.reprint_after_crash=false)", claimToken)
+			}
+			return
+		}
 		log.Printf("Job %s: local durable ledger unavailable; refusing dispatch (no bytes sent): %v", jobID, err)
 		// Fenced pre-execution return (never dispatched, zero bytes sent):
-		// the gateway requeues without burning the retry budget.
+		// the gateway requeues without burning the delivery budget.
 		a.rejectJob(jobID, claimToken, "ledger_unavailable")
 		return
 	}

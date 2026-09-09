@@ -17,7 +17,10 @@ export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 const MAX_ERROR_LENGTH = 2000;
 
 /**
- * Poll claim. Two candidate classes, both fenced by the delivery boundary:
+ * Poll claim. Two candidate classes, both fenced by the delivery boundary
+ * and BOTH attempt budgets (delivery_attempts < MAX_DELIVERY_ATTEMPTS and
+ * retries < MAX_RETRIES) — a reclaim that increments delivery_attempts must
+ * respect the same ceiling as the WS-claim and queued-poll paths:
  *
  *  1. Stale claims that were NEVER delivered (no delivered_at, no ack):
  *     provably pre-dispatch, safe to re-deliver under a fresh claim token.
@@ -71,6 +74,7 @@ export async function GET(req: Request) {
           AND p.acked_at IS NULL
           AND p.updated_at < now() - make_interval(secs => ${STALE_CLAIM_SECONDS})
           AND p.retries < ${MAX_RETRIES}
+          AND p.delivery_attempts < ${MAX_DELIVERY_ATTEMPTS}
           AND a.lifecycle = 'active'
           AND a.status = 'online'
           AND pr.lifecycle = 'active'

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,13 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// ErrTerminalState is returned by BeginPrint when the local ledger holds a
+// terminal ('success') or unknown-outcome ('failed' + marker) record that
+// the requested transition may not legally reopen. Callers must treat it as
+// "this job already has a durable physical outcome; re-report it" and must
+// NOT confuse it with ledger unavailability (which requeues).
+var ErrTerminalState = errors.New("local ledger state is terminal; refusing to reopen for printing")
 
 // Queue is the Agent's local durable delivery queue. It is distinct from the
 // Gateway's PostgreSQL job table:
@@ -147,7 +155,28 @@ func (q *Queue) AbortPrint(id, reason string) error {
 // sent to hardware: if the local ledger cannot be written, the agent cannot
 // later prove whether this job printed, so dispatch is refused pre-dispatch
 // (safe, no bytes sent) with ErrLedgerUnavailable.
-func (q *Queue) BeginPrint(id, printerID string, payload []byte, claimToken string) error {
+//
+// STATE SAFETY (primitive level, not caller convention): BeginPrint may
+// only ever move a row INTO 'printing' from a non-terminal state. A local
+// record whose physical outcome is terminal ('success') or unknown/ambiguous
+// ('failed' carrying an unknown-outcome marker) is NEVER reopened by the
+// normal path: doing so would reprint a document whose previous attempt may
+// already have produced paper. The only sanctioned reopen of a marked
+// unknown row is the explicit, opt-in `reprint_after_crash` behavior,
+// surfaced here as allowUnknownReprint (and the caller only sets it from the
+// operator's documented configuration). A success row is never reopened
+// under any setting; the gateway treats success as terminal.
+//
+// Returns ErrTerminalState (without touching the row) when the guard
+// rejects the transition, and reports it as such so the caller re-reports
+// the stored outcome instead of mistaking it for ledger unavailability
+// (which would requeue the job).
+func (q *Queue) BeginPrint(id, printerID string, payload []byte, claimToken string, allowUnknownReprint bool) error {
+	unknown := "(" + unknownMarkerSQL("last_error") + ")"
+	guard := "(status = 'queued' OR status = 'printing' OR (status = 'failed' AND (last_error IS NULL OR NOT " + unknown + ")))"
+	if allowUnknownReprint {
+		guard = "status <> 'success'"
+	}
 	tx, err := q.db.Begin()
 	if err != nil {
 		return err
@@ -159,17 +188,27 @@ func (q *Queue) BeginPrint(id, printerID string, payload []byte, claimToken stri
 	); err != nil {
 		return err
 	}
+	var res sql.Result
 	if claimToken != "" {
-		if _, err := tx.Exec(
-			`UPDATE print_jobs SET status = 'printing', claim_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		res, err = tx.Exec(
+			`UPDATE print_jobs SET status = 'printing', claim_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND `+guard,
 			claimToken, id,
-		); err != nil {
-			return err
-		}
-	} else if _, err := tx.Exec(
-		`UPDATE print_jobs SET status = 'printing', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id,
-	); err != nil {
+		)
+	} else {
+		res, err = tx.Exec(
+			`UPDATE print_jobs SET status = 'printing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND `+guard,
+			id,
+		)
+	}
+	if err != nil {
 		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrTerminalState
 	}
 	return tx.Commit()
 }

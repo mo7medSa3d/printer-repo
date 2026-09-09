@@ -16,6 +16,22 @@ import { STALE_CLAIM_SECONDS, MAX_RETRIES } from "./job-maintenance";
  * echo it on status updates so a stale worker — an attempt whose lease
  * expired and was reclaimed — is rejected by a DB-enforced ownership
  * predicate, not by an in-memory convention.
+ *
+ * COUNTER CONTRACT (single coherent definition, proven by ws-claim-delivery
+ * and job-maintenance tests):
+ *   delivery_attempts = hand-off ATTEMPTS: every claim that resulted in the
+ *     job leaving the Gateway toward an agent (WebSocket frame sent or poll
+ *     response returned). A release after a failed/unevidenced hand-off
+ *     KEEPS the charge (the frame may have reached the agent — ambiguity is
+ *     budget-bound, never retried freely). A fenced pre-execution rejection
+ *     (pending_full / agent_shutting_down / ledger_unavailable) REFUNDS it:
+ *     the agent provably transmitted zero bytes, so burning the physical
+ *     budget would let a saturated agent expire healthy jobs (LAW 9).
+ *   retries = safe returns to 'queued': pre-execution rejections, stale-claim
+ *     re-deliveries, and sweep requeues. Bounds hand-back loops independently
+ *     of the delivery ceiling.
+ * Both ceilings gate BOTH claim paths (WS `claimJobForDelivery` and the poll
+ * stale/queued candidates); no path may claim past either.
  */
 export const CLAIM_LEASE_SECONDS = STALE_CLAIM_SECONDS;
 export const MAX_DELIVERY_ATTEMPTS = 5;

@@ -98,6 +98,12 @@ jobs:
         working-directory: agent
         shell: pwsh
         run: go test -count=1 -race -p 2 ./...
+      - name: Rust unit tests (desktop)
+        shell: pwsh
+        run: |
+          Push-Location src-tauri
+          cargo test --locked
+          Pop-Location
       - name: Build Go Agent
         working-directory: agent
         shell: pwsh
