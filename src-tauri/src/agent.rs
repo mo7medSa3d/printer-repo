@@ -404,7 +404,7 @@ mod spawn_tests {
 
     #[test]
     fn successful_persistence_keeps_the_spawned_agent_owned_and_alive() {
-        let pid = spawn_persist_or_reconcile(sleeper, |_| Ok(())).expect("spawn+persist must succeed");
+        let pid = spawn_persist_or_reconcile(|| Ok(sleeper()), |_| Ok(())).expect("spawn+persist must succeed");
         assert!(pid_alive(pid), "the agent child must remain running when ownership was recorded");
         // Exact-PID cleanup of this TEST's own child (never a name kill).
         let _ = Command::new("taskkill")
@@ -419,7 +419,7 @@ mod spawn_tests {
         // processes it cannot attribute to itself.
         use std::cell::Cell;
         let spawned_pid = Cell::new(0u32);
-        let result = spawn_persist_or_reconcile(sleeper, |pid| {
+        let result = spawn_persist_or_reconcile(|| Ok(sleeper()), |pid| {
             spawned_pid.set(pid);
             Err("disk full writing agent.pid".to_string())
         });

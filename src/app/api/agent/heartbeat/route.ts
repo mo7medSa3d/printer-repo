@@ -9,6 +9,22 @@ import { hasBodyOverLimit } from "../../../../lib/request-limits";
 const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
 const MAX_KEEP_ALIVE_JOB_IDS = 64;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
+// Union of every capability token either compatibility table can match
+// (agent/internal/printer/capability.go + src/lib/routing.ts). Anything
+// outside this vocabulary can never route; it is dropped at the trust
+// boundary instead of stored.
+const KNOWN_CAPABILITY_TOKENS = new Set([
+  "raw",
+  "escpos",
+  "zpl",
+  "tspl",
+  "pdf",
+  "image",
+  "jpeg",
+  "spooler",
+  "ipp",
+  "ipps",
+]);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
 // "unknown" is the HONEST value for a device whose byte-language protocol
 // has not been declared. Per the authoritative rule (src/lib/routing.ts):
@@ -65,7 +81,25 @@ function sanitizePrinter(p: ReportedPrinter): {
   if (!protocol) return null;
   const config = p.config && typeof p.config === "object" ? { ...(p.config as Record<string, unknown>) } : {};
   delete config.protocol;
-  const capabilities = p.capabilities && typeof p.capabilities === "object" ? (p.capabilities as Record<string, unknown>) : null;
+  let capabilities = p.capabilities && typeof p.capabilities === "object" ? { ...(p.capabilities as Record<string, unknown>) } : null;
+  if (capabilities && "supported_protocols" in capabilities) {
+    // Capability trust boundary: an authenticated agent may only NARROW the
+    // routing surface of a device the operator paired - it must never invent
+    // new capabilities (agent/internal/printer/capability.go and
+    // src/lib/routing.ts only ever match this vocabulary). Unknown tokens
+    // are dropped per-row (the heartbeat for the other devices still
+    // succeeds) instead of stored; an emptied or non-array list behaves as
+    // "no explicit caps" on both sides, where the declared transport decides.
+    if (Array.isArray(capabilities.supported_protocols)) {
+      const known = (capabilities.supported_protocols as unknown[])
+        .map((value) => String(value).toLowerCase().trim())
+        .filter((token) => KNOWN_CAPABILITY_TOKENS.has(token));
+      if (known.length > 0) capabilities.supported_protocols = known;
+      else delete capabilities.supported_protocols;
+    } else {
+      delete capabilities.supported_protocols;
+    }
+  }
   const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status.trim().toLowerCase())
     ? p.status.trim().toLowerCase()
     : "unknown";

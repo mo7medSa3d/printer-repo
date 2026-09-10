@@ -728,32 +728,62 @@ fn record_autostart_choice(marker: &Path) -> Result<(), String> {
     std::fs::write(marker, "1").map_err(|e| format!("write marker {}: {e}", marker.display()))
 }
 
+/// Apply an explicit user autostart choice so the OS registry state and the
+/// durable choice marker can never silently diverge: without the marker, the
+/// next launch treats this machine as "never chose" and re-applies the
+/// first-launch default-enable — silently reversing an explicit DISABLE.
+///
+/// Order: OS change first, marker second; if persisting the marker fails,
+/// the OS change is rolled back to the pre-attempt state before the error
+/// surfaces. No silent divergence, no false success, and no claim of true
+/// atomicity: a rollback that itself fails is reported with both errors so
+/// the operator knows the machine needs manual reconciliation.
+fn apply_autostart_choice(
+    enabled: bool,
+    mut set_os: impl FnMut(bool) -> Result<(), String>,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<String, String> {
+    set_os(enabled)?;
+    let state = if enabled {
+        "autostart enabled"
+    } else {
+        "autostart disabled"
+    };
+    if let Err(persist_err) = persist() {
+        return Err(match set_os(!enabled) {
+            Ok(()) => format!(
+                "{state} applied, but the user-choice record could not be persisted ({persist_err}); \
+                 the OS change was reverted so a later start cannot silently override it - retry from Settings"
+            ),
+            Err(rollback_err) => format!(
+                "{state} applied, but the user-choice record could not be persisted ({persist_err}) \
+                 and reverting the OS change also failed ({rollback_err}); restart the app and retry from Settings"
+            ),
+        });
+    }
+    Ok(state.to_string())
+}
+
 #[tauri::command]
 pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<String, String> {
     run_blocking(move || {
         #[cfg(windows)]
         {
             use tauri_plugin_autostart::ManagerExt;
-            let state = if enabled {
-                app.autolaunch().enable().map_err(|e| format!("enable autostart: {}", e))?;
-                "autostart enabled"
-            } else {
-                app.autolaunch().disable().map_err(|e| format!("disable autostart: {}", e))?;
-                "autostart disabled"
-            };
             // Record that the user has explicitly chosen autostart so the
             // app never re-enables it on a later start (see setup in main.rs).
             let touched = paths::manager_data_root().join("autostart-user-choice");
-            if let Err(e) = record_autostart_choice(&touched) {
-                // The registry change happened, but without the choice
-                // record the next launch would silently re-apply the
-                // default. Surface the divergence instead of reporting a
-                // clean success the system cannot keep.
-                return Err(format!(
-                    "{state} applied, but the user-choice record could not be persisted ({e}); the first-launch default may override it on the next start - retry from Settings"
-                ));
-            }
-            Ok(state.to_string())
+            apply_autostart_choice(
+                enabled,
+                |on| {
+                    if on {
+                        app.autolaunch().enable().map_err(|e| format!("enable autostart: {}", e))
+                    } else {
+                        app.autolaunch().disable().map_err(|e| format!("disable autostart: {}", e))
+                    }
+                },
+                || record_autostart_choice(&touched),
+            )
         }
         #[cfg(not(windows))]
         {
@@ -766,7 +796,96 @@ pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<Strin
 
 #[cfg(test)]
 mod autostart_choice_tests {
-    use super::record_autostart_choice;
+    use super::{apply_autostart_choice, record_autostart_choice};
+
+    #[test]
+    fn apply_enable_success_persists_and_reports_enabled() {
+        let mut os_calls: Vec<bool> = Vec::new();
+        let res = apply_autostart_choice(
+            true,
+            |on| {
+                os_calls.push(on);
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert_eq!(res, Ok("autostart enabled".to_string()));
+        assert_eq!(os_calls, vec![true]);
+    }
+
+    #[test]
+    fn apply_disable_success_persists_and_reports_disabled() {
+        let mut os_calls: Vec<bool> = Vec::new();
+        let res = apply_autostart_choice(
+            false,
+            |on| {
+                os_calls.push(on);
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert_eq!(res, Ok("autostart disabled".to_string()));
+        assert_eq!(os_calls, vec![false]);
+    }
+
+    #[test]
+    fn os_failure_aborts_before_any_persistence() {
+        let mut persist_called = false;
+        let res = apply_autostart_choice(
+            true,
+            |_| Err("registry denied".to_string()),
+            || {
+                persist_called = true;
+                Ok(())
+            },
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("registry denied"));
+        assert!(!persist_called, "a failed OS change must not attempt marker persistence");
+    }
+
+    #[test]
+    fn marker_failure_rolls_back_the_os_change_and_errors() {
+        // THE invariant: an explicit DISABLE whose marker cannot be recorded
+        // must revert the OS change, otherwise the next launch (no marker)
+        // would silently re-apply the first-launch default-enable.
+        let mut os_calls: Vec<bool> = Vec::new();
+        let res = apply_autostart_choice(
+            false,
+            |on| {
+                os_calls.push(on);
+                Ok(())
+            },
+            || Err("disk full writing marker".to_string()),
+        );
+        let err = res.expect_err("divergence must surface, never succeed silently");
+        assert!(err.contains("disk full writing marker"), "original persistence error must survive: {err}");
+        assert!(err.contains("reverted"), "message must state the rollback: {err}");
+        assert_eq!(os_calls, vec![false, true], "OS change must be rolled back exactly once");
+    }
+
+    #[test]
+    fn rollback_failure_reports_both_errors() {
+        // Best-effort rollback that itself fails: both failures must be
+        // visible so the divergence can be reconciled manually.
+        let mut calls = 0;
+        let res = apply_autostart_choice(
+            true,
+            |_| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(())
+                } else {
+                    Err("rollback denied".to_string())
+                }
+            },
+            || Err("disk full writing marker".to_string()),
+        );
+        let err = res.expect_err("must still report failure");
+        assert!(err.contains("disk full writing marker"), "persist error: {err}");
+        assert!(err.contains("rollback denied"), "rollback error: {err}");
+    }
+
 
     #[test]
     fn successful_choice_record_persists_the_marker() {

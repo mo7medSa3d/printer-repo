@@ -69,6 +69,39 @@ func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
 // with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 const maxSpoolerWorkers = 4
 
+// preflightTimeout bounds the readiness probe. Win32 OpenPrinterW/GetPrinterW
+// expose NO timeout of their own and block indefinitely against a wedged
+// spooler RPC, so the caller must bound them. 10s is generous: a healthy
+// local spooler answers in single-digit milliseconds; anything slower is
+// already an unresponsive control plane. A timeout here is provably
+// pre-dispatch (status queries can never spool a document), so it stays a
+// plain typed failure, never an unknown outcome.
+const preflightTimeout = 10 * time.Second
+
+// runPreflightBounded executes a readiness check on a helper goroutine and
+// bounds the CALLER: it returns when the check completes, when ctx is done,
+// or when the hard timeout elapses — whichever comes first. The helper owns
+// its handle lifecycle end-to-end (opened and closed inside the worker) and
+// reports through a buffered channel, so a stuck check cannot deadlock the
+// caller, cannot be double-closed, and cannot leak shared state; at most one
+// helper exists per Print call, and Print calls are already bounded by the
+// agent's job executor plus the spooler worker semaphore.
+func runPreflightBounded(displayName string, timeout time.Duration, ctx context.Context, check func() error) error {
+	type outcome struct{ err error }
+	done := make(chan outcome, 1)
+	go func() { done <- outcome{check()} }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r.err
+	case <-ctx.Done():
+		return fmt.Errorf("readiness probe for %q cancelled before dispatch (no bytes sent): %w", displayName, ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("%w: readiness probe for %q timed out after %v (spooler RPC unresponsive; fail-closed, no bytes sent)", ErrPrinterNotReady, displayName, timeout)
+	}
+}
+
 var spoolerWorkerSem = make(chan struct{}, maxSpoolerWorkers)
 
 type spoolerTaskResult struct {
@@ -294,8 +327,13 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	default:
 	}
 
-	// Pre-flight check printer status before allocating worker slots
-	if err := preFlightSpoolerCheck(p.SpoolerName); err != nil {
+	// Pre-flight check printer status before allocating worker slots.
+	// The check itself is bounded (see runPreflightBounded): a wedged
+	// spooler RPC must not wedge the caller before the worker machinery
+	// below even starts.
+	if err := runPreflightBounded(p.SpoolerName, preflightTimeout, ctx, func() error {
+		return preFlightSpoolerCheck(p.SpoolerName)
+	}); err != nil {
 		return fmt.Errorf("pre-flight spooler check failed: %w", err)
 	}
 

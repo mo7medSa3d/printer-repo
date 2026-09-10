@@ -124,4 +124,24 @@ describe("runtime routing capability and availability", () => {
     expect(isAgentAvailableForPrinter({ lifecycle: "active", status: "offline", lastSeenAt: now })).toBe(false);
     expect(isAgentAvailableForPrinter({ lifecycle: "disabled", status: "online", lastSeenAt: now })).toBe(false);
   });
+
+  it("treats malformed supported_protocols as absent instead of throwing", () => {
+    // Agent-reported JSON is only object-checked at ingestion; a string (or
+    // any non-array) supported_protocols used to throw TypeError inside the
+    // routing check and 500 the calling route. Declared transport decides.
+    const asAny = (v: unknown) => v as never;
+    const base = { protocol: "escpos", connectionType: "network" as const };
+    expect(validatePayloadForPrinter(
+      { type: "escpos" },
+      { ...base, capabilities: { supported_protocols: asAny("escpos") } },
+    )).toEqual({ ok: true });
+    expect(validatePayloadForPrinter(
+      { type: "raw", protocol: "zpl" },
+      { ...base, capabilities: { supported_protocols: asAny("zpl") } },
+    ).ok).toBe(false);
+    expect(validatePayloadForPrinter(
+      { type: "raw", protocol: "raw" },
+      { ...base, capabilities: { supported_protocols: asAny(["raw", 42, null] as unknown[]) } },
+    )).toEqual({ ok: true });
+  });
 });

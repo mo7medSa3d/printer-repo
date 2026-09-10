@@ -250,3 +250,27 @@ func TestDispatchRejectsAfterShutdown(t *testing.T) {
 		t.Fatalf("job dispatched after shutdown must not print, got %d calls", p.calls)
 	}
 }
+
+// TestWaitForJobsNeverBlocksShutdownForever locks the documented shutdown
+// contract: Run/Stop must return after at most shutdownGrace even when a
+// worker is wedged (e.g. a spooler post-cancel wait that outruns the grace,
+// or a detached PDF budget). The bounded return is what makes service stop
+// safe together with crash recovery: surviving writes land, missed ones are
+// recovered honestly as interrupted/unknown on restart. This must keep
+// passing if anyone touches the grace, the wait, or the close ordering.
+func TestWaitForJobsNeverBlocksShutdownForever(t *testing.T) {
+	ag := newTestAgent(t, "p1", &fakePrinter{})
+	ag.wg.Add(1) // simulate a handler that never returns (wedged syscall)
+	start := time.Now()
+	ag.waitForJobs()
+	elapsed := time.Since(start)
+	if elapsed < shutdownGrace {
+		t.Fatalf("waitForJobs returned after %v, before the %v grace - in-flight work was not awaited", elapsed, shutdownGrace)
+	}
+	if elapsed > shutdownGrace+15*time.Second {
+		t.Fatalf("waitForJobs blocked %v, beyond the %v grace + margin - shutdown is not bounded", elapsed, shutdownGrace)
+	}
+	if err := ag.Close(); err != nil {
+		t.Fatalf("Close after bounded wait must succeed: %v", err)
+	}
+}

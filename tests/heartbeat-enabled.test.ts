@@ -118,6 +118,58 @@ suite("heartbeat validation and lifecycle preservation", () => {
     expect(agent.rows[0].status).toBe("online");
   });
 
+  it("bounds reported capabilities to the known vocabulary without failing the heartbeat", async () => {
+    // Capability trust boundary: an authenticated agent may narrow its
+    // device's routing surface but must not invent capabilities. Unknown
+    // tokens are dropped per-row; the heartbeat for the device still lands.
+    const res = await heartbeatPOST(new Request("http://gateway.test/api/agent/heartbeat", {
+      method: "POST",
+      headers: { Authorization: f.agentAuth, "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "online",
+        printers: [{
+          id: f.printerId,
+          name: "CapsBounded",
+          printerType: "physical",
+          deviceClass: "thermal",
+          connectionType: "network",
+          protocol: "raw",
+          config: { ip: "192.0.2.44", port: 9100 },
+          status: "online",
+          capabilities: { supported_protocols: ["raw", "LASER-9000", 42, "zpl"] },
+        }],
+      }),
+    }));
+    expect(res.status).toBe(200);
+    const row = await pool().query(`SELECT capabilities FROM printers WHERE id = $1`, [f.printerId]);
+    expect(row.rows[0].capabilities.supported_protocols).toEqual(["raw", "zpl"]);
+  });
+
+  it("treats a non-array supported_protocols as absent instead of crashing the heartbeat", async () => {
+    const res = await heartbeatPOST(new Request("http://gateway.test/api/agent/heartbeat", {
+      method: "POST",
+      headers: { Authorization: f.agentAuth, "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "online",
+        printers: [{
+          id: f.printerId,
+          name: "CapsMalformed",
+          printerType: "physical",
+          deviceClass: "thermal",
+          connectionType: "network",
+          protocol: "escpos",
+          config: { ip: "192.0.2.45", port: 9100 },
+          status: "online",
+          capabilities: { supported_protocols: "raw" },
+        }],
+      }),
+    }));
+    expect(res.status).toBe(200);
+    const row = await pool().query(`SELECT capabilities FROM printers WHERE id = $1`, [f.printerId]);
+    const caps = row.rows[0].capabilities as Record<string, unknown>;
+    expect("supported_protocols" in caps).toBe(false);
+  });
+
   it("fences keep-alive lease refresh to the live claim (stale worker TOCTOU)", async () => {
     await insertQueuedJob(f, "job_hb_fence");
     const claim = await claimJobForDelivery("job_hb_fence", f.agentId);
