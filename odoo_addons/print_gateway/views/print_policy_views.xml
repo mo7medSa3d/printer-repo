@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_print_gateway_policy_list" model="ir.ui.view">
+        <field name="name">print_gateway.policy.list</field>
+        <field name="model">print_gateway.policy</field>
+        <field name="arch" type="xml">
+            <list string="Print Policies" create="1" delete="1" class="o_pg_list">
+                <field name="name" string="Policy Name"/>
+                <field name="company_id" string="Odoo Company" optional="hide"/>
+                <field name="branch_id" string="Odoo Branch" placeholder="All Branches / Root Default"/>
+                <field name="model_id" string="Model"/>
+                <field name="event_type" string="Event" widget="badge"/>
+                <field name="report_id" string="Report Action" optional="show"/>
+                <field name="binding_id" string="Explicit Binding" optional="show"/>
+                <field name="priority" string="Priority"/>
+                <field name="active" widget="boolean_toggle"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_policy_form" model="ir.ui.view">
+        <field name="name">print_gateway.policy.form</field>
+        <field name="model">print_gateway.policy</field>
+        <field name="arch" type="xml">
+            <form string="Print Policy" class="o_pg_view o_pg_form">
+                <sheet>
+                    <div class="o_pg_record_header">
+                        <span class="o_pg_record_icon">⚡</span>
+                        <div>
+                            <h1><field name="name" placeholder="e.g. Auto-print delivery slip on validate"/></h1>
+                            <p class="text-muted mb-0">Event-driven print policy rule for automated hardware printing.</p>
+                        </div>
+                    </div>
+
+                    <group>
+                        <group string="Scope &amp; Trigger">
+                            <field name="company_id" domain="[('parent_id', '=', False)]" options="{'no_create': True}"/>
+                            <field name="branch_id" domain="[('parent_id', '=', company_id)]" invisible="not company_id" placeholder="All Branches / Root Default" options="{'no_create': True}"/>
+                            <field name="model_id" options="{'no_create': True}"/>
+                            <field name="model_name" invisible="1"/>
+                            <field name="event_type"/>
+                            <field name="active" widget="boolean_toggle"/>
+                        </group>
+                        <group string="Print Action">
+                            <field name="action_type" widget="radio"/>
+                            <field name="report_id" domain="[('model', '=', model_name)]" options="{'no_create': True}" invisible="action_type != 'report'"/>
+                            <field name="raw_protocol" invisible="action_type != 'raw_template'"/>
+                            <field name="raw_template" invisible="action_type != 'raw_template'" placeholder="e.g. ^XA^FO50,50^ADN,36,20^FD{name}^FS^XZ"/>
+                            <field name="binding_id" options="{'no_create': True}"/>
+                            <field name="priority"/>
+                        </group>
+                    </group>
+
+                    <group string="Filters &amp; Conditions">
+                        <field name="warehouse_id" invisible="model_name != 'stock.picking'" options="{'no_create': True}"/>
+                        <field name="picking_type_id" invisible="model_name != 'stock.picking'" options="{'no_create': True}"/>
+                        <field name="domain_filter" placeholder="e.g. [('state', '=', 'done')]"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_print_gateway_policies" model="ir.actions.act_window">
+        <field name="name">Print Policies</field>
+        <field name="res_model">print_gateway.policy</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

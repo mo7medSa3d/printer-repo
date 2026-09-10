@@ -1,34 +1,55 @@
 import React from "react";
-import { labelJob } from "../lib/printers";
+import { deriveOutcome, jobLabel } from "../lib/printers";
+
+type TimelineProps = {
+  status: string;
+  error?: string | null;
+  claimedAt?: string | null;
+};
 
 /**
  * Queued → Claimed → Printing → Outcome pipeline for a print job.
- * Larger than the previous version: the labels are legible at a glance and
- * the step numbers stay readable at small widths.
+ *
+ * Steps are marked reached from EVIDENCE (the claimedAt timestamp, the
+ * status, and unknown-outcome markers), not from the terminal state alone:
+ * a job that failed pre-dispatch never shows "Claimed ✓ Printing ✓" like a
+ * job that really printed.
  */
-export function JobTimeline({ status }: { status: string }) {
+export function JobTimeline({ status, error = null, claimedAt = null }: TimelineProps) {
   const s = String(status).toLowerCase();
-  const flow = ["queued", "claimed", "printing"] as const;
-  const done = s === "success" || s === "completed";
+  const outcome = deriveOutcome(s, error);
+  const done = s === "success";
   const failed = s === "failed" || s === "expired";
-  const idx = flow.indexOf(s as (typeof flow)[number]);
-  const terminalLabel = done ? "Completed" : failed ? "Failed" : "Outcome";
+  const unknown = outcome === "unknown";
 
-  const steps = flow.map((step, i) => {
-    const current = idx === i;
-    const reached = done || failed || idx > i;
+  const reachedQueued = true;
+  const reachedClaimed = Boolean(claimedAt) || ["claimed", "printing", "success"].includes(s) || (failed && unknown);
+  const reachedPrinting = ["printing", "success"].includes(s) || (failed && unknown);
+
+  const steps = [
+    { label: "Queued", reached: reachedQueued },
+    { label: "Claimed", reached: reachedClaimed },
+    { label: "Printing", reached: reachedPrinting },
+  ].map((step, i) => {
+    const current =
+      (step.label === "Claimed" && s === "claimed") ||
+      (step.label === "Printing" && s === "printing");
     return {
-      label: step,
-      state: current && !done && !failed ? "current" : reached ? "done" : "todo",
+      ...step,
+      current,
+      state: current && !done && !(failed || unknown) ? "current" : step.reached ? "done" : "todo",
       n: i + 1,
     } as const;
   });
+
+  const terminalLabel = done || failed || unknown ? jobLabel(s, outcome) : "Outcome";
+  const terminalTone = done ? "ok" : unknown ? "warn" : failed ? "bad" : "todo";
 
   return (
     <div
       className="rounded-xl border border-edge-accent bg-surface-accent px-5 py-4"
       role="img"
-      aria-label={`Job pipeline: ${labelJob(status)}`}
+      aria-label={`Job pipeline: ${terminalLabel}`}
     >
       <ol className="flex items-start">
         {steps.map((step, i) => (
@@ -36,9 +57,7 @@ export function JobTimeline({ status }: { status: string }) {
             {i > 0 && (
               <span
                 aria-hidden
-                className={`mt-[13px] h-0.5 flex-1 ${
-                  idx >= i || done || failed ? "bg-ok-solid/50" : "bg-edge-strong"
-                }`}
+                className={`mt-[13px] h-0.5 flex-1 ${steps[i - 1].reached && step.reached ? "bg-ok-solid/50" : "bg-edge-strong"}`}
               />
             )}
             <span className="flex flex-col items-center gap-2 px-1" aria-hidden>
@@ -54,7 +73,7 @@ export function JobTimeline({ status }: { status: string }) {
                 {step.state === "done" ? "✓" : step.n}
               </span>
               <span
-                className={`min-w-max text-center text-[12px] font-semibold capitalize ${
+                className={`min-w-max text-center text-[12px] font-semibold ${
                   step.state === "current"
                     ? "text-ink"
                     : step.state === "done"
@@ -70,25 +89,25 @@ export function JobTimeline({ status }: { status: string }) {
         <li className="flex flex-1 items-start">
           <span
             aria-hidden
-            className={`mt-[13px] h-0.5 flex-1 ${
-              done || failed ? "bg-ok-solid/50" : "bg-edge-strong"
-            }`}
+            className={`mt-[13px] h-0.5 flex-1 ${done || failed || unknown ? "bg-ok-solid/50" : "bg-edge-strong"}`}
           />
           <span className="flex flex-col items-center gap-2 px-1" aria-hidden>
             <span
               className={`flex h-[26px] w-[26px] items-center justify-center rounded-full border text-[12px] font-bold transition-colors ${
-                done
+                terminalTone === "ok"
                   ? "border-ok-edge bg-ok-solid text-on-solid"
-                  : failed
+                  : terminalTone === "warn"
+                  ? "border-warn-edge bg-warn-solid text-on-solid"
+                  : terminalTone === "bad"
                   ? "border-bad-edge bg-bad-solid text-on-solid"
                   : "border-edge-strong bg-surface text-ink-4"
               }`}
             >
-              {done ? "✓" : failed ? "✕" : ""}
+              {done ? "✓" : failed || unknown ? (unknown ? "?" : "✕") : ""}
             </span>
             <span
               className={`min-w-max text-center text-[12px] font-semibold ${
-                done ? "text-ok" : failed ? "text-bad" : "text-ink-3"
+                terminalTone === "ok" ? "text-ok" : terminalTone === "bad" ? "text-bad" : terminalTone === "warn" ? "text-warn" : "text-ink-3"
               }`}
             >
               {terminalLabel}

@@ -171,6 +171,33 @@ fn taskkill_pid(pid: u32, force: bool) -> Result<std::process::Output, String> {
         .map_err(|e| format!("taskkill PID {pid} failed: {e}"))
 }
 
+/// Spawn a background agent and record ownership metadata for it. If the
+/// PID cannot be persisted the child is terminated and reaped BEFORE the
+/// error surfaces: `stop()`/`restart()` only ever kill the recorded PID (by
+/// design they refuse to kill by image name), so an agent running without a
+/// persisted ownership record would be permanently unmanaged. Reconciling
+/// here keeps the invariant "no unowned spawned process is ever left behind"
+/// while preserving the original persistence error verbatim.
+#[cfg(windows)]
+fn spawn_persist_or_reconcile(
+    mut spawn: impl FnMut() -> Result<std::process::Child, String>,
+    persist: impl FnOnce(u32) -> Result<(), String>,
+) -> Result<u32, String> {
+    let mut child = spawn()?;
+    let pid = child.id();
+    match persist(pid) {
+        Ok(()) => Ok(pid),
+        Err(e) => {
+            logging::warn(&format!(
+                "agent pid={pid} spawned but its ownership record could not be persisted; terminating the unowned child: {e}"
+            ));
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(e)
+        }
+    }
+}
+
 #[cfg(windows)]
 fn spawn_background(app: &tauri::AppHandle) -> Result<u32, String> {
     use std::os::windows::process::CommandExt;
@@ -188,11 +215,14 @@ fn spawn_background(app: &tauri::AppHandle) -> Result<u32, String> {
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn agent {} (config {}) : {e}", path.display(), config.display()))?;
-    let pid = child.id();
-    write_background_pid(pid)?;
+    let pid = spawn_persist_or_reconcile(
+        || {
+            cmd
+                .spawn()
+                .map_err(|e| format!("spawn agent {} (config {}) : {e}", path.display(), config.display()))
+        },
+        write_background_pid,
+    )?;
     logging::info(&format!("started OdooPrintAgent.exe pid={pid} config={}", config.display()));
     Ok(pid)
 }
@@ -344,5 +374,64 @@ pub fn control_service(action: &str, app: &tauri::AppHandle) -> Result<String, S
             }
         }
         _ => Err(format!("invalid service action {:?}", action)),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod spawn_tests {
+    use super::spawn_persist_or_reconcile;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    fn sleeper() -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+        Command::new("cmd")
+            .args(["/C", "ping 127.0.0.1 -n 15 > nul"])
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .expect("spawn cmd.exe sleeper")
+    }
+
+    fn pid_alive(pid: u32) -> bool {
+        use std::os::windows::process::CommandExt;
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .expect("tasklist");
+        String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+    }
+
+    #[test]
+    fn successful_persistence_keeps_the_spawned_agent_owned_and_alive() {
+        let pid = spawn_persist_or_reconcile(|| Ok(sleeper()), |_| Ok(())).expect("spawn+persist must succeed");
+        assert!(pid_alive(pid), "the agent child must remain running when ownership was recorded");
+        // Exact-PID cleanup of this TEST's own child (never a name kill).
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+
+    #[test]
+    fn failed_pid_persistence_terminates_the_child_and_preserves_the_error() {
+        // THE regression: previously the child was left running with no PID
+        // record - permanently unmanaged, because stop() refuses to kill
+        // processes it cannot attribute to itself.
+        use std::cell::Cell;
+        let spawned_pid = Cell::new(0u32);
+        let result = spawn_persist_or_reconcile(|| Ok(sleeper()), |pid| {
+            spawned_pid.set(pid);
+            Err("disk full writing agent.pid".to_string())
+        });
+        let err = result.expect_err("the original persistence error must be returned");
+        assert_eq!(err, "disk full writing agent.pid", "error must be surfaced verbatim");
+
+        let pid = spawned_pid.get();
+        assert_ne!(pid, 0, "a child must actually have been spawned before persist was called");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pid_alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!pid_alive(pid), "spawned child must be terminated and reaped when its PID write fails");
     }
 }

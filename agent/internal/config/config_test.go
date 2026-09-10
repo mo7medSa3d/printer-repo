@@ -43,9 +43,17 @@ func TestDefaultConfigPathProgramData(t *testing.T) {
 func TestConfigValidate(t *testing.T) {
 	c := &Config{}
 	c.Server.URL = "https://example.com"
-	c.Printers = []PrinterConfig{{ID: "p1", Name: "P1", Type: "network", Endpoint: "10.0.0.1:9100"}}
+	c.Printers = []PrinterConfig{{ID: "p1", Name: "P1", Type: "network", Protocol: "raw", Endpoint: "10.0.0.1:9100"}}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("expected valid, got %v", err)
+	}
+	// An undeclared protocol on a network printer is a validation error:
+	// the agent must never invent "raw" for an unconfigured device.
+	cNoProto := &Config{}
+	cNoProto.Server.URL = "https://example.com"
+	cNoProto.Printers = []PrinterConfig{{ID: "p2", Name: "P2", Type: "network", Endpoint: "10.0.0.1:9100"}}
+	if err := cNoProto.Validate(); err == nil {
+		t.Fatalf("expected error for undeclared protocol")
 	}
 	c.Server.URL = "htp://bad"
 	if err := c.Validate(); err == nil {

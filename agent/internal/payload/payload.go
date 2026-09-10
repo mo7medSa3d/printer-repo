@@ -19,9 +19,17 @@ const (
 const EncodingBase64 = "base64"
 const MaxPayloadBytes = 5 * 1024 * 1024
 
+type Peripherals struct {
+	Drawer string
+	Cutter string
+	Buzzer string
+}
+
 type Payload struct {
-	Type Type
-	Data []byte
+	Type        Type
+	Protocol    string
+	Data        []byte
+	Peripherals Peripherals
 }
 
 func Parse(raw interface{}) (*Payload, error) {
@@ -41,6 +49,31 @@ func Parse(raw interface{}) (*Payload, error) {
 			return nil, fmt.Errorf("payload.type is required")
 		}
 		return nil, fmt.Errorf("unsupported payload type %q (expected %q, %q, %q or %q)", typ, TypeRaw, TypeESCPOS, TypePDF, TypeImage)
+	}
+
+	protocol, _ := m["protocol"].(string)
+
+	switch Type(typ) {
+	case TypeRaw:
+		if protocol == "" {
+			return nil, fmt.Errorf("protocol is required for raw payloads")
+		}
+		switch protocol {
+		case "raw", "escpos", "zpl", "tspl":
+		default:
+			return nil, fmt.Errorf("unsupported protocol %q for raw payload", protocol)
+		}
+	case TypeESCPOS:
+		if protocol == "" {
+			return nil, fmt.Errorf("protocol is required for escpos payloads")
+		}
+		if protocol != "escpos" {
+			return nil, fmt.Errorf("protocol %q is incompatible with escpos payload", protocol)
+		}
+	case TypePDF, TypeImage:
+		if protocol != "" {
+			return nil, fmt.Errorf("protocol is not applicable for %s payloads", typ)
+		}
 	}
 
 	encoding, _ := m["encoding"].(string)
@@ -73,5 +106,51 @@ func Parse(raw interface{}) (*Payload, error) {
 	if (Type(typ) == TypeRaw || Type(typ) == TypeESCPOS) && looksLikePDF {
 		return nil, fmt.Errorf("PDF bytes cannot be labeled as raw/escpos")
 	}
-	return &Payload{Type: Type(typ), Data: decoded}, nil
+
+	var periph Peripherals
+	if periphMap, ok := m["peripherals"].(map[string]interface{}); ok {
+		if d, ok := periphMap["drawer"].(string); ok {
+			switch d {
+			case "pin2", "pin5", "none":
+				periph.Drawer = d
+			default:
+				return nil, fmt.Errorf("invalid drawer mode %q", d)
+			}
+		}
+		if c, ok := periphMap["cutter"].(string); ok {
+			switch c {
+			case "partial", "full", "none":
+				periph.Cutter = c
+			default:
+				return nil, fmt.Errorf("invalid cutter mode %q", c)
+			}
+		}
+		if b, ok := periphMap["buzzer"].(string); ok {
+			switch b {
+			case "epson_pulse", "star_bel", "none":
+				periph.Buzzer = b
+			default:
+				return nil, fmt.Errorf("invalid buzzer mode %q", b)
+			}
+		}
+	}
+
+	// "none" is an INACTIVE setting, not an action: it must never count as
+	// a configured peripheral (serializing inactive peripherals as active
+	// semantic values would make e.g. {drawer:"none"} a zpl payload killer).
+	active := func(v string) bool { return v != "" && v != "none" }
+	hasPeripherals := active(periph.Drawer) || active(periph.Cutter) || active(periph.Buzzer)
+	if hasPeripherals && protocol != "escpos" {
+		return nil, fmt.Errorf("peripherals are only supported for escpos protocol")
+	}
+	if !hasPeripherals {
+		periph = Peripherals{}
+	}
+
+	return &Payload{
+		Type:        Type(typ),
+		Protocol:    protocol,
+		Data:        decoded,
+		Peripherals: periph,
+	}, nil
 }

@@ -1,8 +1,9 @@
 from unittest.mock import patch
 
+# Hard imports: this module only runs under the Odoo test runner; a fallback
+# previously degraded the whole file into silent skips with a green exit.
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
-
 from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 
 

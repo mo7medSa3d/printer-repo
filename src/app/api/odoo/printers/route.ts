@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     })
     .from(printers)
     .innerJoin(agents, eq(printers.agentId, agents.id))
-    .where(and(ne(printers.lifecycle, "retired"), ne(agents.lifecycle, "retired")))
+    .where(and(eq(printers.lifecycle, "active"), eq(agents.lifecycle, "active")))
     .orderBy(printers.name);
 
   return NextResponse.json({

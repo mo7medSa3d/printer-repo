@@ -30,6 +30,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
     adminUrl.pathname = "/postgres";
     tempDb = `upgrade_${Date.now()}_${randomBytes(3).toString("hex")}`;
     admin = new Pool({ connectionString: adminUrl.toString(), max: 2 });
+    admin.on("error", () => {});
     await admin.query(`CREATE DATABASE "${tempDb}"`);
 
     workDir = await mkdtemp(join(tmpdir(), "odoo-print-upgrade-"));
@@ -47,6 +48,10 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0015_metrics_and_agent_notifications.sql", "0016_print_job_rate_limits.sql", "0017_notify_requeued_jobs.sql",
       "0018_global_print_job_idempotency.sql", "0019_drop_legacy_print_destination_fk.sql", "0020_remove_gateway_business_ownership.sql",
       "0021_scope_print_jobs_to_api_key.sql", "0022_pairing_code_hash.sql",
+      "0023_internal_print_job_idempotency.sql",
+      "0024_claim_fencing_and_payload_contract.sql",
+      "0025_constraint_scope_and_protocol_contract_fix.sql",
+      "0026_printer_type_default_alignment.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
@@ -66,6 +71,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
 
   it("upgrades a populated legacy database to the runtime-only architecture without losing print history", async () => {
     const pool = new Pool({ connectionString: databaseUrlFor(tempDb), max: 4 });
+    pool.on("error", () => {});
     const db = drizzle(pool);
     try {
       await migrate(db, { migrationsFolder: oldDir });
@@ -126,6 +132,32 @@ suite("production-like PostgreSQL migration upgrade", () => {
       expect(uniqueIndex.rowCount).toBe(1);
       const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid='print_jobs'::regclass AND tgname='print_jobs_notify_agent_job_available'`);
       expect(trigger.rowCount).toBe(1);
+
+      // 0024/0025/0026 artifacts survive a real production-like upgrade path:
+      const upgraded = await pool.query(`
+        SELECT
+          (SELECT count(*) FROM information_schema.columns WHERE table_name='print_jobs' AND column_name='claim_token') AS claim_token_col,
+          (SELECT count(*) FROM pg_constraint WHERE conname='print_jobs_payload_contract_check') AS payload_check,
+          (SELECT count(*) FROM pg_constraint WHERE conname='printers_protocol_check' AND pg_get_constraintdef(oid) LIKE '%unknown%') AS proto_unknown_check,
+          (SELECT count(*) FROM information_schema.columns WHERE table_name='printers' AND column_name='printer_type' AND column_default LIKE '%physical%') AS printer_type_default,
+          (SELECT count(*) FROM information_schema.columns WHERE table_name='printers' AND column_name='connection_type' AND column_default LIKE '%network%') AS connection_type_default
+      `);
+      expect(upgraded.rows[0]).toMatchObject({
+        claim_token_col: "1",
+        payload_check: "1",
+        proto_unknown_check: "1",
+        printer_type_default: "1",
+        connection_type_default: "1",
+      });
+      // The contract CHECK is NOT VALID on purpose: the pre-0024 legacy row
+      // (raw payload without protocol) keeps its history untouched...
+      const legacyPayload = await pool.query(`SELECT payload FROM print_jobs WHERE id=$1`, [jobId]);
+      expect(legacyPayload.rows[0].payload).toEqual({ type: "raw", encoding: "base64", data: "aA==" });
+      // ...while NEW writes must declare the protocol explicitly.
+      await expect(pool.query(`INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at)
+        VALUES ('job_bad_contract', $1, $2, 'queued', '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [agentId, printerId])).rejects.toThrow(/constraint|check/i);
+      await pool.query(`INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at)
+        VALUES ('job_good_contract', $1, $2, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [agentId, printerId]);
     } finally { await pool.end(); }
   });
 });

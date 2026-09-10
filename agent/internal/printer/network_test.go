@@ -2,6 +2,7 @@ package printer
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -132,3 +133,161 @@ func TestNetworkPrinterPartialDelivery(t *testing.T) {
 	}
 }
 
+func TestNetworkPrinterPreFlightCheckScenarios(t *testing.T) {
+	tests := []struct {
+		name          string
+		responder     func(conn net.Conn)
+		expectErrIs   error
+		expectSuccess bool
+	}{
+		{
+			name: "healthy printer succeeds and receives payload",
+			responder: func(conn net.Conn) {
+				// Responds to DLE EOT 1, 2, 4 with normal status
+				cmd := make([]byte, 3)
+				for i := 0; i < 3; i++ {
+					if _, err := io.ReadFull(conn, cmd); err != nil {
+						return
+					}
+					_, _ = conn.Write([]byte{0x12}) // Normal status byte
+				}
+			},
+			expectSuccess: true,
+		},
+		{
+			name: "paper out fails closed with ErrPrinterPaperOut and sends 0 bytes",
+			responder: func(conn net.Conn) {
+				cmd := make([]byte, 3)
+				for i := 0; i < 3; i++ {
+					if _, err := io.ReadFull(conn, cmd); err != nil {
+						return
+					}
+					switch cmd[2] {
+					case 1:
+						_, _ = conn.Write([]byte{0x12})
+					case 2:
+						_, _ = conn.Write([]byte{0x12})
+					case 4:
+						_, _ = conn.Write([]byte{0x72}) // Paper out (bits 5 & 6 = 1 -> 0x60)
+					}
+				}
+			},
+			expectErrIs: ErrPrinterPaperOut,
+		},
+		{
+			name: "cover open fails closed with ErrPrinterCoverOpen and sends 0 bytes",
+			responder: func(conn net.Conn) {
+				cmd := make([]byte, 3)
+				for i := 0; i < 2; i++ {
+					if _, err := io.ReadFull(conn, cmd); err != nil {
+						return
+					}
+					switch cmd[2] {
+					case 1:
+						_, _ = conn.Write([]byte{0x12})
+					case 2:
+						_, _ = conn.Write([]byte{0x16}) // Cover open (bit 2 = 1 -> 0x04)
+					}
+				}
+			},
+			expectErrIs: ErrPrinterCoverOpen,
+		},
+		{
+			name: "offline status fails closed with ErrPrinterOffline and sends 0 bytes",
+			responder: func(conn net.Conn) {
+				cmd := make([]byte, 3)
+				if _, err := io.ReadFull(conn, cmd); err != nil {
+					return
+				}
+				// Bit 3 = 1 -> offline
+				_, _ = conn.Write([]byte{0x1a})
+			},
+			expectErrIs: ErrPrinterOffline,
+		},
+		{
+			name: "malformed/garbage response fails closed with ErrPrinterNotReady and sends 0 bytes",
+			responder: func(conn net.Conn) {
+				cmd := make([]byte, 3)
+				if _, err := io.ReadFull(conn, cmd); err != nil {
+					return
+				}
+				// Echoing back probe or arbitrary garbage byte failing (buf[0] & 0x93) == 0x12 framing check
+				_, _ = conn.Write([]byte{0xFF})
+			},
+			expectErrIs: ErrPrinterNotReady,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen failed: %v", err)
+			}
+			defer ln.Close()
+
+			payloadReceived := make(chan []byte, 1)
+			go func() {
+				// Handle preflight connection
+				conn1, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer conn1.Close()
+				tc.responder(conn1)
+
+				// If print is expected to succeed, accept 2nd connection for payload
+				if tc.expectSuccess {
+					conn2, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					defer conn2.Close()
+					buf := make([]byte, 4096)
+					n, _ := conn2.Read(buf)
+					payloadReceived <- buf[:n]
+				}
+			}()
+
+			p := &NetworkPrinter{
+				Address:  ln.Addr().String(),
+				Protocol: "escpos",
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			data := []byte("\x1b\x40Hello Print Payload\n")
+			err = p.Print(ctx, data)
+
+			if tc.expectSuccess {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				select {
+				case got := <-payloadReceived:
+					if string(got) != string(data) {
+						t.Fatalf("expected payload %q, got %q", data, got)
+					}
+				case <-time.After(1 * time.Second):
+					t.Fatal("timed out waiting for payload delivery")
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !errors.Is(err, tc.expectErrIs) {
+					t.Fatalf("expected errors.Is(err, %v) == true, got err: %v", tc.expectErrIs, err)
+				}
+				// Must also satisfy ErrPrinterNotReady base identity
+				if !errors.Is(err, ErrPrinterNotReady) {
+					t.Fatalf("expected errors.Is(err, ErrPrinterNotReady) == true, got err: %v", err)
+				}
+				// Must NEVER be reported as unknown partial delivery
+				if strings.Contains(err.Error(), "UNKNOWN_PARTIAL_DELIVERY") {
+					t.Fatalf("unexpected UNKNOWN_PARTIAL_DELIVERY on preflight failure: %v", err)
+				}
+			}
+		})
+	}
+}

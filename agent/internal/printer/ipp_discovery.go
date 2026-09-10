@@ -121,7 +121,11 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 				conn, err := d.DialContext(connCtx, "tcp", target)
 				cancel()
 				if err != nil {
-					return
+					// Most hosts on a /24 refuse the connection: skipping
+					// the target must not kill this worker (a plain return
+					// here silently drained the worker pool after ~32
+					// refusals and truncated the scan).
+					continue
 				}
 				conn.Close()
 				port := 631
@@ -220,15 +224,5 @@ func discoverMDNSPrinters(ctx context.Context) []DeviceInfo {
 	// Log that mDNS was attempted
 	// To avoid spamming logs on every discovery, only log at debug level
 	// For now, return empty
-	return nil
-}
-
-// buildMDNSQuery is a helper for future full mDNS implementation (currently stub).
-func buildMDNSQuery(service string) []byte {
-	// DNS query for PTR service._tcp.local
-	// Header: ID 0, flags 0, QDCOUNT 1
-	// Question: QNAME service, QTYPE PTR (12), QCLASS IN (1)
-	// This is a placeholder for future implementation.
-	_ = service
 	return nil
 }

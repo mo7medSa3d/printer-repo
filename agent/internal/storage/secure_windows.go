@@ -51,12 +51,12 @@ func dpapi(proc *syscall.LazyProc, data []byte, flags uintptr) ([]byte, error) {
 	}
 	var outBlob dataBlob
 	r, _, callErr := proc.Call(
-		uintptr(unsafe.Pointer(&inBlob)), // pDataIn
-		0,                               // pDescription
-		0,                               // pOptionalEntropy
-		0,                               // pvReserved
-		0,                               // pPromptStruct
-		flags,                           // dwFlags
+		uintptr(unsafe.Pointer(&inBlob)),  // pDataIn
+		0,                                 // pDescription
+		0,                                 // pOptionalEntropy
+		0,                                 // pvReserved
+		0,                                 // pPromptStruct
+		flags,                             // dwFlags
 		uintptr(unsafe.Pointer(&outBlob)), // pDataOut
 	)
 	if r == 0 {

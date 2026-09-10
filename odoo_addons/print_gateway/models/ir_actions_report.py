@@ -11,6 +11,13 @@ class IrActionsReportGateway(models.Model):
         self.ensure_one()
         normalized_ids = docids if isinstance(docids, (list, tuple)) else [docids] if docids else []
         records = self.env[self.model].browse(normalized_ids).exists() if normalized_ids else self.env[self.model]
+        # Same read authorization as the /report/download controller: when
+        # the gateway dispatches a rendered document out of the database
+        # perimeter, the caller must be allowed to read every source record.
+        # Native Odoo rendering below is already ACL-protected; this closes
+        # the gateway-dispatch side of the same action.
+        if records:
+            records.check_access("read")
         router = self.env["print_gateway.print_router"]
 
         route = router.route_report(self, records, data=data)

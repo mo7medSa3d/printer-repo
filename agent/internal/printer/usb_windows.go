@@ -7,11 +7,20 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// usbChunkTimeout bounds a single synchronous 8KB WriteFile call. A healthy
+// USB bulk transfer completes an 8KB chunk in single-digit milliseconds, so
+// 30s is orders of magnitude of headroom yet finite; it matches the
+// spooler's bounded unknown window, keeping the forensic meaning of a
+// timeout identical across transports. Overridable in tests.
+var usbChunkTimeout = 30 * time.Second
 
 type USBPrinter struct {
 	ID           string
@@ -21,6 +30,73 @@ type USBPrinter struct {
 	SerialNumber string
 	DevicePath   string
 	USBLocation  string
+	// writeChunk performs one synchronous kernel write; injected in tests.
+	writeChunk func(h windows.Handle, chunk []byte) (uint32, error)
+	// wedged latches once a chunk write had to be abandoned mid-syscall.
+	// Only pointer receivers ever exist (see factory.go), so atomic access
+	// is race-safe.
+	wedged atomic.Bool
+}
+
+// defaultUSBWriteChunk is the real synchronous Win32 write.
+func defaultUSBWriteChunk(h windows.Handle, chunk []byte) (uint32, error) {
+	var n uint32
+	err := windows.WriteFile(h, chunk, &n, nil)
+	return n, err
+}
+
+type usbChunkResult struct {
+	n   uint32
+	err error
+}
+
+// writeChunkBounded executes one chunk write on a helper goroutine so the
+// CALLER is bounded even when the kernel/driver call never returns. This
+// does NOT cancel the kernel write (a synchronous WriteFile cannot be
+// interrupted — claiming otherwise would be dishonest, and per Microsoft's
+// cancellation documentation there is no guarantee drivers honor
+// CancelSynchronousIo, which additionally carries thread-identity hazards
+// on shared goroutine stacks).
+//
+// Lifetime safety of the abandoned path, verified against the Win32 contract:
+//   - HANDLE: CloseHandle only decrements the handle count; the in-flight
+//     IRP holds its own reference to the file object, so Print's deferred
+//     CloseHandle neither aborts the pending write nor invalidates the
+//     helper's blocked call. The helper never touches the handle after
+//     WriteFile returns, and CloseHandle runs exactly once (the defer in
+//     Print) — no double-close, no use-after-close.
+//   - BUFFER: the chunk slice is captured by the helper closure, so the Go
+//     collector retains the backing array until the helper exits. No
+//     lifetime hazard by construction.
+//
+// On timeout or cancellation the in-flight syscall is abandoned, the outcome
+// is reported as UNKNOWN (bytes may already have been transmitted), and the
+// printer is latched wedged so no later job can interleave bytes with the
+// abandoned write. The abandoned helper holds no shared state and exits
+// whenever the driver finally completes; at most one exists per wedged
+// printer because every later Print refuses immediately.
+func (p *USBPrinter) writeChunkBounded(h windows.Handle, chunk []byte, cancel <-chan struct{}) (uint32, error) {
+	write := p.writeChunk
+	if write == nil {
+		write = defaultUSBWriteChunk
+	}
+	done := make(chan usbChunkResult, 1)
+	go func() {
+		n, err := write(h, chunk)
+		done <- usbChunkResult{n, err}
+	}()
+	timer := time.NewTimer(usbChunkTimeout)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r.n, r.err
+	case <-cancel:
+		p.wedged.Store(true)
+		return 0, MarkUnknown("USB write to %s abandoned on cancellation after an unknown number of transmitted bytes (kernel write not interruptible)", p.DevicePath)
+	case <-timer.C:
+		p.wedged.Store(true)
+		return 0, MarkUnknown("USB write to %s exceeded the %v operation boundary with an unknown number of transmitted bytes (kernel write not interruptible)", p.DevicePath, usbChunkTimeout)
+	}
 }
 
 func (p *USBPrinter) Identify() string {
@@ -39,6 +115,14 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 	}
 	if len(data) > maxPrintBytes {
 		return fmt.Errorf("payload %d exceeds %d limit", len(data), maxPrintBytes)
+	}
+	// A printer wedged by an abandoned in-flight kernel write (see
+	// writeChunkBounded) must not accept new dispatches: the stuck write may
+	// still complete and emit bytes, so interleaving a new job would corrupt
+	// output AND risk a duplicate physical print. Fail fast, pre-dispatch,
+	// until the process restarts (the latch is in-memory by design).
+	if p.wedged.Load() {
+		return fmt.Errorf("USB device %s is wedged after a stalled write; refusing new dispatch (restart the agent to clear)", p.Identify())
 	}
 	select {
 	case <-ctx.Done():
@@ -61,19 +145,37 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 	for written < len(data) {
 		select {
 		case <-ctx.Done():
+			// Checked BEFORE spawning the write helper: this attempt
+			// provably sent zero bytes, so a plain error stays honest.
+			if written > 0 {
+				return MarkUnknown("print cancelled after %d/%d bytes: %v", written, len(data), ctx.Err())
+			}
 			return fmt.Errorf("print cancelled after %d/%d bytes: %w", written, len(data), ctx.Err())
 		default:
 		}
-		var n uint32
 		chunk := data[written:]
 		if len(chunk) > 8192 {
 			chunk = chunk[:8192]
 		}
-		err := windows.WriteFile(h, chunk, &n, nil)
+		// Once the helper is spawned the kernel may accept bytes even if
+		// the caller gives up while waiting: every failure from this point
+		// is UNKNOWN unless the write provably failed with zero confirmed
+		// bytes. writeChunkBounded already classifies timeouts and
+		// in-flight cancellations as unknown; pass those through verbatim.
+		n, err := p.writeChunkBounded(h, chunk, ctx.Done())
 		if err != nil {
+			if HasUnknownOutcomeMarker(err.Error()) {
+				return err
+			}
+			if written > 0 {
+				return MarkUnknown("WriteFile to %s failed after %d/%d bytes: %v", p.DevicePath, written, len(data), err)
+			}
 			return fmt.Errorf("WriteFile to %s failed after %d/%d bytes: %w", p.DevicePath, written, len(data), err)
 		}
 		if n == 0 {
+			if written > 0 {
+				return MarkUnknown("WriteFile to %s wrote 0 bytes after %d/%d", p.DevicePath, written, len(data))
+			}
 			return fmt.Errorf("WriteFile to %s wrote 0 bytes", p.DevicePath)
 		}
 		written += int(n)
@@ -83,7 +185,7 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 }
 
 func (p *USBPrinter) Test(ctx context.Context) error {
-	return p.Print(ctx, []byte("\x1b\x40USB Direct Test Print for Odoo Agent\nPrinter: "+p.Name+"\nVID:"+fmt.Sprintf("%04x", p.VID)+" PID:"+fmt.Sprintf("%04x", p.PID)+"\n\n\x1d\x56\x01"))
+	return p.Print(ctx, []byte("\x1b\x40USB Direct Test Print for Odoo Agent\nPrinter: "+sanitizeTestText(p.Name)+"\nVID:"+fmt.Sprintf("%04x", p.VID)+" PID:"+fmt.Sprintf("%04x", p.PID)+"\n\n\x1d\x56\x01"))
 }
 
 func (p *USBPrinter) Status() string {

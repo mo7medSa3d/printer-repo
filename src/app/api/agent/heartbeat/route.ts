@@ -1,16 +1,37 @@
 import { db } from "../../../../db";
 import { agents, printJobs, printers } from "../../../../db/schema";
 import { validateAgent } from "../../../../lib/agent-auth";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { DEVICE_CLASSES, PRINTER_TYPES } from "../../../../lib/printer-model";
+import { DEVICE_CLASSES, PRINTER_TYPES, PRINTER_CONFIG_MAX_BYTES, PRINTER_CAPABILITIES_MAX_BYTES, validateConnectionConfig } from "../../../../lib/printer-model";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 const MAX_HEARTBEAT_BODY_BYTES = 512 * 1024;
 const MAX_KEEP_ALIVE_JOB_IDS = 64;
 const VALID_PRINTER_STATUSES = new Set(["online", "offline", "busy", "error", "unknown"]);
+// Union of every capability token either compatibility table can match
+// (agent/internal/printer/capability.go + src/lib/routing.ts). Anything
+// outside this vocabulary can never route; it is dropped at the trust
+// boundary instead of stored.
+const KNOWN_CAPABILITY_TOKENS = new Set([
+  "raw",
+  "escpos",
+  "zpl",
+  "tspl",
+  "pdf",
+  "image",
+  "jpeg",
+  "spooler",
+  "ipp",
+  "ipps",
+]);
 const VALID_CONNECTION_TYPES = new Set(["network", "usb", "spooler", "ipp", "ipps"]);
-const VALID_PROTOCOLS = new Set(["raw", "escpos", "ipp", "ipps", "spooler", "windows_spooler"]);
+// "unknown" is the HONEST value for a device whose byte-language protocol
+// has not been declared. Per the authoritative rule (src/lib/routing.ts):
+// unknown+network/usb is inventoried but never routable; unknown+spooler/
+// ipp behaves as that document transport because the connection itself is
+// the explicit transport declaration. Nothing here ever invents raw/escpos.
+const VALID_PROTOCOLS = new Set(["raw", "escpos", "zpl", "tspl", "ipp", "ipps", "spooler", "windows_spooler", "unknown"]);
 const VALID_AGENT_STATUSES = new Set(["online", "offline"]);
 
 type ReportedPrinter = {
@@ -60,10 +81,33 @@ function sanitizePrinter(p: ReportedPrinter): {
   if (!protocol) return null;
   const config = p.config && typeof p.config === "object" ? { ...(p.config as Record<string, unknown>) } : {};
   delete config.protocol;
-  const capabilities = p.capabilities && typeof p.capabilities === "object" ? (p.capabilities as Record<string, unknown>) : null;
+  let capabilities = p.capabilities && typeof p.capabilities === "object" ? { ...(p.capabilities as Record<string, unknown>) } : null;
+  if (capabilities && "supported_protocols" in capabilities) {
+    // Capability trust boundary: an authenticated agent may only NARROW the
+    // routing surface of a device the operator paired - it must never invent
+    // new capabilities (agent/internal/printer/capability.go and
+    // src/lib/routing.ts only ever match this vocabulary). Unknown tokens
+    // are dropped per-row (the heartbeat for the other devices still
+    // succeeds) instead of stored; an emptied or non-array list behaves as
+    // "no explicit caps" on both sides, where the declared transport decides.
+    if (Array.isArray(capabilities.supported_protocols)) {
+      const known = (capabilities.supported_protocols as unknown[])
+        .map((value) => String(value).toLowerCase().trim())
+        .filter((token) => KNOWN_CAPABILITY_TOKENS.has(token));
+      if (known.length > 0) capabilities.supported_protocols = known;
+      else delete capabilities.supported_protocols;
+    } else {
+      delete capabilities.supported_protocols;
+    }
+  }
   const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status.trim().toLowerCase())
     ? p.status.trim().toLowerCase()
     : "unknown";
+  // Same metadata rules the manager create path applies; a malformed or
+  // oversized report must not land in the routing tables.
+  if (JSON.stringify(config).length > PRINTER_CONFIG_MAX_BYTES) return null;
+  if (capabilities && JSON.stringify(capabilities).length > PRINTER_CAPABILITIES_MAX_BYTES) return null;
+  if (validateConnectionConfig(connectionType, config)) return null;
   return { id: p.id.trim(), name: p.name.trim(), printerType, deviceClass, connectionType, protocol, status, config, capabilities };
 }
 
@@ -86,24 +130,53 @@ export async function POST(req: Request) {
 
     await db.update(agents).set({ status, lastSeenAt: new Date() }).where(eq(agents.id, agent.id));
 
-    // Print-lease keep-alive: the agent reports the job ids it has taken
-    // (gateway status claimed/printing). While the agent is alive and
-    // working those jobs, their `updated_at` stays fresh, so the
-    // stale-printing sweep (10 min) cannot fail a legitimately long print.
-    // A dead agent stops heartbeating, so its jobs still time out as
-    // before. Scoped to this agent's own non-terminal delivery states.
+    // Print-lease keep-alive: the agent reports the (jobId, claimToken)
+    // pairs it is currently holding (gateway status claimed/printing).
+    // While the agent is alive and working those jobs, their `updated_at`
+    // stays fresh, so the stale-printing sweep (10 min) cannot fail a
+    // legitimately long print. A dead agent stops heartbeating, so its jobs
+    // still time out as before. Scoped to this agent's own non-terminal
+    // delivery states AND to the exact live claim: the UPDATE predicate
+    // requires (id, claim_token) to match, so a stale worker's heartbeat
+    // can never refresh the lease of a reclaimed attempt. Legacy bare job
+    // ids (no token, pre-fencing agents) only refresh rows that never
+    // received a token; they can never touch a tokenized claim.
     const rawKeepAlive: unknown[] = Array.isArray(body?.keepAliveJobIds) ? (body.keepAliveJobIds as unknown[]) : [];
-    const keepAliveJobIds = rawKeepAlive
-      .filter((v): v is string => typeof v === "string" && v.length > 0 && v.length <= 120)
-      .slice(0, MAX_KEEP_ALIVE_JOB_IDS);
-    if (keepAliveJobIds.length > 0) {
+    const pairs: Array<{ jobId: string; claimToken: string | null }> = [];
+    for (const entry of rawKeepAlive) {
+      if (typeof entry === "string") {
+        if (entry.length > 0 && entry.length <= 120) pairs.push({ jobId: entry, claimToken: null });
+      } else if (entry && typeof entry === "object") {
+        const rec = entry as Record<string, unknown>;
+        const jobId = typeof rec.jobId === "string" ? rec.jobId : typeof rec.id === "string" ? rec.id : "";
+        const claimToken = typeof rec.claimToken === "string" && rec.claimToken.length > 0 && rec.claimToken.length <= 120
+          ? rec.claimToken
+          : null;
+        if (jobId.length > 0 && jobId.length <= 120) pairs.push({ jobId, claimToken });
+      }
+      if (pairs.length >= MAX_KEEP_ALIVE_JOB_IDS) break;
+    }
+    const tokened = pairs.filter((p): p is { jobId: string; claimToken: string } => p.claimToken !== null);
+    const tokenless = pairs.filter((p) => p.claimToken === null);
+    if (tokened.length > 0) {
+      const tuples = tokened.map((p) => sql`(${p.jobId}, ${p.claimToken})`);
+      const list = tuples.length === 1 ? tuples[0]! : sql.join(tuples, sql`, `);
+      await db.execute(sql`
+        UPDATE print_jobs SET updated_at = now()
+        WHERE agent_id = ${agent.id}
+          AND status IN ('claimed', 'printing')
+          AND (id, claim_token) IN (${list})
+      `);
+    }
+    if (tokenless.length > 0) {
       await db.update(printJobs)
         .set({ updatedAt: new Date() })
         .where(
           and(
             eq(printJobs.agentId, agent.id),
             inArray(printJobs.status, ["claimed", "printing"]),
-            inArray(printJobs.id, keepAliveJobIds),
+            inArray(printJobs.id, tokenless.map((p) => p.jobId)),
+            isNull(printJobs.claimToken),
           ),
         );
     }
@@ -116,26 +189,32 @@ export async function POST(req: Request) {
         continue;
       }
 
+      const printerUpdateSet = {
+        name: p.name,
+        printerType: p.printerType as typeof printers.$inferInsert.printerType,
+        deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
+        connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
+        protocol: p.protocol as typeof printers.$inferInsert.protocol,
+        status: p.status,
+        config: p.config as typeof printers.$inferInsert.config,
+        capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
+        lastSeenAt: new Date(),
+        updatedAt: new Date(),
+      };
+
       const existing = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
       if (existing) {
         if (existing.agentId !== agent.id) {
           skipped.push(p.id);
           continue;
         }
-        await db.update(printers).set({
-          name: p.name,
-          printerType: p.printerType as typeof printers.$inferInsert.printerType,
-          deviceClass: p.deviceClass as typeof printers.$inferInsert.deviceClass,
-          connectionType: p.connectionType as typeof printers.$inferInsert.connectionType,
-          protocol: p.protocol as typeof printers.$inferInsert.protocol,
-          status: p.status,
-          config: p.config as typeof printers.$inferInsert.config,
-          capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
-          lastSeenAt: new Date(),
-          updatedAt: new Date(),
-        }).where(eq(printers.id, p.id));
+        await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
       } else {
-        await db.insert(printers).values({
+        // Two concurrent heartbeats may both report the same NEW printer
+        // id; a plain insert would send the loser into a 23505 PK violation
+        // that failed the whole heartbeat request. Insert atomically and
+        // fall back to the same-agent update when we lose that race.
+        const inserted = await db.insert(printers).values({
           id: p.id,
           agentId: agent.id,
           name: p.name,
@@ -148,7 +227,15 @@ export async function POST(req: Request) {
           config: p.config as typeof printers.$inferInsert.config,
           capabilities: p.capabilities as typeof printers.$inferInsert.capabilities,
           lastSeenAt: new Date(),
-        });
+        }).onConflictDoNothing({ target: printers.id }).returning({ id: printers.id });
+        if (inserted.length === 0) {
+          const raced = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
+          if (raced && raced.agentId === agent.id) {
+            await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
+          } else {
+            skipped.push(p.id);
+          }
+        }
       }
     }
 

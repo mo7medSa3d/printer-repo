@@ -2,11 +2,10 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents, printers, printJobs } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
-import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { eq, count, desc } from "drizzle-orm";
 import { z } from "zod";
-import { generatePairingCode, hashPairingCode } from "../../../../lib/agent-auth";
-import { closeAgentSockets, publishAgentSessionClose } from "../../../../server/ws";
+import { transitionAgentLifecycle, LifecycleConflict } from "../../../../lib/agent-lifecycle";
+import { logError } from "../../../../lib/log";
 
 export const dynamic = "force-dynamic";
 const patchSchema = z.object({ lifecycle: z.enum(["active", "disabled", "retired"]) }).strict();
@@ -27,34 +26,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
-  if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
   let body: unknown; try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
   const parsed = patchSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "lifecycle is required" }, { status: 400 });
-  const next = parsed.data.lifecycle;
-  if (!canTransitionLifecycle(agent.lifecycle, next)) return NextResponse.json({ error: `invalid lifecycle transition: ${agent.lifecycle} -> ${next}` }, { status: 409 });
-  const now = new Date();
-  const reenable = agent.lifecycle === "disabled" && next === "active";
-  const pairingCode = reenable ? generatePairingCode() : null;
-  const pairingCodeHash = pairingCode ? hashPairingCode(pairingCode) : null;
-  await db.transaction(async (tx) => {
-    await tx.update(agents).set({ lifecycle: next, secret: null, pairingCodeHash, pairingCodeExpiresAt: pairingCode ? new Date(now.getTime() + 10 * 60 * 1000) : null, status: "offline", updatedAt: now }).where(eq(agents.id, id));
-    if (next !== "active") {
-      await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(eq(printers.agentId, id));
+  try {
+    const result = await transitionAgentLifecycle(id, parsed.data.lifecycle);
+    if (!result) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json({ ok: true, lifecycle: result.lifecycle, pairingCode: result.pairingCode });
+  } catch (error) {
+    if (error instanceof LifecycleConflict) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
-  });
-
-  // The secret was just nullified, but an already-established WS socket
-  // would keep receiving jobs until it happens to reconnect. Close it
-  // immediately on this instance and ask the other instances to do the
-  // same (best-effort; the nullified secret already defeats re-auth).
-  if (next !== "active") {
-    try { closeAgentSockets(id); } catch { /* sockets already gone */ }
-    void publishAgentSessionClose(id).catch((error) => {
-      console.warn(`[agents] failed to publish session close for ${id}:`, error);
-    });
+    logError("agent.lifecycle_failed", { agentId: id, error: error instanceof Error ? error.message : "unknown" });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
-
-  return NextResponse.json({ ok: true, lifecycle: next, pairingCode });
 }

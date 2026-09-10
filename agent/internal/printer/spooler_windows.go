@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -23,6 +24,17 @@ var (
 	procEndPagePrinter   = modWinspool.NewProc("EndPagePrinter")
 	procEndDocPrinter    = modWinspool.NewProc("EndDocPrinter")
 	procEnumPrintersW    = modWinspool.NewProc("EnumPrintersW")
+	procGetPrinterW      = modWinspool.NewProc("GetPrinterW")
+)
+
+const (
+	PRINTER_STATUS_PAUSED            = 0x00000001
+	PRINTER_STATUS_ERROR             = 0x00000002
+	PRINTER_STATUS_PAPER_JAM         = 0x00000008
+	PRINTER_STATUS_PAPER_OUT         = 0x00000010
+	PRINTER_STATUS_OFFLINE           = 0x00000080
+	PRINTER_STATUS_USER_INTERVENTION = 0x00100000
+	PRINTER_STATUS_DOOR_OPEN         = 0x00400000
 )
 
 type docInfo1 struct {
@@ -42,6 +54,11 @@ type SpoolerPrinter struct {
 	PDFPrint    PDFPrintFunc
 	ProbeFunc   func(spoolerName string) string
 	Timeout     time.Duration
+	// preflightActive single-flights the readiness probe per printer: at
+	// most one helper goroutine may ever be stuck inside Win32 for this
+	// printer. Only pointer receivers ever exist (see NewSpooler and all
+	// call sites), so atomic access is race-safe.
+	preflightActive atomic.Bool
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
@@ -57,6 +74,59 @@ func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
 // This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
 // with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
 const maxSpoolerWorkers = 4
+
+// preflightTimeout bounds the readiness probe. Win32 OpenPrinterW/GetPrinterW
+// expose NO timeout of their own and block indefinitely against a wedged
+// spooler RPC, so the caller must bound them. 10s is generous: a healthy
+// local spooler answers in single-digit milliseconds; anything slower is
+// already an unresponsive control plane. A timeout here is provably
+// pre-dispatch (status queries can never spool a document), so it stays a
+// plain typed failure, never an unknown outcome.
+const preflightTimeout = 10 * time.Second
+
+// boundedPreflight runs one readiness check with single-flight semantics
+// for this printer: if a previous check is still stuck inside Win32, fail
+// fast instead of spawning another helper goroutine. Without this, every
+// timed-out Print against a wedged spooler would leak one more blocked
+// helper (each Print gets its own, because the stuck one never returns to
+// clear the way) — unbounded accumulation over hours of steady job flow.
+// The flag clears when the stuck helper's check finally returns, so
+// recovery after a transient stall is automatic, with no restart and no
+// operator action. A refused call is a plain pre-dispatch failure: no
+// document bytes were ever submitted.
+func (p *SpoolerPrinter) boundedPreflight(ctx context.Context, timeout time.Duration, check func() error) error {
+	if !p.preflightActive.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w: readiness probe for %q already in progress (previous probe stuck in spooler RPC)", ErrPrinterNotReady, p.SpoolerName)
+	}
+	return runPreflightBounded(p.SpoolerName, timeout, ctx, func() error {
+		defer p.preflightActive.Store(false)
+		return check()
+	})
+}
+
+// runPreflightBounded executes a readiness check on a helper goroutine and
+// bounds the CALLER: it returns when the check completes, when ctx is done,
+// or when the hard timeout elapses — whichever comes first. The helper owns
+// its handle lifecycle end-to-end (opened and closed inside the worker) and
+// reports through a buffered channel, so a stuck check cannot deadlock the
+// caller, cannot be double-closed, and cannot leak shared state; at most one
+// helper exists per Print call, and Print calls are already bounded by the
+// agent's job executor plus the spooler worker semaphore.
+func runPreflightBounded(displayName string, timeout time.Duration, ctx context.Context, check func() error) error {
+	type outcome struct{ err error }
+	done := make(chan outcome, 1)
+	go func() { done <- outcome{check()} }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r.err
+	case <-ctx.Done():
+		return fmt.Errorf("readiness probe for %q cancelled before dispatch (no bytes sent): %w", displayName, ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("%w: readiness probe for %q timed out after %v (spooler RPC unresponsive; fail-closed, no bytes sent)", ErrPrinterNotReady, displayName, timeout)
+	}
+}
 
 var spoolerWorkerSem = make(chan struct{}, maxSpoolerWorkers)
 
@@ -106,7 +176,15 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 	if jobID == 0 {
 		return spoolerTaskResult{err: fmt.Errorf("StartDocPrinterW(%q) failed: %w", spoolerName, err)}
 	}
+	// EndDocPrinter must run on every path after StartDocPrinterW succeeded.
+	// On the success path it is called explicitly so its verdict can be
+	// classified honestly: a failed EndDocPrinter may cause the spooler to
+	// discard the job even though WritePrinter accepted every byte.
+	docCompleted := false
 	defer func() {
+		if docCompleted {
+			return
+		}
 		if _, _, e := procEndDocPrinter.Call(uintptr(hPrinter)); e != nil && e != syscall.Errno(0) {
 			log.Printf("EndDocPrinter warning for %s: %v", spoolerName, e)
 		}
@@ -170,7 +248,92 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 		written += bytesWritten
 	}
 
+	docCompleted = true
+	if _, _, endErr := procEndDocPrinter.Call(uintptr(hPrinter)); endErr != nil && endErr != syscall.Errno(0) {
+		// WritePrinter accepted all bytes, but the Win32 doc session did not
+		// close cleanly: the spooler may discard the job. "Printed" would be
+		// a false confirmation, so the outcome stays ambiguous.
+		return spoolerTaskResult{
+			written: written,
+			jobID:   jobID,
+			err:     MarkUnknown("spooler session for %q failed to close after writing %d/%d bytes (submission state unknown): %v", spoolerName, written, len(data), endErr),
+		}
+	}
+
 	return spoolerTaskResult{written: written, jobID: jobID, err: nil}
+}
+
+func preFlightSpoolerCheck(spoolerName string) error {
+	printerNamePtr, err := syscall.UTF16PtrFromString(spoolerName)
+	if err != nil {
+		return fmt.Errorf("invalid spooler name %q: %w", spoolerName, err)
+	}
+
+	var hPrinter syscall.Handle
+	ret, _, lastErr := procOpenPrinterW.Call(
+		uintptr(unsafe.Pointer(printerNamePtr)),
+		uintptr(unsafe.Pointer(&hPrinter)),
+		0,
+	)
+	if ret == 0 {
+		return fmt.Errorf("%w: OpenPrinterW(%q) failed: %w", ErrPrinterOffline, spoolerName, lastErr)
+	}
+	defer procClosePrinter.Call(uintptr(hPrinter))
+
+	minSize := uint32(unsafe.Sizeof(printerInfo2{}))
+	var needed uint32
+	procGetPrinterW.Call(
+		uintptr(hPrinter),
+		2,
+		0,
+		0,
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if needed < minSize {
+		// Fail-closed: winspool must provide at least enough bytes for printerInfo2
+		return fmt.Errorf("%w: GetPrinterW(%q) returned invalid buffer size %d (minimum %d)", ErrPrinterNotReady, spoolerName, needed, minSize)
+	}
+
+	buf := make([]byte, needed)
+	ret, _, lastErr = procGetPrinterW.Call(
+		uintptr(hPrinter),
+		2,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(needed),
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if ret == 0 {
+		// Fail-closed: cannot confirm printer readiness
+		return fmt.Errorf("%w: GetPrinterW(%q) level 2 query failed: %w", ErrPrinterNotReady, spoolerName, lastErr)
+	}
+
+	if len(buf) < int(minSize) {
+		return fmt.Errorf("%w: spooler buffer size %d smaller than printerInfo2 struct %d", ErrPrinterNotReady, len(buf), minSize)
+	}
+
+	pi := (*printerInfo2)(unsafe.Pointer(&buf[0]))
+	if (pi.Status & PRINTER_STATUS_OFFLINE) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is offline (status 0x%08x)", ErrPrinterOffline, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_PAUSED) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is paused (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_ERROR) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is in error state (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_PAPER_JAM) != 0 {
+		return fmt.Errorf("%w: spooler printer %q has a paper jam (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_USER_INTERVENTION) != 0 {
+		return fmt.Errorf("%w: spooler printer %q requires user intervention (status 0x%08x)", ErrPrinterNotReady, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_DOOR_OPEN) != 0 {
+		return fmt.Errorf("%w: spooler printer %q door or cover is open (status 0x%08x)", ErrPrinterCoverOpen, spoolerName, pi.Status)
+	}
+	if (pi.Status & PRINTER_STATUS_PAPER_OUT) != 0 {
+		return fmt.Errorf("%w: spooler printer %q is out of paper (status 0x%08x)", ErrPrinterPaperOut, spoolerName, pi.Status)
+	}
+	return nil
 }
 
 // Print writes raw byte data directly to the Windows Spooler.
@@ -188,6 +351,17 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+
+	// Pre-flight check printer status before allocating worker slots.
+	// The check itself is bounded (see runPreflightBounded): a wedged
+	// spooler RPC must not wedge the caller before the worker machinery
+	// below even starts. Single-flight (see boundedPreflight) additionally
+	// guarantees repeated timeouts cannot accumulate stuck helpers.
+	if err := p.boundedPreflight(ctx, preflightTimeout, func() error {
+		return preFlightSpoolerCheck(p.SpoolerName)
+	}); err != nil {
+		return fmt.Errorf("pre-flight spooler check failed: %w", err)
 	}
 
 	select {
@@ -211,9 +385,18 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	select {
 	case <-ctx.Done():
 		close(cancelNotice)
-		// Return immediately without touching Win32 handle.
-		// Worker manages its own handle lifecycle and closes it safely upon return.
-		return fmt.Errorf("spooler print cancelled: %w", ctx.Err())
+		// The worker may already be past WritePrinter. Wait a bounded time
+		// for its authoritative result; whatever it reports (including
+		// UNKNOWN_PARTIAL_DELIVERY from a mid-write cancel) is returned as
+		// is. If the Win32 call never returns, the outcome is unknown BY
+		// DEFINITION and must be reported as such — never as a clean
+		// not-printed failure, which would invite a duplicate reprint.
+		select {
+		case res := <-resultCh:
+			return res.err
+		case <-time.After(30 * time.Second):
+			return MarkUnknown("spooler session on %q still active after cancellation (bytes written unknown): %v", p.SpoolerName, ctx.Err())
+		}
 	case res := <-resultCh:
 		if res.err != nil {
 			return res.err
@@ -302,27 +485,27 @@ func (p *SpoolerPrinter) Status() string {
 }
 
 type printerInfo2 struct {
-	pServerName          *uint16
-	pPrinterName         *uint16
-	pShareName           *uint16
-	pPortName            *uint16
-	pDriverName          *uint16
-	pComment             *uint16
-	pLocation            *uint16
-	pDevMode             uintptr
-	pSepFile             *uint16
-	pPrintProcessor      *uint16
-	pDatatype            *uint16
-	pParameters          *uint16
-	pSecurityDescriptor  uintptr
-	Attributes           uint32
-	Priority             uint32
-	DefaultPriority      uint32
-	StartTime            uint32
-	UntilTime            uint32
-	Status               uint32
-	cJobs                uint32
-	AveragePPM           uint32
+	pServerName         *uint16
+	pPrinterName        *uint16
+	pShareName          *uint16
+	pPortName           *uint16
+	pDriverName         *uint16
+	pComment            *uint16
+	pLocation           *uint16
+	pDevMode            uintptr
+	pSepFile            *uint16
+	pPrintProcessor     *uint16
+	pDatatype           *uint16
+	pParameters         *uint16
+	pSecurityDescriptor uintptr
+	Attributes          uint32
+	Priority            uint32
+	DefaultPriority     uint32
+	StartTime           uint32
+	UntilTime           uint32
+	Status              uint32
+	cJobs               uint32
+	AveragePPM          uint32
 }
 
 func utf16PtrToString(p *uint16) string {

@@ -25,7 +25,8 @@
         <field name="arch" type="xml">
             <form string="Print Gateway Binding" class="o_pg_view o_pg_form">
                 <header>
-                    <button name="action_verify_remote_hardware" type="object" string="Test Hardware Reachability" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
+                    <button name="action_send_test_print" type="object" string="Send Test Page" class="btn btn-primary" icon="fa-print" invisible="not runtime_agent_id or not printer_id"/>
+                    <button name="action_verify_remote_hardware" type="object" string="Validate Registration (Gateway)" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
                 </header>
                 <sheet>
                     <div class="o_pg_record_header">
@@ -87,6 +88,13 @@
                             <group string="Runtime Target">
                                 <field name="runtime_agent_id" string="Gateway Runtime Agent" widget="gateway_runtime_agent"/>
                                 <field name="printer_id" string="Gateway Runtime Printer" widget="gateway_runtime_printer"/>
+                                <field name="printer_protocol" string="Printer Protocol"/>
+                                <field name="fallback_binding_id" string="Failover Backup Binding" options="{'no_create': True}"/>
+                            </group>
+                            <group string="Hardware Peripherals (ESC/POS)">
+                                <field name="drawer_kick_mode" string="Cash Drawer Kick"/>
+                                <field name="cutter_mode" string="Paper Cutter"/>
+                                <field name="buzzer_mode" string="Kitchen Chime"/>
                             </group>
                             <group string="Routing">
                                 <field name="enabled" widget="boolean_toggle"/>

@@ -221,8 +221,3 @@ export function isVirtualPrinterRecord(printer: PrinterLike | null | undefined):
   if (!name) return false;
   return SOFTWARE_WRITER_TOKENS.some((pattern) => name.includes(pattern));
 }
-
-/** A printer row that may be routed to, bound and used for jobs. */
-export function isRoutablePrinterRecord(printer: PrinterLike | null | undefined): boolean {
-  return !isVirtualPrinterRecord(printer);
-}

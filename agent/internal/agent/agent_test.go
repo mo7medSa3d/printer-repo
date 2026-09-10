@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ const jobIDPrefix = "JOBID:"
 func makeJobPayload(jobID string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":     "raw",
+		"protocol": "raw",
 		"encoding": "base64",
 		"data":     base64.StdEncoding.EncodeToString([]byte(jobIDPrefix + jobID)),
 	}
@@ -113,7 +115,9 @@ func (f *fakePrinter) Print(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (f *fakePrinter) Test(ctx context.Context) error { return f.Print(ctx, []byte(jobIDPrefix+"test")) }
+func (f *fakePrinter) Test(ctx context.Context) error {
+	return f.Print(ctx, []byte(jobIDPrefix+"test"))
+}
 
 func (f *fakePrinter) Status() string {
 	if f.status != "" {
@@ -166,7 +170,7 @@ func newTestAgent(t *testing.T, printerID string, p printer.Printer) *Agent {
 		t.Fatalf("New: %v", err)
 	}
 	ag.printers = map[string]printer.Printer{printerID: p}
-	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100"}}
+	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}}
 	t.Cleanup(func() {
 		server.Close()
 		if err := ag.Close(); err != nil {
@@ -252,8 +256,8 @@ func TestDifferentPrintersConcurrent(t *testing.T) {
 	defer func() { _ = ag.Close() }()
 	ag.printers = map[string]printer.Printer{"p1": p1, "p2": p2}
 	ag.printerConfigs = map[string]config.PrinterConfig{
-		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100"},
-		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101"},
+		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"},
+		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101", Protocol: "raw"},
 	}
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -434,9 +438,9 @@ func TestDifferentJobsAcrossThreePrintersConcurrent(t *testing.T) {
 	defer func() { _ = ag.Close() }()
 	ag.printers = map[string]printer.Printer{"p1": p1, "p2": p2, "p3": p3}
 	ag.printerConfigs = map[string]config.PrinterConfig{
-		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100"},
-		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101"},
-		"p3": {ID: "p3", Name: "P3", Type: "network", Endpoint: "127.0.0.1:9102"},
+		"p1": {ID: "p1", Name: "P1", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"},
+		"p2": {ID: "p2", Name: "P2", Type: "network", Endpoint: "127.0.0.1:9101", Protocol: "raw"},
+		"p3": {ID: "p3", Name: "P3", Type: "network", Endpoint: "127.0.0.1:9102", Protocol: "raw"},
 	}
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -507,7 +511,7 @@ func TestTTLExpiredSkipped(t *testing.T) {
 	ctx := context.Background()
 	job := map[string]interface{}{
 		"id": "expired_job", "printerId": "p1",
-		"payload": makeJobPayload("expired_job"),
+		"payload":   makeJobPayload("expired_job"),
 		"expiresAt": time.Now().Add(-time.Minute).Format(time.RFC3339),
 	}
 	ag.processJob(ctx, job)
@@ -522,7 +526,7 @@ func TestDuplicateSkippedAfterSuccess(t *testing.T) {
 	ctx := context.Background()
 	job := map[string]interface{}{
 		"id": "dup_job", "printerId": "p1",
-		"payload": makeJobPayload("dup_job"),
+		"payload":   makeJobPayload("dup_job"),
 		"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
 	}
 	ag.processJob(ctx, job)
@@ -552,5 +556,193 @@ func TestSingleFlightProbeGuard(t *testing.T) {
 	state.running.Store(false)
 	if !state.running.CompareAndSwap(false, true) {
 		t.Fatal("CAS after store(false) must succeed")
+	}
+}
+
+func TestKeepAliveEchoesClaimTokens(t *testing.T) {
+	// The heartbeat keep-alive must carry (jobId, claimToken) pairs so the
+	// gateway can fence the lease refresh to the live claim. A bare job id
+	// would let a stale worker extend a reclaimed lease.
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	p := &fakePrinter{blocked: release, startedCh: started}
+	ag := newTestAgent(t, "p1", p)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	job := map[string]interface{}{
+		"id":         "job-ka-1",
+		"printerId":  "p1",
+		"payload":    makeJobPayload("job-ka-1"),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "tok-live-9",
+	}
+	go ag.dispatchJob(ctx, job)
+	select {
+	case got := <-started:
+		if got != "job-ka-1" {
+			t.Fatalf("unexpected job started: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("job never reached the printer")
+	}
+	pairs := ag.inFlightJobIDs(64)
+	if len(pairs) != 1 || pairs[0]["jobId"] != "job-ka-1" || pairs[0]["claimToken"] != "tok-live-9" {
+		t.Fatalf("keep-alive must echo the live claim token, got %v", pairs)
+	}
+	close(release)
+	ag.waitForJobs()
+	assertNoInFlight(t, ag)
+}
+
+func TestAuthorizeDispatchAfterReportFailure(t *testing.T) {
+	now := time.Now()
+	transportErr := errors.New("connection refused")
+	cases := []struct {
+		name      string
+		received  time.Time
+		expires   time.Time
+		hasExpiry bool
+		err       error
+		want      bool
+	}{
+		{"fence rejection never proceeds", now, time.Time{}, false, ErrStaleClaim, false},
+		{"explicit gateway rejection never proceeds", now, time.Time{}, false, ErrTransitionRejected, false},
+		{"nil error proceeds (defensive: gate only runs on error)", now, time.Time{}, false, nil, true},
+		{"transport failure with fresh receipt proceeds", now.Add(-10 * time.Second), time.Time{}, false, transportErr, true},
+		{"transport failure with stale receipt refuses", now.Add(-time.Hour), time.Time{}, false, transportErr, false},
+		{"transport failure with unknown receipt refuses", time.Time{}, time.Time{}, false, transportErr, false},
+		{"transport failure past TTL refuses even when fresh", now.Add(-time.Second), now.Add(-time.Second), true, transportErr, false},
+		{"transport failure before TTL proceeds when fresh", now.Add(-time.Second), now.Add(time.Hour), true, transportErr, true},
+		{"boundary: exactly at the window refuses", now.Add(-staleClaimSafetyWindow), time.Time{}, false, transportErr, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := authorizeDispatchAfterReportFailure(tc.received, tc.expires, tc.hasExpiry, now, tc.err)
+			if got != tc.want {
+				t.Fatalf("proceed = %v, want %v (reason: %s)", got, tc.want, reason)
+			}
+			if got == tc.want && !got && reason == "" {
+				t.Fatalf("refusals must carry a forensic reason")
+			}
+		})
+	}
+}
+
+func TestStaleTransportFailureHaltsBeforeHardware(t *testing.T) {
+	// Gateway unreachable AND the delivery is older than the claim-lease
+	// window: a reclaim may already have completed, so the stale attempt
+	// must not touch the printer even though the failure is "only" a
+	// transport error.
+	server := newStatusTestServer(t)
+	defer server.Close()
+	cfg := &config.Config{}
+	cfg.Agent.ID = "agt_test"
+	cfg.Agent.Secret = "secret"
+	cfg.Server.URL = "http://127.0.0.1:1"
+	tmpDir := t.TempDir()
+	ag, err := New(cfg, filepath.Join(tmpDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = ag.Close() }()
+	p := &fakePrinter{}
+	ag.printers = map[string]printer.Printer{"p1": p}
+	ag.printerConfigs = map[string]config.PrinterConfig{"p1": {ID: "p1", Name: "T", Type: "network", Protocol: "raw", Endpoint: "127.0.0.1:9100"}}
+	jobID := "job-stale-transport"
+	// Simulate a delivery accepted long ago: dispatch acceptance stamped
+	// the receipt time, then the gateway went dark.
+	ag.inFlightMu.Lock()
+	ag.inFlight[jobID] = struct{}{}
+	ag.inFlightTokens[jobID] = "tok-old-1"
+	ag.inFlightReceived[jobID] = time.Now().Add(-time.Hour)
+	ag.inFlightMu.Unlock()
+	ag.processJob(context.Background(), map[string]interface{}{
+		"id":         jobID,
+		"printerId":  "p1",
+		"payload":    makeJobPayload(jobID),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "tok-old-1",
+	})
+	if p.calls != 0 {
+		t.Fatalf("stale attempt with unreachable gateway must print nothing, got %d calls", p.calls)
+	}
+	_, status, found, err := ag.queue.Get(jobID)
+	if err != nil || !found {
+		t.Fatalf("expected an aborted ledger row, found=%v err=%v", found, err)
+	}
+	if status == "printing" || status == "success" {
+		t.Fatalf("aborted attempt must not be left in %q", status)
+	}
+}
+
+func TestFreshTransportFailureStillPrints(t *testing.T) {
+	// The mirror case: gateway unreachable but the delivery is seconds old,
+	// so no reclaim could have completed. Offline-tolerant printing is
+	// preserved: the job prints and the ledger tracks it.
+	cfg := &config.Config{}
+	cfg.Agent.ID = "agt_test"
+	cfg.Agent.Secret = "secret"
+	cfg.Server.URL = "http://127.0.0.1:1"
+	tmpDir := t.TempDir()
+	ag, err := New(cfg, filepath.Join(tmpDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = ag.Close() }()
+	p := &fakePrinter{}
+	ag.printers = map[string]printer.Printer{"p1": p}
+	ag.printerConfigs = map[string]config.PrinterConfig{"p1": {ID: "p1", Name: "T", Type: "network", Protocol: "raw", Endpoint: "127.0.0.1:9100"}}
+	jobID := "job-fresh-transport"
+	ag.dispatchJob(context.Background(), map[string]interface{}{
+		"id":         jobID,
+		"printerId":  "p1",
+		"payload":    makeJobPayload(jobID),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "tok-fresh-1",
+	})
+	ag.waitForJobs()
+	if p.calls != 1 {
+		t.Fatalf("fresh delivery with unreachable gateway must still print once, got %d calls", p.calls)
+	}
+}
+
+func TestAddPrinterRefreshesChangedRuntimeConfig(t *testing.T) {
+	p1 := &fakePrinter{}
+	p2 := &fakePrinter{}
+	ag := newTestAgent(t, "prt-refresh", p1)
+	stored := config.PrinterConfig{ID: "prt-refresh", Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}
+
+	// Identical re-registration (every discovery sweep): no-op, no churn.
+	if ag.addPrinter("prt-refresh", p1, stored) {
+		t.Fatal("identical re-registration must be a no-op returning false")
+	}
+	if got, ok := ag.getPrinter("prt-refresh"); !ok || got != printer.Printer(p1) {
+		t.Fatal("no-op re-registration must not disturb the registered backend")
+	}
+
+	// Changed endpoint (DHCP reassignment is the classic case): both the
+	// backend object and the stored facts must move to the new config, or
+	// dispatch, capability gating, and heartbeats keep using the dead device.
+	moved := stored
+	moved.Endpoint = "192.0.2.99:9100"
+	if !ag.addPrinter("prt-refresh", p2, moved) {
+		t.Fatal("changed re-registration must refresh and return true")
+	}
+	if got, ok := ag.getPrinter("prt-refresh"); !ok || got != printer.Printer(p2) {
+		t.Fatal("runtime backend must be the newly registered object")
+	}
+	facts, ok := ag.deviceFacts("prt-refresh")
+	if !ok {
+		t.Fatal("facts must exist for the refreshed printer")
+	}
+	_ = facts
+	pc, ok := func() (config.PrinterConfig, bool) {
+		ag.printersMu.RLock()
+		defer ag.printersMu.RUnlock()
+		v, ok := ag.printerConfigs["prt-refresh"]
+		return v, ok
+	}()
+	if !ok || pc.Endpoint != "192.0.2.99:9100" {
+		t.Fatalf("stored facts must carry the new endpoint, got %+v", pc)
 	}
 }

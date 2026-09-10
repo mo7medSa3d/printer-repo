@@ -10,6 +10,7 @@ import {
   sha256,
 } from "./helpers/pg";
 import { POST as printJobsPOST, GET as printJobsGET } from "../src/app/api/print/jobs/route";
+import { createPrintJobForPrinter } from "../src/lib/print-job-service";
 
 const suite = describe.skipIf(!hasTestDatabase);
 
@@ -193,5 +194,62 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const second = await sameOperationFromOtherInstallation.json();
     expect(second.jobId).not.toBe(created.jobId);
     expect(await jobCount()).toBe(2);
+  });
+
+  it("internal requests (api_key_id is null) converge concurrently on one logical job", async () => {
+    const key = "op-internal-concurrent";
+    const payload = { type: "pdf", encoding: "base64", data: pdfBase64() };
+    const opts = {
+      requestedBy: "internal-service",
+      idempotencyKey: key,
+      destination: "POS",
+      documentType: "invoice",
+      rateLimitKeyId: null,
+    };
+    const results = await Promise.all([
+      createPrintJobForPrinter(f.printerId, payload, opts),
+      createPrintJobForPrinter(f.printerId, payload, opts),
+      createPrintJobForPrinter(f.printerId, payload, opts),
+    ]);
+    const ids = new Set(results.map((r) => r.id));
+    expect(ids.size).toBe(1);
+    expect(await jobCount()).toBe(1);
+    const reusedCount = results.filter((r) => r.isReused).length;
+    expect(reusedCount).toBe(2);
+  });
+
+  it("internal requests with same idempotency key targeting different printers/agents are rejected", async () => {
+    const otherAgentId = "agent_other_internal";
+    const otherPrinterId = "printer_other_internal";
+    await pool().query(
+      `INSERT INTO agents (id, name, status, lifecycle, metadata) VALUES ($1, 'Other Agent', 'online', 'active', '{"hostname":"host2","version":"1.0.0"}'::jsonb)`,
+      [otherAgentId],
+    );
+    await pool().query(
+      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+       VALUES ($1, $2, 'Other Printer', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, '{"supported_protocols":["pdf"]}'::jsonb)`,
+      [otherPrinterId, otherAgentId],
+    );
+
+    const key = "op-internal-agent-conflict";
+    const payload = { type: "pdf", encoding: "base64", data: pdfBase64() };
+    const first = await createPrintJobForPrinter(f.printerId, payload, {
+      requestedBy: "internal-service",
+      idempotencyKey: key,
+      destination: "POS",
+      documentType: "invoice",
+      rateLimitKeyId: null,
+    });
+    expect(first.id).toMatch(/^job_/);
+
+    await expect(
+      createPrintJobForPrinter(otherPrinterId, payload, {
+        requestedBy: "internal-service",
+        idempotencyKey: key,
+        destination: "POS",
+        documentType: "invoice",
+        rateLimitKeyId: null,
+      }),
+    ).rejects.toThrow();
   });
 });

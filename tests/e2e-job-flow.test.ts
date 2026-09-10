@@ -51,10 +51,15 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect(envelope.job.status).toBe("claimed");
     expect(envelope.job.payload.type).toBe("pdf");
 
-    ws.send(JSON.stringify({ type: "job_ack", jobId: created.jobId }));
+    ws.send(JSON.stringify({ type: "job_ack", jobId: created.jobId, claimToken: envelope.job.claimToken }));
     await expect.poll(async () => (await jobRow(created.jobId)).acked_at !== null, { timeout: 5000 }).toBe(true);
-    const patch = (status: string) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status }) }));
+    // Execution fencing: every status report must carry the claim token the
+    // gateway attached to THIS delivery attempt.
+    expect(envelope.job.claimToken).toMatch(/.{8,}/);
+    const patch = (status: string, token: string | null = envelope.job.claimToken) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status, ...(token ? { claimToken: token } : {}) }) }));
     expect((await patch("printing")).status).toBe(200);
+    // A superseded/forged token can never finalize the job.
+    expect((await patch("success", "stale-token-from-a-dead-attempt")).status).toBe(409);
     expect((await patch("success")).status).toBe(200);
     const statusRes = await printJobsGET(new Request(`http://gateway.test/api/print/jobs?id=${created.jobId}`, { headers: { Authorization: `Bearer ${f.odooKey}` } }));
     expect(statusRes.status).toBe(200);
@@ -72,12 +77,12 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect((await res.json()).code).toBe("CAPABILITY_MISMATCH");
     const jobs = await pool().query(`SELECT count(*)::int AS n FROM print_jobs`);
     expect(jobs.rows[0].n).toBe(0);
-    const ok = await printJobsPOST(odooRequest(escpos.odooKey, { printerId: escpos.printerId, documentType: "receipt", payload: { type: "escpos", encoding: "base64", data: Buffer.from("\x1b@hello\x1dV\x01").toString("base64") } }));
+    const ok = await printJobsPOST(odooRequest(escpos.odooKey, { printerId: escpos.printerId, documentType: "receipt", payload: { type: "escpos", protocol: "escpos", encoding: "base64", data: Buffer.from("\x1b@hello\x1dV\x01").toString("base64") } }));
     expect(ok.status).toBe(201);
   });
 
   it("keeps a job queued when no agent socket is connected", async () => {
-    const res = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
+    const res = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", protocol: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
     expect(res.status).toBe(201);
     const created = await res.json();
     const row = await jobRow(created.jobId);
@@ -86,7 +91,7 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
   });
 
   it("supports polling claims and explicit job ACK", async () => {
-    const createRes = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
+    const createRes = await printJobsPOST(odooRequest(f.odooKey, { printerId: f.printerId, destination: "POS", documentType: "receipt", payload: { type: "raw", protocol: "raw", encoding: "base64", data: Buffer.from("hello").toString("base64") } }));
     expect(createRes.status).toBe(201);
     const created = await createRes.json();
     const pollRes = await agentJobsGET(new Request("http://gateway.test/api/agent/jobs", { headers: { Authorization: f.agentAuth } }));
@@ -95,9 +100,18 @@ suite("end-to-end job flow (Odoo -> Gateway -> agent socket -> status)", () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0].id).toBe(created.jobId);
     expect(jobs[0].status).toBe("claimed");
+    expect(jobs[0].claimToken).toMatch(/.{8,}/);
+    // claimed != delivered: committing the claim row is not proof the HTTP
+    // response reached the agent, so no delivery evidence is stamped here.
     expect((await jobRow(created.jobId)).delivered_at).toBeNull();
-    expect((await agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status: "printing" }) }))).status).toBe(200);
-    await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId }));
+    const pollPatch = (status: string, token?: string) => agentJobsPATCH(new Request("http://gateway.test/api/agent/jobs", { method: "PATCH", headers: { Authorization: f.agentAuth, "content-type": "application/json" }, body: JSON.stringify({ jobId: created.jobId, status, ...(token ? { claimToken: token } : {}) }) }));
+    // Fenced: reporting without the claim token is rejected.
+    expect((await pollPatch("printing")).status).toBe(409);
+    expect((await pollPatch("printing", jobs[0].claimToken)).status).toBe(200);
+    // The fenced status report proves the agent holds this attempt, so
+    // delivery evidence is stamped now (and only now).
+    expect((await jobRow(created.jobId)).delivered_at).not.toBeNull();
+    await handleAgentMessage(f.agentId, JSON.stringify({ type: "job_ack", jobId: created.jobId, claimToken: jobs[0].claimToken }));
     const row = await jobRow(created.jobId);
     expect(row.acked_at).not.toBeNull();
     expect(row.delivered_at).not.toBeNull();

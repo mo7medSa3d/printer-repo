@@ -117,6 +117,39 @@ suite("discovery trust and approval flow", () => {
     expect(device.rows[0].provisioned_printer_id).toBe(body.printerId);
   });
 
+  it("refuses to provision an LPR-only candidate as raw (LAW: no heuristic protocol inference)", async () => {
+    // An LPR probe only proves TCP 515 accepts connections. The LPD daemon
+    // there does not consume a raw byte stream, so mapping lpr -> raw would
+    // write raw job bytes to port 515 - the exact re-labeling the agent's
+    // NormalizedProtocol refuses. Such candidates must land on the explicit
+    // unsupported-transport gate, never on a silently invented protocol.
+    const discoveryId = await createDiscoverySession();
+    await agentRequest(discoveryId, [{
+      id: "device-lpr-1", source: ["lpr"], protocol: "lpr", ipAddress: "192.168.10.77", port: 515,
+      uri: "lpd://192.168.10.77", deviceName: "LPR Printer",
+    }]);
+
+    const manager = await createManagerSession();
+    const verify = await verifyPOST(
+      await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-lpr-1/verify`),
+      { params: Promise.resolve({ id: f.agentId, deviceId: "device-lpr-1" }) } as any,
+    );
+    expect(verify.status).toBe(200);
+
+    const provision = await provisionPOST(
+      await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-lpr-1/provision`),
+      { params: Promise.resolve({ id: f.agentId, deviceId: "device-lpr-1" }) } as any,
+    );
+    expect(provision.status).toBe(422);
+    expect((await provision.json()).code).toBe("UNSUPPORTED_DISCOVERY_TRANSPORT");
+
+    // No printer row may exist for the LPR device under any protocol.
+    const printers = await pool().query(`SELECT id, protocol FROM printers WHERE config->>'ip' = '192.168.10.77'`);
+    expect(printers.rows).toEqual([]);
+    const device = await pool().query(`SELECT candidate_status FROM discovered_devices WHERE id = 'device-lpr-1'`);
+    expect(device.rows[0].candidate_status).not.toBe("provisioned");
+  });
+
   it("serializes concurrent provisioning so one candidate cannot create two printers", async () => {
     const discoveryId = await createDiscoverySession();
     await agentRequest(discoveryId, [{

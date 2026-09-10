@@ -53,7 +53,10 @@ export function PrintersPage({ s }: { s: DesktopState }) {
         >
           <option value="all">All statuses</option>
           <option value="online">Online</option>
+          <option value="busy">Busy</option>
           <option value="offline">Offline</option>
+          <option value="error">Error</option>
+          <option value="unknown">Status unknown</option>
         </Select>
         <div className="flex flex-wrap gap-3">
           <Button

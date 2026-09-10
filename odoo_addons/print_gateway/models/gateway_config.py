@@ -172,7 +172,7 @@ class PrintGatewayConfig(models.Model):
 
 class PrintGatewayPairAgentWizard(models.TransientModel):
     _name = "print_gateway.pair_agent_wizard"
-    _description = "Pair New Agent Wizard"
+    _description = "Assign Runtime Agent Wizard"
 
     config_id = fields.Many2one("print_gateway.gateway_config", string="Gateway Configuration", required=True)
     company_id = fields.Many2one("res.company", related="config_id.company_id", readonly=True)
@@ -181,58 +181,70 @@ class PrintGatewayPairAgentWizard(models.TransientModel):
         domain="[('parent_id', '=', company_id)]",
         required=True,
     )
+    agent_id = fields.Char(
+        string="Runtime Agent ID",
+        help="Identifier of an active Agent registered with the Central Gateway.",
+    )
     pairing_code = fields.Char(
-        string="6-Digit Pairing Code",
-        required=True,
-        size=6,
-        help="Enter the 6-character code displayed on the Windows Print Agent application or Central Gateway.",
+        string="Agent Reference / ID",
+        help="Identifier or name of the Agent to assign to this branch.",
     )
 
     def action_confirm_pairing(self):
         self.ensure_one()
-        code = (self.pairing_code or "").strip().upper()
-        if len(code) != 6:
-            raise ValidationError(_("The pairing code must be exactly 6 characters."))
+        target = (self.agent_id or self.pairing_code or "").strip()
+        if not target:
+            raise ValidationError(_("Please provide a valid Runtime Agent ID."))
         config = self.config_id
         try:
-            response = requests.post(
-                "%s/api/pair" % config._gateway_base(for_request=True),
-                json={"pairingCode": code},
-                headers={"Accept": "application/json"},
+            response = requests.get(
+                "%s/api/odoo/agents" % config._gateway_base(for_request=True),
+                headers=config._gateway_headers(),
                 timeout=(5, 10),
                 allow_redirects=False,
             )
-            if response.status_code == 429:
-                raise ValidationError(_("Too many pairing attempts. Please wait a few moments before trying again."))
+            if response.status_code in (401, 403):
+                raise ValidationError(_("Gateway authentication failed. Please check your Gateway API key."))
             if response.status_code != 200:
-                body = response.json() if response.content else {}
-                err = body.get("error") or ("HTTP %s" % response.status_code)
-                raise ValidationError(_("Pairing failed: %s") % err)
-            data = response.json()
-            agent_id = data.get("agentId")
-            if not agent_id:
-                raise ValidationError(_("Gateway did not return an agent identifier."))
-
+                raise ValidationError(_("Gateway agent discovery failed (HTTP %s).") % response.status_code)
+            body = response.json() if response.content else {}
+            agents_list = body.get("agents") if isinstance(body, dict) else []
+            matched = next(
+                (a for a in agents_list if isinstance(a, dict) and (a.get("id") == target or a.get("name") == target)),
+                None,
+            )
+            if not matched:
+                available = [a.get("id") for a in agents_list if isinstance(a, dict) and a.get("id")]
+                raise ValidationError(
+                    _("Agent '%s' not found on Central Gateway. Registered active agents: %s")
+                    % (target, ", ".join(available) if available else _("none"))
+                )
+            if matched.get("lifecycle") != "active":
+                raise ValidationError(
+                    _("Agent '%s' cannot be assigned because its status is '%s'. Only active agents are allowed.")
+                    % (matched.get("name") or target, matched.get("lifecycle"))
+                )
+            resolved_agent_id = matched["id"]
             assignment_model = self.env["print_gateway.runtime_agent_assignment"]
             existing = assignment_model.search([
                 ("company_id", "=", config.company_id.id),
                 ("branch_id", "=", self.branch_id.id),
             ], limit=1)
             if existing:
-                existing.write({"runtime_agent_id": agent_id, "enabled": True})
+                existing.write({"runtime_agent_id": resolved_agent_id, "enabled": True})
             else:
                 assignment_model.create({
                     "company_id": config.company_id.id,
                     "branch_id": self.branch_id.id,
-                    "runtime_agent_id": agent_id,
+                    "runtime_agent_id": resolved_agent_id,
                     "enabled": True,
                 })
             return {
                 "type": "ir.actions.client",
                 "tag": "display_notification",
                 "params": {
-                    "title": _("Agent Paired Successfully"),
-                    "message": _("Agent %s paired and assigned to %s.") % (agent_id, self.branch_id.name),
+                    "title": _("Agent Assigned Successfully"),
+                    "message": _("Agent %s assigned to %s.") % (resolved_agent_id, self.branch_id.name),
                     "type": "success",
                     "sticky": False,
                 },
@@ -240,5 +252,6 @@ class PrintGatewayPairAgentWizard(models.TransientModel):
         except ValidationError:
             raise
         except requests.RequestException as exc:
-            raise ValidationError(_("Gateway connection timed out during pairing.")) from exc
+            raise ValidationError(_("Gateway connection timed out while querying registered agents.")) from exc
+
 

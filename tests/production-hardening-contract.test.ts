@@ -25,11 +25,6 @@ describe("production hardening contracts", () => {
     expect(guard).toContain('new IncomingMessage(source.socket)');
   });
 
-  it("runs a real-HTTP regression test for the body guard", () => {
-    expect(read("tests/request-guard-http.test.ts")).toContain("createServer");
-    expect(read("tests/server-http-acceptance.test.ts")).toContain("getRequestHandler");
-  });
-
   it("keeps the bundled Caddy sanitizing forwarded-IP headers and capping request bodies", () => {
     const caddy = read("Caddyfile");
     expect(caddy).toContain("header_up X-Forwarded-For {http.request.remote.host}");

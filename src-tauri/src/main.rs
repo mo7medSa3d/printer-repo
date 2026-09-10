@@ -42,27 +42,11 @@ fn main() {
             #[cfg(windows)]
             {
                 use tauri_plugin_autostart::ManagerExt;
-
-                // Autostart defaults to ON only on the FIRST launch.
-                // Once the user has made a choice (set_autostart writes
-                // the marker file), this block must not override it —
-                // the old unconditional enable() silently re-enabled
-                // autostart on every app start, breaking the user's
-                // "off" choice. (audit #21)
-                let touched = paths::manager_data_root().join("autostart-user-choice");
-                if touched.exists() {
-                    logging::info("desktop autostart left as configured by the user");
-                } else {
-                    match app.autolaunch().enable() {
-                        Ok(_) => logging::info("desktop autostart enabled by default on first launch"),
-                        Err(e) => logging::warn(&format!(
-                            "desktop autostart could not be enabled by default: {e}"
-                        )),
-                    }
-                    if let Err(e) = std::fs::write(&touched, "1") {
-                        logging::warn(&format!("could not persist autostart marker: {e}"));
-                    }
-                }
+                apply_first_launch_autostart(
+                    &paths::manager_data_root().join("autostart-user-choice"),
+                    || app.autolaunch().enable().map_err(|e| e.to_string()),
+                    |path| std::fs::write(path, "1").map_err(|e| e.to_string()),
+                );
             }
 
             tray::setup_tray(app.handle())?;
@@ -133,4 +117,106 @@ fn main() {
         }
         _ => {}
     });
+}
+
+/// Autostart defaults to ON only on the FIRST launch. Once the user has made
+/// a choice (`set_autostart` writes the marker file) this must not override
+/// it — the old unconditional `enable()` silently re-enabled autostart on
+/// every app start, breaking the user's "off" choice (audit #21).
+///
+/// The marker means "a default-enable SUCCEEDED or the user chose", never
+/// "we tried": when `enable()` fails the marker must NOT be written, so the
+/// next launch retries instead of being permanently suppressed by a false
+/// success record.
+#[cfg(windows)]
+fn apply_first_launch_autostart(
+    marker: &std::path::Path,
+    enable: impl FnOnce() -> Result<(), String>,
+    write_marker: impl FnOnce(&std::path::Path) -> Result<(), String>,
+) {
+    if marker.exists() {
+        logging::info("desktop autostart left as configured by the user");
+        return;
+    }
+    match enable() {
+        Ok(()) => {
+            logging::info("desktop autostart enabled by default on first launch");
+            if let Err(e) = write_marker(marker) {
+                logging::warn(&format!("could not persist autostart marker: {e}"));
+            }
+        }
+        Err(e) => {
+            // No marker: a failed first attempt must remain RETRYABLE on the
+            // next launch. This is the defect this function now proves.
+            logging::warn(&format!(
+                "desktop autostart could not be enabled by default (will retry on next launch): {e}"
+            ));
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod autostart_tests {
+    use super::apply_first_launch_autostart;
+
+    fn temp_marker(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("odoo-autostart-{test}-{:?}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("autostart-user-choice")
+    }
+
+    #[test]
+    fn first_launch_enable_success_persists_the_marker() {
+        let marker = temp_marker("ok");
+        let _ = std::fs::remove_file(&marker);
+        apply_first_launch_autostart(&marker, || Ok(()), |p| std::fs::write(p, "1").map_err(|e| e.to_string()));
+        assert!(marker.exists(), "successful default-enable must record the marker");
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn first_launch_enable_failure_must_not_persist_a_false_marker() {
+        // THE regression: previously the marker was written even when
+        // enable() failed, permanently suppressing the retry.
+        let marker = temp_marker("fail");
+        let _ = std::fs::remove_file(&marker);
+        let marker_written = std::cell::Cell::new(false);
+        apply_first_launch_autostart(
+            &marker,
+            || Err("registry denied".to_string()),
+            |_p| {
+                marker_written.set(true);
+                Ok(())
+            },
+        );
+        assert!(!marker_written.get(), "failed enable must not invoke the marker write at all");
+        assert!(!marker.exists(), "failed enable must leave the state retryable (no marker)");
+    }
+
+    #[test]
+    fn marker_present_never_re_enables_on_subsequent_launches() {
+        // Covers both the post-default-enable relaunch and the explicit user
+        // choice (set_autostart writes the same marker): enable() must not run.
+        let marker = temp_marker("present");
+        std::fs::write(&marker, "1").unwrap();
+        let mut enable_called = false;
+        apply_first_launch_autostart(
+            &marker,
+            || {
+                enable_called = true;
+                Ok(())
+            },
+            |_p| Ok(()),
+        );
+        assert!(!enable_called, "an existing marker means the decision is already recorded");
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn marker_write_failure_on_success_is_logged_not_fatal() {
+        let marker = temp_marker("writefail");
+        let _ = std::fs::remove_file(&marker);
+        apply_first_launch_autostart(&marker, || Ok(()), |_p| Err("disk full".to_string()));
+        assert!(!marker.exists());
+    }
 }

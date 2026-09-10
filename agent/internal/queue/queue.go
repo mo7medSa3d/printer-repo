@@ -2,6 +2,7 @@ package queue
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,13 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// ErrTerminalState is returned by BeginPrint when the local ledger holds a
+// terminal ('success') or unknown-outcome ('failed' + marker) record that
+// the requested transition may not legally reopen. Callers must treat it as
+// "this job already has a durable physical outcome; re-report it" and must
+// NOT confuse it with ledger unavailability (which requeues).
+var ErrTerminalState = errors.New("local ledger state is terminal; refusing to reopen for printing")
 
 // Queue is the Agent's local durable delivery queue. It is distinct from the
 // Gateway's PostgreSQL job table:
@@ -32,7 +40,8 @@ func New(dbPath string) (*Queue, error) {
 	if dir == "" || dir == "." {
 		dir = "."
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// 0700: local queue rows contain print payloads (receipts, invoices).
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create queue directory %s: %w", dir, err)
 	}
 
@@ -64,7 +73,8 @@ func New(dbPath string) (*Queue, error) {
 			last_error TEXT,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			claimed_at DATETIME
+			claimed_at DATETIME,
+			claim_token TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_queue_status ON print_jobs(status);
 		CREATE INDEX IF NOT EXISTS idx_queue_printer ON print_jobs(printer_id);
@@ -79,6 +89,7 @@ func New(dbPath string) (*Queue, error) {
 		`ALTER TABLE print_jobs ADD COLUMN last_error TEXT`,
 		`ALTER TABLE print_jobs ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE print_jobs ADD COLUMN claimed_at DATETIME`,
+		`ALTER TABLE print_jobs ADD COLUMN claim_token TEXT`,
 	} {
 		_, _ = db.Exec(col)
 	}
@@ -121,6 +132,97 @@ func (q *Queue) UpdateStatusWithError(id, status, lastErr string) error {
 	return err
 }
 
+// AbortPrint rolls a 'printing' ledger row back to 'queued' when the attempt
+// is cancelled BEFORE any byte reached hardware (currently: the gateway
+// rejected our claim at the fence, so another attempt owns the job).
+//
+// This is the inverse of BeginPrint and exists for crash-safety honesty: a
+// row left in 'printing' would be misread by MarkInterrupted after a restart
+// as "may have printed", permanently blocking legitimate redelivery. Aborting
+// clears the superseded claim token as well, so crash recovery never reports
+// with a dead token. The status predicate keeps this from clobbering a row
+// that concurrently reached a terminal state.
+func (q *Queue) AbortPrint(id, reason string) error {
+	_, err := q.db.Exec(
+		`UPDATE print_jobs SET status = 'queued', last_error = ?, claim_token = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'printing'`,
+		reason, id,
+	)
+	return err
+}
+
+// BeginPrint records the durable local ledger entry for a delivery attempt
+// and marks it as physically printing. It MUST succeed before any byte is
+// sent to hardware: if the local ledger cannot be written, the agent cannot
+// later prove whether this job printed, so dispatch is refused pre-dispatch
+// (safe, no bytes sent) with ErrLedgerUnavailable.
+//
+// STATE SAFETY (primitive level, not caller convention): BeginPrint may
+// only ever move a row INTO 'printing' from a non-terminal state. A local
+// record whose physical outcome is terminal ('success') or unknown/ambiguous
+// ('failed' carrying an unknown-outcome marker) is NEVER reopened by the
+// normal path: doing so would reprint a document whose previous attempt may
+// already have produced paper. The only sanctioned reopen of a marked
+// unknown row is the explicit, opt-in `reprint_after_crash` behavior,
+// surfaced here as allowUnknownReprint (and the caller only sets it from the
+// operator's documented configuration). A success row is never reopened
+// under any setting; the gateway treats success as terminal.
+//
+// Returns ErrTerminalState (without touching the row) when the guard
+// rejects the transition, and reports it as such so the caller re-reports
+// the stored outcome instead of mistaking it for ledger unavailability
+// (which would requeue the job).
+func (q *Queue) BeginPrint(id, printerID string, payload []byte, claimToken string, allowUnknownReprint bool) error {
+	unknown := "(" + unknownMarkerSQL("last_error") + ")"
+	guard := "(status = 'queued' OR status = 'printing' OR (status = 'failed' AND (last_error IS NULL OR NOT " + unknown + ")))"
+	if allowUnknownReprint {
+		guard = "status <> 'success'"
+	}
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO print_jobs (id, printer_id, payload, status, claim_token) VALUES (?, ?, ?, 'queued', ?)`,
+		id, printerID, payload, claimToken,
+	); err != nil {
+		return err
+	}
+	var res sql.Result
+	if claimToken != "" {
+		res, err = tx.Exec(
+			`UPDATE print_jobs SET status = 'printing', claim_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND `+guard,
+			claimToken, id,
+		)
+	} else {
+		res, err = tx.Exec(
+			`UPDATE print_jobs SET status = 'printing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND `+guard,
+			id,
+		)
+	}
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrTerminalState
+	}
+	return tx.Commit()
+}
+
+// ClaimTokenFor returns the claim token recorded for the most recent local
+// attempt of a job (used by crash recovery to report with its own token).
+func (q *Queue) ClaimTokenFor(id string) string {
+	var tok sql.NullString
+	if err := q.db.QueryRow(`SELECT claim_token FROM print_jobs WHERE id = ?`, id).Scan(&tok); err != nil {
+		return ""
+	}
+	return tok.String
+}
+
 // Get returns the local record for a gateway job id, if present.
 func (q *Queue) Get(id string) (printerID string, status string, found bool, err error) {
 	err = q.db.QueryRow(`SELECT printer_id, status FROM print_jobs WHERE id = ?`, id).Scan(&printerID, &status)
@@ -142,8 +244,9 @@ const InterruptedMarker = "AGENT_RESTART_DURING_PRINT"
 
 // InterruptedJob is a job that was left mid-print by a crash/restart.
 type InterruptedJob struct {
-	ID        string
-	PrinterID string
+	ID         string
+	PrinterID  string
+	ClaimToken string
 }
 
 // MarkInterrupted moves every job still recorded as 'printing' into a terminal
@@ -153,14 +256,14 @@ type InterruptedJob struct {
 // a row in 'printing' after a fresh start can only mean the previous process
 // died while the document was at the printer.
 func (q *Queue) MarkInterrupted() ([]InterruptedJob, error) {
-	rows, err := q.db.Query(`SELECT id, printer_id FROM print_jobs WHERE status = 'printing'`)
+	rows, err := q.db.Query(`SELECT id, printer_id, COALESCE(claim_token, '') FROM print_jobs WHERE status = 'printing'`)
 	if err != nil {
 		return nil, err
 	}
 	var found []InterruptedJob
 	for rows.Next() {
 		var j InterruptedJob
-		if err := rows.Scan(&j.ID, &j.PrinterID); err != nil {
+		if err := rows.Scan(&j.ID, &j.PrinterID, &j.ClaimToken); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -181,9 +284,28 @@ func (q *Queue) MarkInterrupted() ([]InterruptedJob, error) {
 	return found, nil
 }
 
-// WasInterrupted reports whether the local record for id is the terminal
-// failure produced by MarkInterrupted (i.e. a crash during physical printing).
-func (q *Queue) WasInterrupted(id string) bool {
+// UnknownOutcomeMarkers lists the local last_error prefixes whose physical
+// outcome is ambiguous. It must stay equal to the gateway's
+// PHYSICAL_OUTCOME_UNKNOWN_MARKERS (src/lib/job-status.ts) and to
+// printer.OutcomeMarkers (agent/internal/printer/outcome.go) — tests on both
+// sides lock the values. AGENT_RESTART_DURING_PRINT is queue.InterruptedMarker.
+// The full canonical list is kept here (not just the markers this package
+// writes today) so a future local writer of any ambiguous marker is refused
+// reprint by WasOutcomeUnknown instead of being misclassified as safely
+// retryable.
+var UnknownOutcomeMarkers = []string{
+	"AGENT_EXECUTION_TIMEOUT",
+	"AGENT_RESTART_DURING_PRINT",
+	"JOB_EXPIRED_DURING_PRINT",
+	"UNKNOWN_PARTIAL_DELIVERY",
+	"UNKNOWN_SUBMISSION_OUTCOME",
+}
+
+// WasOutcomeUnknown reports whether the local record for id carries a
+// physically ambiguous failure. Such rows are never reprinted by a duplicate
+// delivery unless reprint_after_crash is explicitly enabled: the previous
+// attempt may have produced paper.
+func (q *Queue) WasOutcomeUnknown(id string) bool {
 	var status string
 	var lastErr sql.NullString
 	if err := q.db.QueryRow(`SELECT status, last_error FROM print_jobs WHERE id = ?`, id).Scan(&status, &lastErr); err != nil {
@@ -192,7 +314,22 @@ func (q *Queue) WasInterrupted(id string) bool {
 	if status != "failed" || !lastErr.Valid {
 		return false
 	}
-	return strings.HasPrefix(lastErr.String, InterruptedMarker)
+	for _, marker := range UnknownOutcomeMarkers {
+		if strings.HasPrefix(lastErr.String, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// WasInterrupted reports whether the local record for id is the terminal
+// failure produced by MarkInterrupted (i.e. a crash during physical printing).
+func (q *Queue) WasInterrupted(id string) bool {
+	var lastErr sql.NullString
+	if err := q.db.QueryRow(`SELECT last_error FROM print_jobs WHERE id = ?`, id).Scan(&lastErr); err != nil {
+		return false
+	}
+	return lastErr.Valid && strings.HasPrefix(lastErr.String, InterruptedMarker)
 }
 
 // CountByStatus is a small diagnostic helper for the Tauri/desktop health view.

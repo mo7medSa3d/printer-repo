@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """Native Odoo print bindings: Odoo context -> Gateway runtime printer."""
 
+import logging
+
 from psycopg2 import IntegrityError
 import requests
 
 from odoo import api, fields, models, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
+
+_logger = logging.getLogger(__name__)
 
 
 DESTINATION_MODELS = [
@@ -87,9 +91,57 @@ class PrintGatewayBinding(models.Model):
     printer_id = fields.Char(
         string="Gateway Runtime Printer", required=True, index=True, copy=False,
     )
+    printer_protocol = fields.Selection([
+        ("escpos", "ESC/POS"),
+        ("zpl", "Zebra ZPL-II"),
+        ("tspl", "TSC TSPL"),
+        ("raw", "Raw Text/Binary"),
+        ("spooler", "Windows/macOS Document Spool (driver-rendered)"),
+        ("ipp", "IPP"),
+        ("ipps", "IPP over TLS"),
+        ("unknown", "Not declared (not routable)"),
+    ], string="Printer Protocol", required=True,
+       help="Hardware control language the printer ACTUALLY understands. "
+            "There is deliberately no default: declaring the protocol is an "
+            "explicit operator statement. 'unknown' keeps byte-stream jobs "
+            "unroutable (raw/zpl/tspl/escpos all require an exact match); "
+            "document (PDF/image) jobs additionally require the Gateway "
+            "printer itself to be a document transport. Byte protocols never "
+            "wildcard: a 'raw' printer does not accept zpl/tspl/escpos jobs.")
+    fallback_binding_id = fields.Many2one(
+        "print_gateway.binding", string="Failover Backup Binding", ondelete="set null",
+        domain="['&', ('id', '!=', id), ('company_id', '=', company_id)]",
+        help="Pre-dispatch failover target if the primary printer is confirmed offline before bytes are sent.",
+    )
+    drawer_kick_mode = fields.Selection([
+        ("none", "Disabled"),
+        ("pin2", "Pin 2 (0x1B 0x70 0x00)"),
+        ("pin5", "Pin 5 (0x1B 0x70 0x01)"),
+    ], string="Cash Drawer Kick", default="none", help="Hardware cash drawer pulse mode.")
+    cutter_mode = fields.Selection([
+        ("none", "No Cut"),
+        ("partial", "Partial Cut (0x1D 0x56 0x42)"),
+        ("full", "Full Cut (0x1D 0x56 0x41)"),
+    ], string="Paper Cutter", default="none", help="Hardware paper cutter command mode.")
+    buzzer_mode = fields.Selection([
+        ("none", "Disabled"),
+        ("epson_pulse", "Epson Pulse (0x1B 0x63 0x30 0x02)"),
+        ("star_bel", "Star Bell (0x07)"),
+    ], string="Kitchen Buzzer", default="none", help="Hardware audio chime.")
     enabled = fields.Boolean(default=True)
     priority = fields.Integer(default=10, help="Lower value is preferred when multiple bindings are valid.")
     name = fields.Char(compute="_compute_name", store=True)
+
+    def get_peripheral_payload(self):
+        self.ensure_one()
+        payload = {}
+        if self.drawer_kick_mode and self.drawer_kick_mode != "none":
+            payload["drawer"] = self.drawer_kick_mode
+        if self.cutter_mode and self.cutter_mode != "none":
+            payload["cutter"] = self.cutter_mode
+        if self.buzzer_mode and self.buzzer_mode != "none":
+            payload["buzzer"] = self.buzzer_mode
+        return payload
 
     _priority_unique = models.Constraint(
         "UNIQUE(company_id, branch_id, destination_ref, document_type, priority)",
@@ -200,9 +252,14 @@ class PrintGatewayBinding(models.Model):
         except (requests.RequestException, ValueError) as exc:
             raise ValidationError(_("Gateway runtime agent discovery is unavailable.")) from exc
         agents = body.get("agents") if isinstance(body, dict) else None
-        selected_agent = next((agent for agent in agents or [] if isinstance(agent, dict) and agent.get("id") == self.runtime_agent_id and agent.get("lifecycle", "active") != "retired"), None)
-        if not isinstance(agents, list) or not selected_agent:
-            raise ValidationError(_("The selected Gateway Runtime Agent is not an active runtime agent."))
+        agent_match = next((agent for agent in agents or [] if isinstance(agent, dict) and agent.get("id") == self.runtime_agent_id), None)
+        if not isinstance(agents, list) or not agent_match:
+            raise ValidationError(_("The selected Gateway Runtime Agent is not found."))
+        if agent_match.get("lifecycle") != "active":
+            raise ValidationError(
+                _("Agent '%s' cannot be assigned because its lifecycle is '%s'. Only agents with lifecycle 'active' may receive print jobs.")
+                % (agent_match.get("name") or self.runtime_agent_id, agent_match.get("lifecycle"))
+            )
         try:
             response = requests.get("%s/api/odoo/printers" % config._gateway_base(for_request=True), headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False)
             if response.status_code != 200:
@@ -213,9 +270,15 @@ class PrintGatewayBinding(models.Model):
         except (requests.RequestException, ValueError) as exc:
             raise ValidationError(_("Gateway runtime printer discovery is unavailable.")) from exc
         printers = body.get("printers") if isinstance(body, dict) else None
-        selected_printer = next((printer for printer in printers or [] if isinstance(printer, dict) and printer.get("id") == self.printer_id and printer.get("lifecycle", "active") != "retired"), None)
-        if not isinstance(printers, list) or not selected_printer:
-            raise ValidationError(_("The selected Gateway Runtime Printer is not an active runtime printer."))
+        printer_match = next((printer for printer in printers or [] if isinstance(printer, dict) and printer.get("id") == self.printer_id), None)
+        if not isinstance(printers, list) or not printer_match:
+            raise ValidationError(_("The selected Gateway Runtime Printer is not found."))
+        if printer_match.get("lifecycle") != "active":
+            raise ValidationError(
+                _("Printer '%s' cannot be assigned because its lifecycle is '%s'. Only printers with lifecycle 'active' may receive print jobs.")
+                % (printer_match.get("name") or self.printer_id, printer_match.get("lifecycle"))
+            )
+        selected_printer = printer_match
         agent = selected_printer.get("agent") if isinstance(selected_printer.get("agent"), dict) else {}
         if agent.get("id") != self.runtime_agent_id:
             raise ValidationError(_("Gateway Runtime Printer does not belong to the selected Runtime Agent."))
@@ -272,15 +335,47 @@ class PrintGatewayBinding(models.Model):
             if not isinstance(record.printer_id, str) or not record.printer_id.strip():
                 raise ValidationError(_("A Gateway Runtime Printer must be selected."))
 
-    def action_verify_remote_hardware(self):
+    def action_send_test_print(self):
+        """Construct a standardized diagnostic test page and submit via the Outbox pipeline."""
         self.ensure_one()
+        # A test page causes a PHYSICAL print side effect; the view hides the
+        # button from non-admins but the model is the authoritative boundary
+        # (the method is RPC-callable and binding ACLs are read-only for
+        # internal users, which would otherwise never fire here).
+        if not self.env.user.has_group("base.group_system"):
+            raise AccessError(_("Only Odoo system administrators can dispatch test pages."))
+        self._validate_runtime_target()
+        router = self.env["print_gateway.print_router"]
+        res = router.route_test_page(self)
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Test Print Dispatched"),
+                "message": res.get("message") or _("Diagnostic test page sent to printer '%s'.") % self.printer_id,
+                "type": "success",
+                "sticky": False,
+            },
+        }
+
+    def action_verify_remote_hardware(self):
+        """Validate the CONTROL-PLANE registration, not hardware reachability.
+
+        This checks that the agent and printer exist on the Gateway with
+        lifecycle 'active' and belong together. It deliberately does not
+        claim anything about the device being powered on or answering -
+        that is what Send Test Page is for.
+        """
+        self.ensure_one()
+        if not self.env.user.has_group("base.group_system"):
+            raise AccessError(_("Only Odoo system administrators can validate hardware registration."))
         self._validate_runtime_target()
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",
             "params": {
-                "title": _("Hardware Verification"),
-                "message": _("Gateway runtime agent (%s) and printer (%s) are reachable and verified active.") % (self.runtime_agent_id, self.printer_id),
+                "title": _("Registration Validated"),
+                "message": _("Gateway registration is consistent: agent '%s' and printer '%s' are registered and active. This is a control-plane check, not a live hardware test - use Send Test Page to validate the physical path.") % (self.runtime_agent_id, self.printer_id),
                 "type": "success",
                 "sticky": False,
             },
@@ -425,6 +520,13 @@ class PrintGatewayBinding(models.Model):
             return {"dispatched": False, "has_binding": False}
 
         records = self.env[report.model].browse(res_ids or []).exists()
+        # The rendered PDF leaves the Odoo perimeter (gateway + physical
+        # print), so the caller must hold READ access on every record it
+        # asked to render - exactly like the /report/download controller.
+        # Without this, an internal user could exfiltrate same-company
+        # documents they are not allowed to open via RPC dispatch.
+        if records:
+            records.check_access("read")
         router = self.env["print_gateway.print_router"]
         config = router._gateway_config(self.env.company)
         if not config:
@@ -442,11 +544,12 @@ class PrintGatewayBinding(models.Model):
                 branch=branch,
             )
         except Exception as exc:
+            _logger.warning("Failed to locate silent binding: %s", exc)
             return {
                 "has_binding": True,
                 "success": False,
                 "dispatched": False,
-                "error": str(exc),
+                "error": "Failed to evaluate print routing.",
                 "fail_closed": True,
             }
 
@@ -466,11 +569,12 @@ class PrintGatewayBinding(models.Model):
                 "message": route.get("message") or _("Sent silently to printer."),
             }
         except Exception as exc:
+            _logger.warning("Failed to execute silent print route: %s", exc)
             return {
                 "dispatched": False,
                 "success": False,
                 "has_binding": True,
-                "error": str(exc),
+                "error": "Print dispatch failed. Open Print Jobs for the reason; the document was not sent.",
                 "fail_closed": True,
             }
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   CheckCircle2,
   Eye,
   Inbox,
@@ -31,6 +32,7 @@ import {
   getManagerSession,
   loginManager,
   logoutManager,
+  onManagerAuthChanged,
 } from "../lib/ipc";
 import { friendlyPrinterError } from "../lib/printers";
 import {
@@ -43,7 +45,7 @@ import {
   labelJob,
 } from "../lib/printers";
 
-const TABS = ["all", "pending", "printing", "completed", "failed"] as const;
+const TABS = ["all", "queued", "printing", "printed", "unknown", "failed", "expired"] as const;
 
 export function JobsPage({ s }: { s: DesktopState }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
@@ -74,6 +76,30 @@ export function JobsPage({ s }: { s: DesktopState }) {
     return () => {
       cancelled = true;
     };
+  }, [s.gatewayUrl]);
+
+  // Session expiry happens silently in the background: any 401 handled by
+  // the ipc layer clears the stored token and fires an auth-changed event.
+  // Without this subscription the UI kept claiming the operator was signed
+  // in while every request was failing.
+  useEffect(() => {
+    if (!s.gatewayUrl) return;
+    return onManagerAuthChanged(() => {
+      let cancelled = false;
+      getManagerSession(s.gatewayUrl)
+        .then((status) => {
+          if (!cancelled) {
+            setAuthenticated(status.authenticated);
+            setAuthExpiresAt(status.expiresAt ?? null);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setAuthenticated(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    });
   }, [s.gatewayUrl]);
 
   const managerAuthenticated = Boolean(s.gatewayUrl) && authenticated;
@@ -118,10 +144,12 @@ export function JobsPage({ s }: { s: DesktopState }) {
 
   const tabCounts = {
     all: s.jobCounts.all,
-    pending: s.jobCounts.pending,
+    queued: s.jobCounts.queued,
     printing: s.jobCounts.printing,
-    completed: s.jobCounts.completed,
+    printed: s.jobCounts.printed,
+    unknown: s.jobCounts.unknown,
     failed: s.jobCounts.failed,
+    expired: s.jobCounts.expired,
   };
 
   const handleCleanup = async () => {
@@ -282,7 +310,9 @@ export function JobsPage({ s }: { s: DesktopState }) {
             icon={
               s.jobTab === "failed" ? (
                 <XCircle className="h-10 w-10 text-bad" />
-              ) : s.jobTab === "completed" ? (
+              ) : s.jobTab === "unknown" ? (
+                <AlertTriangle className="h-10 w-10 text-warn" />
+              ) : s.jobTab === "printed" ? (
                 <CheckCircle2 className="h-10 w-10 text-ok" />
               ) : (
                 <Inbox className="h-10 w-10" />
@@ -300,7 +330,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
                 ? "This printer has no jobs in the current view — clear the filter to see the full queue."
                 : s.jobTab === "failed"
                 ? "Failed jobs will appear here with the reason and printer."
-                : s.jobTab === "pending"
+                : s.jobTab === "queued"
                 ? "Queued jobs waiting for the agent to claim them."
                 : "Print jobs will appear here as soon as the agent starts printing."
             }
@@ -382,8 +412,8 @@ export function JobsPage({ s }: { s: DesktopState }) {
         }
       >
         <div className="space-y-3 text-sm text-ink-2">
-          <p>Only completed and failed local records are removed.</p>
-          <p>Queued and printing jobs are never touched.</p>
+          <p>Only completed and provably-failed local records are removed.</p>
+          <p>Queued, printing, and <strong>unknown-outcome</strong> records are kept — the latter are the evidence that a document may already have printed. Check the printer, then clear them from the agent CLI with <span className="font-mono">jobs cleanup --include-unknown</span> once reconciled.</p>
           <p>Gateway PostgreSQL history is not changed by this action.</p>
         </div>
       </Modal>

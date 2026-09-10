@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -438,7 +439,6 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 		{"raw tcp", &NetworkPrinter{Address: "127.0.0.1:9100"}, []string{KindRaw, KindESCPOS, KindImage}},
 		{"zpl tcp", &NetworkPrinter{Address: "127.0.0.1:9100", Protocol: "zpl"}, []string{KindRaw, KindZPL, KindLabel}},
 		{"tspl tcp", &NetworkPrinter{Address: "127.0.0.1:9100", Protocol: "tspl"}, []string{KindRaw, KindTSPL, KindLabel}},
-		{"label printer", NewLabelPrinter(&NetworkPrinter{Address: "127.0.0.1:9100"}, ProtocolZPL, "Zebra"), []string{KindRaw, KindZPL, KindTSPL, KindLabel}},
 		{"mock spooler", newMockSpoolerPrinter("Test"), []string{KindRaw, KindESCPOS, KindPDF}},
 		{"usb", &USBPrinter{ID: "u", Name: "USB"}, []string{KindRaw, KindESCPOS}},
 	}
@@ -453,13 +453,67 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewIPPPrinter: %v", err)
 	}
-	if got := SupportedKinds(ipp); fmt.Sprint(got) != fmt.Sprint([]string{KindRaw, KindESCPOS, KindPDF}) {
-		t.Fatalf("ipp: supported kinds = %v", got)
+	if got := SupportedKinds(ipp); fmt.Sprint(got) != fmt.Sprint([]string{KindPDF}) {
+		t.Fatalf("ipp: supported kinds = %v (IPP is a document transport; byte streams are not octet-spooled)", got)
 	}
 	if format, ok := ippDocumentFormatFor(KindPDF); !ok || format != ippFormatPDF {
 		t.Fatalf("IPP must send PDF as %s, got %q (ok=%v)", ippFormatPDF, format, ok)
 	}
-	if format, ok := ippDocumentFormatFor(KindESCPOS); !ok || format != ippFormatOctetStream {
-		t.Fatalf("IPP must send ESC/POS as %s, got %q (ok=%v)", ippFormatOctetStream, format, ok)
+	if _, ok := ippDocumentFormatFor(KindESCPOS); ok {
+		t.Fatalf("IPP must NOT accept ESC/POS octet spooling")
+	}
+}
+
+// --- Law 1: post-launch PDF failures are ambiguous, never retryable ------
+//
+// Once the external PDF renderer has been launched it owns the spool
+// submission; whether it handed pages to the physical spooler before
+// failing/timing out is not observable. Every post-launch failure must
+// therefore carry an unknown-outcome marker so the gateway never treats it
+// as a provably-not-printed (auto-retryable) result.
+
+func TestPDFHelperTimeoutIsUnknownOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sleep.exe availability differs across Windows runners; covered by TestPlatformPDFTimeoutIsUnknownOutcome")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	// Extra template args become script parameters; the script sleeps past
+	// the budget and exec.CommandContext kills it mid-run.
+	err := runPDFHelper(ctx, []string{"sh", "-c", "sleep 5", "{printer}", "{file}"}, "Test Printer", "/tmp/unused.pdf")
+	if err == nil {
+		t.Fatal("expected timeout error from PDF helper")
+	}
+	if !OutcomeUnknown(err) {
+		t.Fatalf("PDF helper timeout must be classified unknown (got: %v)", err)
+	}
+}
+
+func TestPDFHelperNonZeroExitIsUnknownOutcome(t *testing.T) {
+	// buildPDFHelperArgs requires a {file} placeholder; the extra args are
+	// consumed as script parameters, so the helper still exits non-zero.
+	helper := []string{"sh", "-c", "exit 3", "{printer}", "{file}"}
+	if runtime.GOOS == "windows" {
+		helper = []string{"cmd", "/C", "exit 3", "{printer}", "{file}"}
+	}
+	err := runPDFHelper(context.Background(), helper, "Test Printer", "/tmp/unused.pdf")
+	if err == nil {
+		t.Fatal("expected non-zero exit error from PDF helper")
+	}
+	if !OutcomeUnknown(err) {
+		t.Fatalf("PDF helper non-zero exit must be classified unknown (got: %v)", err)
+	}
+}
+
+func TestPDFHelperStartFailureIsPlainRetryable(t *testing.T) {
+	// A helper that never started transmitted nothing: provably
+	// pre-dispatch, so it stays a plain failure (retryable by policy).
+	helper := []string{"/definitely/not/a/real/binary/xyz", "{printer}", "{file}"}
+	err := runPDFHelper(context.Background(), helper, "Test Printer", "/tmp/unused.pdf")
+	if err == nil {
+		t.Fatal("expected start failure from PDF helper")
+	}
+	if OutcomeUnknown(err) {
+		t.Fatalf("helper start failure is provably pre-dispatch and must stay plain (got: %v)", err)
 	}
 }

@@ -4,21 +4,9 @@ import { agents, printers } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
 import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { parsePrinterInput } from "../../../lib/printer-model";
+import { parsePrinterInput, validateConnectionConfig } from "../../../lib/printer-model";
 
 export const dynamic = "force-dynamic";
-
-function validateConnectionConfig(connectionType: string, cfg: Record<string, unknown>): string | null {
-  if (connectionType === "network") {
-    if (!cfg.ip || typeof cfg.ip !== "string") return "network printer requires config.ip";
-    if (!cfg.port || typeof cfg.port !== "number") return "network printer requires config.port";
-    if (cfg.ip.includes(" ")) return "invalid network address";
-  }
-  if (connectionType === "spooler" && !(typeof cfg.spooler_name === "string" && cfg.spooler_name.trim()) && !(typeof cfg.address === "string" && cfg.address.trim())) {
-    return "spooler printer requires config.spooler_name or config.address";
-  }
-  return null;
-}
 
 export async function GET(req: Request) {
   const claims = await validateManager(req);

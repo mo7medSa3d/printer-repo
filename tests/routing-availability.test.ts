@@ -42,19 +42,19 @@ suite("gateway runtime printer availability + payload capability contract", () =
   }
 
   it("accepts raw/escpos/pdf only when the printer capability boundary allows it", () => {
-    expect(validatePayloadForPrinter("raw", {
+    expect(validatePayloadForPrinter({ type: "raw", protocol: "raw" }, {
       protocol: "raw",
       connectionType: "network",
       capabilities: { supported_protocols: ["raw"] },
     })).toEqual({ ok: true });
 
-    expect(validatePayloadForPrinter("pdf", {
+    expect(validatePayloadForPrinter({ type: "pdf" }, {
       protocol: "raw",
       connectionType: "network",
       capabilities: { supported_protocols: ["raw"] },
     }).ok).toBe(false);
 
-    expect(validatePayloadForPrinter("pdf", {
+    expect(validatePayloadForPrinter({ type: "pdf" }, {
       protocol: "spooler",
       connectionType: "spooler",
       capabilities: { supported_protocols: ["raw", "escpos", "pdf"] },
@@ -66,7 +66,7 @@ suite("gateway runtime printer availability + payload capability contract", () =
       printerId: f.printerId,
       destination: "POS",
       documentType: "receipt",
-      payload: { type: "raw", encoding: "base64", data: rawBase64() },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: rawBase64() },
       idempotencyKey: "runtime-create-1",
     });
     expect(res.status).toBe(201);
@@ -80,7 +80,7 @@ suite("gateway runtime printer availability + payload capability contract", () =
       printerId: "printer-does-not-exist",
       destination: "POS",
       documentType: "receipt",
-      payload: { type: "raw", encoding: "base64", data: rawBase64() },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: rawBase64() },
     });
     expect(res.status).toBe(404);
   });
@@ -91,9 +91,9 @@ suite("gateway runtime printer availability + payload capability contract", () =
       printerId: f.printerId,
       destination: "POS",
       documentType: "receipt",
-      payload: { type: "raw", encoding: "base64", data: rawBase64() },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: rawBase64() },
     });
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(409);
     expect((await pool().query(`SELECT count(*)::int AS n FROM print_jobs`)).rows[0].n).toBe(0);
   });
 
@@ -103,7 +103,7 @@ suite("gateway runtime printer availability + payload capability contract", () =
       printerId: f.printerId,
       destination: "POS",
       documentType: "receipt",
-      payload: { type: "raw", encoding: "base64", data: rawBase64() },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: rawBase64() },
     });
     expect(res.status).toBe(503);
     expect((await pool().query(`SELECT count(*)::int AS n FROM print_jobs`)).rows[0].n).toBe(0);
@@ -129,7 +129,7 @@ suite("gateway runtime printer availability + payload capability contract", () =
       printerId: f.printerId,
       destination: "POS",
       documentType: "receipt",
-      payload: { type: "raw", encoding: "base64", data: rawBase64() },
+      payload: { type: "raw", protocol: "raw", encoding: "base64", data: rawBase64() },
       idempotencyKey: "runtime-status-1",
     });
     expect(created.status).toBe(201);

@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+# Hard imports: this module only runs under the Odoo test runner; a fallback
+# previously degraded the whole file into silent skips with a green exit.
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
@@ -51,6 +53,7 @@ class TestBranchRuntimeBinding(TransactionCase):
         vals = {
             "company_id": self.company.id, "branch_id": self.branch.id,
             "destination_type": "report", "destination_report_id": report.id, "report_id": report.id,
+            "printer_protocol": "escpos",
             "runtime_agent_id": "agent-a", "printer_id": "printer-a", "enabled": True, "priority": 10,
         }
         vals.update(extra)

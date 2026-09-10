@@ -5,6 +5,8 @@ import { validateManager } from "../../../lib/manager-auth";
 import { desc } from "drizzle-orm";
 import { z } from "zod";
 import { createAgent } from "../../actions";
+import { ActionError } from "../../../lib/action-error";
+import { logError } from "../../../lib/log";
 
 export const dynamic = "force-dynamic";
 const createAgentSchema = z.object({ name: z.string().trim().min(1).max(200) }).strict();
@@ -29,6 +31,10 @@ export async function POST(req: Request) {
   try {
     return NextResponse.json(await createAgent(parsed.data.name), { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "unable to create agent" }, { status: 400 });
+    if (error instanceof ActionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    logError("agent.create_failed", { error: error instanceof Error ? error.message : "unknown" });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -68,7 +68,7 @@ export default function ApiKeysPage() {
   }
 
   async function revoke(id: string) {
-    if (!window.confirm("Revoke this API key? Odoo will immediately lose access.")) return;
+    if (!window.confirm("Revoke this API key? Odoo will immediately lose access, and this cannot be undone.")) return;
     setBusy(true);
     setError(null);
     try {
@@ -91,8 +91,12 @@ export default function ApiKeysPage() {
 
   async function copyRawKey() {
     if (!rawKey) return;
-    await navigator.clipboard.writeText(rawKey);
-    setCopied(true);
+    try {
+      await navigator.clipboard.writeText(rawKey);
+      setCopied(true);
+    } catch {
+      setError("The browser blocked clipboard access. Select the key text and press Ctrl+C.");
+    }
   }
 
   return (
@@ -106,7 +110,7 @@ export default function ApiKeysPage() {
         <Link href="/dashboard" className="text-sm font-semibold text-brand hover:underline">Back to Console</Link>
       </div>
 
-      {error && <div className="mb-5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">{error}</div>}
+      {error && <div role="alert" className="mb-5 rounded-xl border border-bad-edge bg-bad-bg px-4 py-3 text-sm text-bad">{error}</div>}
 
       {rawKey && (
         <Card className="mb-6 border-brand/30 bg-brand/5">

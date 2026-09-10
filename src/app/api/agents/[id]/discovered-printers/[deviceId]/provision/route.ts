@@ -42,9 +42,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ipps: { protocol: "ipps", connectionType: "ipps" },
       raw: { protocol: "raw", connectionType: "network" },
       escpos: { protocol: "escpos", connectionType: "network" },
-      lpr: { protocol: "raw", connectionType: "network" },
       spooler: { protocol: "spooler", connectionType: "spooler" },
       windows_spooler: { protocol: "spooler", connectionType: "spooler" },
+      // "lpr" is deliberately NOT mapped. An LPR discovery probe only proves
+      // TCP 515 accepts connections; the LPD daemon there does NOT consume a
+      // raw byte stream, so provisioning lpr -> raw would write raw job bytes
+      // to port 515 - the exact heuristic protocol inference the agent's own
+      // NormalizedProtocol refuses. LPR-only devices must be registered
+      // explicitly by an operator (Add Printer dialog) with a proven
+      // transport, never silently re-labelled.
     };
     const rawProtocol = (device.protocol ?? "").toLowerCase();
     const transport = protocolMap[rawProtocol];

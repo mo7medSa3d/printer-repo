@@ -147,7 +147,7 @@ The Odoo outbox is committed before the network request. Retries reuse the same 
 
 Odoo-side idempotency is protected by a database uniqueness constraint and handles concurrent create races by reconciling the committed winner. Gateway-side idempotency is protected by the PostgreSQL uniqueness constraint and transaction lock before queue insertion.
 
-Gateway delivery uses an atomic claim (`FOR UPDATE SKIP LOCKED`), bounded delivery attempts, WebSocket push when available, and polling as the recovery path. A queued print job contains the runtime printer and agent identifiers needed for later delivery; it does not depend on mutable `env.company` or client-side state after creation.
+Gateway delivery uses an atomic claim (`FOR UPDATE SKIP LOCKED`) that mints a fresh claim token per attempt; agents echo the token on every status report, so a stale attempt can never finalize a reclaimed job. WebSocket push is used when available, polling is the recovery path. Only claims with no delivery evidence are ever re-queued; a claim that was delivered but went silent becomes terminal-failed with an unknown-outcome marker - never auto-requeued, never auto-retried. A queued print job contains the runtime printer and agent identifiers needed for later delivery; it does not depend on mutable `env.company` or client-side state after creation.
 
 ## Security
 

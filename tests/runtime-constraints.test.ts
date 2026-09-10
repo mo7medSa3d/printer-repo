@@ -42,12 +42,12 @@ suite("database runtime state constraints", () => {
   it("rejects invalid print job status and negative counters", async () => {
     const id = `job_constraint_${Date.now()}_1`;
     await expectRejected(`INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
-      VALUES ($1, $2, 'invoice', $3, $4, 'bogus', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour')`,
+      VALUES ($1, $2, 'invoice', $3, $4, 'bogus', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour')`,
       [id, f.destination, f.agentId, f.printerId]);
 
     const validId = `job_constraint_${Date.now()}_2`;
     await pool().query(`INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
-      VALUES ($1, $2, 'invoice', $3, $4, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour')`,
+      VALUES ($1, $2, 'invoice', $3, $4, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour')`,
       [validId, f.destination, f.agentId, f.printerId]);
     await expectRejected(`UPDATE print_jobs SET retries = -1 WHERE id = $1`, [validId]);
     await expectRejected(`UPDATE print_jobs SET delivery_attempts = -1 WHERE id = $1`, [validId]);
@@ -60,18 +60,18 @@ suite("database runtime state constraints", () => {
       VALUES ($1, 'standard', 'constraint key', $2)`, [apiKeyId, apiKeyId]);
 
     await pool().query(`INSERT INTO print_jobs (id, api_key_id, destination, document_type, agent_id, printer_id, status, payload, expires_at, idempotency_key)
-      VALUES ($1, $2, $3, 'invoice', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour', $6)`,
+      VALUES ($1, $2, $3, 'invoice', $4, $5, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour', $6)`,
       [`job_constraint_${Date.now()}_3`, apiKeyId, f.destination, f.agentId, f.printerId, key]);
 
     await expect(pool().query(`INSERT INTO print_jobs (id, api_key_id, destination, document_type, agent_id, printer_id, status, payload, expires_at, idempotency_key)
-      VALUES ($1, $2, $3, 'invoice', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour', $6)`,
+      VALUES ($1, $2, $3, 'invoice', $4, $5, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour', $6)`,
       [`job_constraint_${Date.now()}_4`, apiKeyId, f.destination, f.agentId, f.printerId, key])).rejects.toMatchObject({ code: "23505" });
 
     const otherApiKeyId = `key_other_${Date.now()}`;
     await pool().query(`INSERT INTO api_keys (id, scope, name, hashed_key)
       VALUES ($1, 'standard', 'other constraint key', $2)`, [otherApiKeyId, otherApiKeyId]);
     await expect(pool().query(`INSERT INTO print_jobs (id, api_key_id, destination, document_type, agent_id, printer_id, status, payload, expires_at, idempotency_key)
-      VALUES ($1, $2, $3, 'invoice', $4, $5, 'queued', '{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour', $6)`,
+      VALUES ($1, $2, $3, 'invoice', $4, $5, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour', $6)`,
       [`job_constraint_${Date.now()}_5`, otherApiKeyId, f.destination, f.agentId, f.printerId, key])).resolves.toMatchObject({ rowCount: 1 });
   });
 });

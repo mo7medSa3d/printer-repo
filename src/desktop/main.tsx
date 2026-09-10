@@ -58,6 +58,7 @@ import {
   type PrinterInfo,
 } from "./lib/ipc";
 import {
+  deriveOutcome,
   errMsg,
   friendlyPrinterError,
   humanConnection,
@@ -65,6 +66,7 @@ import {
   isProductionPrinter,
   jobDestination,
   jobDocType,
+  jobGuidance,
   jobId,
   jobPrinterId,
   jobStatus,
@@ -231,7 +233,7 @@ export default function App() {
       try {
         setBusyBoth(true);
         await testPrinter(id);
-        setMsg({ text: "Test print sent", type: "success" });
+        setMsg({ text: "Local test page printed from this PC (bypasses the Gateway).", type: "success" });
       } catch (e) {
         setMsg({ text: friendlyPrinterError(errMsg(e)), type: "error" });
       } finally {
@@ -360,6 +362,11 @@ export default function App() {
   const isOnline =
     !!agentStatus && !(agentStatus as Record<string, unknown>).error && (agentStatus as { running?: boolean }).running !== false;
   const gatewayConnected = !!health && (health as { ok?: boolean }).ok !== false && !healthError;
+  const gatewaySubLabel = !gatewayUrl
+    ? "Set Gateway URL in Settings"
+    : gatewayConnected
+      ? "Reachable"
+      : "Failed last check";
   const physicalPrinters = useMemo(() => printers.filter(isProductionPrinter), [printers]);
   const totalPrinters = physicalPrinters.length;
   const onlinePrinters = physicalPrinters.filter((p) => p.status === "online").length;
@@ -369,8 +376,10 @@ export default function App() {
   const pendingJobs = jobs.filter((j) => ["queued", "claimed"].includes(jobStatus(j))).length;
   const failedJobs = jobs.filter((j) => ["failed", "expired"].includes(jobStatus(j))).length;
   const fleetAgents = (health as { agents?: { total?: number; online?: number } } | null)?.agents;
-  const fleetTotal = Number(fleetAgents?.total ?? 0);
-  const fleetOnline = Number(fleetAgents?.online ?? 0);
+  // /api/health deliberately reports liveness only. Fabricating 0/0 here lied
+  // to operators; absent data renders as an explicit dash instead.
+  const fleetTotal: number | null = fleetAgents ? Number(fleetAgents.total ?? 0) : null;
+  const fleetOnline: number | null = fleetAgents ? Number(fleetAgents.online ?? 0) : null;
   const printerFilterName =
     printers.find((pp) => pp.id === jobPrinterFilter)?.name ?? jobPrinterFilter ?? "";
 
@@ -407,10 +416,13 @@ export default function App() {
     if (jobTab !== "all") {
       list = list.filter((j) => {
         const st = jobStatus(j).toLowerCase();
-        if (jobTab === "pending") return ["queued", "claimed"].includes(st);
+        const outcome = deriveOutcome(st, String(j.error ?? ""));
+        if (jobTab === "queued") return ["queued", "claimed"].includes(st);
         if (jobTab === "printing") return st === "printing";
-        if (jobTab === "completed") return ["success", "completed"].includes(st);
-        if (jobTab === "failed") return ["failed", "expired"].includes(st);
+        if (jobTab === "printed") return st === "success";
+        if (jobTab === "unknown") return outcome === "unknown";
+        if (jobTab === "failed") return st === "failed" && outcome === "not_printed";
+        if (jobTab === "expired") return st === "expired" && outcome !== "unknown";
         return true;
       });
     }
@@ -429,10 +441,12 @@ export default function App() {
   const jobCounts = useMemo(
     () => ({
       all: jobs.length,
-      pending: pendingJobs,
+      queued: pendingJobs,
       printing: jobs.filter((j) => jobStatus(j) === "printing").length,
-      completed: jobs.filter((j) => ["success", "completed"].includes(jobStatus(j))).length,
+      printed: jobs.filter((j) => jobStatus(j) === "success").length,
+      unknown: jobs.filter((j) => deriveOutcome(jobStatus(j), String(j.error ?? "")) === "unknown").length,
       failed: failedJobs,
+      expired: jobs.filter((j) => jobStatus(j) === "expired" && deriveOutcome("expired", String(j.error ?? "")) !== "unknown").length,
     }),
     [jobs, pendingJobs, failedJobs]
   );
@@ -466,7 +480,7 @@ export default function App() {
     },
     jobs: {
       title: "Print Jobs",
-      subtitle: "Operational queue — queued, printing, completed and failed.",
+      subtitle: "Operational queue — queued, printing, printed, failed, unknown outcome and expired.",
     },
     agents: { title: "Agents", subtitle: "This PC's print agent and the gateway fleet." },
     settings: {
@@ -659,8 +673,10 @@ export default function App() {
         }
       >
         <p className="text-[14px] leading-relaxed text-ink-2">
-          In-flight jobs are drained first; the gateway keeps them queued and they can be
-          resumed when the agent is back online.
+          Jobs that have not started printing stay in the Gateway queue and continue automatically
+          when the agent is back. A document that is at the printer right now will be interrupted:
+          its result is recorded as <strong>Unknown - may have partially printed</strong> and needs
+          your decision (check the tray, then reprint deliberately from the job list if needed).
         </p>
       </Modal>
 
@@ -708,7 +724,7 @@ export default function App() {
                 onClick={() => handleTest(selectedPrinter.id)}
                 icon={<Zap className="h-4 w-4" />}
               >
-                Test print
+                Local test page
               </Button>
               <Button
                 variant="secondary"
@@ -723,8 +739,9 @@ export default function App() {
               </Button>
             </div>
             <p className="text-[13px] leading-relaxed text-ink-3">
-              A test print goes through the same job pipeline as real prints — queued, claimed
-              by the agent, then to the printer.
+              This prints a LOCAL test page directly from this PC - it does not exercise the
+              Gateway queue. Use &quot;Send Test Page&quot; on the Gateway console to validate the full
+              pipeline (queued, claimed by the agent, then printed).
             </p>
           </div>
         )}
@@ -743,7 +760,11 @@ export default function App() {
                 tone={jobTone(jobStatus(selectedJob))}
                 label={labelJob(jobStatus(selectedJob))}
               />
-              <JobTimeline status={jobStatus(selectedJob)} />
+              <JobTimeline
+                status={jobStatus(selectedJob)}
+                error={selectedJob.error ? String(selectedJob.error) : null}
+                claimedAt={selectedJob.claimedAt ? String(selectedJob.claimedAt) : null}
+              />
             </div>
             <div className="divide-y divide-edge">
               <MetaRow label="Job ID">
@@ -775,29 +796,40 @@ export default function App() {
             </div>
             {selectedJob.error ? (
               <div className="rounded-xl border border-bad-edge bg-bad-bg p-5">
-                <div className="flex items-center gap-2 text-[15px] font-semibold text-bad">
-                  <AlertTriangle className="h-5 w-5" aria-hidden /> Print failed
-                </div>
-                <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
-                  {friendlyPrinterError(String(selectedJob.error))}
-                </p>
-                <details className="mt-3">
-                  <summary className="cursor-pointer text-[13px] font-medium text-ink-3">
-                    Technical details
-                  </summary>
-                  <p className="mt-2 break-all font-mono text-[12px] text-ink-2">
-                    {String(selectedJob.error)}
-                  </p>
-                </details>
-                <p className="mt-3 text-[13px] text-ink-3">
-                  Retries: {String(selectedJob.retries ?? 0)} of 5 — the gateway re-delivers the
-                  job to the agent while retries remain.
-                </p>
+                {(() => {
+                  const outcome = deriveOutcome(jobStatus(selectedJob), String(selectedJob.error));
+                  const unknown = outcome === "unknown";
+                  return (
+                    <>
+                      <div className={`flex items-center gap-2 text-[15px] font-semibold ${unknown ? "text-warn" : "text-bad"}`}>
+                        <AlertTriangle className="h-5 w-5" aria-hidden />
+                        {unknown ? "Outcome unknown - paper may have printed" : "Print failed"}
+                      </div>
+                      <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
+                        {friendlyPrinterError(String(selectedJob.error))}
+                      </p>
+                      <details className="mt-3">
+                        <summary className="cursor-pointer text-[13px] font-medium text-ink-3">
+                          Technical details
+                        </summary>
+                        <p className="mt-2 break-all font-mono text-[12px] text-ink-2">
+                          {String(selectedJob.error)}
+                        </p>
+                      </details>
+                      {!unknown && (
+                        <p className="mt-3 text-[13px] text-ink-3">
+                          This job failed before printing started. Once the cause is fixed, resend the
+                          document from its source (Odoo) - the Gateway will queue it as a new job.
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             ) : (
               <div className="flex items-center gap-2 rounded-xl border border-info-edge bg-info-bg px-5 py-4 text-[14px] text-info">
-                <Info className="h-5 w-5 flex-shrink-0" aria-hidden /> No error recorded for
-                this job.
+                <Info className="h-5 w-5 flex-shrink-0" aria-hidden />
+                {jobGuidance(jobStatus(selectedJob), deriveOutcome(jobStatus(selectedJob), null)) || "No error recorded for this job."}
               </div>
             )}
           </div>

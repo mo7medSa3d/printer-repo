@@ -24,7 +24,7 @@ import {
 } from "../../components/ui";
 import { SettingsSection } from "../ui";
 import type { DesktopState } from "../types";
-import { friendlyPrinterError } from "../lib/printers";
+import { friendlyPrinterError, labelPrinter } from "../lib/printers";
 import { getAutostart, setAutostart } from "../lib/ipc";
 
 export function SettingsPage({ s }: { s: DesktopState }) {
@@ -169,11 +169,15 @@ export function SettingsPage({ s }: { s: DesktopState }) {
               <button
                 role="switch"
                 aria-checked={!!s.autostart}
+                aria-busy={s.autostart === null}
+                disabled={s.autostart === null}
                 aria-label="Start agent with Windows"
+                title={s.autostart === null ? "Checking current setting..." : undefined}
                 onClick={async () => {
                   if (s.autostart === null) return;
-                  const res = await setAutostart(!s.autostart);
-                  s.setMsg({ text: res, type: "success" });
+                  const next = !s.autostart;
+                  const res = await setAutostart(next);
+                  s.setMsg({ text: next ? "Launch at sign-in turned on." : "Launch at sign-in turned off.", type: "success" });
                   const st = await getAutostart();
                   s.setAutostartState(st.enabled);
                 }}
@@ -205,8 +209,8 @@ export function SettingsPage({ s }: { s: DesktopState }) {
             </div>
           </div>
           <StatusBadge
-            label={s.isOnline && s.gatewayConnected ? "Paired & Ready" : "Pairing Available"}
-            tone={s.isOnline && s.gatewayConnected ? "ok" : "warn"}
+            label={s.isOnline ? (s.gatewayConnected ? "Agent Running" : "Agent Running - Gateway Unreachable") : "Agent Stopped"}
+            tone={s.isOnline ? (s.gatewayConnected ? "ok" : "warn") : "neutral"}
           />
         </div>
         <div className="grid gap-6 px-6 py-6 lg:grid-cols-[1fr_auto] lg:items-end">
@@ -251,12 +255,14 @@ export function SettingsPage({ s }: { s: DesktopState }) {
         </div>
       </Card>
 
-      {/* Live Diagnostics & Log Viewer */}
+      {/* Current Status Snapshot */}
       <Card className="overflow-hidden">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-edge bg-surface px-6 py-5">
           <div>
-            <h2 className="text-[17px] font-semibold leading-tight text-ink">Live Diagnostics & Event Stream</h2>
-            <p className="mt-1 text-[13px] text-ink-3">Real-time daemon events, hardware discovery signals, and error logs</p>
+            <h2 className="text-[17px] font-semibold leading-tight text-ink">Current Status</h2>
+            <p className="mt-1 text-[13px] text-ink-3">
+              A live snapshot of this PC&apos;s agent and devices - not a log stream. The full agent log lives at the path below.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -282,47 +288,57 @@ export function SettingsPage({ s }: { s: DesktopState }) {
                 ].join("\n");
 
                 navigator.clipboard.writeText(report).then(() => {
-                  s.setMsg({ text: "Diagnostic logs copied to clipboard", type: "success" });
+                  s.setMsg({ text: "Status summary copied to clipboard", type: "success" });
                 }).catch(() => {
-                  s.setMsg({ text: "Unable to copy diagnostics", type: "error" });
+                  s.setMsg({ text: "Unable to copy the status summary", type: "error" });
                 });
               }}
               icon={<Copy className="h-3.5 w-3.5" />}
             >
-              Export Logs
+              Copy Status Summary
             </Button>
           </div>
         </div>
 
         <div className="p-6 space-y-4">
-          <div className="max-h-64 overflow-y-auto rounded-xl border border-edge bg-slate-950 p-4 font-mono text-[12px] text-slate-300 shadow-inner space-y-1.5">
-            <div className="text-emerald-400">
-              <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [INFO] Edge Manager initialized (v{s.version || "1.0.0"})
+          <div className="max-h-64 overflow-y-auto rounded-xl border border-edge bg-surface-2 p-4 text-[13px] shadow-inner space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-medium text-ink-2">Agent service</span>
+              <span className={s.isOnline ? "font-semibold text-ok" : "font-semibold text-bad"}>
+                {s.isOnline ? "Running" : "Stopped"}
+              </span>
             </div>
-            <div className={s.isOnline ? "text-emerald-400" : "text-rose-400"}>
-              <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [{s.isOnline ? "INFO" : "WARN"}] Local Agent Service: {s.isOnline ? "Running (OdooPrintAgent.exe active)" : "Stopped"}
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-medium text-ink-2">Gateway</span>
+              <span className={s.gatewayConnected ? "font-semibold text-ok" : "font-semibold text-warn"}>
+                {s.gatewayConnected ? "Reachable" : s.gatewayUrl ? "Failed last check" : "Not configured"}
+              </span>
             </div>
-            <div className={s.gatewayConnected ? "text-emerald-400" : "text-amber-400"}>
-              <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [{s.gatewayConnected ? "INFO" : "WARN"}] Gateway: {s.gatewayConnected ? `Connected to ${s.gatewayUrl}` : s.gatewayUrl ? "Unreachable" : "Not configured"}
-            </div>
-            {s.lastHeartbeat && (
-              <div className="text-slate-300">
-                <span className="text-slate-500">[{new Date(s.lastHeartbeat).toLocaleTimeString()}]</span> [INFO] Gateway heartbeat ack received
-              </div>
-            )}
             {s.healthError && (
-              <div className="text-rose-400">
-                <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [ERROR] Gateway health check: {friendlyPrinterError(s.healthError)}
+              <div className="rounded-lg border border-bad-edge bg-bad-bg px-3 py-2 text-[12px] text-bad">
+                Gateway health check failed: {friendlyPrinterError(s.healthError)}
               </div>
             )}
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-medium text-ink-2">Devices reported</span>
+              <span className="font-semibold text-ink">{s.printers.length}</span>
+            </div>
             {s.printers.map((p) => (
-              <div key={p.id} className="text-slate-300">
-                <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [INFO] Hardware device online: {p.name} ({p.connection_type})
+              <div key={p.id} className="flex items-center justify-between gap-3 rounded-lg border border-edge bg-surface px-3 py-2">
+                <span className="min-w-0 flex-1 truncate text-ink-2">{p.name}</span>
+                <span className={`flex-shrink-0 font-semibold ${p.status === "online" ? "text-ok" : p.status === "offline" || p.status === "error" ? "text-bad" : "text-warn"}`}>
+                  {labelPrinter(p.status)}
+                </span>
               </div>
             ))}
-            {s.failedJobs > 0 && (
-              <div className="text-rose-400">
-                <span className="text-slate-500">[{new Date().toLocaleTimeString()}]</span> [WARN] {s.failedJobs} job(s) in failed state
+            {s.printers.length === 0 && (
+              <p className="text-[12px] text-ink-3">
+                No devices reported yet. Run discovery on the Printers page.
+              </p>
+            )}
+            {paths.length > 0 && (
+              <div className="pt-1 text-[12px] text-ink-3">
+                Agent log: <span className="font-mono break-all">{paths.find(([k]) => k.toLowerCase().includes("log"))?.[1] ?? "see Data locations below"}</span>
               </div>
             )}
           </div>

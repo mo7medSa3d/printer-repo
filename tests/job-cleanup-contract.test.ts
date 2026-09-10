@@ -37,10 +37,31 @@ describe("print-job cleanup contract", () => {
     expect(command).toContain('arg("cleanup")');
   });
 
-  it("only deletes terminal records from the Agent local queue", () => {
+  it("only deletes PROVABLY terminal records from the Agent local queue", () => {
     const queue = read("agent/internal/queue/cleanup.go");
-    expect(queue).toContain("status IN ('success', 'failed')");
-    expect(queue).toContain("Queued and");
-    expect(queue).toContain("printing jobs are deliberately preserved");
+    // Unknown-outcome evidence survives cleanup: deleting a row whose last
+    // error carries ANY unknown-outcome marker would erase the local
+    // duplicate-print protection and the operator's reconciliation record.
+    // The SQL is derived from the CANONICAL marker list (queue.UnknownOutcomeMarkers)
+    // so cleanup can never drift behind the marker vocabulary again — the
+    // old implementation preserved only 2 of the 5 markers.
+    expect(queue).toContain("status = 'success'");
+    expect(queue).toContain("unknownMarkerSQL(\"last_error\")");
+    expect(queue).toContain("UnknownOutcomeMarkers");
+    // The canonical marker vocabulary is declared once (queue.go) and is
+    // separately locked by queue_test.go / outcome_test.go.
+    const markers = read("agent/internal/queue/queue.go");
+    for (const marker of [
+      "AGENT_EXECUTION_TIMEOUT",
+      "AGENT_RESTART_DURING_PRINT",
+      "JOB_EXPIRED_DURING_PRINT",
+      "UNKNOWN_PARTIAL_DELIVERY",
+      "UNKNOWN_SUBMISSION_OUTCOME",
+    ]) {
+      expect(markers).toContain(marker);
+    }
+    const purge = read("agent/cmd/cli/cleanup.go");
+    // purging unknown-outcome evidence is a separate deliberate operation.
+    expect(purge).toContain("--include-unknown");
   });
 });

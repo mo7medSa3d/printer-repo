@@ -3,6 +3,7 @@ package printer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -183,9 +184,23 @@ func runPDFHelper(ctx context.Context, template []string, printerName, pdfPath s
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// The helper process is killed by exec.CommandContext when the
+		// print budget expires. A killed or timed-out helper may have
+		// already handed pages to the spooler, so the physical outcome is
+		// ambiguous: report unknown, never a plain retryable failure.
+		if ctx.Err() != nil {
+			return MarkUnknown("PDF helper %s did not finish within its budget (submission state unknown): %v", argv[0], ctx.Err())
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
 			return fmt.Errorf("PDF helper %s failed: %w: %s", argv[0], err, msg)
+		}
+		// A non-zero helper exit can mean the renderer failed before or
+		// after spooling pages — the boundary is not observable, so the
+		// outcome must stay unknown (LAW: no retry after transmission).
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return MarkUnknown("PDF helper %s exited with code %d (submission state unknown)", argv[0], exitErr.ExitCode())
 		}
 		return fmt.Errorf("PDF helper %s failed: %w", argv[0], err)
 	}

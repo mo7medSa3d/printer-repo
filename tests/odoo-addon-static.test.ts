@@ -28,7 +28,7 @@ describe("Odoo addon static contracts", () => {
     const persist = router.indexOf("def _persist_durable_job");
     const create = router.indexOf("create_operation", persist);
     const commit = router.indexOf("cr.commit()", persist);
-    const submit = router.indexOf("job.action_submit", persist);
+    const submit = router.indexOf("job._action_submit_trusted", persist);
     expect(persist).toBeGreaterThan(-1);
     expect(create).toBeGreaterThan(persist);
     expect(commit).toBeGreaterThan(create);
@@ -132,7 +132,7 @@ describe("Odoo addon static contracts", () => {
   it("persists outbox jobs under the active branch company, not the root gateway company", () => {
     const router = read("models/print_router.py");
     const submitIdx = router.indexOf("def _submit_route");
-    const submitBlock = router.slice(submitIdx, submitIdx + 600);
+    const submitBlock = router.slice(submitIdx, submitIdx + 1200);
     // The company passed to _persist_durable_job must be the caller's company, not route["company"]
     expect(submitBlock).toContain('"company": company');
     expect(submitBlock).not.toContain('"company": route["company"]');

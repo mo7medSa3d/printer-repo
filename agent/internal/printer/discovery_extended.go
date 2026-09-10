@@ -18,25 +18,25 @@ import (
 // DiscoveryCandidate enriches DeviceInfo with confidence and verification metadata.
 type DiscoveryCandidate struct {
 	Device       DeviceInfo `json:"device"`
-	Confidence   string     `json:"confidence"` // low/medium/high
+	Confidence   string     `json:"confidence"`   // low/medium/high
 	Verification string     `json:"verification"` // candidate/verified
 	Sources      []string   `json:"sources"`
 }
 
 // DiscoverySource constants — discovery origin, NOT printer protocol.
 const (
-	SourceMDNS          = "mdns"
-	SourceIPP           = "ipp"
-	SourceIPPS          = "ipps"
-	SourceRAW           = "raw"
-	SourceLPR           = "lpr"
-	SourceSNMP          = "snmp"
-	SourceWSD           = "wsd"
-	SourceSpooler       = "windows_spooler"
-	SourceUSB           = "usb"
-	SourceSubnet        = "subnet"
-	SourceConfig        = "config"
-	SourceRegistry      = "registry"
+	SourceMDNS     = "mdns"
+	SourceIPP      = "ipp"
+	SourceIPPS     = "ipps"
+	SourceRAW      = "raw"
+	SourceLPR      = "lpr"
+	SourceSNMP     = "snmp"
+	SourceWSD      = "wsd"
+	SourceSpooler  = "windows_spooler"
+	SourceUSB      = "usb"
+	SourceSubnet   = "subnet"
+	SourceConfig   = "config"
+	SourceRegistry = "registry"
 )
 
 // confidence helpers
@@ -209,11 +209,14 @@ func probeSNMPHost(ctx context.Context, host string, timeout time.Duration) *Dev
 		DisplayName:    sysDescr,
 		PrinterType:    "unknown",
 		ConnectionType: "network",
-		Protocol:       "raw",
-		Endpoint:       net.JoinHostPort(host, "9100"),
+		// An SNMP sysDescr proves there is a print-capable HOST, not that a
+		// raw 9100 byte sink exists on it. Protocol stays undeclared ("") so
+		// the gateway treats this as a candidate, never as a routable raw
+		// printer.
+		Protocol:       "",
+		Endpoint:       host,
 		NetworkAddress: host,
-		Port:           9100,
-		Status:         "online",
+		Status:         "unknown",
 		Enabled:        true,
 		Capabilities:   map[string]interface{}{"discovered_via": "snmp", "sysDescr": sysDescr, "snmp_verified": true},
 	}
@@ -241,7 +244,7 @@ func buildSNMPGet(oids []string) []byte {
 	vbLenPos := pdu.Len()
 	pdu.WriteByte(0)
 	for _, oid := range oids {
-		pdu.WriteByte(0x30) // varbind
+		pdu.WriteByte(0x30)     // varbind
 		pdu.WriteByte(0x06 + 5) // approximate
 		// OID
 		oidBytes := encodeOID(oid)
@@ -292,7 +295,7 @@ func encodeOID(s string) []byte {
 		if v < 128 {
 			out = append(out, byte(v))
 		} else {
-			out = append(out, byte(0x80| (v>>7)), byte(v&0x7F))
+			out = append(out, byte(0x80|(v>>7)), byte(v&0x7F))
 		}
 	}
 	return out
@@ -478,11 +481,13 @@ func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
 			Name:           fmt.Sprintf("WSD Printer %s", ip),
 			DisplayName:    model,
 			ConnectionType: "network",
-			Protocol:       "raw",
-			Endpoint:       net.JoinHostPort(ip, "9100"),
+			// A WSD probe answer identifies a WS-Print-capable device; it
+			// does NOT prove a raw 9100 byte sink. Undeclared protocol,
+			// unknown status: operator/IPP verification decides.
+			Protocol:       "",
+			Endpoint:       ip,
 			NetworkAddress: ip,
-			Port:           9100,
-			Status:         "online",
+			Status:         "unknown",
 			Enabled:        true,
 			Capabilities:   caps,
 		}

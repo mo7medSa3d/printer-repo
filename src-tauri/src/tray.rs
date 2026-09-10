@@ -5,12 +5,16 @@ use tauri::{
   Manager,
 };
 
-/// Menu ids emitted to the frontend as `tray:navigate` payloads. The desktop
-/// UI owns the sections with these names; navigation happens inside the WebView
-/// (no `eval` permission required).
-const NAV_GATEWAY: &str = "#gateway";
-const NAV_AGENT: &str = "#agent";
-const NAV_PAIR: &str = "#pair";
+/// Menu ids emitted to the frontend as `tray:navigate` payloads. The values
+/// MUST be entries of the desktop `Page` union (src/desktop/types.ts):
+/// `dashboard | printers | jobs | agents | settings`. Navigation happens
+/// inside the WebView (no `eval` permission required); a mismatched id is
+/// silently dropped by the frontend (`PAGES.includes`), which turned every
+/// tray navigation except settings into a no-op before this contract was
+/// made explicit.
+const NAV_GATEWAY: &str = "#dashboard";
+const NAV_AGENT: &str = "#agents";
+const NAV_PAIR: &str = "#settings";
 const NAV_SETTINGS: &str = "#settings";
 
 fn reveal_main_window(app: &tauri::AppHandle) {

@@ -116,7 +116,7 @@ suite("manager login rate limiting", () => {
     expect((await known.json()).error).toBe((await unknown.json()).error);
   });
 
-  it("different IPs are tracked separately", async () => {
+  it("the account bucket still locks new source IPs (lockout is account-scoped too)", async () => {
     for (let i = 0; i < 5; i++) {
       await login(USER, "wrong", "203.0.113.1");
     }

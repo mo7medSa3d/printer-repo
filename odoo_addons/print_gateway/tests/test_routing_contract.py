@@ -3,10 +3,11 @@ import uuid
 
 import requests
 
+# Hard imports: this module only runs under the Odoo test runner; a fallback
+# previously degraded the whole file into silent skips with a green exit.
 from odoo import api
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
-
 from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 
 
@@ -77,7 +78,8 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                     "printer_id": "printer_runtime_%s" % key,
                     "destination": "Sales",
                     "document_type": "order",
-                    "payload": {"type": "raw", "encoding": "base64", "data": "aGVsbG8="},
+                    "payload": {"type": "raw", "protocol": "raw", "encoding": "base64", "data": "aGVsbG8="},
+                    "protocol": "raw",
                     "idempotency_key": key,
                 }
             )
@@ -95,6 +97,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 "destination_report_id": report.id,
                 "report_id": report.id,
                 "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
                 "enabled": True,
                 "priority": 10,
             }
@@ -110,6 +113,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 "destination_report_id": report.id,
                 "report_id": report.id,
                 "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
             }
         )
         self.assertEqual(binding.destination_ref._name, "ir.actions.report")
@@ -132,6 +136,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 "report_id": report.id,
                 "destination_ref": "ir.actions.report,%s" % other_report.id,
                 "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
             }
         )
         self.assertEqual(binding.destination_ref._name, "ir.actions.report")
@@ -165,6 +170,7 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                         "destination_picking_type_id": picking_type.id,
                         "report_id": report.id,
                         "printer_id": "printer_runtime_1",
+                "printer_protocol": "escpos",
                     }
                 )
         finally:
@@ -345,7 +351,16 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             cr.close()
 
     def test_manual_retry_does_not_reset_in_flight_or_unknown_jobs(self):
-        for status in ("submitted", "claimed", "printing", "unknown"):
+        # Fixture rows walk the canonical chain hop-by-hop (the matrix
+        # forbids shortcuts even in tests): queued -> submitted -> claimed
+        # -> printing, plus a terminal unknown row.
+        chain = {
+            "submitted": ("submitted",),
+            "claimed": ("submitted", "claimed"),
+            "printing": ("submitted", "claimed", "printing"),
+            "unknown": None,
+        }
+        for status, hops in chain.items():
             job_id = self._job("retry-safety-%s" % status)
             cr = self.env.registry.cursor()
             try:
@@ -353,7 +368,11 @@ class TestPrintGatewayRoutingContract(TransactionCase):
                 company = env["res.company"].browse(self.durable_company_id).exists()
                 model_env = env["print_gateway.print_job"].with_company(company).env
                 job = model_env["print_gateway.print_job"].browse(job_id).exists()
-                job.write({"status": status})
+                if hops is None:
+                    job.write({"status": "unknown", "next_retry_at": False})
+                else:
+                    for hop in hops:
+                        job.write({"status": hop})
                 job.action_retry()
                 self.assertEqual(job.status, status)
             finally:
@@ -381,5 +400,163 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             self.assertEqual(len(retries), 1)
             self.assertNotEqual(retries.idempotency_key, job.idempotency_key)
             submit.assert_called_once()
+        finally:
+            cr.close()
+
+    def test_gateway_unknown_outcome_marker_parity(self):
+        """Cross-layer parity: unknown-outcome markers must match the Gateway
+        (src/lib/job-status.ts) and the Go agent
+        (agent/internal/printer/outcome.go) verbatim. A renamed marker in one
+        layer silently converts ambiguous outcomes into auto-retryable
+        failures in another (physical double prints)."""
+        expected = (
+            "AGENT_EXECUTION_TIMEOUT",
+            "AGENT_RESTART_DURING_PRINT",
+            "JOB_EXPIRED_DURING_PRINT",
+            "UNKNOWN_PARTIAL_DELIVERY",
+            "UNKNOWN_SUBMISSION_OUTCOME",
+        )
+        self.assertEqual(
+            tuple(self.env["print_gateway.print_job"]._GATEWAY_UNKNOWN_MARKERS),
+            expected,
+        )
+
+    def test_sync_maps_failed_with_unknown_markers_to_unknown(self):
+        """BEHAVIORAL: a Gateway 'failed' whose error starts with any
+        UNKNOWN_* marker must land in outbox status 'unknown' - never
+        'failed' (which would read as definitely-not-printed and offer
+        ordinary Retry) and never 'partial'. A markerless failed stays
+        'failed'."""
+        from unittest.mock import MagicMock
+        markers = [
+            "AGENT_EXECUTION_TIMEOUT",
+            "AGENT_RESTART_DURING_PRINT",
+            "JOB_EXPIRED_DURING_PRINT",
+            "UNKNOWN_PARTIAL_DELIVERY",
+            "UNKNOWN_SUBMISSION_OUTCOME",
+        ]
+        cases = [(m, "unknown") for m in markers]
+        cases.append((None, "failed"))
+        for marker, expected in cases:
+            key = "sync-marker-%s" % (marker or "plain")
+            job_id = self._job(key)
+            cr = self.env.registry.cursor()
+            try:
+                env = api.Environment(cr, self.env.uid, dict(self.env.context))
+                company = env["res.company"].browse(self.durable_company_id).exists()
+                model_env = env["print_gateway.print_job"].with_company(company).env
+                job = model_env["print_gateway.print_job"].browse(job_id).exists()
+                job.write({"gateway_job_id": "gw-%s" % key, "status": "submitted"})
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                if marker:
+                    mock_resp.json.return_value = {
+                        "status": "failed",
+                        "error": "%s: simulated ambiguous execution" % marker,
+                    }
+                else:
+                    mock_resp.json.return_value = {
+                        "status": "failed",
+                        "error": "CONNECTION_ERROR: simulated refused connection",
+                    }
+                with patch.object(PrintGatewayConfig, "_validate_gateway_host"), patch(
+                    "odoo.addons.print_gateway.models.print_job.requests.get",
+                    return_value=mock_resp,
+                ):
+                    job.action_sync_status()
+                self.assertEqual(
+                    job.status, expected,
+                    "marker=%r must map to %r" % (marker, expected),
+                )
+            finally:
+                cr.close()
+
+    def test_sync_gateway_requeue_keeps_ahead_state_and_syncs_remaining_jobs(self):
+        """A Gateway 'queued' observation while Odoo already holds 'claimed'
+        is a normal lease event (stale-claim reclaim, evidence-push failure
+        release, fenced pre-execution rejection) - NOT new information. The
+        sync must keep the ahead state instead of writing backward (which
+        the matrix forbids and which used to raise and abort the whole sync
+        loop, starving every other job until the row converged)."""
+        from unittest.mock import MagicMock
+        first_id = self._job("sync-requeue-race-claimed")
+        second_id = self._job("sync-requeue-race-submitted")
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            first = model_env["print_gateway.print_job"].browse(first_id).exists()
+            second = model_env["print_gateway.print_job"].browse(second_id).exists()
+            # Walk legal hops only: direct write() enforces the matrix.
+            first.write({"gateway_job_id": "gw-requeue-race-1", "status": "submitted"})
+            first.write({"status": "claimed"})
+            second.write({"gateway_job_id": "gw-requeue-race-2", "status": "submitted"})
+
+            def fake_get(url, params=None, **kwargs):
+                resp = MagicMock()
+                resp.status_code = 200
+                if (params or {}).get("id") == "gw-requeue-race-1":
+                    # Gateway requeued the lease after Odoo observed 'claimed'.
+                    resp.json.return_value = {"status": "queued", "error": False}
+                else:
+                    resp.json.return_value = {"status": "success", "error": False}
+                return resp
+
+            with patch.object(PrintGatewayConfig, "_validate_gateway_host"), patch(
+                "odoo.addons.print_gateway.models.print_job.requests.get",
+                side_effect=fake_get,
+            ):
+                # Must not raise: previously this aborted the loop here.
+                model_env["print_gateway.print_job"].browse([first_id, second_id]).exists().action_sync_status()
+            # Ahead state kept (no backward write to 'submitted')...
+            self.assertEqual(
+                model_env["print_gateway.print_job"].browse(first_id).exists().status,
+                "claimed",
+            )
+            # ...and the remaining job still converged (no loop starvation).
+            self.assertEqual(
+                model_env["print_gateway.print_job"].browse(second_id).exists().status,
+                "success",
+            )
+        finally:
+            cr.close()
+
+    def test_force_reprint_does_not_consume_sequence_on_failed_create(self):
+        job_id = self._job("reprint-sequence-safety")
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            job = model_env["print_gateway.print_job"].browse(job_id).exists()
+            job.write({"status": "unknown", "next_retry_at": False})
+            self.assertEqual(job.reprint_attempt_count, 0)
+
+            real_create = type(job).create_operation
+            calls = {"n": 0}
+
+            def flaky_create(model_self, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ValidationError("simulated creation failure")
+                return real_create(model_self, **kwargs)
+
+            with patch.object(type(job), "create_operation", autospec=True, side_effect=flaky_create):
+                with self.assertRaises(ValidationError):
+                    job.action_force_reprint()
+            job.invalidate_recordset()
+            self.assertEqual(job.reprint_attempt_count, 0)
+            self.assertFalse(model_env["print_gateway.print_job"].search([
+                ("idempotency_key", "like", "%s-reprint-%%" % job.idempotency_key),
+            ]))
+
+            with patch.object(type(job), "action_submit", autospec=True, return_value=True):
+                job.action_force_reprint()
+            self.assertEqual(job.reprint_attempt_count, 1)
+            derived = model_env["print_gateway.print_job"].search([
+                ("idempotency_key", "=", "%s-reprint-1" % job.idempotency_key),
+            ])
+            self.assertEqual(len(derived), 1)
         finally:
             cr.close()

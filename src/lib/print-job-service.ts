@@ -4,10 +4,12 @@ import { isVirtualPrinterRecord } from "./printer-virtual";
 import { validatePayloadForPrinter } from "./routing";
 import { validatePrintJobPayload } from "./payload";
 import { claimAndPushJobToAgent } from "../server/ws";
+import { logWarn } from "./log";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { canonicalize } from "./canonicalize";
+import { MAX_AGENT_IN_FLIGHT_JOBS } from "./job-delivery";
 
-export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 export const MAX_AGENT_QUEUED_JOBS = 1000;
 export const PRINT_JOB_RATE_LIMIT_PER_MINUTE = 60;
 export const PRINT_JOB_RATE_LIMIT_PER_HOUR = 1000;
@@ -37,6 +39,35 @@ export class PrintJobCapabilityError extends Error {
   }
 }
 
+/**
+ * Expected, operator-safe input/state failures. Routes map these to explicit
+ * HTTP statuses; anything NOT of this family is an internal error and must be
+ * logged, never echoed to clients.
+ */
+export class PrintJobInputError extends Error {
+  readonly code: string;
+  readonly status: number;
+  constructor(message: string, code: string, status: number) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+export function idempotencyFingerprint(input: {
+  printerId: string;
+  documentType?: string | null;
+  destination?: string | null;
+  payload: unknown;
+}) {
+  return JSON.stringify({
+    printerId: input.printerId,
+    documentType: input.documentType?.trim().toLowerCase() || null,
+    destination: input.destination?.trim() || null,
+    payload: canonicalize(input.payload),
+  });
+}
+
 export type CreatePrintJobOptions = {
   requestedBy: string;
   idempotencyKey?: string | null;
@@ -50,12 +81,13 @@ export type CreatePrintJobResult = {
   id: string;
   printerId: string;
   agentId: string;
-  status: "queued";
+  status: string;
+  isReused?: boolean;
 };
 
 function normalizeRequestedBy(value: string): string {
   const normalized = value.trim();
-  if (!normalized || normalized.length > 100) throw new Error("requestedBy is invalid");
+  if (!normalized || normalized.length > 100) throw new PrintJobInputError("requestedBy is invalid", "INVALID_REQUEST", 400);
   return normalized;
 }
 
@@ -73,21 +105,56 @@ async function insertQueuedJobAtomically({
   destination?: string | null;
   documentType?: string | null;
   rateLimitKeyId?: string | null;
-}): Promise<void> {
-  await db.transaction(async (tx) => {
+}): Promise<{ jobId: string; status: string; agentId: string; printerId: string; isReused: boolean }> {
+  return await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
     if (rateLimitKeyId) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
     }
+    if (idempotencyKey) {
+      const lockKey = rateLimitKeyId ? `print_jobs:idempotency:${rateLimitKeyId}:${idempotencyKey}` : `print_jobs:idempotency:internal:${idempotencyKey}`;
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    }
 
     if (idempotencyKey) {
       const existing = rateLimitKeyId
-        ? await tx.execute(sql`SELECT id FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1`)
-        : await tx.execute(sql`SELECT id FROM print_jobs WHERE api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1`);
+        ? await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`)
+        : await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`);
       if (existing.rows.length > 0) {
-        const err = new Error("DUPLICATE_JOB");
-        Object.assign(err, { code: "DUPLICATE_JOB" });
-        throw err;
+        const row = existing.rows[0] as {
+          id: string;
+          printer_id: string;
+          destination?: string | null;
+          document_type?: string | null;
+          payload: unknown;
+          agent_id: string;
+          status: string;
+        };
+        const storedFingerprint = idempotencyFingerprint({
+          printerId: row.printer_id,
+          documentType: row.document_type,
+          destination: row.destination,
+          payload: row.payload,
+        });
+        const requestFingerprint = idempotencyFingerprint({
+          printerId,
+          documentType,
+          destination,
+          payload: validatedPayload,
+        });
+
+        if (storedFingerprint === requestFingerprint) {
+          return {
+            jobId: row.id,
+            status: row.status,
+            agentId: row.agent_id,
+            printerId: row.printer_id,
+            isReused: true,
+          };
+        }
+        const conflictErr = new Error("IDEMPOTENCY_CONFLICT");
+        Object.assign(conflictErr, { code: "IDEMPOTENCY_CONFLICT" });
+        throw conflictErr;
       }
     }
 
@@ -149,6 +216,14 @@ async function insertQueuedJobAtomically({
       idempotencyKey: idempotencyKey ?? null,
       expiresAt,
     });
+
+    return {
+      jobId,
+      status: "queued",
+      agentId,
+      printerId,
+      isReused: false,
+    };
   });
 }
 
@@ -158,31 +233,31 @@ export async function createPrintJobForPrinter(
   options: CreatePrintJobOptions,
 ): Promise<CreatePrintJobResult> {
   const normalizedPrinterId = typeof printerId === "string" ? printerId.trim() : "";
-  if (!normalizedPrinterId) throw new Error("printer id is required");
+  if (!normalizedPrinterId) throw new PrintJobInputError("printer id is required", "INVALID_REQUEST", 400);
   const requestedBy = normalizeRequestedBy(options.requestedBy);
   const printer = await db.query.printers.findFirst({ where: eq(printers.id, normalizedPrinterId) });
-  if (!printer) throw new Error("Printer not found");
-  if (printer.lifecycle !== "active") throw new Error(`Printer is ${printer.lifecycle}`);
-  if (isVirtualPrinterRecord(printer)) throw new Error("Printer is virtual or redirected");
-  if (printer.status !== "online") throw new Error(`Printer is not online (status=${printer.status})`);
+  if (!printer) throw new PrintJobInputError("Printer not found", "PRINTER_NOT_FOUND", 404);
+  if (printer.lifecycle !== "active") throw new PrintJobInputError(`Printer is ${printer.lifecycle}`, "PRINTER_UNAVAILABLE", 409);
+  if (isVirtualPrinterRecord(printer)) throw new PrintJobInputError("Printer is virtual or redirected", "PRINTER_VIRTUAL", 409);
+  if (printer.status !== "online") throw new PrintJobInputError("Printer is not online", "PRINTER_OFFLINE", 503);
 
   const validatedPayload = validatePrintJobPayload(payload);
-  const capability = validatePayloadForPrinter(validatedPayload.type, {
+  const capability = validatePayloadForPrinter(validatedPayload, {
     protocol: printer.protocol, connectionType: printer.connectionType, capabilities: printer.capabilities,
   });
   if (!capability.ok) throw new PrintJobCapabilityError(capability.reason);
 
   const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
-  if (!ownerAgent) throw new Error("Printer owner agent not found");
-  if (ownerAgent.lifecycle !== "active") throw new Error(`Agent is ${ownerAgent.lifecycle}`);
+  if (!ownerAgent) throw new PrintJobInputError("Printer owner agent not found", "AGENT_NOT_FOUND", 404);
+  if (ownerAgent.lifecycle !== "active") throw new PrintJobInputError(`Agent is ${ownerAgent.lifecycle}`, "AGENT_UNAVAILABLE", 409);
 
   const id = `job_${nanoid(12)}`;
   const expiresAt = options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000);
   if (!(expiresAt instanceof Date) || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
-    throw new Error("expiresAt must be in the future");
+    throw new PrintJobInputError("expiresAt must be in the future", "INVALID_REQUEST", 400);
   }
 
-  await insertQueuedJobAtomically({
+  const result = await insertQueuedJobAtomically({
     jobId: id,
     printerId: printer.id,
     agentId: ownerAgent.id,
@@ -195,10 +270,14 @@ export async function createPrintJobForPrinter(
     rateLimitKeyId: options.rateLimitKeyId ?? null,
   });
 
-  try {
-    await claimAndPushJobToAgent({ id, agentId: ownerAgent.id });
-  } catch (error) {
-    console.warn(`[print-job-service] WS push deferred for job ${id}:`, error instanceof Error ? error.message : error);
+  if (result.isReused) {
+    return { id: result.jobId, printerId: result.printerId, agentId: result.agentId, status: result.status, isReused: true };
   }
-  return { id, printerId: printer.id, agentId: ownerAgent.id, status: "queued" };
+
+  try {
+    await claimAndPushJobToAgent({ id: result.jobId, agentId: ownerAgent.id });
+  } catch (error) {
+    logWarn("print.job.ws_push_deferred", { jobId: result.jobId, agentId: ownerAgent.id, error: error instanceof Error ? error.message : String(error) });
+  }
+  return { id: result.jobId, printerId: printer.id, agentId: ownerAgent.id, status: "queued", isReused: false };
 }

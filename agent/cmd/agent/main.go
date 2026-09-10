@@ -84,7 +84,8 @@ func setupLogging(configPath string) (*os.File, error) {
 		logDir = exeDir
 	}
 	logDir = filepath.Join(logDir, "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	// 0700: agent logs describe locally attached hardware and job metadata.
+	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return nil, fmt.Errorf("create log directory %s: %w", logDir, err)
 	}
 	if err := config.EnsureSecureDirectoryACL(logDir); err != nil {
@@ -92,7 +93,7 @@ func setupLogging(configPath string) (*os.File, error) {
 	}
 	logPath := filepath.Join(logDir, "agent.log")
 	rotateLogIfFull(logPath)
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", logPath, err)
 	}

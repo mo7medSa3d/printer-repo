@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { asc, ne } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { db } from "../../../../db";
 import { agents } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
@@ -19,7 +19,7 @@ export async function GET(req: Request) {
       lastSeenAt: agents.lastSeenAt,
     })
     .from(agents)
-    .where(ne(agents.lifecycle, "retired"))
+    .where(eq(agents.lifecycle, "active"))
     .orderBy(asc(agents.name));
 
   return NextResponse.json({ agents: rows }, {

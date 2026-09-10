@@ -21,6 +21,6 @@ describe("document-type routing contract", () => {
     expect(src).toContain("def route_pos_sale_details(");
     expect(src).toContain("self._submit_route(");
     expect(src).toContain("_persist_durable_job");
-    expect(src).toContain("job.action_submit(raise_on_failure=True)");
+    expect(src).toContain("job._action_submit_trusted(raise_on_failure=True)");
   });
 });

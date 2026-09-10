@@ -42,14 +42,22 @@ async function silentPrintReportHandler(action, options, env) {
         }
 
         if (res && (res.dispatched || res.success)) {
-            notification.add(
-                res.message || _t("Sent silently to Gateway printer: %s", res.printer_name || "Printer"),
-                { type: "success" }
-            );
+            // The interceptor must never greenlight an UNKNOWN outcome: the
+            // dispatch call succeeded but the physical result is ambiguous.
+            if (["unknown", "partial"].includes(res.status)) {
+                notification.add(
+                    _t("Print outcome unknown - the printer may have received part or all of this report. Verify at the printer before reprinting (Print Jobs > Force Reprint)."),
+                    { type: "warning", sticky: true }
+                );
+            } else {
+                notification.add(
+                    res.message || _t("Report queued on Gateway printer: %s - watch the Print Jobs list for the final result.", res.printer_name || "Printer"),
+                    { type: "success" }
+                );
+            }
             return true; // Cancel default browser PDF dialog
         }
     } catch (err) {
-        console.warn("[print_gateway] Silent dispatch error:", err);
         notification.add(
             _t("Gateway print dispatch error: %s", err?.message || err),
             { type: "danger" }

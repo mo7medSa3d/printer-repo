@@ -54,22 +54,22 @@
         <field name="name">print_gateway.pair_agent_wizard.form</field>
         <field name="model">print_gateway.pair_agent_wizard</field>
         <field name="arch" type="xml">
-            <form string="Pair New Agent" class="o_pg_pairing_wizard">
+            <form string="Assign Runtime Agent" class="o_pg_pairing_wizard">
                 <sheet>
                     <div class="o_pg_wizard_header text-center mb-4">
-                        <i class="fa fa-plug fa-3x text-primary mb-2" title="Pair Agent" role="img" aria-label="Pair Agent"/>
-                        <h3 class="fw-bold">Pair Hardware Print Agent</h3>
-                        <p class="text-muted">Enter the 6-character pairing code shown on your Windows Print Agent application or Gateway dashboard to bind it to a branch.</p>
+                        <i class="fa fa-plug fa-3x text-primary mb-2" title="Assign Agent" role="img" aria-label="Assign Agent"/>
+                        <h3 class="fw-bold">Assign Hardware Print Agent</h3>
+                        <p class="text-muted">Enter the Agent ID or name of an active agent registered on the Central Gateway to bind it to a branch.</p>
                     </div>
                     <group>
                         <field name="config_id" invisible="1"/>
                         <field name="company_id" invisible="1"/>
                         <field name="branch_id" string="Target Branch" options="{'no_create': True, 'no_open': True}"/>
-                        <field name="pairing_code" placeholder="e.g. 7X9K2M" class="o_pg_pairing_code_input text-center fw-bold fs-3 text-uppercase" style="letter-spacing: 4px;"/>
+                        <field name="agent_id" placeholder="e.g. agent-pos-01" class="o_pg_pairing_code_input text-center fw-bold fs-4"/>
                     </group>
                 </sheet>
                 <footer>
-                    <button name="action_confirm_pairing" string="Confirm Pairing" type="object" class="btn-primary"/>
+                    <button name="action_confirm_pairing" string="Assign Agent" type="object" class="btn-primary"/>
                     <button string="Cancel" class="btn-secondary" special="cancel"/>
                 </footer>
             </form>

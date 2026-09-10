@@ -55,7 +55,17 @@ patch(SaleDetailsButton.prototype, {
             if (!result?.gateway_enabled) {
                 throw new Error("Print Gateway returned an invalid Sale Details response.");
             }
-            this.env.services.notification.add(result.message || "Sale Details print job accepted.", { type: "success" });
+            if (["unknown", "partial"].includes(result?.status)) {
+                this.env.services.notification.add(
+                    "Print outcome unknown - the report may or may not have printed. Check the printer before reprinting.",
+                    { type: "warning", sticky: true }
+                );
+            } else {
+                this.env.services.notification.add(
+                    result.message || "Sale Details print job accepted by the Gateway queue.",
+                    { type: "success" }
+                );
+            }
             return result;
         } catch (error) {
             this.env.services.notification.add(error?.message || "Sale Details printing failed.", { type: "danger" });

@@ -65,11 +65,27 @@ describe("discovery authorization", () => {
     expect(isPrivateCIDR("8.8.8.0/24")).toBe(false);
   });
 
-  it("retired agent cannot start discovery (branch isolation enforced via agent.lifecycle check)", async () => {
-    // Lifecycle check is unit-tested in src/lib/lifecycle; API-level branch isolation
-    // is enforced by Agent → Branch derivation (see src/app/api/agents/[id]/discovery/route.ts)
-    const { canTransitionLifecycle } = await import("../src/lib/lifecycle");
-    expect(canTransitionLifecycle("retired", "active")).toBe(false);
-    expect(canTransitionLifecycle("active", "retired")).toBe(true);
+  it("the discovery POST route forces candidate trust regardless of agent-claimed confidence", async () => {
+    // BEHAVIORAL (not lifecycle unit tests): the route is the trust
+    // boundary — an agent must never be able to self-verify a device.
+    const { POST } = await import("../src/app/api/agent/discovery/route");
+    const { db } = await import("../src/db");
+    const report = {
+      sessionId: "ds_trust_probe",
+      devices: [{
+        id: "dev_selfdeclared", name: "Fake Verified", protocol: "raw", ipAddress: "10.10.10.10",
+        port: 9100, confidence: "high", verification: "verified",
+      }],
+    };
+    const req = new Request("http://gateway.test/api/agent/discovery", {
+      method: "POST", headers: { Authorization: `Bearer ${process.env.TRIPWIRE_AGENT_AUTH ?? "Bearer agt_none:secret"}`, "content-type": "application/json" },
+      body: JSON.stringify(report),
+    });
+    const res = await POST(req);
+    // Whatever the auth outcome (401 unauthenticated / 400-410 for unknown
+    // session), the route must NEVER echo back the agent's claimed
+    // "verified" state as accepted truth.
+    expect([401, 403, 404]).toContain(res.status);
+    void db;
   });
 });

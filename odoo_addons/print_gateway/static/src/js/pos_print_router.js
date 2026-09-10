@@ -58,7 +58,24 @@ patch(PosStore.prototype, {
                 { image },
                 true
             );
-            this.notification.add(result?.message || "Print job accepted.", { type: "success" });
+            // Truthful feedback: "submitted" means QUEUED for the agent, not
+            // printed; "unknown" means the outcome cannot be trusted.
+            if (["unknown", "partial"].includes(result?.status)) {
+                this.notification.add(
+                    "Print outcome unknown - the receipt may or may not have printed. Check the printer before reprinting.",
+                    { type: "warning", sticky: true }
+                );
+            } else if (result?.status === "failed") {
+                this.notification.add(
+                    result?.message || "The Gateway could not accept this receipt. Check the Print Jobs list for the reason.",
+                    { type: "danger" }
+                );
+            } else {
+                this.notification.add(
+                    result?.message || "Receipt sent to the Gateway queue - watch the Print Jobs list for the final result.",
+                    { type: "success" }
+                );
+            }
             if (!printBillActionTriggered) {
                 const count = currentOrder.nb_print ? currentOrder.nb_print + 1 : 1;
                 await this.data.write("pos.order", [orderId], { nb_print: count });

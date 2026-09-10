@@ -145,6 +145,7 @@ export type JobDeliveryEnvelope = {
     payload: unknown;
     expiresAt: string;
     retries: number;
+    claimToken: string | null;
   };
   id: string;
   printerId: string;
@@ -165,6 +166,7 @@ export function buildJobEnvelope(job: ClaimedJobRow): JobDeliveryEnvelope {
       payload: job.payload,
       expiresAt,
       retries: job.retries,
+      claimToken: job.claimToken ?? null,
     },
     id: job.id,
     printerId: job.printerId,
@@ -181,10 +183,23 @@ export async function claimAndPushJobToAgent(job: { id: string; agentId: string 
   if (!claimed) return "not_claimable";
   const delivered = sendToAgent(job.agentId, buildJobEnvelope(claimed));
   if (!delivered) {
-    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, "websocket delivery failed after claim; job requeued for redelivery");
+    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, claimed.claimToken, "websocket delivery failed after claim; job requeued for redelivery");
     return outcome === "failed" ? "failed" : "requeued";
   }
-  await markJobDelivered(job.id, job.agentId);
+  // "Delivered" is a DATABASE fact, not a socket fact: only when the
+  // delivered_at evidence write lands for THIS claim token does the gateway
+  // consider the job handed over. A socket success whose evidence write
+  // misses (row expired, terminal, or reclaimed mid-send) falls back to the
+  // undelivered-release path instead of stranding a phantom delivery.
+  const evidenced = await markJobDelivered(job.id, job.agentId, claimed.claimToken);
+  if (!evidenced) {
+    const outcome = await releaseUndeliveredClaim(job.id, job.agentId, claimed.claimToken, "websocket delivery evidence did not persist; job requeued for redelivery");
+    // "noop" here means the row left the claimable states entirely between
+    // claim and evidence (expired/terminal/cascade-deleted): there is
+    // nothing left to deliver or requeue.
+    if (outcome === "noop") return "not_claimable";
+    return outcome === "failed" ? "failed" : "requeued";
+  }
   return "delivered";
 }
 
@@ -192,11 +207,12 @@ export async function handleAgentMessage(agentId: string, raw: string): Promise<
   let msg: unknown;
   try { msg = JSON.parse(raw); } catch { return; }
   if (!msg || typeof msg !== "object") return;
-  const { type, jobId } = msg as { type?: unknown; jobId?: unknown };
+  const { type, jobId, claimToken } = msg as { type?: unknown; jobId?: unknown; claimToken?: unknown };
   if (type !== "job_ack") return;
   if (typeof jobId !== "string" || !jobId) return;
-  const known = await recordJobAck(jobId, agentId);
-  if (!known) console.warn(`[ws] agent ${agentId} acked unknown job ${jobId}`);
+  const token = typeof claimToken === "string" && claimToken ? claimToken : null;
+  const known = await recordJobAck(jobId, agentId, token);
+  if (!known) console.warn(`[ws] agent ${agentId} acked a job with no matching live claim (unknown, terminal, or superseded): ${jobId}`);
 }
 
 async function startJobNotificationListener(): Promise<() => Promise<void>> {
@@ -256,10 +272,6 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
         client.release();
         return;
       }
-      activeClient = client;
-      await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
-      await client.query(`LISTEN ${PG_SESSIONS_CHANNEL}`);
-      reconnectAttempt = 0;
       client.on("notification", handleNotification);
       client.on("error", (error) => {
         void incrementMetric("postgres_notification_errors_total");
@@ -267,6 +279,28 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
         disconnect(client);
       });
       client.on("end", () => disconnect(client));
+      try {
+        await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
+        await client.query(`LISTEN ${PG_SESSIONS_CHANNEL}`);
+      } catch (listenError) {
+        // Setup failed BEFORE adoption: the client must be released here
+        // (disconnect() deliberately only touches the adopted client, and
+        // the mid-setup 'error' handler above no-ops for the same reason).
+        // Without this release the pool slot leaks; without the rethrow
+        // below no reconnect is scheduled and push delivery dies silently.
+        try { client.release(true); } catch {}
+        throw listenError;
+      }
+      if (stopped) {
+        // Startup raced shutdown between LISTEN and adoption: release
+        // cleanly instead of leaking a live listener nobody owns.
+        try { await client.query(`UNLISTEN ${PG_NOTIFY_CHANNEL}`); } catch {}
+        try { await client.query(`UNLISTEN ${PG_SESSIONS_CHANNEL}`); } catch {}
+        client.release();
+        return;
+      }
+      activeClient = client;
+      reconnectAttempt = 0;
     } catch (error) {
       void incrementMetric("postgres_notification_failures_total");
       console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);

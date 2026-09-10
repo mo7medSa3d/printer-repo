@@ -1,6 +1,21 @@
 import type { PrinterInfo } from "./ipc";
-import type { Tone } from "../../components/ui";
+import type { Tone } from "../../shared/job-vocabulary";
 import { isVirtualPrinterRecord } from "../../lib/printer-virtual";
+
+export {
+  jobLabel,
+  jobTone,
+  jobGuidance,
+  deriveOutcome,
+  printerLabel,
+  printerTone,
+  UNKNOWN_OUTCOME_MARKERS,
+} from "../../shared/job-vocabulary";
+import {
+  deriveOutcome as deriveOutcomeImpl,
+  jobLabel as jobLabelImpl,
+  printerLabel as printerLabelImpl,
+} from "../../shared/job-vocabulary";
 
 /* ============================================================
    Desktop presentation helpers for printers
@@ -44,61 +59,14 @@ export function isProductionPrinter(p: PrinterInfo): boolean {
 
 /* ---------- Status vocabulary ---------- */
 
-export function printerTone(status: string): Tone {
-  switch (status) {
-    case "online":
-      return "ok";
-    case "busy":
-      return "warn";
-    case "error":
-    case "offline":
-      return "bad";
-    default:
-      return "neutral";
-  }
-}
-
-export function jobTone(status: string): Tone {
-  switch (status.toLowerCase()) {
-    case "success":
-    case "completed":
-      return "ok";
-    case "unknown_partial_delivery":
-    case "partial":
-    case "partial_delivery":
-      return "warn";
-    case "failed":
-    case "expired":
-    case "canceled":
-    case "cancelled":
-      return "bad";
-    case "printing":
-    case "processing":
-    case "claimed":
-      return "info";
-    case "queued":
-    case "pending":
-      return "neutral";
-    default:
-      return "neutral";
-  }
-}
-
+// printerTone/jobTone/printerLabel/jobLabel now come from the SHARED
+// vocabulary module (single source of truth with the web console).
 export function labelPrinter(status: string): string {
-  return status === "unknown"
-    ? "Unknown"
-    : status.charAt(0).toUpperCase() + status.slice(1);
+  return printerLabelImpl(status);
 }
 
 export function labelJob(status: string): string {
-  const s = status.toLowerCase();
-  if (s === "success" || s === "completed") return "Completed";
-  if (s === "unknown_partial_delivery" || s === "partial") return "Attention Needed";
-  if (s === "printing" || s === "processing") return "Printing";
-  if (s === "claimed") return "Claimed";
-  if (s === "queued" || s === "pending") return "Queued";
-  if (s === "failed") return "Failed";
-  return status.charAt(0).toUpperCase() + status.slice(1);
+  return jobLabelImpl(status, deriveOutcomeImpl(status, ""));
 }
 
 /* ---------- Human-friendly descriptions ---------- */
@@ -136,6 +104,12 @@ export function errMsg(e: unknown): string {
 }
 
 export function friendlyPrinterError(raw: string): string {
+  // SAFETY-CRITICAL: an unknown physical outcome must never be reworded into
+  // "did not respond" - that phrasing makes operators reprint and
+  // double-print. These markers always win, and are never truncated.
+  if (/^(AGENT_EXECUTION_TIMEOUT|AGENT_RESTART_DURING_PRINT|JOB_EXPIRED_DURING_PRINT|UNKNOWN_PARTIAL_DELIVERY|UNKNOWN_SUBMISSION_OUTCOME)/.test(raw)) {
+    return "Print status is unknown. The printer may have received part or all of the job. Automatic retry is paused to prevent duplicate printing - check the printer before reprinting.";
+  }
   const lower = raw.toLowerCase();
   if (lower.includes("connection refused") || lower.includes("dial tcp"))
     return "Could not connect to the printer.";

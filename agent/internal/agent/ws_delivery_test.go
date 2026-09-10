@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,17 +20,24 @@ import (
 )
 
 type statusUpdate struct {
-	JobID  string `json:"jobId"`
-	Status string `json:"status"`
-	Error  string `json:"error"`
+	JobID      string `json:"jobId"`
+	Status     string `json:"status"`
+	Error      string `json:"error"`
+	Reason     string `json:"reason"`
+	ClaimToken string `json:"claimToken"`
 }
 
 type recordingGateway struct {
-	mu      sync.Mutex
-	updates []statusUpdate
-	acks    []string
-	server  *httptest.Server
-	sendCh  chan interface{}
+	mu        sync.Mutex
+	updates   []statusUpdate
+	acks      []string
+	ackTokens map[string]string
+	// rejectPrinting, when true, answers claimed->printing reports with the
+	// exact fence rejection a real gateway emits for a superseded claim.
+	// Tests the agent-side hard stop: zero bytes may follow such a response.
+	rejectPrinting bool
+	server         *httptest.Server
+	sendCh         chan interface{}
 }
 
 func (g *recordingGateway) Updates() []statusUpdate {
@@ -48,6 +56,16 @@ func (g *recordingGateway) Acks() []string {
 	return out
 }
 
+func (g *recordingGateway) AckTokens() map[string]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[string]string, len(g.ackTokens))
+	for k, v := range g.ackTokens {
+		out[k] = v
+	}
+	return out
+}
+
 func newRecordingGateway(t *testing.T) *recordingGateway {
 	t.Helper()
 	g := &recordingGateway{sendCh: make(chan interface{}, 8)}
@@ -63,7 +81,14 @@ func newRecordingGateway(t *testing.T) *recordingGateway {
 			}
 			g.mu.Lock()
 			g.updates = append(g.updates, body)
+			reject := g.rejectPrinting && body.Status == "printing"
 			g.mu.Unlock()
+			if reject {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"Stale claim token: this attempt was superseded by a newer claim","code":"STALE_CLAIM","status":"claimed"}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"success":true}`))
 		case http.MethodGet:
@@ -97,6 +122,10 @@ func newRecordingGateway(t *testing.T) *recordingGateway {
 				if frame["type"] == "job_ack" {
 					g.mu.Lock()
 					g.acks = append(g.acks, frame["jobId"])
+					if g.ackTokens == nil {
+						g.ackTokens = make(map[string]string)
+					}
+					g.ackTokens[frame["jobId"]] = frame["claimToken"]
 					g.mu.Unlock()
 				}
 			}
@@ -132,7 +161,7 @@ func newAgentAgainst(t *testing.T, serverURL, printerID string, p printer.Printe
 		t.Fatalf("New: %v", err)
 	}
 	ag.printers = map[string]printer.Printer{printerID: p}
-	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100"}}
+	ag.printerConfigs = map[string]config.PrinterConfig{printerID: {ID: printerID, Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}}
 	t.Cleanup(func() {
 		if err := ag.Close(); err != nil {
 			t.Logf("Agent.Close: %v", err)
@@ -363,4 +392,142 @@ func TestReprintAfterCrashPolicy(t *testing.T) {
 			t.Fatal("nil crash-reprint policy must default to false")
 		}
 	})
+}
+
+func TestClaimTokenEchoedInStatusUpdatesAndAck(t *testing.T) {
+	gw := newRecordingGateway(t)
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ag.connectWebSocket(ctx)
+	waitFor(t, 5*time.Second, func() bool { return ag.getWSConn() != nil })
+
+	// The full chain: WS envelope carries the claim token, the agent echoes
+	// it on every status report and on the ack frame.
+	env := claimedEnvelope("job_with_token", "p1")
+	env["job"].(map[string]interface{})["claimToken"] = "claim-live-123"
+	gw.sendCh <- env
+	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 1 })
+	ag.waitForJobs()
+
+	if p.calls != 1 {
+		t.Fatalf("expected exactly one print, got %d", p.calls)
+	}
+	seen := map[string]bool{}
+	for _, u := range gw.Updates() {
+		if u.JobID != "job_with_token" {
+			continue
+		}
+		if u.ClaimToken != "claim-live-123" {
+			t.Fatalf("status %q update is missing the echoed claim token: %+v", u.Status, u)
+		}
+		seen[u.Status] = true
+	}
+	if !seen["printing"] || !seen["success"] {
+		t.Fatalf("expected fenced printing+success updates, got %+v", gw.Updates())
+	}
+	if tok := gw.AckTokens()["job_with_token"]; tok != "claim-live-123" {
+		t.Fatalf("ack must carry the claim token, got %q", tok)
+	}
+}
+
+func TestLedgerWriteFailureBlocksDispatch(t *testing.T) {
+	gw := newRecordingGateway(t)
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	// Break the durable evidence base: no ledger row can ever be proven.
+	if err := ag.queue.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	job := map[string]interface{}{
+		"id":         "job_no_ledger",
+		"printerId":  "p1",
+		"payload":    makeJobPayload("job_no_ledger"),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "claim-ledger-x",
+	}
+	ag.processJob(context.Background(), job)
+	ag.waitForJobs()
+	if p.calls != 0 {
+		t.Fatalf("dispatch without a writable ledger must print nothing, got %d prints", p.calls)
+	}
+	found := false
+	for _, u := range gw.Updates() {
+		if u.JobID == "job_no_ledger" && u.Status == "queued" {
+			found = true
+			// The unreachable local ledger turns into a FENCED pre-execution
+			// return (reason ledger_unavailable), which the gateway maps to
+			// a requeue carrying "Agent returned job before execution".
+			if u.Reason != "ledger_unavailable" {
+				t.Fatalf("expected the ledger_unavailable rejection reason, got %+v", u)
+			}
+			if u.ClaimToken != "claim-ledger-x" {
+				t.Fatalf("fenced return must carry the claim token, got %+v", u)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a fenced queued return after ledger failure, got %+v", gw.Updates())
+	}
+}
+
+func TestStalePrintingFenceHaltsBeforeHardware(t *testing.T) {
+	// P0: the gateway rejects the claimed->printing transition (the claim
+	// expired and was reassigned). processJob MUST NOT invoke the printer
+	// backend at all: zero PrintDocument calls, zero bytes written.
+	gw := newRecordingGateway(t)
+	gw.rejectPrinting = true
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	job := map[string]interface{}{
+		"id":         "job_stale_fence",
+		"printerId":  "p1",
+		"payload":    makeJobPayload("job_stale_fence"),
+		"expiresAt":  time.Now().Add(time.Hour).Format(time.RFC3339),
+		"claimToken": "claim-superseded-1",
+	}
+	ag.processJob(context.Background(), job)
+	ag.waitForJobs()
+	if p.calls != 0 {
+		t.Fatalf("fence-rejected claim must never reach hardware, got %d printer calls", p.calls)
+	}
+	// The local ledger row must not be left 'printing': BeginPrint marked
+	// it, the fence rejected it, and AbortPrint rolled it back - otherwise a
+	// later restart would misread it as "may have printed" and block the
+	// legitimate redelivery forever.
+	_, status, found, err := ag.queue.Get("job_stale_fence")
+	if err != nil {
+		t.Fatalf("queue.Get: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected a rolled-back ledger row for the aborted attempt")
+	}
+	if status == "printing" {
+		t.Fatalf("aborted attempt left the ledger in 'printing' - a restart would fake a crash-interrupt")
+	}
+	// And the stale token must have been cleared so recovery never reports
+	// with it.
+	if tok := ag.queue.ClaimTokenFor("job_stale_fence"); tok != "" {
+		t.Fatalf("aborted attempt must clear the superseded claim token, got %q", tok)
+	}
+}
+
+func TestUpdateJobStatusDetectsFenceRejection(t *testing.T) {
+	gw := newRecordingGateway(t)
+	gw.rejectPrinting = true
+	p := &fakePrinter{}
+	ag := newAgentAgainst(t, gw.server.URL, "p1", p)
+	err := ag.updateJobStatus("job_x", "printing", "", "claim-dead")
+	if err == nil {
+		t.Fatalf("expected ErrStaleClaim, got nil")
+	}
+	if !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("expected ErrStaleClaim, got %v", err)
+	}
+	// Non-fence statuses still report normally through the same path.
+	gw.rejectPrinting = false
+	if err := ag.updateJobStatus("job_x", "printing", "", "claim-live"); err != nil {
+		t.Fatalf("expected nil error once the fence accepts, got %v", err)
+	}
 }

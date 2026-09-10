@@ -14,7 +14,7 @@ import (
 
 func TestIPPURLNormalization(t *testing.T) {
 	cases := []struct {
-		in, want string
+		in, want  string
 		shouldErr bool
 	}{
 		{"ipp://192.168.1.60/ipp/print", "http://192.168.1.60/ipp/print", false},
@@ -33,16 +33,16 @@ func TestIPPURLNormalization(t *testing.T) {
 		if !tc.shouldErr && err != nil {
 			t.Errorf("unexpected error for %q: %v", tc.in, err)
 		}
-		if !tc.shouldErr && got != tc.want {
-			t.Errorf("for %q want %q got %q", tc.in, tc.want, got)
+		if !tc.shouldErr && got.Redacted() != tc.want {
+			t.Errorf("for %q want %q got %q", tc.in, tc.want, got.Redacted())
 		}
 	}
 }
 
 func TestIPPBuildPrintJob(t *testing.T) {
 	url := "http://192.168.1.60/ipp/print"
-	data := []byte("hello")
-	req := buildIPPPrintJob(url, data)
+	data := append([]byte("%PDF-1.4\n"), 0x00)
+	req := buildIPPPrintJobWithFormat(url, data, ippFormatPDF)
 	if len(req) < 10 {
 		t.Fatalf("too short")
 	}
@@ -81,8 +81,8 @@ func TestIPPPrintWithMockServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewIPPPrinter: %v", err)
 	}
-	data := []byte("IPP test data")
-	if err := p.Print(context.Background(), data); err != nil {
+	data := validTestPDFBytes()
+	if err := p.PrintDocument(context.Background(), Document{Kind: KindPDF, Data: data}); err != nil {
 		t.Fatalf("Print failed: %v", err)
 	}
 	if contentType != "application/ipp" {
@@ -101,7 +101,7 @@ func TestIPPPrintErrorOnBadStatus(t *testing.T) {
 	}))
 	defer server.Close()
 	p, _ := NewIPPPrinter(server.URL, "Test")
-	err := p.Print(context.Background(), []byte("data"))
+	err := p.PrintDocument(context.Background(), Document{Kind: KindPDF, Data: validTestPDFBytes()})
 	if err == nil {
 		t.Fatalf("expected error for IPP status 0x0404")
 	}
@@ -113,7 +113,7 @@ func TestIPPPrintErrorOnBadStatus(t *testing.T) {
 func TestFactoryIPP(t *testing.T) {
 	cases := []struct {
 		typ, endpoint, proto string
-		shouldSucceed bool
+		shouldSucceed        bool
 	}{
 		{"ipp", "ipp://192.168.1.60/ipp/print", "ipp", true},
 		{"ipps", "ipps://192.168.1.60/ipp/print", "ipps", true},
@@ -135,10 +135,10 @@ func TestFactoryIPP(t *testing.T) {
 
 func TestParseIPPAttributesRealistic(t *testing.T) {
 	var buf bytes.Buffer
-	buf.Write([]byte{0x02, 0x00})                     // version 2.0
-	binary.Write(&buf, binary.BigEndian, uint16(0))   // successful-ok
-	binary.Write(&buf, binary.BigEndian, uint32(1))   // request id
-	buf.WriteByte(0x01)                               // operation attributes
+	buf.Write([]byte{0x02, 0x00})                   // version 2.0
+	binary.Write(&buf, binary.BigEndian, uint16(0)) // successful-ok
+	binary.Write(&buf, binary.BigEndian, uint32(1)) // request id
+	buf.WriteByte(0x01)                             // operation attributes
 	writeIPPAttribute(&buf, 0x47, "attributes-charset", "utf-8")
 	writeIPPAttribute(&buf, 0x48, "attributes-natural-language", "en")
 	writeIPPAttribute(&buf, 0x41, "status-message", "successful-ok")
@@ -202,7 +202,7 @@ func TestParseIPPAttributesMalformedNeverPanics(t *testing.T) {
 		{0x02, 0x00},
 		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
 		append([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04, 0x21}, bytes.Repeat([]byte{0xff}, 8)...),
-		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x20}, // truncated name
+		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x20},                  // truncated name
 		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x01, 'a', 0xFF, 0xFF}, // huge value length
 		{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x99, 0x00, 0x03, 'f', 'o', 'o', 0x00, 0x01, 0x01},
 	}
@@ -313,4 +313,8 @@ func readAll(r interface{ Read([]byte) (int, error) }) []byte {
 		}
 	}
 	return buf
+}
+
+func validTestPDFBytes() []byte {
+	return []byte("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
 }

@@ -19,7 +19,7 @@ async function ensureFixture() {
   await pool.query(`DELETE FROM print_jobs WHERE agent_id=$1 AND id LIKE 'job_cc_%'`, [AGENT_ID]);
   for (let i = 0; i < 20; i++) {
     await pool.query(
-      `INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at) VALUES ($1,$2,$3,'queued','{"type":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now()+interval '1 hour')`,
+      `INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at) VALUES ($1,$2,$3,'queued','{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now()+interval '1 hour')`,
       [`job_cc_${String(i).padStart(2,"0")}`, AGENT_ID, PRINTER_ID]
     );
   }

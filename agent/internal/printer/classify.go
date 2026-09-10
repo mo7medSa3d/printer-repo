@@ -181,10 +181,18 @@ func mapWindowsStatus(status uint32, attributes uint32) string {
 	if status&PRINTER_STATUS_PAUSED != 0 {
 		return "offline"
 	}
-	if status == 0 {
+	if status&PRINTER_STATUS_INITIALIZING != 0 || status&PRINTER_STATUS_WARMING_UP != 0 {
+		return "busy"
+	}
+	// Only status-zero or KNOWN-BENIGN bits prove a queue is ready. Any
+	// unmodelled bit set is reported honestly as "unknown" — never mapped
+	// to healthy.
+	const benignStatusBits = PRINTER_STATUS_PENDING_DELETION | PRINTER_STATUS_WAITING |
+		PRINTER_STATUS_TONER_LOW | PRINTER_STATUS_POWER_SAVE
+	if status&^benignStatusBits == 0 {
 		return "online"
 	}
-	return "online"
+	return "unknown"
 }
 
 func spoolerToLowerTrim(s string) string {

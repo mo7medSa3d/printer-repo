@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Odoo Print Gateway',
-    'version': '19.0.2.1.0',
+    'version': '19.0.2.2.0',
     'summary': 'Silent Odoo 19 printing through an external Gateway and runtime Agent',
     'description': """
 Odoo Print Gateway — Integration Only
@@ -24,7 +24,9 @@ Odoo printing occurs only when Gateway printing is explicitly disabled.
         'security/security.xml',
         'views/gateway_config_views.xml',
         'views/binding_views.xml',
+        'views/print_policy_views.xml',
         'views/print_job_views.xml',
+        'views/print_intent_views.xml',
         'views/menu.xml',
         'data/cron.xml',
     ],
@@ -38,7 +40,6 @@ Odoo printing occurs only when Gateway printing is explicitly disabled.
             'print_gateway/static/src/scss/print_gateway_backend.scss',
             'print_gateway/static/src/components/runtime_agent_field.js',
             'print_gateway/static/src/components/runtime_printer_field.js',
-            'print_gateway/static/src/js/runtime_printer_field.js',
             'print_gateway/static/src/js/report_interceptor.js',
             'print_gateway/static/src/js/tours/binding_cascade_tour.js',
         ],

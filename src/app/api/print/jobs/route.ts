@@ -3,8 +3,9 @@ import { db } from "../../../../db";
 import { printJobs } from "../../../../db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../lib/odoo-auth";
 import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
-import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError } from "../../../../lib/print-job-service";
+import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError, PrintJobInputError, idempotencyFingerprint } from "../../../../lib/print-job-service";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
+import { logError } from "../../../../lib/log";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -37,34 +38,10 @@ function responseForRow(row: typeof printJobs.$inferSelect) {
     agentId: row.agentId,
     destination: row.destination,
     documentType: row.documentType,
+    error: row.error,
   };
 }
 
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, child]) => [key, canonicalize(child)]),
-    );
-  }
-  return value;
-}
-
-function idempotencyFingerprint(request: {
-  printerId: string;
-  documentType?: string | null;
-  destination?: string | null;
-  payload: unknown;
-}) {
-  return JSON.stringify({
-    printerId: request.printerId,
-    documentType: request.documentType?.trim().toLowerCase() || null,
-    destination: request.destination?.trim() || null,
-    payload: canonicalize(request.payload),
-  });
-}
 
 function idempotencyMatches(row: typeof printJobs.$inferSelect, request: {
   printerId: string;
@@ -72,7 +49,17 @@ function idempotencyMatches(row: typeof printJobs.$inferSelect, request: {
   destination?: string;
   payload: PrintJobPayload;
 }) {
-  return idempotencyFingerprint(row) === idempotencyFingerprint(request);
+  return idempotencyFingerprint({
+    printerId: row.printerId,
+    documentType: row.documentType,
+    destination: row.destination,
+    payload: row.payload,
+  }) === idempotencyFingerprint({
+    printerId: request.printerId,
+    documentType: request.documentType,
+    destination: request.destination,
+    payload: request.payload,
+  });
 }
 
 function idempotencyConflict() {
@@ -125,6 +112,17 @@ export async function POST(req: Request) {
       expiresAt,
       rateLimitKeyId: odoo.id,
     });
+    if (result.isReused) {
+      const existing = await db.query.printJobs.findFirst({
+        where: eq(printJobs.id, result.id),
+      });
+      if (existing) {
+        return NextResponse.json(responseForRow(existing), { status: 200 });
+      }
+      // The reused job was deleted concurrently; do not fall through to a
+      // 201 describing a job that no longer exists.
+      return NextResponse.json({ error: "IDEMPOTENCY_CONFLICT", code: "IDEMPOTENCY_CONFLICT", retryable: false }, { status: 409 });
+    }
     return NextResponse.json({
       jobId: result.id,
       status: result.status,
@@ -146,16 +144,24 @@ export async function POST(req: Request) {
     if (error instanceof PrintJobCapabilityError) {
       return NextResponse.json({ error: error.message, code: error.code, retryable: false }, { status: 422 });
     }
-    if (error instanceof Error && (error as Error & { code?: string }).code === "DUPLICATE_JOB" && parsed.data.idempotencyKey) {
+    if (error instanceof PrintJobInputError) {
+      return NextResponse.json({ error: error.message, code: error.code, retryable: error.status >= 500 }, { status: error.status });
+    }
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: error.issues[0]?.message ?? "Invalid payload", code: "INVALID_PAYLOAD", retryable: false }, { status: 400 });
+    }
+    if (error instanceof Error && (error as Error & { code?: string }).code === "IDEMPOTENCY_CONFLICT" && parsed.data.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({
         where: and(eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
       });
       if (existing && idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
       return idempotencyConflict();
     }
-    const message = error instanceof Error ? error.message : "print job creation failed";
-    const status = /not found/i.test(message) ? 404 : /not online|disabled|virtual|retired/i.test(message) ? 503 : 500;
-    return NextResponse.json({ error: message }, { status });
+    // Anything else is an internal failure: log the detail, return a generic
+    // sanitized error. Database constraint names, driver messages, and
+    // stack traces never leave the server.
+    logError("print.job.create_failed", { key: parsed.data.idempotencyKey ?? null, error: error instanceof Error ? error.message : String(error) });
+    return NextResponse.json({ error: "Internal server error", code: "INTERNAL_ERROR", retryable: true }, { status: 500 });
   }
 }
 
