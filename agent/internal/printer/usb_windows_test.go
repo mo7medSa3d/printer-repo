@@ -95,7 +95,7 @@ func TestUSBWriteExceedingBoundaryIsUnknownAndWedges(t *testing.T) {
 	if !HasUnknownOutcomeMarker(err.Error()) {
 		t.Fatalf("a write abandoned mid-syscall may already have transmitted bytes and must be unknown: %v", err)
 	}
-	if !strings.Contains(err.Error(), "wedged") && !strings.Contains(err.Error(), "abandoned") {
+	if !strings.Contains(err.Error(), "operation boundary") || !strings.Contains(err.Error(), "unknown number of transmitted bytes") {
 		t.Fatalf("timeout error must say what happened: %v", err)
 	}
 	if elapsed > 10*time.Second {
