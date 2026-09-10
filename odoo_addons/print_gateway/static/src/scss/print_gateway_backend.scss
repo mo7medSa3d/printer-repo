@@ -1,4 +1,22 @@
 /* Print Gateway backend UI — deliberately scoped to the add-on views. */
+.o_pg_view, .o_form_view {
+    .o_field_widget input,
+    .o_field_widget select,
+    .o_input {
+        border: 1px solid var(--pg-input-border) !important; // Slate-300
+        border-radius: 6px !important;
+        padding: 6px 10px !important;
+        background-color: #ffffff !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+
+        &:focus {
+            border-color: var(--pg-brand-600) !important; // Brand Blue
+            box-shadow: 0 0 0 3px var(--pg-input-ring) !important;
+            outline: none !important;
+        }
+    }
+}
+
 .o_pg_view {
     color: var(--pg-text-2);
 

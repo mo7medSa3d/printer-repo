@@ -51,7 +51,8 @@
       "nsis": {
         "installMode": "perMachine",
         "displayLanguageSelector": false,
-        "startMenuFolder": "Odoo Print Manager"
+        "startMenuFolder": "Odoo Print Manager",
+        "installerHooks": "./installer_hooks.nsh"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

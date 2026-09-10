@@ -61,33 +61,15 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsHTTPByDefault(t *testing.T) {
-	t.Setenv("ODOO_PRINT_AGENT_ENV", "")
-	t.Setenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP", "")
-	c := &Config{}
-	c.Server.URL = "http://example.com"
-	if err := c.Validate(); err == nil {
-		t.Fatal("expected HTTP to be rejected by default")
-	}
-}
-
-func TestConfigValidateAllowsHTTPOnlyInExplicitDevelopmentMode(t *testing.T) {
-	t.Setenv("ODOO_PRINT_AGENT_ENV", "development")
-	t.Setenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP", "1")
-	c := &Config{}
-	c.Server.URL = "http://127.0.0.1:3000"
-	if err := c.Validate(); err != nil {
-		t.Fatalf("expected explicit development HTTP to be valid, got %v", err)
-	}
-}
-
-func TestConfigValidateRejectsHTTPWhenOnlyFlagIsPresent(t *testing.T) {
-	t.Setenv("ODOO_PRINT_AGENT_ENV", "production")
-	t.Setenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP", "1")
-	c := &Config{}
-	c.Server.URL = "http://example.com"
-	if err := c.Validate(); err == nil {
-		t.Fatal("expected HTTP to remain rejected outside development")
+func TestConfigValidateAcceptsHTTPAndHTTPSByDefault(t *testing.T) {
+	// Plain HTTP is accepted without any development opt-in (LAN appliances
+	// and local ports are commonly served over HTTP).
+	for _, url := range []string{"http://127.0.0.1:3000", "https://gateway.example.com"} {
+		c := &Config{}
+		c.Server.URL = url
+		if err := c.Validate(); err != nil {
+			t.Fatalf("expected %q to be valid by default, got %v", url, err)
+		}
 	}
 }
 

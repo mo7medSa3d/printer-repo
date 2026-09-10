@@ -6,10 +6,11 @@ static AGENT_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// Root for writable Odoo Print Manager state.
 ///
-/// Production Windows preference: `%PROGRAMDATA%\OdooPrintManager`.
-/// This is strictly separated from read-only `C:\Program Files\Odoo Print Manager`.
-/// If ProgramData is not writable for the current user, a per-user AppData path
-/// is used so the desktop can still start on a clean, non-elevated install.
+/// STRICTLY `%PROGRAMDATA%\OdooPrintManager` on Windows: the desktop app and
+/// the Windows Service (LocalSystem) must read and write the SAME location,
+/// so no per-user fallback exists by design. If this process cannot write
+/// there, every mutating operation fails closed with an Administrator
+/// message and the UI shows an elevation banner (see is_running_as_admin).
 pub fn manager_data_root() -> PathBuf {
     if let Some(p) = MANAGER_DATA_ROOT.get() {
         return p.clone();
@@ -22,14 +23,11 @@ pub fn ensure_manager_data_root() -> std::io::Result<PathBuf> {
         return Ok(p.clone());
     }
     let primary = manager_data_root_candidate();
-    if ensure_dir(&primary).is_ok() {
-        let _ = MANAGER_DATA_ROOT.set(primary.clone());
-        return Ok(primary);
+    if let Err(e) = ensure_dir(&primary) {
+        return Err(admin_required_error("manager data dir", &primary, &e));
     }
-    let fallback = local_manager_data_root();
-    ensure_dir(&fallback)?;
-    let _ = MANAGER_DATA_ROOT.set(fallback.clone());
-    Ok(fallback)
+    let _ = MANAGER_DATA_ROOT.set(primary.clone());
+    Ok(primary)
 }
 
 fn manager_data_root_candidate() -> PathBuf {
@@ -57,19 +55,11 @@ fn manager_data_root_candidate() -> PathBuf {
     }
 }
 
-fn local_manager_data_root() -> PathBuf {
-    if let Ok(dir) = std::env::var("LOCALAPPDATA") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir).join("OdooPrintManager");
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config").join("odoo-print-manager");
-    }
-    manager_data_root_candidate()
-}
-
 /// Root for the Go agent's writable runtime data.
+///
+/// STRICTLY `%PROGRAMDATA%\OdooPrintAgent` on Windows, for the same
+/// no-split-brain reason as the manager root: the desktop-spawned agent
+/// (pid file, config, queue) and the Windows Service must share one home.
 pub fn agent_data_root() -> PathBuf {
     if let Some(p) = AGENT_DATA_ROOT.get() {
         return p.clone();
@@ -82,14 +72,11 @@ pub fn ensure_agent_data_root() -> std::io::Result<PathBuf> {
         return Ok(p.clone());
     }
     let primary = agent_data_root_candidate();
-    if ensure_dir(&primary).is_ok() {
-        let _ = AGENT_DATA_ROOT.set(primary.clone());
-        return Ok(primary);
+    if let Err(e) = ensure_dir(&primary) {
+        return Err(admin_required_error("agent data dir", &primary, &e));
     }
-    let fallback = local_agent_data_root();
-    ensure_dir(&fallback)?;
-    let _ = AGENT_DATA_ROOT.set(fallback.clone());
-    Ok(fallback)
+    let _ = AGENT_DATA_ROOT.set(primary.clone());
+    Ok(primary)
 }
 
 fn agent_data_root_candidate() -> PathBuf {
@@ -117,18 +104,6 @@ fn agent_data_root_candidate() -> PathBuf {
     }
 }
 
-fn local_agent_data_root() -> PathBuf {
-    if let Ok(dir) = std::env::var("LOCALAPPDATA") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir).join("OdooPrintAgent");
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config").join("odoo-print-agent");
-    }
-    agent_data_root_candidate()
-}
-
 pub fn settings_path() -> PathBuf {
     manager_data_root().join("settings.json")
 }
@@ -147,6 +122,27 @@ pub fn manager_log_path() -> PathBuf {
 
 pub fn ensure_dir(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
+}
+
+/// Fail-closed directory error: directory creation is where a missing
+/// Administrator privilege surfaces first. State it explicitly so callers
+/// (and the UI banner) can tell the operator to relaunch elevated instead
+/// of showing a raw os error.
+fn admin_required_error(what: &str, path: &Path, e: &std::io::Error) -> std::io::Error {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        std::io::Error::new(
+            e.kind(),
+            format!(
+                "cannot create {what} ({}): access denied. Run the app as administrator",
+                path.display()
+            ),
+        )
+    } else {
+        std::io::Error::new(
+            e.kind(),
+            format!("cannot create {what} ({}): {e}", path.display()),
+        )
+    }
 }
 
 pub fn ensure_runtime_dirs() -> std::io::Result<()> {

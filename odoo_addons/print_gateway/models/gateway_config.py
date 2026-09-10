@@ -33,7 +33,11 @@ class PrintGatewayConfig(models.Model):
         help="Backward-compatible opaque Gateway runtime-agent reference from the earlier configuration model. New branch bindings do not use this field as their source of truth.",
     )
     last_test_at = fields.Datetime(readonly=True)
-    last_test_status = fields.Selection([("success", "Success"), ("failed", "Failed")], readonly=True)
+    last_test_status = fields.Selection(
+        [("draft", "Untested"), ("success", "Success"), ("failed", "Failed"),
+         ("revoked", "Revoked / Deleted on Gateway")],
+        readonly=True, default="draft",
+    )
     last_test_error = fields.Text(readonly=True)
 
     _company_unique = models.Constraint(
@@ -139,6 +143,18 @@ class PrintGatewayConfig(models.Model):
                 allow_redirects=False,
             )
             body = response.json() if response.content else {}
+            if response.status_code == 401:
+                # The installation API key was revoked or deleted on the
+                # Gateway. Mark it explicitly, explain it, and disable
+                # printing immediately so no further jobs are attempted
+                # with a dead credential.
+                self.write({
+                    "last_test_at": fields.Datetime.now(),
+                    "last_test_status": "revoked",
+                    "last_test_error": _("API Key has been revoked or deleted from the Gateway. Printing is disabled. Paste a new key or press Clear / Remove Key, then test again."),
+                    "enabled": False,
+                })
+                raise ValidationError(_("API Key has been revoked or deleted from the Gateway."))
             if response.status_code != 200 or not isinstance(body, dict) or body.get("ok") is not True:
                 raise ValidationError(_("Gateway connection test failed (HTTP %s).") % response.status_code)
             self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "success", "last_test_error": False})
@@ -156,6 +172,22 @@ class PrintGatewayConfig(models.Model):
         except ValueError as exc:
             self.write({"last_test_at": fields.Datetime.now(), "last_test_status": "failed", "last_test_error": _("Gateway returned an invalid health response.")})
             raise ValidationError(_("Gateway returned an invalid health response.")) from exc
+
+    def action_clear_api_key(self):
+        """Remove the stored installation API key and reset test state."""
+        self.ensure_one()
+        self._check_admin()
+        self.write({
+            "gateway_api_key": False,
+            "last_test_status": "draft",
+            "last_test_error": False,
+            "enabled": False,
+        })
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"title": _("API Key"), "message": _("The installation API key was removed. Printing is disabled until a new key is configured and tested."), "type": "warning", "sticky": False},
+        }
 
     def action_open_pairing_wizard(self):
         self.ensure_one()

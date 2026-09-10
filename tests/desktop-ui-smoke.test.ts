@@ -87,6 +87,8 @@ async function invoke<T>(cmd: string): Promise<T> {
       } as unknown as T;
     case "get_app_version":
       return "1.0.0" as unknown as T;
+    case "is_running_as_admin":
+      return true as unknown as T;
     case "get_gateway_config":
       return { url: "https://gw.example.com" } as unknown as T;
     case "get_runtime_paths":

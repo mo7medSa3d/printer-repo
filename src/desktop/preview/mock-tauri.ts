@@ -180,6 +180,8 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): P
       return "Printer registered" as unknown as T;
     case "get_autostart":
       return { enabled: true } as unknown as T;
+    case "is_running_as_admin":
+      return true as unknown as T;
     case "set_autostart":
       return "Autostart updated" as unknown as T;
     case "start_agent":

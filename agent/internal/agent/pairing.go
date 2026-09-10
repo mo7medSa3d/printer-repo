@@ -18,11 +18,6 @@ import (
 const pairingCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 const pairingCodeLength = 6
 
-func allowInsecureHTTP() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("ODOO_PRINT_AGENT_ENV")), "development") &&
-		os.Getenv("ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP") == "1"
-}
-
 func validateServerURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -37,16 +32,10 @@ func validateServerURL(raw string) error {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("server URL must not contain query strings or fragments")
 	}
-	if u.Scheme == "https" {
+	if u.Scheme == "https" || u.Scheme == "http" {
 		return nil
 	}
-	if u.Scheme == "http" && allowInsecureHTTP() {
-		return nil
-	}
-	if u.Scheme == "http" {
-		return fmt.Errorf("server URL must use https; insecure http is allowed only when ODOO_PRINT_AGENT_ENV=development and ODOO_PRINT_AGENT_ALLOW_INSECURE_HTTP=1")
-	}
-	return fmt.Errorf("server URL scheme must be https, got %q", u.Scheme)
+	return fmt.Errorf("server URL scheme must be http or https, got %q", u.Scheme)
 }
 
 func normalizeAndValidatePairingCode(raw string) (string, error) {
