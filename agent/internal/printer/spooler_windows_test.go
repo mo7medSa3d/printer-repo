@@ -127,3 +127,44 @@ func TestBoundedPreflightSingleFlightRefusesOverlap(t *testing.T) {
 		t.Fatalf("recovered spooler must accept preflight again, got %v", err)
 	}
 }
+
+func TestSpoolerSessionTryLockRefusesOverlap(t *testing.T) {
+	p := &SpoolerPrinter{Name: "T", SpoolerName: "session_mutex_test"}
+	if err := p.tryBeginSession(); err != nil {
+		t.Fatalf("first session must acquire the slot, got %v", err)
+	}
+	start := time.Now()
+	err := p.tryBeginSession()
+	elapsed := time.Since(start)
+	if err == nil {
+		p.endSession()
+		t.Fatal("overlapping session must be refused while one is in progress")
+	}
+	if !errors.Is(err, ErrPrinterNotReady) {
+		t.Fatalf("refusal must stay a typed not-ready failure, got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("refusal was not fast: waited %v", elapsed)
+	}
+	if HasUnknownOutcomeMarker(err.Error()) {
+		t.Fatalf("pre-dispatch refusal must not be classified unknown: %v", err)
+	}
+	p.endSession()
+	if err := p.tryBeginSession(); err != nil {
+		t.Fatalf("slot must be reusable after the session ends, got %v", err)
+	}
+	p.endSession()
+}
+
+func TestSpoolerStatusUnknownPrinterIsOffline(t *testing.T) {
+	// No such queue exists on any Windows host, so OpenPrinterW reliably
+	// fails and the probe must report offline — never a bare-open "online".
+	p := &SpoolerPrinter{
+		Name:        "T",
+		SpoolerName: "definitely-not-a-real-printer-4f2a9c",
+		Timeout:     10 * time.Second,
+	}
+	if st := p.Status(); st != "offline" {
+		t.Fatalf("unknown spooler queue must report offline, got %q", st)
+	}
+}

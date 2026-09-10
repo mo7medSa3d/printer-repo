@@ -51,7 +51,12 @@ class PrintGatewayJob(models.Model):
         ("printed", "Definitely printed"),
         ("unknown", "Possibly printed / unknown"),
     ], compute="_compute_physical_outcome")
-    payload = fields.Text(required=True, copy=False, readonly=True)
+    # Full document bytes (rendered PDF/JPEG, native command streams).
+    # Restricted to system administrators: the job list/form never displays
+    # payload content, and every server-side reader (submit/sync/retry runs
+    # elevated or as cron). Same-company internal users keep status/history
+    # visibility without access to other documents' byte content.
+    payload = fields.Text(required=True, copy=False, readonly=True, groups="base.group_system")
     payload_type = fields.Selection([
         ("pdf", "PDF Vector"),
         ("raster_jpeg", "JPEG Raster Banding"),
@@ -63,7 +68,7 @@ class PrintGatewayJob(models.Model):
         ("zpl", "Zebra ZPL-II"),
         ("tspl", "TSC TSPL"),
     ], required=False, readonly=True)
-    raw_payload = fields.Text(string="Native Command Payload", readonly=True)
+    raw_payload = fields.Text(string="Native Command Payload", readonly=True, groups="base.group_system")
     printer_profile = fields.Text(string="Printer Hardware Profile", readonly=True)
     fallback_binding_id = fields.Many2one("print_gateway.binding", string="Failover Backup Binding", readonly=True)
     idempotency_key = fields.Char(required=True, index=True, copy=False, readonly=True)

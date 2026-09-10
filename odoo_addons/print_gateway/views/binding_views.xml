@@ -23,91 +23,72 @@
         <field name="name">print_gateway.binding.form</field>
         <field name="model">print_gateway.binding</field>
         <field name="arch" type="xml">
-            <form string="Print Gateway Binding" class="o_pg_view o_pg_form">
+            <form string="Print Gateway Binding">
                 <header>
                     <button name="action_send_test_print" type="object" string="Send Test Page" class="btn btn-primary" icon="fa-print" invisible="not runtime_agent_id or not printer_id"/>
                     <button name="action_verify_remote_hardware" type="object" string="Validate Registration (Gateway)" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
                 </header>
                 <sheet>
-                    <div class="o_pg_record_header">
-                        <span class="o_pg_record_icon">🖨️</span>
-                        <div>
-                            <h1>Hardware Print Binding</h1>
-                            <p class="text-muted mb-0">Route business documents directly to physical print hardware without browser dialogs.</p>
-                        </div>
+                    <div class="oe_title">
+                        <h1>Print Binding</h1>
+                        <p class="text-muted">Connect an Odoo document route to a Gateway printer.</p>
                     </div>
 
-                    <div class="o_pg_step_container">
-                        <!-- Step 1: Hierarchy -->
-                        <div class="o_pg_step_card">
-                            <div class="o_pg_step_header">
-                                <span class="o_pg_step_num">1</span>
-                                <h3 class="o_pg_step_title">Hierarchy &amp; Scope</h3>
-                                <span class="o_pg_step_subtitle">Select organizational context</span>
-                            </div>
-                            <group string="Business Context">
-                                <field name="company_id" string="Odoo Company" domain="[('parent_id', '=', False)]" options="{'no_create': True}"/>
-                                <field name="branch_id" string="Odoo Branch" domain="[('parent_id', '=', company_id)]"
-                                       invisible="not company_id" placeholder="All Branches / Root Default" options="{'no_create': True}"/>
-                            </group>
-                        </div>
+                    <separator string="Route"/>
+                    <div class="mb-3">
+                        <field name="name" readonly="1"/>
+                    </div>
+                    <div class="text-muted mb-3"><small>Odoo defines the business route. Gateway handles physical execution.</small></div>
 
-                        <!-- Step 2: Operational Area & Destination -->
-                        <div class="o_pg_step_card">
-                            <div class="o_pg_step_header">
-                                <span class="o_pg_step_num">2</span>
-                                <h3 class="o_pg_step_title">Operational Destination</h3>
-                                <span class="o_pg_step_subtitle">Define print source and template</span>
-                            </div>
+                    <group string="Context">
+                        <field name="company_id" string="Company" domain="[('parent_id', '=', False)]" options="{'no_create': True}"/>
+                        <field name="branch_id" string="Branch" domain="[('parent_id', '=', company_id)]"
+                               invisible="not company_id" placeholder="All Branches / Root Default" options="{'no_create': True}"/>
+                    </group>
+
+                    <group string="Destination">
+                        <field name="destination_type" string="Destination Type" widget="radio" options="{'horizontal': true}"/>
+                        <field name="destination_pos_config_id" string="Destination"
+                               invisible="destination_type != 'pos'" required="destination_type == 'pos'"
+                               domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
+                        <field name="destination_pos_printer_id" string="Destination"
+                               invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"
+                               domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]"/>
+                        <field name="destination_picking_type_id" string="Operation Type"
+                               invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"
+                               domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
+                        <field name="destination_report_id" string="Destination"
+                               invisible="destination_type != 'report'" required="destination_type == 'report'"/>
+                        <field name="report_id" string="Document / Report"
+                               invisible="destination_type == 'pos_printer'" required="destination_type != 'pos_printer'"/>
+                        <field name="document_type" string="Document Type" readonly="1"/>
+                    </group>
+
+                    <group string="Hardware">
+                        <field name="runtime_agent_id" string="Runtime Agent" widget="gateway_runtime_agent"/>
+                        <field name="printer_id" string="Runtime Printer" widget="gateway_runtime_printer"/>
+                    </group>
+
+                    <notebook>
+                        <page string="Advanced Routing">
                             <group>
-                                <field name="destination_type" string="Odoo Destination Type" widget="radio" options="{'horizontal': true}"/>
-                                <field name="destination_pos_config_id" string="Odoo Destination"
-                                       invisible="destination_type != 'pos'" required="destination_type == 'pos'"
-                                       domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
-                                <field name="destination_pos_printer_id" string="Odoo Destination"
-                                       invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"
-                                       domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]"/>
-                                <field name="destination_picking_type_id" string="Odoo Destination"
-                                       invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"
-                                       domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
-                                <field name="destination_report_id" string="Odoo Destination"
-                                       invisible="destination_type != 'report'" required="destination_type == 'report'"/>
-                                <field name="report_id" string="Document / Report"
-                                       invisible="destination_type == 'pos_printer'" required="destination_type != 'pos_printer'"/>
-                                <field name="document_type" string="Document Type" readonly="1"/>
-                            </group>
-                        </div>
-
-                        <!-- Step 3: Target Hardware & Routing -->
-                        <div class="o_pg_step_card">
-                            <div class="o_pg_step_header">
-                                <span class="o_pg_step_num">3</span>
-                                <h3 class="o_pg_step_title">Target Hardware &amp; Routing</h3>
-                                <span class="o_pg_step_subtitle">Select discovered agent and physical printer</span>
-                            </div>
-                            <group string="Runtime Target">
-                                <field name="runtime_agent_id" string="Gateway Runtime Agent" widget="gateway_runtime_agent"/>
-                                <field name="printer_id" string="Gateway Runtime Printer" widget="gateway_runtime_printer"/>
                                 <field name="printer_protocol" string="Printer Protocol"/>
                                 <field name="fallback_binding_id" string="Failover Backup Binding" options="{'no_create': True}"/>
+                                <field name="enabled" widget="boolean_toggle"/>
+                                <field name="priority"/>
                             </group>
-                            <group string="Hardware Peripherals (ESC/POS)">
+                        </page>
+                        <page string="Hardware Options">
+                            <group>
                                 <field name="drawer_kick_mode" string="Cash Drawer Kick"/>
                                 <field name="cutter_mode" string="Paper Cutter"/>
                                 <field name="buzzer_mode" string="Kitchen Chime"/>
                             </group>
-                            <group string="Routing">
-                                <field name="enabled" widget="boolean_toggle"/>
-                                <field name="priority"/>
-                            </group>
-                        </div>
-                    </div>
+                        </page>
+                    </notebook>
 
                     <field name="effective_company_id" invisible="1"/>
                     <field name="destination_ref" invisible="1"/>
-                    <div class="alert alert-info" role="alert">
-                        Odoo owns the Company, Branch, Destination and Document context. The Gateway owns Runtime Agents, Runtime Printers and physical execution. This binding only connects the two.
-                    </div>
                 </sheet>
             </form>
         </field>

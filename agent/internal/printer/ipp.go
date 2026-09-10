@@ -169,7 +169,11 @@ func (p *IPPPrinter) printDocument(ctx context.Context, data []byte, documentFor
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	if deadline, ok := ctx.Deadline(); ok {
-		if timeout := time.Until(deadline); timeout > 0 && timeout < 15*time.Second {
+		// Honor the print budget: a large/slow IPP transfer legitimately
+		// outlives the 15s stall floor, and the budget context already
+		// bounds the whole job. Without this, slow-but-progressing jobs
+		// are killed at 15s despite a multi-minute budget.
+		if timeout := time.Until(deadline); timeout > 0 {
 			client.Timeout = timeout
 		}
 	}

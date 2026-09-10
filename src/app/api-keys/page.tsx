@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Copy, KeyRound, Shield, Trash2 } from "lucide-react";
 import { Button, Card, CardHeader, Input, Field, StatusBadge } from "../../components/ui";
+import { copyTextToClipboard } from "../../lib/clipboard";
 
 type ApiKey = {
   id: string;
@@ -89,12 +90,33 @@ export default function ApiKeysPage() {
     }
   }
 
+  async function removeKey(id: string) {
+    if (!window.confirm("Permanently remove this revoked API key? This cannot be undone. Keys with print-job history cannot be removed.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/odoo/keys", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ id, remove: true }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Unable to remove API key.");
+      setRawKey(null);
+      setKeys(await load());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function copyRawKey() {
     if (!rawKey) return;
-    try {
-      await navigator.clipboard.writeText(rawKey);
+    if (await copyTextToClipboard(rawKey)) {
       setCopied(true);
-    } catch {
+    } else {
       setError("The browser blocked clipboard access. Select the key text and press Ctrl+C.");
     }
   }
@@ -104,7 +126,7 @@ export default function ApiKeysPage() {
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-brand"><KeyRound className="h-4 w-4" /> Gateway API Keys</div>
-          <h1 className="text-2xl font-semibold tracking-tight text-ink">Generate and revoke Odoo access</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">Generate, revoke, and remove Odoo access</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-3">Keys are shown only once. The Gateway stores only a cryptographic hash; there is no branch or document-type scope here.</p>
         </div>
         <Link href="/dashboard" className="text-sm font-semibold text-brand hover:underline">Back to Console</Link>
@@ -149,7 +171,11 @@ export default function ApiKeysPage() {
                 <div className="mt-1 text-xs text-ink-3">Created {new Date(item.createdAt).toLocaleString()} · Last used {item.lastUsedAt ? new Date(item.lastUsedAt).toLocaleString() : "Never"}</div>
                 <div className="mt-1 font-mono text-[11px] text-ink-3">{item.id}</div>
               </div>
-              {!item.revokedAt && <Button type="button" variant="secondary" onClick={() => revoke(item.id)} disabled={busy} icon={<Trash2 className="h-4 w-4" />}>Revoke</Button>}
+              {!item.revokedAt ? (
+                <Button type="button" variant="secondary" onClick={() => revoke(item.id)} disabled={busy} icon={<Trash2 className="h-4 w-4" />}>Revoke</Button>
+              ) : (
+                <Button type="button" variant="danger" onClick={() => removeKey(item.id)} disabled={busy} icon={<Trash2 className="h-4 w-4" />}>Remove</Button>
+              )}
             </div>
           ))}
         </div>

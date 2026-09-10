@@ -56,7 +56,7 @@
                             invisible="status not in ('partial', 'unknown') and physical_outcome != 'unknown'"/>
                     <button name="action_retry" type="object" string="Retry" class="oe_highlight" groups="base.group_system" invisible="status != 'failed' or physical_outcome != 'not_printed'"/>
                     <button name="action_sync_status" type="object" string="Refresh Status" groups="base.group_system" invisible="not gateway_job_id"/>
-                    <field name="status" widget="statusbar" statusbar_visible="queued,submitted,claimed,printing,success" decoration-danger="status in ('failed', 'unknown', 'partial')"/>
+                    <field name="status" widget="statusbar" statusbar_visible="queued,submitted,claimed,printing,success,failed,unknown,partial" decoration-danger="status in ('failed', 'unknown', 'partial')"/>
                 </header>
                 <sheet>
                     <!-- Amber Callout for UNKNOWN_PARTIAL_DELIVERY -->

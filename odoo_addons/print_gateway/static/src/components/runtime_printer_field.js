@@ -2,7 +2,7 @@
 
 import { Component, onWillStart, onWillUpdateProps, useState, xml } from "@odoo/owl";
 import { registry } from "@web/core/registry";
-import { useService } from "@web/core/utils/hooks";
+import { rpc } from "@web/core/network/rpc";
 
 function relationalId(value) {
     if (!value) return false;
@@ -26,7 +26,7 @@ export class RuntimePrinterField extends Component {
         </div>`;
 
     setup() {
-        this.rpc = useService("rpc");
+        this.rpc = rpc;
         this.currentRequestId = 0;
         this.state = useState({ loading: false, printers: [], agentId: false, destinationType: false, error: null });
         onWillStart(() => this.load(this.props));
@@ -106,5 +106,12 @@ export class RuntimePrinterField extends Component {
 }
 
 if (!registry.category("fields").contains("gateway_runtime_printer")) {
-    registry.category("fields").add("gateway_runtime_printer", RuntimePrinterField);
+    // The widget is bound exclusively to print_gateway.binding.printer_id,
+    // an opaque Gateway runtime identifier stored as Char (see models/binding.py).
+    // Declaring ["char"] keeps the descriptor truthful so Odoo 19 does not log
+    // a misleading "don't support the type" warning on every form open.
+    registry.category("fields").add("gateway_runtime_printer", {
+        component: RuntimePrinterField,
+        supportedTypes: ["char"],
+    });
 }

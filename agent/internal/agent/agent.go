@@ -1067,6 +1067,13 @@ func (a *Agent) rejectJob(jobID, token, reason string) {
 // shutdownGrace), so the SQLite queue is never closed mid-write on service
 // stop. Surviving the deadline is safe: WAL is crash-durable and the gateway
 // reclaims stale claimed jobs automatically.
+//
+// Caller contract (sync.WaitGroup rule): no wg.Add may be concurrent with
+// this Wait. Production shutdown satisfies it via the inFlightMu gate in
+// dispatchJob. Tests driving delivery from a background goroutine (WS
+// handler) must first synchronize past the Add — e.g. the WS ack alone is
+// NOT enough, it is sent before dispatchJob runs; wait for the print to
+// start (see waitForPrintStarted) before calling this.
 func (a *Agent) waitForJobs() {
 	done := make(chan struct{})
 	go func() {
@@ -1167,7 +1174,13 @@ func (a *Agent) printerStatusPayload() []map[string]interface{} {
 	a.printersMu.RUnlock()
 	sort.Strings(ids) // deterministic order aids gateway-side diffing
 
-	const maxReportedPrinters = 50
+	// The gateway accepts up to 500 printers per heartbeat ("too many
+	// printers in heartbeat" above that), and each entry is a short id +
+	// status pair (~100 bytes), so 500 stays two orders of magnitude under
+	// the heartbeat body cap. Truncating lower would silently hide real
+	// printers from routing: gateway availability requires a fresh
+	// heartbeat sighting, so an unreported printer can never be routed to.
+	const maxReportedPrinters = 500
 	if len(ids) > maxReportedPrinters {
 		ids = ids[:maxReportedPrinters]
 	}

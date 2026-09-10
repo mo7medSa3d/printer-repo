@@ -110,6 +110,7 @@ class PrintGatewayBinding(models.Model):
             "wildcard: a 'raw' printer does not accept zpl/tspl/escpos jobs.")
     fallback_binding_id = fields.Many2one(
         "print_gateway.binding", string="Failover Backup Binding", ondelete="set null",
+        check_company=True,
         domain="['&', ('id', '!=', id), ('company_id', '=', company_id)]",
         help="Pre-dispatch failover target if the primary printer is confirmed offline before bytes are sent.",
     )
@@ -167,7 +168,7 @@ class PrintGatewayBinding(models.Model):
                 destination = record.destination_report_id
             record.destination_ref = "%s,%s" % (destination._name, destination.id) if destination else False
 
-    @api.depends("report_id", "destination_type", "destination_pos_printer_id")
+    @api.depends("report_id", "report_id.model", "report_id.report_name", "destination_type", "destination_pos_printer_id")
     def _compute_document_type(self):
         for record in self:
             if record.destination_type == "pos_printer":

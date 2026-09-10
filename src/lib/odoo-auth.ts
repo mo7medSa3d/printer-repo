@@ -3,18 +3,6 @@ import { apiKeys } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
-export function configuredOdooDatabaseName(): string | null {
-  const value = process.env.ODOO_DATABASE_NAME?.trim();
-  if (!value || value.length > 63 || /[\r\n]/.test(value)) return null;
-  return value;
-}
-
-export function isOdooDatabaseAllowed(requestDatabase: string | null | undefined): boolean {
-  const configured = configuredOdooDatabaseName();
-  if (!configured) return process.env.NODE_ENV !== "production";
-  return typeof requestDatabase === "string" && requestDatabase.trim() === configured;
-}
-
 function hashKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
@@ -51,9 +39,9 @@ export function isOdooKeyAllowedForDocumentType(
 }
 
 export async function validateOdooKey(req: Request) {
-  const requestDatabase = req.headers.get("x-odoo-database");
-  if (!isOdooDatabaseAllowed(requestDatabase)) return null;
-
+  // Odoo Gateway authentication is based on the Odoo installation API key.
+  // The Odoo database name is not used as an authentication requirement:
+  // X-Odoo-Database may be sent for informational purposes and is ignored.
   const authorization = req.headers.get("authorization") ?? "";
   const apiHeader = req.headers.get("x-api-key") ?? "";
   const raw = authorization.startsWith("Bearer ")

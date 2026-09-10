@@ -11,13 +11,15 @@ The Odoo integration contract is intentionally small. Odoo owns business records
 `mgr_session` cookie or manager bearer session, according to `src/lib/manager-auth.ts`.
 
 ### Odoo
-`Authorization: Bearer odoo_<key>` or `X-Api-Key: odoo_<key>` plus `X-Odoo-Database: <configured database>`.
+`Authorization: Bearer odoo_<key>` or `X-Api-Key: odoo_<key>`.
+
+Odoo Gateway authentication is based on the Odoo installation API key. The Odoo database name is not used as an authentication requirement. Odoo may still send `X-Odoo-Database` for informational purposes; the Gateway ignores it for authentication.
 
 The raw Odoo key is returned only when generated. Gateway persists only its cryptographic hash and a revoke timestamp.
 
 ## `GET /api/odoo/health`
 
-Authenticated with the Odoo installation key and configured database name. Returns `{ "ok": true }` only for a valid, non-revoked key. This endpoint is used by the Odoo **Test Connection** button.
+Authenticated with the Odoo installation key. Returns `{ "ok": true }` only for a valid, non-revoked key. This endpoint is used by the Odoo **Test Connection** button.
 
 ## `GET /api/odoo/printers`
 
@@ -44,7 +46,7 @@ Request:
 
 No Gateway branch ID, Gateway destination ID, Gateway document-type ID, agent provisioning data, or printer-creation data is accepted.
 
-The Gateway validates the Odoo key, database binding, payload, expiration and idempotency before queueing the runtime job. A created Odoo-originated job is stamped with the authenticated API-key identity so status lookup and idempotency are installation-scoped. Internal Manager-created jobs may omit that identity and are not exposed through this Odoo status endpoint.
+The Gateway validates the Odoo key, payload, expiration and idempotency before queueing the runtime job. A created Odoo-originated job is stamped with the authenticated API-key identity so status lookup and idempotency are installation-scoped. Internal Manager-created jobs may omit that identity and are not exposed through this Odoo status endpoint.
 
 `201` means a new job was accepted. `200` means an idempotent retry matched an existing job and returns that job identity. A reused key with different routing/payload data returns `409 IDEMPOTENCY_CONFLICT`.
 

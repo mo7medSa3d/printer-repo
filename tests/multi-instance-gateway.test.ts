@@ -7,10 +7,10 @@ import { getWorkerSchema } from "../src/lib/worker-schema";
 const run = describe.skipIf(!hasTestDatabase || process.env.RUN_MULTI_INSTANCE_TEST !== "1");
 type GatewayProcess = { child: ChildProcess; output: () => string; ready: Promise<number> };
 
-function startGateway(databaseName: string, workerSchema: string | null): GatewayProcess {
+function startGateway(workerSchema: string | null): GatewayProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env, NODE_ENV: "production", PORT: "0", HOSTNAME: "127.0.0.1", TRUST_PROXY: "0",
-    ODOO_DATABASE_NAME: databaseName, GATEWAY_JWT_SECRET: "test-secret-that-is-at-least-32-characters-long",
+    GATEWAY_JWT_SECRET: "test-secret-that-is-at-least-32-characters-long",
     MANAGER_USERNAME: "test-manager", MANAGER_PASSWORD_HASH: "",
   };
   delete env.VITEST; delete env.VITEST_WORKER_ID; delete env.VITEST_POOL_ID;
@@ -52,11 +52,11 @@ async function stop(gateway: GatewayProcess) {
 
 run("multi-instance Gateway runtime delivery", () => {
   let fixture: Fixture; let gatewayA: GatewayProcess; let gatewayB: GatewayProcess; let portA: number; let portB: number;
-  const schema = getWorkerSchema(); const databaseName = "multi_instance_test";
+  const schema = getWorkerSchema();
 
   beforeAll(async () => {
     await applyMigrations(); fixture = await seedFixture();
-    gatewayA = startGateway(databaseName, schema); gatewayB = startGateway(databaseName, schema);
+    gatewayA = startGateway(schema); gatewayB = startGateway(schema);
     [portA, portB] = await Promise.all([waitHealthy(gatewayA), waitHealthy(gatewayB)]);
   });
   beforeEach(async () => { await pool().query("DELETE FROM print_jobs"); });

@@ -563,10 +563,17 @@ pub async fn discover_printers(app: tauri::AppHandle) -> Result<DiscoverResult, 
 
 #[tauri::command]
 pub async fn test_printer(printer_id: String, app: tauri::AppHandle) -> Result<String, String> {
-    if printer_id.trim().is_empty() {
+    // Same trust boundary as register_printer's arg_value: the id is passed
+    // positionally to the Go CLI, whose parser treats a leading-dash value
+    // as a flag (e.g. "-config" would be swallowed as a flag name). Printer
+    // ids never legitimately start with '-'.
+    let pid = printer_id.trim().to_string();
+    if pid.is_empty() {
         return Err("printer id is required".into());
     }
-    let pid = printer_id.clone();
+    if pid.starts_with('-') {
+        return Err("printer id must not start with '-'".into());
+    }
     run_blocking(move || {
         let cli = agent::cli_path(&app)?;
         let config = paths::agent_config_path();

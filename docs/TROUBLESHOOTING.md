@@ -4,7 +4,7 @@
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| `401 Unauthorized` | API key missing, invalid, revoked, or database binding mismatch | Re-copy a newly generated key into Odoo and verify the configured Odoo database name |
+| `401 Unauthorized` | API key missing, invalid, or revoked | Re-copy a newly generated key into Odoo |
 | Gateway URL rejected | Unsupported scheme, credentials, query/fragment, API path, or private target | Use the Gateway origin only and allow-list private targets explicitly when required |
 | `Gateway is unavailable` | DNS, TLS, firewall, or Gateway process failure | Check the Gateway health endpoint and outbound connectivity from Odoo |
 | `Gateway health check failed` | Authentication or health response failure | Validate the API key and Gateway runtime |

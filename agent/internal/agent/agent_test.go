@@ -63,6 +63,12 @@ func (f *fakePrinter) Spans() []printSpan {
 	return out
 }
 
+func (f *fakePrinter) Calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 func spansOverlap(a, b printSpan) bool {
 	return a.start.Before(b.end) && b.start.Before(a.end)
 }
