@@ -139,7 +139,7 @@ No Gateway branch identifier, destination entity ID, or document-type entity is 
 ## API key lifecycle
 
 The Gateway manager supports generation, one-time display/copy, and revoke. Only a cryptographic hash remains at rest.
-Odoo stores the credential it must use to connect to the Gateway. Keys are installation-scoped and authenticated with the configured Odoo database name.
+Odoo stores the credential it must use to connect to the Gateway. Keys are installation-scoped. Odoo Gateway authentication is based on the Odoo installation API key. The Odoo database name is not used as an authentication requirement.
 
 ## Reliability
 

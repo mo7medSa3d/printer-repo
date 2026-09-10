@@ -6,7 +6,6 @@ import { sweepPrintJobs } from "./src/lib/job-maintenance";
 import { cleanupAuthRateLimits } from "./src/lib/auth-rate-limit";
 import { cleanupExpiredManagerSessions } from "./src/lib/manager-auth";
 import { applyApiCors, handleApiCorsPreflight } from "./src/server/cors";
-import { configuredOdooDatabaseName } from "./src/lib/odoo-auth";
 import { isTrustedProxyRequest, trustProxyEnabled } from "./src/server/trusted-proxy";
 import { runtimeSecret } from "./src/lib/runtime-secret";
 
@@ -18,10 +17,6 @@ const HOUSEKEEPING_INTERVAL_MS = 5 * 60_000;
 
 if (process.env.NODE_ENV === "production" && process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD === "1") {
   throw new Error("Refusing production startup with ALLOW_PLAINTEXT_MANAGER_PASSWORD=1; configure MANAGER_PASSWORD_HASH instead.");
-}
-
-if (process.env.NODE_ENV === "production" && !configuredOdooDatabaseName()) {
-  throw new Error("Refusing production startup without ODOO_DATABASE_NAME; configure the exact Odoo database served by this Gateway.");
 }
 
 if (process.env.NODE_ENV === "production" && trustProxyEnabled()) {

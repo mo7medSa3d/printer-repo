@@ -219,9 +219,13 @@ func TestDuplicateWSDeliveryPrintsOnceAndAcksBoth(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return ag.getWSConn() != nil })
 	gw.sendCh <- claimedEnvelope("job_dup", "p1")
 	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 1 })
+	waitForPrintStarted(t, p)
 	ag.waitForJobs()
 	gw.sendCh <- claimedEnvelope("job_dup", "p1")
 	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 2 })
+	// No wait needed here: the duplicate takes dispatchJob's dedupe path,
+	// which never calls wg.Add, and the handler is sequential, so the
+	// observed second ack already proves the first delivery's Add is done.
 	ag.waitForJobs()
 	if p.calls != 1 {
 		t.Fatalf("duplicate delivery must print exactly once, got %d prints", p.calls)
@@ -294,6 +298,18 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met within timeout")
+}
+
+// waitForPrintStarted waits until the dispatched job's executor has entered
+// the printer. The WS ack is sent BEFORE dispatchJob's wg.Add, so a test
+// that only waits for the ack can reach waitForJobs (wg.Wait) while the
+// handler goroutine has not yet called Add — sync.WaitGroup forbids Add
+// concurrent with Wait, and the race detector fails the test (seen on the
+// Windows CI runner). The print call happens strictly after Add, so
+// observing it proves the Add is in the past and Wait is safe.
+func waitForPrintStarted(t *testing.T, p *fakePrinter) {
+	t.Helper()
+	waitFor(t, 5*time.Second, func() bool { return p.Calls() >= 1 })
 }
 
 func TestInterruptedJobIsReportedAtStartup(t *testing.T) {
@@ -409,6 +425,7 @@ func TestClaimTokenEchoedInStatusUpdatesAndAck(t *testing.T) {
 	env["job"].(map[string]interface{})["claimToken"] = "claim-live-123"
 	gw.sendCh <- env
 	waitFor(t, 5*time.Second, func() bool { return len(gw.Acks()) == 1 })
+	waitForPrintStarted(t, p)
 	ag.waitForJobs()
 
 	if p.calls != 1 {

@@ -11,6 +11,7 @@ export default defineConfig({
       "tests/e2e-job-flow.test.ts",
       "tests/ws-claim-delivery.test.ts",
       "tests/ws-listener-setup-race.test.ts",
+      "tests/ws-socket-cap.test.ts",
       "tests/job-status-postgres-concurrency.test.ts",
       "tests/auth-rate-limit.test.ts",
       "tests/heartbeat-enabled.test.ts",

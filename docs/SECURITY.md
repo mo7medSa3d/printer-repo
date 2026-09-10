@@ -6,9 +6,11 @@
 |---|---|---|
 | Agent | `Bearer <agent-id>:<secret>` | Agent runtime APIs |
 | Manager | manager session cookie/bearer | Gateway administration |
-| Odoo | `Bearer odoo_<key>` or `X-Api-Key` + `X-Odoo-Database` | Odoo integration API |
+| Odoo | `Bearer odoo_<key>` or `X-Api-Key` | Odoo integration API |
 
 Raw Odoo API keys are returned only when generated. Gateway stores only the cryptographic hash and a revoke timestamp.
+
+Odoo Gateway authentication is based on the Odoo installation API key. The Odoo database name is not used as an authentication requirement.
 
 ## Odoo API keys
 
@@ -18,7 +20,7 @@ The key is installation-level, not branch-scoped and not document-type-scoped.
 - Copy the raw key once.
 - Gateway list/read endpoints return metadata only.
 - Revoke by key id; revoked keys immediately fail authentication.
-- `X-Odoo-Database` binds the key to the configured Odoo database/installation.
+- `X-Odoo-Database` may be sent for informational purposes; it is ignored for authentication.
 
 No branch id is encoded in the Odoo key authorization model.
 

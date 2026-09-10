@@ -10,12 +10,17 @@ class PosOrderGatewayPrinting(models.Model):
 
     def action_print_gateway_receipt(self, image):
         self.ensure_one()
+        # The rendered receipt leaves the database perimeter (Gateway +
+        # paper), so the caller must be allowed to read the order itself,
+        # mirroring the report path's read check.
+        self.check_access("read")
         if not image:
             raise ValidationError(_("The rendered POS receipt image is required."))
         return self.env["print_gateway.print_router"].route_pos_receipt(self, image)
 
     def action_print_gateway_kitchen(self, printer_id, image, reprint=False, operation_id=None):
         self.ensure_one()
+        self.check_access("read")
         if not printer_id:
             raise ValidationError(_("The Odoo Kitchen / Preparation printer is required."))
         try:

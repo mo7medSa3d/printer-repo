@@ -55,7 +55,7 @@ Exactly-once physical printing is not claimed. A device can accept bytes immedia
 - API key raw secret appears only at creation
 - list/read endpoints never expose raw secrets
 - revoke immediately invalidates a key
-- Odoo database binding is enforced
+- Odoo Gateway authentication is based on the Odoo installation API key
 - Gateway URL validation blocks credentials, query/fragment, and unauthorized private targets
 - no secret/payload logging
 - Odoo company ACL and record-rule isolation

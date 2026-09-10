@@ -88,13 +88,16 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
     def test_binding_view_exposes_explicit_business_and_runtime_relationship(self):
         source = (VIEWS / "binding_views.xml").read_text(encoding="utf-8")
         for label in (
-            'string="Odoo Company"', 'string="Odoo Branch"',
-            'string="Gateway Runtime Agent"', 'string="Gateway Runtime Printer"',
-            'string="Business Context"', 'string="Runtime Target"', 'string="Routing"',
+            'string="Company"', 'string="Branch"',
+            'string="Runtime Agent"', 'string="Runtime Printer"',
+            'string="Context"', 'string="Destination"', 'string="Hardware"',
+            'string="Advanced Routing"', 'string="Hardware Options"',
         ):
             self.assertIn(label, source)
         self.assertIn('widget="gateway_runtime_agent"', source)
         self.assertIn('widget="gateway_runtime_printer"', source)
+        # Verbose legacy labels must stay out of the simplified form.
+        self.assertNotIn("Hardware Print Binding", source)
 
     def test_direct_pos_controller_is_loaded_and_runtime_printer_controller_is_loaded(self):
         pos_controller = (CONTROLLERS / "pos.py").read_text(encoding="utf-8")

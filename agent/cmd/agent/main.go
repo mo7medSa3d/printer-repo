@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -105,6 +107,29 @@ func setupLogging(configPath string) (*os.File, error) {
 	return f, nil
 }
 
+// configureServiceRecovery declares SCM failure actions so a crashed agent
+// restarts itself (60s delay, 3 attempts, counter reset daily) instead of
+// staying dead until an operator notices. kardianos/service does not expose
+// failure actions, so this shells to sc.exe on Windows only. Warn-only: a
+// recovery-config failure must never break an otherwise good install.
+func configureServiceRecovery(serviceName string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	sc, err := exec.LookPath("sc.exe")
+	if err != nil {
+		log.Printf("WARNING: sc.exe not found; service recovery actions not configured")
+		return
+	}
+	out, err := exec.Command(sc, "failure", serviceName, "reset=", "86400",
+		"actions=", "restart/60000/restart/60000/restart/60000").CombinedOutput()
+	if err != nil {
+		log.Printf("WARNING: configuring service recovery actions failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		return
+	}
+	log.Printf("Service recovery actions configured (restart on crash)")
+}
+
 func handleServiceControl(rawAction, configPath string) error {
 	svcConfig := &service.Config{
 		Name:         "OdooPrintAgent",
@@ -143,6 +168,9 @@ func handleServiceControl(rawAction, configPath string) error {
 			return fmt.Errorf("service control %q failed: %w", action, err)
 		}
 		log.Printf("Service control %q completed", action)
+		if action == "install" {
+			configureServiceRecovery(svcConfig.Name)
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown service action %q. Valid actions: install, uninstall, start, stop, restart, status", action)

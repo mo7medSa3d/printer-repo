@@ -4,9 +4,9 @@
 
 Gateway runtime settings remain in `.env` and deployment secrets.
 
-Key values include `DATABASE_URL`, manager authentication, `GATEWAY_JWT_SECRET`, `ODOO_DATABASE_NAME` in production, and proxy/trust settings required by the deployment.
+Key values include `DATABASE_URL`, manager authentication, `GATEWAY_JWT_SECRET`, and proxy/trust settings required by the deployment.
 
-`ODOO_DATABASE_NAME` binds Odoo API access to the one Odoo database served by the Gateway installation.
+Odoo Gateway authentication is based on the Odoo installation API key. The Odoo database name is not used as an authentication requirement.
 
 ## Agent
 

@@ -4,8 +4,10 @@ package printer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -45,9 +47,12 @@ type docInfo1 struct {
 
 // SpoolerPrinter interacts with the Windows Spooler API (winspool.drv).
 //
-// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
-// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
-// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
+// Win32 WritePrinter is inherently synchronous in the Windows kernel driver
+// and cannot be cancelled: a wedged spooler RPC blocks the worker goroutine
+// until it returns, however long that takes. Containment is therefore
+// per-printer (sessionMu): a wedged printer can only ever tie up its OWN
+// session — never other printers'. Cross-printer burst protection comes from
+// the agent's job executor cap, which the spooler routinely absorbs.
 type SpoolerPrinter struct {
 	Name        string
 	SpoolerName string
@@ -59,6 +64,13 @@ type SpoolerPrinter struct {
 	// printer. Only pointer receivers ever exist (see NewSpooler and all
 	// call sites), so atomic access is race-safe.
 	preflightActive atomic.Bool
+	// sessionMu serializes full print sessions per printer. A session that
+	// wedges inside synchronous WritePrinter holds this mutex (not a shared
+	// pool slot), so repeated Prints against the SAME wedged printer fail
+	// fast via TryLock below while every OTHER printer proceeds normally.
+	// sync.Mutex is safe as a zero value, so struct literals in tests and
+	// all constructors behave identically.
+	sessionMu sync.Mutex
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
@@ -68,12 +80,6 @@ func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
 	}
 	return &SpoolerPrinter{Name: name, SpoolerName: spoolerName}
 }
-
-// maxSpoolerWorkers bounds concurrent spooler operations.
-// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
-// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
-// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
-const maxSpoolerWorkers = 4
 
 // preflightTimeout bounds the readiness probe. Win32 OpenPrinterW/GetPrinterW
 // expose NO timeout of their own and block indefinitely against a wedged
@@ -111,7 +117,7 @@ func (p *SpoolerPrinter) boundedPreflight(ctx context.Context, timeout time.Dura
 // reports through a buffered channel, so a stuck check cannot deadlock the
 // caller, cannot be double-closed, and cannot leak shared state; at most one
 // helper exists per Print call, and Print calls are already bounded by the
-// agent's job executor plus the spooler worker semaphore.
+// agent's job executor plus the per-printer session mutex.
 func runPreflightBounded(displayName string, timeout time.Duration, ctx context.Context, check func() error) error {
 	type outcome struct{ err error }
 	done := make(chan outcome, 1)
@@ -127,8 +133,6 @@ func runPreflightBounded(displayName string, timeout time.Duration, ctx context.
 		return fmt.Errorf("%w: readiness probe for %q timed out after %v (spooler RPC unresponsive; fail-closed, no bytes sent)", ErrPrinterNotReady, displayName, timeout)
 	}
 }
-
-var spoolerWorkerSem = make(chan struct{}, maxSpoolerWorkers)
 
 type spoolerTaskResult struct {
 	written uint32
@@ -337,9 +341,23 @@ func preFlightSpoolerCheck(spoolerName string) error {
 }
 
 // Print writes raw byte data directly to the Windows Spooler.
-// Win32 WritePrinter syscall is inherently synchronous in the Windows kernel driver.
-// This package provides Caller Timeout Isolation via a bounded worker pool (maxSpoolerWorkers = 4)
-// with fast-fail rejection (ERR_SPOOLER_POOL_SATURATED), rather than asynchronous kernel cancellation.
+// Win32 WritePrinter is inherently synchronous: a wedged call blocks until
+// Win32 returns, so caller-side timeouts isolate the CALLER (see the select
+// below) while the per-printer session mutex isolates OTHER printers.
+// tryBeginSession acquires this printer's session slot, failing fast when
+// another session is already in progress (wedged or racing). A refusal is a
+// plain pre-dispatch failure: no document bytes were ever submitted.
+func (p *SpoolerPrinter) tryBeginSession() error {
+	if !p.sessionMu.TryLock() {
+		return fmt.Errorf("%w: another spooler session for %q is already in progress", ErrPrinterNotReady, p.SpoolerName)
+	}
+	return nil
+}
+
+func (p *SpoolerPrinter) endSession() {
+	p.sessionMu.Unlock()
+}
+
 func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("refusing to print empty payload")
@@ -367,18 +385,25 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case spoolerWorkerSem <- struct{}{}:
 	default:
-		return fmt.Errorf("ERR_SPOOLER_POOL_SATURATED: all spooler worker slots occupied (%d/%d)", maxSpoolerWorkers, maxSpoolerWorkers)
 	}
+
+	// Serialize full sessions per printer. A previous session wedged inside
+	// synchronous WritePrinter holds sessionMu until Win32 returns; a second
+	// overlapping Print must fail fast (pre-dispatch, safely retryable)
+	// instead of queueing another helper behind the wedged RPC. Healthy
+	// printers never contend here: the agent already serializes jobs per
+	// printer, so this only ever triggers on genuine overlap (e.g. a test
+	// print racing a job) or a wedged predecessor.
+	if err := p.tryBeginSession(); err != nil {
+		return err
+	}
+	defer p.endSession()
 
 	resultCh := make(chan spoolerTaskResult, 1)
 	cancelNotice := make(chan struct{})
 
 	go func() {
-		defer func() {
-			<-spoolerWorkerSem
-		}()
 		resultCh <- executeSpoolerSession(p.SpoolerName, data, cancelNotice)
 	}()
 
@@ -453,22 +478,22 @@ func (p *SpoolerPrinter) Status() string {
 			resCh <- p.ProbeFunc(p.SpoolerName)
 			return
 		}
-		printerNamePtr, err := syscall.UTF16PtrFromString(p.SpoolerName)
-		if err != nil {
-			resCh <- "error"
+		// Evaluate the same PRINTER_INFO_2 status bits as the dispatch
+		// preflight: a queue that merely OPENS (paused, error, jam, door
+		// open, paper out) must not report "online" or the gateway keeps
+		// routing jobs at a printer that refuses them. Only the gateway's
+		// status vocabulary is returned (online/offline/error); anything
+		// the probe cannot determine surfaces as "error" here and the
+		// outer timeout below stays "spooler_rpc_unresponsive" (both
+		// normalize away from online gateway-side).
+		if err := preFlightSpoolerCheck(p.SpoolerName); err != nil {
+			if errors.Is(err, ErrPrinterOffline) {
+				resCh <- "offline"
+			} else {
+				resCh <- "error"
+			}
 			return
 		}
-		var hPrinter syscall.Handle
-		ret, _, _ := procOpenPrinterW.Call(
-			uintptr(unsafe.Pointer(printerNamePtr)),
-			uintptr(unsafe.Pointer(&hPrinter)),
-			0,
-		)
-		if ret == 0 {
-			resCh <- "offline"
-			return
-		}
-		procClosePrinter.Call(uintptr(hPrinter))
 		resCh <- "online"
 	}()
 

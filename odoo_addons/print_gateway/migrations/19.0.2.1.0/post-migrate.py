@@ -27,12 +27,12 @@ def migrate(cr, version):
         INSERT INTO print_gateway_binding (
             company_id, branch_id, runtime_agent_id, printer_id, destination_type,
             printer_protocol, drawer_kick_mode, cutter_mode, buzzer_mode,
-            enabled, priority, create_date, write_date
+            enabled, priority, create_uid, write_uid, create_date, write_date
         )
-        SELECT 
+        SELECT
             c.company_id, NULL, c.runtime_agent_id, 'unassigned', 'pos',
             'unknown', 'none', 'none', 'none',
-            FALSE, 999, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC'
+            FALSE, 999, c.create_uid, c.write_uid, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC'
         FROM print_gateway_gateway_config c
         WHERE c.runtime_agent_id IS NOT NULL AND c.runtime_agent_id != ''
           AND NOT EXISTS (

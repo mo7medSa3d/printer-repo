@@ -16,6 +16,7 @@ class PosSessionGatewayPrinting(models.Model):
 
     def action_print_gateway_sale_details(self, image):
         self.ensure_one()
+        self.check_access("read")
         if not image:
             raise ValidationError(_("The rendered Sale Details image is required."))
         return self.env["print_gateway.print_router"].route_pos_sale_details(self, image)

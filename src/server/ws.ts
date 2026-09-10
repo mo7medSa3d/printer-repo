@@ -21,6 +21,10 @@ type AgentSocket = WebSocket & { agentId?: string; isAlive?: boolean };
 type WritableSocket = Pick<Duplex, "end" | "destroy">;
 
 const agentSockets = new Map<string, Set<AgentSocket>>();
+// A rogue or wedged agent must not grow one entry without bound: sockets are
+// cheap, but each holds buffers and timers. Agents normally hold exactly one;
+// 8 leaves ample headroom for rolling reconnect overlap.
+const MAX_AGENT_SOCKETS = 8;
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;
 const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
 const PG_NOTIFY_CHANNEL = "print_gateway_agent_jobs";
@@ -91,6 +95,15 @@ function trackAgentSocket(agentId: string, ws: AgentSocket) {
     agentSockets.set(agentId, set);
   }
   set.add(ws);
+  if (set.size > MAX_AGENT_SOCKETS) {
+    // Shed the oldest socket first: the newest connection is the live one
+    // (reconnect overlap), and delivery always prefers an open socket.
+    const oldest = set.values().next().value as AgentSocket | undefined;
+    if (oldest && oldest !== ws) {
+      try { oldest.terminate(); } catch {}
+      set.delete(oldest);
+    }
+  }
   void incrementMetric("websocket_connections_opened_total");
   ws.on("close", () => {
     set!.delete(ws);
@@ -247,7 +260,10 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
 
   const scheduleReconnect = () => {
     if (stopped || reconnectTimer) return;
-    const delay = Math.min(PG_NOTIFY_RECONNECT_MIN_MS * (2 ** reconnectAttempt), PG_NOTIFY_RECONNECT_MAX_MS);
+    const capped = Math.min(PG_NOTIFY_RECONNECT_MIN_MS * (2 ** reconnectAttempt), PG_NOTIFY_RECONNECT_MAX_MS);
+    // Full jitter: without it every gateway instance retries a Postgres
+    // bounce in lockstep, re-hammering the database on each backoff rung.
+    const delay = Math.floor(capped / 2 + Math.random() * (capped / 2));
     reconnectAttempt = Math.min(reconnectAttempt + 1, 10);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;

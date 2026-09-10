@@ -56,6 +56,7 @@ import {
   printerLabel,
   printerTone as sharedPrinterTone,
 } from "../../shared/job-vocabulary";
+import { copyTextToClipboard } from "../../lib/clipboard";
 
 export type Agent = {
   id: string;
@@ -286,11 +287,10 @@ export default function DashboardClient({
   };
 
   const copyPairingCode = async (code: string) => {
-    try {
-      await navigator.clipboard.writeText(code);
+    if (await copyTextToClipboard(code)) {
       setCopiedCode(true);
       setTimeout(() => setCopiedCode(false), 2000);
-    } catch {
+    } else {
       setMessage({ text: "Please copy the code manually.", type: "err" });
     }
   };

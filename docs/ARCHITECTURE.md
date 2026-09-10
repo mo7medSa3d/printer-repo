@@ -75,7 +75,7 @@ Every logical print operation has one stable idempotency key. The Odoo outbox ro
 
 ## Security
 
-Odoo API keys are installation-scoped, randomly generated, shown once, hashed at rest, and revocable. Gateway APIs validate the configured Odoo database binding. Gateway URL validation rejects credentials, query/fragment components, non-origin paths and private/local addresses unless an explicit deployment allow-list is configured. Redirects are disabled. Logs do not contain API keys or print payloads.
+Odoo API keys are installation-scoped, randomly generated, shown once, hashed at rest, and revocable. Odoo Gateway authentication is based on the Odoo installation API key. The Odoo database name is not used as an authentication requirement. Gateway URL validation rejects credentials, query/fragment components, non-origin paths and private/local addresses unless an explicit deployment allow-list is configured. Redirects are disabled. Logs do not contain API keys or print payloads.
 
 ## Verification gates
 
