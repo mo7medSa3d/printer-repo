@@ -40,6 +40,7 @@ import {
   getAgentStatus,
   getAppVersion,
   getAutostart,
+  isRunningAsAdmin,
   getGatewayUrl,
   getPrinters,
   getRuntimePaths,
@@ -124,6 +125,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<ToastMessage>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [isAdmin, setIsAdmin] = useState<boolean>(true);
   const busyRef = useRef(false);
   const setBusyBoth = useCallback((v: boolean) => {
     busyRef.current = v;
@@ -319,6 +321,11 @@ export default function App() {
       setBusyBoth(false);
     }
   }, [pairCode, gatewayUrl, refreshStatus, setBusyBoth]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    isRunningAsAdmin().then((admin) => setIsAdmin(admin));
+  }, []);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -564,6 +571,27 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app text-ink">
+      {!isAdmin && (
+        <div style={{
+          backgroundColor: "#fee2e2",
+          borderBottom: "2px solid #ef4444",
+          color: "#991b1b",
+          padding: "12px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          fontWeight: "bold",
+          fontSize: "14px",
+          zIndex: 9999
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "18px" }}>⚠️</span>
+            <span>
+              <strong>تنبيه صلاحيات:</strong> التطبيق لا يعمل بصلاحيات المسؤول (Administrator). لن تتمكن من كتابة الإعدادات أو التحكم في الخدمة. يرجى إغلاق التطبيق وإعادة تشغيله عبر <u>Run as administrator</u>.
+            </span>
+          </div>
+        </div>
+      )}
       <Sidebar
         page={page}
         navigate={navigate}

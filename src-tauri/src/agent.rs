@@ -145,13 +145,24 @@ fn clear_background_pid() {
 }
 
 #[cfg(windows)]
+fn pid_permission_guidance(path: &std::path::Path, op: &str, e: &std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        return format!(
+            "cannot {op} the agent ownership record ({}): access denied. Run the app as administrator or use Windows Service mode instead",
+            path.display()
+        );
+    }
+    format!("{op} background pid: {e}")
+}
+
+#[cfg(windows)]
 fn write_background_pid(pid: u32) -> Result<(), String> {
     let path = background_pid_path()?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, pid.to_string())
-        .map_err(|e| format!("write background pid: {e}"))?;
+        .map_err(|e| pid_permission_guidance(&tmp, "write", &e))?;
     std::fs::rename(&tmp, &path)
-        .map_err(|e| format!("commit background pid: {e}"))?;
+        .map_err(|e| pid_permission_guidance(&path, "commit", &e))?;
     Ok(())
 }
 

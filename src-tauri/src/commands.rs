@@ -30,6 +30,60 @@ pub struct AgentStatus {
 }
 
 #[tauri::command]
+pub fn is_running_as_admin() -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        type HANDLE = *mut c_void;
+        type BOOL = i32;
+        type DWORD = u32;
+
+        #[repr(C)]
+        struct TOKEN_ELEVATION {
+            token_is_elevated: DWORD,
+        }
+
+        const TOKEN_QUERY: DWORD = 0x0008;
+        const TOKEN_ELEVATION_TYPE: DWORD = 20;
+
+        extern "system" {
+            fn GetCurrentProcess() -> HANDLE;
+            fn OpenProcessToken(process: HANDLE, desired_access: DWORD, token: *mut HANDLE) -> BOOL;
+            fn GetTokenInformation(
+                token: HANDLE,
+                class: DWORD,
+                info: *mut c_void,
+                len: DWORD,
+                ret_len: *mut DWORD,
+            ) -> BOOL;
+            fn CloseHandle(handle: HANDLE) -> BOOL;
+        }
+
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return false;
+            }
+            let mut elevation = TOKEN_ELEVATION { token_is_elevated: 0 };
+            let mut ret_len: DWORD = 0;
+            let ok = GetTokenInformation(
+                token,
+                TOKEN_ELEVATION_TYPE,
+                &mut elevation as *mut _ as *mut c_void,
+                std::mem::size_of::<TOKEN_ELEVATION>() as DWORD,
+                &mut ret_len,
+            );
+            CloseHandle(token);
+            ok != 0 && elevation.token_is_elevated != 0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+#[tauri::command]
 pub async fn get_agent_status(app: tauri::AppHandle) -> AgentStatus {
     let hostname = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -97,13 +151,13 @@ fn normalize_gateway_url(raw: &str) -> Result<String, String> {
     }
     let parsed = url.parse::<url::Url>().map_err(|e| format!("invalid gateway URL: {e}"))?;
     let scheme = parsed.scheme();
-    let is_loopback = matches!(parsed.host_str(), Some(h) if h == "localhost" || h == "127.0.0.1" || h == "::1");
-    // Pairing sends the agent secret over this connection: require TLS for
-    // every non-loopback host. The desktop UI (ipc.ts) already enforces
-    // https-only; keeping the Rust guard in parity closes the bypass where
-    // the URL is entered or edited outside the WebView form.
-    if !(scheme == "https" || (scheme == "http" && is_loopback)) {
-        return Err("gateway URL must use https:// (plain http is only allowed for localhost)".into());
+    // Both http and https are accepted: LAN appliances and local ports are
+    // commonly served over plain HTTP (e.g. http://192.0.2.10:3000). The
+    // desktop UI (ipc.ts) enforces the same rule; keeping the Rust guard in
+    // parity closes the bypass where the URL is entered or edited outside
+    // the WebView form.
+    if scheme != "https" && scheme != "http" {
+        return Err("gateway URL must use http:// or https://".into());
     }
     if parsed.username() != "" || parsed.password().is_some() {
         return Err("gateway URL cannot include embedded credentials".into());

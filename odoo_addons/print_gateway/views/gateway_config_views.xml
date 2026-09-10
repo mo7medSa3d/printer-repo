@@ -26,6 +26,9 @@
                 <sheet>
                     <h2>Print Gateway</h2>
                     <p class="text-muted">Odoo owns business context and print intent. Gateway owns runtime Agents, runtime Printers, queueing and execution.</p>
+                    <div class="alert alert-danger" role="alert" invisible="last_test_status != 'revoked'">
+                        The installation API key was revoked or deleted on the Gateway, and printing has been disabled. Paste a new key or press Clear / Remove Key, then test the connection again.
+                    </div>
                     <group>
                         <field name="company_id" string="Odoo Company"/>
                         <field name="enabled" widget="boolean_toggle"/>
@@ -33,9 +36,10 @@
                     <group string="Connection">
                         <field name="gateway_url" placeholder="https://print.example.com"/>
                         <field name="gateway_api_key" password="True" placeholder="Paste the installation API key"/>
+                        <button name="action_clear_api_key" type="object" string="Clear / Remove Key" class="btn btn-outline-danger btn-sm" groups="base.group_system" invisible="not gateway_api_key"/>
                     </group>
                     <group string="Connection Test" col="4">
-                        <field name="last_test_status" readonly="1" widget="badge"/>
+                        <field name="last_test_status" readonly="1" widget="badge" decoration-success="last_test_status == 'success'" decoration-danger="last_test_status in ('failed', 'revoked')"/>
                         <field name="last_test_at" readonly="1"/>
                         <field name="last_test_error" readonly="1" invisible="not last_test_error" colspan="2"/>
                     </group>

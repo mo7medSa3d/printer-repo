@@ -37,8 +37,8 @@ export function normalizeGatewayUrl(raw: string): string {
   if (/\s/.test(url)) {
     throw new Error("Gateway URL cannot contain whitespace");
   }
-  if (!/^https:\/\//i.test(url)) {
-    throw new Error("Gateway URL must use https://");
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error("Gateway URL must use http:// or https://");
   }
   try {
     const parsed = new URL(url);
@@ -213,6 +213,14 @@ export function getRuntimePaths(): Promise<RuntimePaths> {
 
 export function getAppVersion(): Promise<string> {
   return invoke<string>("get_app_version");
+}
+
+export async function isRunningAsAdmin(): Promise<boolean> {
+  try {
+    return await invoke<boolean>("is_running_as_admin");
+  } catch {
+    return false;
+  }
 }
 
 export interface PrinterInfo {

@@ -27,11 +27,16 @@ fn main() {
         .setup(|app| {
             logging::info("application setup started");
 
-            paths::ensure_runtime_dirs().map_err(|e| {
-                let msg = format!("unable to create runtime dirs: {e}");
-                logging::error(&msg);
-                std::io::Error::other(msg)
-            })?;
+            // Runtime dirs are strictly %PROGRAMDATA% (no per-user fallback,
+            // so desktop and service share one home). A non-elevated launch
+            // cannot create them — warn and continue so the app still opens
+            // and the elevation banner + per-operation admin errors guide
+            // the operator to relaunch as administrator.
+            if let Err(e) = paths::ensure_runtime_dirs() {
+                logging::error(&format!(
+                    "unable to create runtime dirs (run as administrator): {e}"
+                ));
+            }
 
             logging::info(&format!(
                 "runtime dirs: manager={}, agent={}",
@@ -94,7 +99,8 @@ fn main() {
             cleanup::cleanup_local_jobs,
             commands::register_printer,
             commands::get_autostart,
-            commands::set_autostart
+            commands::set_autostart,
+            commands::is_running_as_admin
         ])
         .build(tauri::generate_context!());
 
