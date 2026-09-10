@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -53,6 +54,11 @@ type SpoolerPrinter struct {
 	PDFPrint    PDFPrintFunc
 	ProbeFunc   func(spoolerName string) string
 	Timeout     time.Duration
+	// preflightActive single-flights the readiness probe per printer: at
+	// most one helper goroutine may ever be stuck inside Win32 for this
+	// printer. Only pointer receivers ever exist (see NewSpooler and all
+	// call sites), so atomic access is race-safe.
+	preflightActive atomic.Bool
 }
 
 func NewSpooler(spoolerName, displayName string) *SpoolerPrinter {
@@ -77,6 +83,26 @@ const maxSpoolerWorkers = 4
 // pre-dispatch (status queries can never spool a document), so it stays a
 // plain typed failure, never an unknown outcome.
 const preflightTimeout = 10 * time.Second
+
+// boundedPreflight runs one readiness check with single-flight semantics
+// for this printer: if a previous check is still stuck inside Win32, fail
+// fast instead of spawning another helper goroutine. Without this, every
+// timed-out Print against a wedged spooler would leak one more blocked
+// helper (each Print gets its own, because the stuck one never returns to
+// clear the way) — unbounded accumulation over hours of steady job flow.
+// The flag clears when the stuck helper's check finally returns, so
+// recovery after a transient stall is automatic, with no restart and no
+// operator action. A refused call is a plain pre-dispatch failure: no
+// document bytes were ever submitted.
+func (p *SpoolerPrinter) boundedPreflight(ctx context.Context, timeout time.Duration, check func() error) error {
+	if !p.preflightActive.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w: readiness probe for %q already in progress (previous probe stuck in spooler RPC)", ErrPrinterNotReady, p.SpoolerName)
+	}
+	return runPreflightBounded(p.SpoolerName, timeout, ctx, func() error {
+		defer p.preflightActive.Store(false)
+		return check()
+	})
+}
 
 // runPreflightBounded executes a readiness check on a helper goroutine and
 // bounds the CALLER: it returns when the check completes, when ctx is done,
@@ -330,8 +356,9 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	// Pre-flight check printer status before allocating worker slots.
 	// The check itself is bounded (see runPreflightBounded): a wedged
 	// spooler RPC must not wedge the caller before the worker machinery
-	// below even starts.
-	if err := runPreflightBounded(p.SpoolerName, preflightTimeout, ctx, func() error {
+	// below even starts. Single-flight (see boundedPreflight) additionally
+	// guarantees repeated timeouts cannot accumulate stuck helpers.
+	if err := p.boundedPreflight(ctx, preflightTimeout, func() error {
 		return preFlightSpoolerCheck(p.SpoolerName)
 	}); err != nil {
 		return fmt.Errorf("pre-flight spooler check failed: %w", err)

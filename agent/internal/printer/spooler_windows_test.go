@@ -83,3 +83,47 @@ func TestPreflightBoundedPropagatesCheckFailure(t *testing.T) {
 		t.Fatalf("check failure must pass through unchanged, got %v", err)
 	}
 }
+
+func TestBoundedPreflightSingleFlightRefusesOverlap(t *testing.T) {
+	p := &SpoolerPrinter{Name: "T", SpoolerName: "wedged_spooler_singleflight"}
+	block := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- p.boundedPreflight(context.Background(), 300*time.Millisecond, func() error {
+			<-block // wedged RPC: never returns until released
+			return nil
+		})
+	}()
+	// Let the first call register its in-flight helper.
+	time.Sleep(50 * time.Millisecond)
+
+	// A second overlapping call must fail FAST, not spawn another helper
+	// that would accumulate behind the wedged RPC.
+	start := time.Now()
+	err := p.boundedPreflight(context.Background(), 5*time.Second, func() error { return nil })
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("overlapping preflight must be refused while one is stuck")
+	}
+	if !errors.Is(err, ErrPrinterNotReady) {
+		t.Fatalf("refusal must stay a typed not-ready failure, got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("refusal was not fast: waited %v", elapsed)
+	}
+	if HasUnknownOutcomeMarker(err.Error()) {
+		t.Fatalf("pre-dispatch refusal must not be classified unknown: %v", err)
+	}
+
+	// Once the wedged RPC finally returns, the flag clears and the next
+	// call proceeds normally: recovery is automatic, no restart required.
+	// (The helper holds the flag until ITS check returns, not until the
+	// bounded caller gives up - otherwise every timeout would leak one more
+	// stuck helper behind the wedged RPC.)
+	close(block)
+	<-done
+	err = p.boundedPreflight(context.Background(), 2*time.Second, func() error { return nil })
+	if err != nil {
+		t.Fatalf("recovered spooler must accept preflight again, got %v", err)
+	}
+}
