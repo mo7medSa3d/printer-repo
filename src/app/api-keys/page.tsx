@@ -148,12 +148,12 @@ export default function ApiKeysPage() {
 
       <Card className="mb-6">
         <CardHeader title="Generate API Key" subtitle="Use this key in Odoo Gateway Configuration." icon={<KeyRound className="h-5 w-5 text-brand" />} />
-        <div className="grid gap-4 px-6 pb-6 sm:grid-cols-[1fr_auto] sm:items-end">
-          <Field label="Key name">
-            <Input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} />
+        <form onSubmit={(e) => { e.preventDefault(); generate(); }} className="grid gap-4 px-6 pb-6 sm:grid-cols-[1fr_auto] sm:items-end">
+          <Field label="Key name" htmlFor="key-name">
+            <Input id="key-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} />
           </Field>
-          <Button type="button" variant="primary" onClick={generate} loading={busy} disabled={busy} icon={<KeyRound className="h-4 w-4" />}>Generate API Key</Button>
-        </div>
+          <Button type="submit" variant="primary" loading={busy} disabled={busy} icon={<KeyRound className="h-4 w-4" />}>Generate API Key</Button>
+        </form>
       </Card>
 
       <Card>
