@@ -53,13 +53,28 @@ type usbChunkResult struct {
 // writeChunkBounded executes one chunk write on a helper goroutine so the
 // CALLER is bounded even when the kernel/driver call never returns. This
 // does NOT cancel the kernel write (a synchronous WriteFile cannot be
-// interrupted — claiming otherwise would be dishonest): on timeout or
-// cancellation the in-flight syscall is abandoned, the outcome is reported
-// as UNKNOWN (bytes may already have been transmitted), and the printer is
-// latched wedged so no later job can interleave bytes with the abandoned
-// write. The abandoned helper holds no shared state and exits whenever the
-// driver finally completes; at most one exists per wedged printer because
-// every later Print refuses immediately.
+// interrupted — claiming otherwise would be dishonest, and per Microsoft's
+// cancellation documentation there is no guarantee drivers honor
+// CancelSynchronousIo, which additionally carries thread-identity hazards
+// on shared goroutine stacks).
+//
+// Lifetime safety of the abandoned path, verified against the Win32 contract:
+//   - HANDLE: CloseHandle only decrements the handle count; the in-flight
+//     IRP holds its own reference to the file object, so Print's deferred
+//     CloseHandle neither aborts the pending write nor invalidates the
+//     helper's blocked call. The helper never touches the handle after
+//     WriteFile returns, and CloseHandle runs exactly once (the defer in
+//     Print) — no double-close, no use-after-close.
+//   - BUFFER: the chunk slice is captured by the helper closure, so the Go
+//     collector retains the backing array until the helper exits. No
+//     lifetime hazard by construction.
+//
+// On timeout or cancellation the in-flight syscall is abandoned, the outcome
+// is reported as UNKNOWN (bytes may already have been transmitted), and the
+// printer is latched wedged so no later job can interleave bytes with the
+// abandoned write. The abandoned helper holds no shared state and exits
+// whenever the driver finally completes; at most one exists per wedged
+// printer because every later Print refuses immediately.
 func (p *USBPrinter) writeChunkBounded(h windows.Handle, chunk []byte, cancel <-chan struct{}) (uint32, error) {
 	write := p.writeChunk
 	if write == nil {

@@ -705,3 +705,44 @@ func TestFreshTransportFailureStillPrints(t *testing.T) {
 		t.Fatalf("fresh delivery with unreachable gateway must still print once, got %d calls", p.calls)
 	}
 }
+
+func TestAddPrinterRefreshesChangedRuntimeConfig(t *testing.T) {
+	p1 := &fakePrinter{}
+	p2 := &fakePrinter{}
+	ag := newTestAgent(t, "prt-refresh", p1)
+	stored := config.PrinterConfig{ID: "prt-refresh", Name: "Test", Type: "network", Endpoint: "127.0.0.1:9100", Protocol: "raw"}
+
+	// Identical re-registration (every discovery sweep): no-op, no churn.
+	if ag.addPrinter("prt-refresh", p1, stored) {
+		t.Fatal("identical re-registration must be a no-op returning false")
+	}
+	if got, ok := ag.getPrinter("prt-refresh"); !ok || got != printer.Printer(p1) {
+		t.Fatal("no-op re-registration must not disturb the registered backend")
+	}
+
+	// Changed endpoint (DHCP reassignment is the classic case): both the
+	// backend object and the stored facts must move to the new config, or
+	// dispatch, capability gating, and heartbeats keep using the dead device.
+	moved := stored
+	moved.Endpoint = "192.0.2.99:9100"
+	if !ag.addPrinter("prt-refresh", p2, moved) {
+		t.Fatal("changed re-registration must refresh and return true")
+	}
+	if got, ok := ag.getPrinter("prt-refresh"); !ok || got != printer.Printer(p2) {
+		t.Fatal("runtime backend must be the newly registered object")
+	}
+	facts, ok := ag.deviceFacts("prt-refresh")
+	if !ok {
+		t.Fatal("facts must exist for the refreshed printer")
+	}
+	_ = facts
+	pc, ok := func() (config.PrinterConfig, bool) {
+		ag.printersMu.RLock()
+		defer ag.printersMu.RUnlock()
+		v, ok := ag.printerConfigs["prt-refresh"]
+		return v, ok
+	}()
+	if !ok || pc.Endpoint != "192.0.2.99:9100" {
+		t.Fatalf("stored facts must carry the new endpoint, got %+v", pc)
+	}
+}

@@ -5,7 +5,7 @@ import WebSocket from "ws";
 import { hasTestDatabase, applyMigrations, truncateAll, seedFixture, insertQueuedJob, jobRow, closePool, pool, type Fixture } from "./helpers/pg";
 import { attachAgentWSS, claimAndPushJobToAgent } from "../src/server/ws";
 import { db } from "../src/db";
-import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS } from "../src/lib/job-delivery";
+import { claimJobForDelivery, releaseUndeliveredClaim, recordJobAck, MAX_DELIVERY_ATTEMPTS, MAX_AGENT_IN_FLIGHT_JOBS } from "../src/lib/job-delivery";
 import type { ClaimedJobRow } from "../src/lib/job-delivery";
 import { sweepPrintJobs } from "../src/lib/job-maintenance";
 import { GET as agentJobsGET, PATCH as agentJobsPATCH } from "../src/app/api/agent/jobs/route";
@@ -599,5 +599,52 @@ suite("WS claim-before-delivery", () => {
     expect(row.status).toBe("queued");
     expect(Number(row.delivery_attempts)).toBe(MAX_DELIVERY_ATTEMPTS);
     expect(row.claim_token).toBeNull();
+  });
+
+  it("WS claim enforces the in-flight ceiling: saturated agent gets no new claim", async () => {
+    // The 500 in-flight cap used to be creation- and poll-only: concurrent
+    // WS pushes (NOTIFY fan-out, bulk creation) could overshoot it without
+    // bound. Fill the agent to exactly the ceiling with live claimed rows,
+    // then prove the next WS claim is refused without touching the row.
+    await pool().query(
+      `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
+       SELECT 'cap_fill_' || g, $1, 'receipt', $2, $3, 'claimed',
+              '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb,
+              now() + interval '1 hour'
+       FROM generate_series(1, $4) g`,
+      [f.destination, f.agentId, f.printerId, MAX_AGENT_IN_FLIGHT_JOBS],
+    );
+    await insertQueuedJob(f, "job_cap_saturated");
+    expect(await claimJobForDelivery("job_cap_saturated", f.agentId)).toBeNull();
+    const row = await jobRow("job_cap_saturated");
+    expect(row.status).toBe("queued");
+    expect(Number(row.delivery_attempts)).toBe(0);
+    expect(row.claim_token).toBeNull();
+  });
+
+  it("concurrent WS claims at the cap boundary admit exactly one (advisory-lock serialization)", async () => {
+    // One slot below the ceiling, two simultaneous pushes must not both
+    // win: the shared pg_advisory_xact_lock serializes the count+claim, so
+    // exactly one claim lands and delivery_attempts increments exactly once
+    // across both rows. Against the old uncapped code both would claim.
+    await pool().query(
+      `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
+       SELECT 'cap_race_' || g, $1, 'receipt', $2, $3, 'claimed',
+              '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb,
+              now() + interval '1 hour'
+       FROM generate_series(1, $4) g`,
+      [f.destination, f.agentId, f.printerId, MAX_AGENT_IN_FLIGHT_JOBS - 1],
+    );
+    await insertQueuedJob(f, "job_cap_race_a");
+    await insertQueuedJob(f, "job_cap_race_b");
+    const [a, b] = await Promise.all([
+      claimJobForDelivery("job_cap_race_a", f.agentId),
+      claimJobForDelivery("job_cap_race_b", f.agentId),
+    ]);
+    expect([a, b].filter((r) => r !== null)).toHaveLength(1);
+    const sum = await pool().query(
+      `SELECT COALESCE(SUM(delivery_attempts), 0)::int AS s FROM print_jobs WHERE id IN ('job_cap_race_a','job_cap_race_b')`,
+    );
+    expect(Number(sum.rows[0].s)).toBe(1);
   });
 });

@@ -272,10 +272,6 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
         client.release();
         return;
       }
-      activeClient = client;
-      await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
-      await client.query(`LISTEN ${PG_SESSIONS_CHANNEL}`);
-      reconnectAttempt = 0;
       client.on("notification", handleNotification);
       client.on("error", (error) => {
         void incrementMetric("postgres_notification_errors_total");
@@ -283,6 +279,28 @@ async function startJobNotificationListener(): Promise<() => Promise<void>> {
         disconnect(client);
       });
       client.on("end", () => disconnect(client));
+      try {
+        await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
+        await client.query(`LISTEN ${PG_SESSIONS_CHANNEL}`);
+      } catch (listenError) {
+        // Setup failed BEFORE adoption: the client must be released here
+        // (disconnect() deliberately only touches the adopted client, and
+        // the mid-setup 'error' handler above no-ops for the same reason).
+        // Without this release the pool slot leaks; without the rethrow
+        // below no reconnect is scheduled and push delivery dies silently.
+        try { client.release(true); } catch {}
+        throw listenError;
+      }
+      if (stopped) {
+        // Startup raced shutdown between LISTEN and adoption: release
+        // cleanly instead of leaking a live listener nobody owns.
+        try { await client.query(`UNLISTEN ${PG_NOTIFY_CHANNEL}`); } catch {}
+        try { await client.query(`UNLISTEN ${PG_SESSIONS_CHANNEL}`); } catch {}
+        client.release();
+        return;
+      }
+      activeClient = client;
+      reconnectAttempt = 0;
     } catch (error) {
       void incrementMetric("postgres_notification_failures_total");
       console.warn("[ws] PostgreSQL notification listener unavailable; polling remains the recovery path:", error);

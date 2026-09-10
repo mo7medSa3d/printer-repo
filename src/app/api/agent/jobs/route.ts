@@ -7,13 +7,12 @@ import { isJobStatus, canTransition, isTerminal, isLateSuccessAllowed, derivePhy
 import { logInfo, logWarn, requestIdFrom } from "../../../../lib/log";
 import { incrementMetric } from "../../../../lib/metrics";
 import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "../../../../lib/job-maintenance";
-import { CLAIM_RETURNING, MAX_DELIVERY_ATTEMPTS } from "../../../../lib/job-delivery";
+import { CLAIM_RETURNING, MAX_DELIVERY_ATTEMPTS, MAX_AGENT_IN_FLIGHT_JOBS } from "../../../../lib/job-delivery";
 import { fencedJobWrite } from "../../../../lib/job-fencing";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
 
 export const dynamic = "force-dynamic";
 const MAX_CLAIM_BATCH = 20;
-export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 const MAX_ERROR_LENGTH = 2000;
 
 /**

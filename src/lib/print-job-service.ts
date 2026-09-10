@@ -8,8 +8,8 @@ import { logWarn } from "./log";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { canonicalize } from "./canonicalize";
+import { MAX_AGENT_IN_FLIGHT_JOBS } from "./job-delivery";
 
-export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
 export const MAX_AGENT_QUEUED_JOBS = 1000;
 export const PRINT_JOB_RATE_LIMIT_PER_MINUTE = 60;
 export const PRINT_JOB_RATE_LIMIT_PER_HOUR = 1000;

@@ -471,6 +471,57 @@ class TestPrintGatewayRoutingContract(TransactionCase):
             finally:
                 cr.close()
 
+    def test_sync_gateway_requeue_keeps_ahead_state_and_syncs_remaining_jobs(self):
+        """A Gateway 'queued' observation while Odoo already holds 'claimed'
+        is a normal lease event (stale-claim reclaim, evidence-push failure
+        release, fenced pre-execution rejection) - NOT new information. The
+        sync must keep the ahead state instead of writing backward (which
+        the matrix forbids and which used to raise and abort the whole sync
+        loop, starving every other job until the row converged)."""
+        from unittest.mock import MagicMock
+        first_id = self._job("sync-requeue-race-claimed")
+        second_id = self._job("sync-requeue-race-submitted")
+        cr = self.env.registry.cursor()
+        try:
+            env = api.Environment(cr, self.env.uid, dict(self.env.context))
+            company = env["res.company"].browse(self.durable_company_id).exists()
+            model_env = env["print_gateway.print_job"].with_company(company).env
+            first = model_env["print_gateway.print_job"].browse(first_id).exists()
+            second = model_env["print_gateway.print_job"].browse(second_id).exists()
+            # Walk legal hops only: direct write() enforces the matrix.
+            first.write({"gateway_job_id": "gw-requeue-race-1", "status": "submitted"})
+            first.write({"status": "claimed"})
+            second.write({"gateway_job_id": "gw-requeue-race-2", "status": "submitted"})
+
+            def fake_get(url, params=None, **kwargs):
+                resp = MagicMock()
+                resp.status_code = 200
+                if (params or {}).get("id") == "gw-requeue-race-1":
+                    # Gateway requeued the lease after Odoo observed 'claimed'.
+                    resp.json.return_value = {"status": "queued", "error": False}
+                else:
+                    resp.json.return_value = {"status": "success", "error": False}
+                return resp
+
+            with patch.object(PrintGatewayConfig, "_validate_gateway_host"), patch(
+                "odoo.addons.print_gateway.models.print_job.requests.get",
+                side_effect=fake_get,
+            ):
+                # Must not raise: previously this aborted the loop here.
+                model_env["print_gateway.print_job"].browse([first_id, second_id]).exists().action_sync_status()
+            # Ahead state kept (no backward write to 'submitted')...
+            self.assertEqual(
+                model_env["print_gateway.print_job"].browse(first_id).exists().status,
+                "claimed",
+            )
+            # ...and the remaining job still converged (no loop starvation).
+            self.assertEqual(
+                model_env["print_gateway.print_job"].browse(second_id).exists().status,
+                "success",
+            )
+        finally:
+            cr.close()
+
     def test_force_reprint_does_not_consume_sequence_on_failed_create(self):
         job_id = self._job("reprint-sequence-safety")
         cr = self.env.registry.cursor()

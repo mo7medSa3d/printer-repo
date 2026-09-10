@@ -1047,6 +1047,21 @@ class PrintGatewayJob(models.Model):
                 values = {"last_error": err_msg}
                 if status in self._TERMINAL:
                     values["completed_at"] = fields.Datetime.now()
+                if status == "submitted" and job.status in ("claimed", "printing"):
+                    # The Gateway requeued a job we already observed further
+                    # along (stale-claim reclaim, evidence-push failure
+                    # release, or fenced pre-execution rejection - all normal
+                    # Gateway lease events, most visibly after the 90s stale
+                    # window). Our row is AHEAD of the Gateway: there is no
+                    # new information here. Writing 'submitted' would be a
+                    # backward transition the matrix forbids - and raising
+                    # would abort this whole sync loop (starving every other
+                    # job, every minute, until the row converges). Keep our
+                    # state; the next sync converges once the agent
+                    # re-claims the job or its TTL expires it terminally
+                    # (both transitions are forward and legal).
+                    synced_count += 1
+                    continue
                 # Recorded hop-by-hop through the canonical chain: a sync
                 # observing e.g. submitted -> success writes submitted ->
                 # claimed -> printing -> success rather than jumping, so the

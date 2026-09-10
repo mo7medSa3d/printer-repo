@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -178,8 +179,21 @@ func (a *Agent) getProbeState(printerID string) *printerProbeState {
 func (a *Agent) addPrinter(id string, p printer.Printer, pc config.PrinterConfig) bool {
 	a.printersMu.Lock()
 	defer a.printersMu.Unlock()
-	if _, exists := a.printers[id]; exists {
-		return false
+	if old, exists := a.printerConfigs[id]; exists {
+		// Rediscovery re-reports every known device on each sweep. An
+		// identical config is a no-op (no churn, no log spam). A CHANGED
+		// config (endpoint moved, protocol or credentials rotated - DHCP
+		// reassignment is the classic case) must replace both the backend
+		// and the stored facts atomically: otherwise dispatch, capability
+		// gating, and heartbeats keep using the stale device indefinitely
+		// (until process restart), sending jobs to a dead address or
+		// gating against the wrong protocol. In-flight work already holds
+		// its resolved backend object, so replacement cannot corrupt an
+		// executing print.
+		if reflect.DeepEqual(old, pc) {
+			return false
+		}
+		log.Printf("printer %q re-registered with changed configuration; refreshing runtime backend and facts", id)
 	}
 	a.printers[id] = p
 	a.printerConfigs[id] = pc
@@ -402,7 +416,7 @@ func (a *Agent) runInitialAsyncDiscovery(ctx context.Context) {
 					continue
 				}
 				if a.addPrinter(di.ID, p, pc) {
-					log.Printf("[discovery] async added printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
+					log.Printf("[discovery] async added or refreshed printer: %s (%s) type=%s", di.ID, di.Name, di.ConnectionType)
 				}
 			}
 		}

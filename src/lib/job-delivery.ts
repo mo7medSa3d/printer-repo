@@ -5,6 +5,14 @@ import { fencedDeliveryWrite } from "./job-fencing";
 import { STALE_CLAIM_SECONDS, MAX_RETRIES } from "./job-maintenance";
 
 /**
+ * Hard ceiling on live (claimed + printing, unexpired) jobs per agent.
+ * Defined HERE - the claim-ownership home - and imported by the creation
+ * admission check (print-job-service) and the poll batch sizer
+ * (agent/jobs route), so the three sites can never diverge.
+ */
+export const MAX_AGENT_IN_FLIGHT_JOBS = 500;
+
+/**
  * Ownership rules for handing a job to an agent.
  *
  * The Gateway owns runtime delivery state. A queued job is eligible only when
@@ -78,6 +86,30 @@ export const CLAIM_RETURNING = sql`
  */
 export async function claimJobForDelivery(jobId: string, agentId: string): Promise<ClaimedJobRow | null> {
   return db.transaction(async (tx) => {
+    // Same advisory lock the poll claim path and the creation admission
+    // check take: concurrent WS pushes and polls for one agent serialize
+    // here, so the in-flight ceiling below is a true invariant, not a
+    // best-effort pre-check that racing claims could overshoot.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
+    const live = await tx.execute(sql`
+      SELECT COUNT(*)::int AS count
+      FROM print_jobs p
+      JOIN agents a ON a.id = p.agent_id
+      JOIN printers pr ON pr.id = p.printer_id
+      WHERE p.agent_id = ${agentId}
+        AND p.status IN ('claimed', 'printing')
+        AND p.expires_at > now()
+        AND a.lifecycle = 'active'
+        AND a.status = 'online'
+        AND pr.lifecycle = 'active'
+        AND pr.status = 'online'
+    `);
+    const inFlight = Number((live.rows[0] as { count?: number | string } | undefined)?.count ?? 0);
+    // The WS push path previously had no ceiling at all: a NOTIFY fan-out or
+    // bulk creation could push live jobs past MAX while the poll path and
+    // creation admission both refused. Refuse here instead of claiming into
+    // an overloaded agent; the job stays queued for a later poll.
+    if (inFlight >= MAX_AGENT_IN_FLIGHT_JOBS) return null;
     const locked = await tx.execute(sql`
       SELECT p.id
       FROM print_jobs p
