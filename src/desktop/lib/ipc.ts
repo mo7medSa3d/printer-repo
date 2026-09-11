@@ -32,23 +32,26 @@ export interface RuntimePaths {
 }
 
 export function normalizeGatewayUrl(raw: string): string {
-  const value = raw.trim();
-  if (!value) return "";
-  if (/\s/.test(value)) throw new Error("Gateway URL cannot contain whitespace");
-  let parsed: URL;
+  const url = raw.trim();
+  if (!url) return "";
+  if (/\s/.test(url)) {
+    throw new Error("Gateway URL cannot contain whitespace");
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error("Gateway URL must use http:// or https://");
+  }
   try {
-    parsed = new URL(value);
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      throw new Error("Gateway URL cannot include embedded credentials");
+    }
+    if (parsed.search || parsed.hash) {
+      throw new Error("Gateway URL cannot include query strings or fragments");
+    }
+    return parsed.toString().replace(/\/+$/, "");
   } catch {
     throw new Error("Gateway URL is invalid");
   }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error("Gateway URL cannot include credentials, query strings, or fragments");
-  }
-  const scheme = parsed.protocol.toLowerCase();
-  // Zero-configuration: both http and https are accepted for any valid
-  // hostname or IP (LAN, public, loopback) with no environment opt-in.
-  if (scheme !== "https:" && scheme !== "http:") throw new Error("Gateway URL must use http:// or https://");
-  return parsed.toString().replace(/\/+$/, "");
 }
 
 function getManagerToken(): string | null {

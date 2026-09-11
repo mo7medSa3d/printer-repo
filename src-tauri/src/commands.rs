@@ -152,8 +152,11 @@ fn normalize_gateway_url(raw: &str) -> Result<String, String> {
     }
     let parsed = url.parse::<url::Url>().map_err(|e| format!("invalid gateway URL: {e}"))?;
     let scheme = parsed.scheme();
-    // Zero-configuration: both http and https are accepted for any valid
-    // hostname or IP (LAN, public, loopback) with no environment opt-in.
+    // Both http and https are accepted: LAN appliances and local ports are
+    // commonly served over plain HTTP (e.g. http://192.0.2.10:3000). The
+    // desktop UI (ipc.ts) enforces the same rule; keeping the Rust guard in
+    // parity closes the bypass where the URL is entered or edited outside
+    // the WebView form.
     if scheme != "https" && scheme != "http" {
         return Err("gateway URL must use http:// or https://".into());
     }
