@@ -5,8 +5,11 @@ package printer
 import (
 	"context"
 	"errors"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // The preflight check runs synchronously against Win32 spooler RPC, which has
@@ -166,5 +169,57 @@ func TestSpoolerStatusUnknownPrinterIsOffline(t *testing.T) {
 	}
 	if st := p.Status(); st != "offline" {
 		t.Fatalf("unknown spooler queue must report offline, got %q", st)
+	}
+}
+
+func TestSpoolerEndPagePrinterFailureCannotSucceed(t *testing.T) {
+	mockSyscalls := defaultSpoolerSyscalls
+	mockSyscalls.openPrinterW = func(printerName *uint16, hPrinter *syscall.Handle) (uintptr, error) {
+		*hPrinter = 123
+		return 1, nil
+	}
+	mockSyscalls.closePrinter = func(hPrinter syscall.Handle) (uintptr, error) {
+		return 1, nil
+	}
+	mockSyscalls.startDocPrinterW = func(hPrinter syscall.Handle, di *docInfo1) (uintptr, error) {
+		return 456, nil
+	}
+	mockSyscalls.startPagePrinter = func(hPrinter syscall.Handle) (uintptr, error) {
+		return 1, nil
+	}
+	mockSyscalls.writePrinter = func(hPrinter syscall.Handle, buf unsafe.Pointer, len int, bytesWritten *uint32) (uintptr, error) {
+		*bytesWritten = uint32(len)
+		return 1, nil
+	}
+	mockSyscalls.endPagePrinter = func(hPrinter syscall.Handle) (uintptr, error) {
+		// Simulate EndPagePrinter failure
+		return 0, syscall.Errno(6) // ERROR_INVALID_HANDLE
+	}
+	mockSyscalls.endDocPrinter = func(hPrinter syscall.Handle) (uintptr, error) {
+		return 1, nil
+	}
+
+	data := []byte("receipt line 1\nreceipt line 2\n")
+	res := executeSpoolerSessionWithSyscalls("TestPrinter", data, nil, mockSyscalls)
+	if res.err == nil {
+		t.Fatal("EndPagePrinter failure must NOT result in a successful print")
+	}
+	if !OutcomeUnknown(res.err) {
+		t.Fatalf("EndPagePrinter failure must be classified as unknown outcome, got %v", res.err)
+	}
+	if !strings.Contains(res.err.Error(), "EndPagePrinter failed") {
+		t.Fatalf("error must identify EndPagePrinter failure, got %v", res.err)
+	}
+
+	// Verify that when EndPagePrinter succeeds, the session reports success.
+	mockSyscalls.endPagePrinter = func(hPrinter syscall.Handle) (uintptr, error) {
+		return 1, nil
+	}
+	resSuccess := executeSpoolerSessionWithSyscalls("TestPrinter", data, nil, mockSyscalls)
+	if resSuccess.err != nil {
+		t.Fatalf("expected successful print when EndPagePrinter succeeds, got %v", resSuccess.err)
+	}
+	if resSuccess.written != uint32(len(data)) {
+		t.Fatalf("expected %d bytes written, got %d", len(data), resSuccess.written)
 	}
 }

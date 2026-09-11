@@ -140,22 +140,76 @@ type spoolerTaskResult struct {
 	err     error
 }
 
+type spoolerSyscalls struct {
+	openPrinterW     func(printerName *uint16, hPrinter *syscall.Handle) (uintptr, error)
+	closePrinter     func(hPrinter syscall.Handle) (uintptr, error)
+	startDocPrinterW func(hPrinter syscall.Handle, di *docInfo1) (uintptr, error)
+	startPagePrinter func(hPrinter syscall.Handle) (uintptr, error)
+	writePrinter     func(hPrinter syscall.Handle, buf unsafe.Pointer, len int, bytesWritten *uint32) (uintptr, error)
+	endPagePrinter   func(hPrinter syscall.Handle) (uintptr, error)
+	endDocPrinter    func(hPrinter syscall.Handle) (uintptr, error)
+}
+
+var defaultSpoolerSyscalls = spoolerSyscalls{
+	openPrinterW: func(printerName *uint16, hPrinter *syscall.Handle) (uintptr, error) {
+		r, _, err := procOpenPrinterW.Call(
+			uintptr(unsafe.Pointer(printerName)),
+			uintptr(unsafe.Pointer(hPrinter)),
+			0,
+		)
+		return r, err
+	},
+	closePrinter: func(hPrinter syscall.Handle) (uintptr, error) {
+		r, _, err := procClosePrinter.Call(uintptr(hPrinter))
+		return r, err
+	},
+	startDocPrinterW: func(hPrinter syscall.Handle, di *docInfo1) (uintptr, error) {
+		r, _, err := procStartDocPrinterW.Call(
+			uintptr(hPrinter),
+			1,
+			uintptr(unsafe.Pointer(di)),
+		)
+		return r, err
+	},
+	startPagePrinter: func(hPrinter syscall.Handle) (uintptr, error) {
+		r, _, err := procStartPagePrinter.Call(uintptr(hPrinter))
+		return r, err
+	},
+	writePrinter: func(hPrinter syscall.Handle, buf unsafe.Pointer, len int, bytesWritten *uint32) (uintptr, error) {
+		r, _, err := procWritePrinter.Call(
+			uintptr(hPrinter),
+			uintptr(buf),
+			uintptr(len),
+			uintptr(unsafe.Pointer(bytesWritten)),
+		)
+		return r, err
+	},
+	endPagePrinter: func(hPrinter syscall.Handle) (uintptr, error) {
+		r, _, err := procEndPagePrinter.Call(uintptr(hPrinter))
+		return r, err
+	},
+	endDocPrinter: func(hPrinter syscall.Handle) (uintptr, error) {
+		r, _, err := procEndDocPrinter.Call(uintptr(hPrinter))
+		return r, err
+	},
+}
+
 func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan struct{}) spoolerTaskResult {
+	return executeSpoolerSessionWithSyscalls(spoolerName, data, cancelNotice, defaultSpoolerSyscalls)
+}
+
+func executeSpoolerSessionWithSyscalls(spoolerName string, data []byte, cancelNotice <-chan struct{}, sys spoolerSyscalls) spoolerTaskResult {
 	printerNamePtr, err := syscall.UTF16PtrFromString(spoolerName)
 	if err != nil {
 		return spoolerTaskResult{err: fmt.Errorf("invalid spooler name %q: %w", spoolerName, err)}
 	}
 
 	var hPrinter syscall.Handle
-	ret, _, err := procOpenPrinterW.Call(
-		uintptr(unsafe.Pointer(printerNamePtr)),
-		uintptr(unsafe.Pointer(&hPrinter)),
-		0,
-	)
+	ret, err := sys.openPrinterW(printerNamePtr, &hPrinter)
 	if ret == 0 {
 		return spoolerTaskResult{err: fmt.Errorf("OpenPrinterW(%q) failed: %w", spoolerName, err)}
 	}
-	defer procClosePrinter.Call(uintptr(hPrinter))
+	defer sys.closePrinter(hPrinter)
 
 	select {
 	case <-cancelNotice:
@@ -172,11 +226,7 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 		return spoolerTaskResult{err: fmt.Errorf("invalid datatype: %w", err)}
 	}
 	di := docInfo1{pDocName: docName, pDatatype: dataType}
-	jobID, _, err := procStartDocPrinterW.Call(
-		uintptr(hPrinter),
-		1,
-		uintptr(unsafe.Pointer(&di)),
-	)
+	jobID, err := sys.startDocPrinterW(hPrinter, &di)
 	if jobID == 0 {
 		return spoolerTaskResult{err: fmt.Errorf("StartDocPrinterW(%q) failed: %w", spoolerName, err)}
 	}
@@ -189,7 +239,7 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 		if docCompleted {
 			return
 		}
-		if _, _, e := procEndDocPrinter.Call(uintptr(hPrinter)); e != nil && e != syscall.Errno(0) {
+		if _, e := sys.endDocPrinter(hPrinter); e != nil && e != syscall.Errno(0) {
 			log.Printf("EndDocPrinter warning for %s: %v", spoolerName, e)
 		}
 	}()
@@ -200,14 +250,14 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 	default:
 	}
 
-	ret, _, err = procStartPagePrinter.Call(uintptr(hPrinter))
+	ret, err = sys.startPagePrinter(hPrinter)
 	if ret == 0 {
 		return spoolerTaskResult{jobID: jobID, err: fmt.Errorf("StartPagePrinter(%q) failed: %w", spoolerName, err)}
 	}
 	pageCompleted := false
 	defer func() {
 		if !pageCompleted {
-			procEndPagePrinter.Call(uintptr(hPrinter))
+			sys.endPagePrinter(hPrinter)
 		}
 	}()
 
@@ -228,12 +278,7 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 
 		var bytesWritten uint32
 		chunk := data[written:]
-		r, _, writeErr := procWritePrinter.Call(
-			uintptr(hPrinter),
-			uintptr(unsafe.Pointer(&chunk[0])),
-			uintptr(len(chunk)),
-			uintptr(unsafe.Pointer(&bytesWritten)),
-		)
+		r, writeErr := sys.writePrinter(hPrinter, unsafe.Pointer(&chunk[0]), len(chunk), &bytesWritten)
 		if r == 0 {
 			if written > 0 {
 				return spoolerTaskResult{
@@ -258,10 +303,16 @@ func executeSpoolerSession(spoolerName string, data []byte, cancelNotice <-chan 
 	}
 
 	pageCompleted = true
-	procEndPagePrinter.Call(uintptr(hPrinter))
+	if r, endPageErr := sys.endPagePrinter(hPrinter); r == 0 {
+		return spoolerTaskResult{
+			written: written,
+			jobID:   jobID,
+			err:     MarkUnknown("spooler EndPagePrinter failed for %q after writing %d/%d bytes (submission state unknown): %v", spoolerName, written, len(data), endPageErr),
+		}
+	}
 
 	docCompleted = true
-	if _, _, endErr := procEndDocPrinter.Call(uintptr(hPrinter)); endErr != nil && endErr != syscall.Errno(0) {
+	if _, endErr := sys.endDocPrinter(hPrinter); endErr != nil && endErr != syscall.Errno(0) {
 		// WritePrinter accepted all bytes, but the Win32 doc session did not
 		// close cleanly: the spooler may discard the job. "Printed" would be
 		// a false confirmation, so the outcome stays ambiguous.
