@@ -445,6 +445,48 @@ export function Select({
 
 /* ---------- Modal / Drawer ---------- */
 
+// Tracks elements made inert while a dialog is open so background access
+// can be restored exactly on close. Module-level: shared by every Modal
+// and Drawer instance (including nested dialogs) on the page.
+const inertedBackground = new Set<HTMLElement>();
+let openDialogCount = 0;
+
+function refreshBackgroundIsolation(): void {
+  if (typeof document === "undefined") return;
+  if (openDialogCount === 0) {
+    inertedBackground.forEach((el) => {
+      el.inert = false;
+    });
+    inertedBackground.clear();
+    return;
+  }
+  // Inert every top-level background branch that does not host an open
+  // dialog root. Walking up from each [data-dialog-root] keeps nested
+  // dialogs reachable while everything behind them stays inert to both
+  // keyboard (Tab) and assistive technology.
+  document.querySelectorAll<HTMLElement>("[data-dialog-root]").forEach((root) => {
+    let el: HTMLElement | null = root;
+    while (el && el !== document.body) {
+      const parent: HTMLElement | null = el.parentElement;
+      if (!parent) break;
+      [...parent.children].forEach((sib) => {
+        if (
+          sib instanceof HTMLElement &&
+          sib !== el &&
+          !sib.contains(el) &&
+          !sib.hasAttribute("data-dialog-root") &&
+          sib.querySelector("[data-dialog-root]") === null &&
+          !inertedBackground.has(sib)
+        ) {
+          sib.inert = true;
+          inertedBackground.add(sib);
+        }
+      });
+      el = parent;
+    }
+  });
+}
+
 function useDialog(
   open: boolean,
   onClose: () => void,
@@ -452,6 +494,8 @@ function useDialog(
 ) {
   useEffect(() => {
     if (!open) return;
+    openDialogCount += 1;
+    refreshBackgroundIsolation();
     const focusables = (): HTMLElement[] => {
       const panel = panelRef.current;
       if (!panel) return [];
@@ -491,6 +535,8 @@ function useDialog(
     panelRef.current?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
+      openDialogCount = Math.max(0, openDialogCount - 1);
+      refreshBackgroundIsolation();
       prev?.focus?.();
     };
   }, [open, onClose, panelRef]);
@@ -518,7 +564,7 @@ export function Modal({
   useDialog(open, onClose, panelRef);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div data-dialog-root className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
         className="pg-fade-in absolute inset-0 backdrop-blur-[2px]"
         style={{ backgroundColor: "var(--overlay)" }}
@@ -576,7 +622,7 @@ export function Drawer({
   useDialog(open, onClose, panelRef);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div data-dialog-root className="fixed inset-0 z-50 flex justify-end">
       <div
         className="pg-fade-in absolute inset-0"
         style={{ backgroundColor: "var(--overlay)" }}

@@ -13,6 +13,19 @@ import { _t } from "@web/core/l10n/translation";
  * - If a binding DOES exist and dispatch fails: displays an error notification and
  *   returns true to cancel native browser PDF download, preventing hardware bypass.
  */
+/**
+ * Persistent next step for every interception outcome: opens the Print Jobs
+ * list so the operator can verify the real job state instead of relying on
+ * a transient toast.
+ */
+function openJobsButton(env) {
+    return {
+        name: _t("Open Print Jobs"),
+        primary: true,
+        onClick: () => env.services.action.doAction("print_gateway.action_print_gateway_jobs"),
+    };
+}
+
 async function silentPrintReportHandler(action, options, env) {
     if (action.type !== "ir.actions.report" || action.report_type !== "qweb-pdf") {
         return false;
@@ -40,9 +53,12 @@ async function silentPrintReportHandler(action, options, env) {
         );
 
         if (res && res.has_binding && (res.success === false || !res.dispatched)) {
+            // Sticky: a failed interception must stay visible — unlike the
+            // transient success toast, a failure needs an explicit dismiss
+            // so the operator never misses that no paper came out.
             notification.add(
                 res.error || _t("Gateway print failed for bound printer. Native download cancelled."),
-                { type: "danger" }
+                { type: "danger", sticky: true, buttons: [openJobsButton(env)] }
             );
             return true; // FAIL-CLOSED: Bound printer failed, do not bypass to browser PDF
         }
@@ -52,11 +68,7 @@ async function silentPrintReportHandler(action, options, env) {
             // dispatch call succeeded but the physical result is ambiguous.
             // Both toasts link to Print Jobs so the interception never
             // leaves the user without a next step.
-            const openJobs = {
-                name: _t("Open Print Jobs"),
-                primary: true,
-                onClick: () => env.services.action.doAction("print_gateway.action_print_gateway_jobs"),
-            };
+            const openJobs = openJobsButton(env);
             if (["unknown", "partial"].includes(res.status)) {
                 notification.add(
                     _t("Print outcome unknown - the printer may have received part or all of this report. Verify at the printer before reprinting (Print Jobs > Force Reprint)."),
@@ -71,9 +83,12 @@ async function silentPrintReportHandler(action, options, env) {
             return true; // Cancel default browser PDF dialog
         }
     } catch (err) {
+        // Same persistence rule as a failed dispatch: an RPC-level error
+        // must stay visible until dismissed, with the Jobs list one click
+        // away for verification.
         notification.add(
             _t("Gateway print dispatch error: %s", err?.message || err),
-            { type: "danger" }
+            { type: "danger", sticky: true, buttons: [openJobsButton(env)] }
         );
         return true; // FAIL-CLOSED: Dispatch call failed, cancel native PDF dialog
     }
