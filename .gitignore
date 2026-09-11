@@ -1,69 +1,34 @@
 ```
-# Build artifacts
-tsconfig.tsbuildinfo
-
-# Dependencies
-node_modules/
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Logs
-*.log
-
-# IDE
-.vscode/
-.idea/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Go
+# Compiled and build artifacts
 *.o
-*.a
-*.so
+*.obj
 *.exe
 *.dll
-*.dylib
-*.test
-*.prof
+*.so
+*.a
+*.out
+
+# Dependencies
 vendor/
+*.mod
+*.sum
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
 
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Distribution
-dist/
-build/
-*.tar.gz
-*.egg-info/
-.eggs/
-
-# Temporary files
-*.tmp
-*.swp
-*.swo
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Cache
-.mypy_cache/
-.pytest_cache/
-.gradle/
-target/
+# Environment
+.env
+.env.local
+*.env.*
 ```
