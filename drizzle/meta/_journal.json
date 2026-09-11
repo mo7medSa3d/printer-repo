@@ -2,32 +2,201 @@
   "version": "7",
   "dialect": "postgresql",
   "entries": [
-    {"idx":0,"version":"7","when":1788063485214,"tag":"0000_simple_tigra","breakpoints":true},
-    {"idx":1,"version":"7","when":1788063485215,"tag":"0001_phase1_branch_foundation","breakpoints":true},
-    {"idx":2,"version":"7","when":1788063485216,"tag":"0002_add_document_types","breakpoints":true},
-    {"idx":3,"version":"7","when":1788063485217,"tag":"0003_add_idempotency_key","breakpoints":true},
-    {"idx":4,"version":"7","when":1788063485218,"tag":"0004_add_job_delivery_tracking","breakpoints":true},
-    {"idx":5,"version":"7","when":1788063485219,"tag":"0005_auth_rate_limits","breakpoints":true},
-    {"idx":6,"version":"7","when":1788063485220,"tag":"0006_architecture_hardening","breakpoints":true},
-    {"idx":7,"version":"7","when":1788063485221,"tag":"0007_auth_rate_limit_retention","breakpoints":true},
-    {"idx":8,"version":"7","when":1788063485222,"tag":"0008_remove_pcl_contract","breakpoints":true},
-    {"idx":9,"version":"7","when":1788063485223,"tag":"0009_runtime_invariant_guard","breakpoints":true},
-    {"idx":10,"version":"7","when":1788375830076,"tag":"0010_discovery","breakpoints":true},
-    {"idx":11,"version":"7","when":1788422427729,"tag":"0011_worker_schema_fk_hardening","breakpoints":false},
-    {"idx":12,"version":"7","when":1788610000000,"tag":"0012_runtime_state_checks","breakpoints":false},
-    {"idx":13,"version":"7","when":1788610000002,"tag":"0013_runtime_state_constraint_scope_fix","breakpoints":false},
-    {"idx":14,"version":"7","when":1788610000003,"tag":"0014_discovery_state_checks","breakpoints":false},
-    {"idx":15,"version":"7","when":1788620000000,"tag":"0015_metrics_and_agent_notifications","breakpoints":false},
-    {"idx":16,"version":"7","when":1788630000000,"tag":"0016_print_job_rate_limits","breakpoints":false},
-    {"idx":17,"version":"7","when":1788630000001,"tag":"0017_notify_requeued_jobs","breakpoints":false},
-    {"idx":18,"version":"7","when":1788739200000,"tag":"0018_global_print_job_idempotency","breakpoints":false},
-    {"idx":19,"version":"7","when":1788739200001,"tag":"0019_drop_legacy_print_destination_fk","breakpoints":false},
-    {"idx":20,"version":"7","when":1788739200002,"tag":"0020_remove_gateway_business_ownership","breakpoints":false},
-    {"idx":21,"version":"7","when":1788739200003,"tag":"0021_scope_print_jobs_to_api_key","breakpoints":false},
-    {"idx":22,"version":"7","when":1788739200004,"tag":"0022_pairing_code_hash","breakpoints":false},
-    {"idx":23,"version":"7","when":1788739200005,"tag":"0023_internal_print_job_idempotency","breakpoints":false},
-    {"idx":24,"version":"7","when":1788825600000,"tag":"0024_claim_fencing_and_payload_contract","breakpoints":false},
-    {"idx":25,"version":"7","when":1788825600001,"tag":"0025_constraint_scope_and_protocol_contract_fix","breakpoints":false},
-    {"idx":26,"version":"7","when":1788912000000,"tag":"0026_printer_type_default_alignment","breakpoints":false}
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788063485214,
+      "tag": "0000_simple_tigra",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788063485215,
+      "tag": "0001_phase1_branch_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788063485216,
+      "tag": "0002_add_document_types",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788063485217,
+      "tag": "0003_add_idempotency_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788063485218,
+      "tag": "0004_add_job_delivery_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788063485219,
+      "tag": "0005_auth_rate_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788063485220,
+      "tag": "0006_architecture_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788063485221,
+      "tag": "0007_auth_rate_limit_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788063485222,
+      "tag": "0008_remove_pcl_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788063485223,
+      "tag": "0009_runtime_invariant_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788375830076,
+      "tag": "0010_discovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788422427729,
+      "tag": "0011_worker_schema_fk_hardening",
+      "breakpoints": false
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788610000000,
+      "tag": "0012_runtime_state_checks",
+      "breakpoints": false
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788610000002,
+      "tag": "0013_runtime_state_constraint_scope_fix",
+      "breakpoints": false
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788610000003,
+      "tag": "0014_discovery_state_checks",
+      "breakpoints": false
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1788620000000,
+      "tag": "0015_metrics_and_agent_notifications",
+      "breakpoints": false
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788630000000,
+      "tag": "0016_print_job_rate_limits",
+      "breakpoints": false
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788630000001,
+      "tag": "0017_notify_requeued_jobs",
+      "breakpoints": false
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788739200000,
+      "tag": "0018_global_print_job_idempotency",
+      "breakpoints": false
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788739200001,
+      "tag": "0019_drop_legacy_print_destination_fk",
+      "breakpoints": false
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788739200002,
+      "tag": "0020_remove_gateway_business_ownership",
+      "breakpoints": false
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788739200003,
+      "tag": "0021_scope_print_jobs_to_api_key",
+      "breakpoints": false
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788739200004,
+      "tag": "0022_pairing_code_hash",
+      "breakpoints": false
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788739200005,
+      "tag": "0023_internal_print_job_idempotency",
+      "breakpoints": false
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788825600000,
+      "tag": "0024_claim_fencing_and_payload_contract",
+      "breakpoints": false
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788825600001,
+      "tag": "0025_constraint_scope_and_protocol_contract_fix",
+      "breakpoints": false
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788912000000,
+      "tag": "0026_printer_type_default_alignment",
+      "breakpoints": false
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788998400000,
+      "tag": "0027_printers_protocol_check_windows_spooler",
+      "breakpoints": false
+    }
   ]
 }

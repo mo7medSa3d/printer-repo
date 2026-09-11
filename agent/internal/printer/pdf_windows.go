@@ -3,31 +3,150 @@
 package printer
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
 )
 
 // Windows PDF printing.
 //
-// The PDF is submitted with ShellExecuteExW using the "printto" verb: the
-// application registered for .pdf renders the document and prints it through
-// the selected printer's Windows driver. This is the documented Windows way
-// to print a document to a specific printer, and it is what makes
-// "Odoo QWeb PDF -> correctly rendered physical page" true — unlike a RAW
-// spool of the PDF bytes.
+// Two paths, chosen by execution context:
 //
-// Safety properties:
-//   - no shell is involved (no cmd.exe, no string-concatenated command line);
-//   - the file path comes from os.CreateTemp inside a 0700 temp directory;
-//   - the printer name is validated (no quotes/control chars) and passed as a
-//     single quoted parameter to the handler;
-//   - the spawned handler is waited on (SEE_MASK_NOCLOSEPROCESS +
-//     WaitForSingleObject) so a failure is a real error, and the temp file is
-//     only deleted after the handler has exited.
+//  1. Headless CLI renderer (SumatraPDF preferred, pdf_print_command first
+//     via pdf.go). Deterministic, dialog-free, Session-0 safe. This is the
+//     ONLY path used when running as a Windows Service: GUI handlers
+//     (Adobe/Edge) hang or crash in Session 0, which has no interactive
+//     desktop for GDI/DDE.
+//  2. ShellExecuteExW "printto" fallback, interactive sessions ONLY. Keeps
+//     every currently-working desktop setup printing when no headless
+//     renderer is installed. Never used from a service.
+//
+// SumatraPDF resolution order:
+//   1. Next to the executing binary (e.g. C:\Program Files\OdooPrintAgent\SumatraPDF.exe)
+//   2. Next to the config file (%ProgramData%\OdooPrintAgent\bin\SumatraPDF.exe)
+//   3. Standard installation paths in %ProgramFiles% or %ProgramFiles(x86)%
+//   4. PATH lookup
+
+func findSumatraPDF() (string, error) {
+	// Check beside executable
+	if exe, err := os.Executable(); err == nil {
+		beside := filepath.Join(filepath.Dir(exe), "SumatraPDF.exe")
+		if _, err := os.Stat(beside); err == nil {
+			return beside, nil
+		}
+		// Also check bin/ subfolder
+		sub := filepath.Join(filepath.Dir(exe), "bin", "SumatraPDF.exe")
+		if _, err := os.Stat(sub); err == nil {
+			return sub, nil
+		}
+	}
+
+	// Check ProgramData
+	if pd := os.Getenv("ProgramData"); pd != "" {
+		p := filepath.Join(pd, "OdooPrintAgent", "bin", "SumatraPDF.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	// Check ProgramFiles
+	for _, envVar := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+		if val := os.Getenv(envVar); val != "" {
+			cand := filepath.Join(val, "SumatraPDF", "SumatraPDF.exe")
+			if _, err := os.Stat(cand); err == nil {
+				return cand, nil
+			}
+		}
+	}
+
+	// Check PATH
+	if p, err := exec.LookPath("SumatraPDF.exe"); err == nil {
+		return p, nil
+	}
+
+	return "", fmt.Errorf("SumatraPDF.exe not found in application directories, ProgramFiles, or PATH")
+}
+
+// runningAsService reports whether this process runs as a Windows Service
+// (Session 0). On any doubt it reports service=true: the headless path is
+// always safe, while the GUI path is only safe interactively.
+func runningAsService() bool {
+	isSvc, err := svc.IsWindowsService()
+	if err != nil {
+		return true
+	}
+	return isSvc
+}
+
+// platformPrintPDF prints pdfPath on printerName, choosing the safe renderer
+// for the current execution context.
+func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
+	// Sanitize printer name: remove trailing backslashes (they escape the
+	// closing quote under CommandLineToArgvW rules) and reject quotes.
+	sanitizedPrinter := strings.TrimRight(printerName, "\\")
+	if strings.ContainsAny(sanitizedPrinter, "\"") {
+		return fmt.Errorf("invalid printer name %q: contains quotes", printerName)
+	}
+
+	if sumatraPath, err := findSumatraPDF(); err == nil {
+		log.Printf("PDF on %q via headless renderer %s", sanitizedPrinter, sumatraPath)
+		return printPDFViaSumatra(ctx, sumatraPath, sanitizedPrinter, pdfPath)
+	}
+
+	if runningAsService() {
+		return fmt.Errorf(
+			"Session 0 headless PDF printing requires SumatraPDF (no interactive handler is usable from a Windows Service): %w (place SumatraPDF.exe in the agent directory or set pdf_print_command in agent.yaml)",
+			fmt.Errorf("SumatraPDF.exe not found"),
+		)
+	}
+
+	log.Printf("PDF on %q via system printto handler (no headless renderer installed)", sanitizedPrinter)
+	return printPDFViaShellHandler(ctx, sanitizedPrinter, pdfPath)
+}
+
+// printPDFViaSumatra executes headless PDF printing using SumatraPDF.exe:
+// -print-to <printerName> : prints to specified printer
+// -silent                 : suppresses error dialogs
+// -exit-when-done         : terminates SumatraPDF when printing completes
+func printPDFViaSumatra(ctx context.Context, sumatraPath, printerName, pdfPath string) error {
+	cmd := exec.CommandContext(ctx, sumatraPath, "-print-to", printerName, "-silent", "-exit-when-done", pdfPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			// Print was killed by timeout/cancel; bytes may have already been dispatched to spooler.
+			return MarkUnknown("headless PDF printing on %q did not finish within budget (submission state unknown): %v", printerName, ctx.Err())
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			msg := strings.TrimSpace(stderr.String())
+			if msg != "" {
+				return MarkUnknown("SumatraPDF exited with code %d: %s (submission state unknown)", exitErr.ExitCode(), msg)
+			}
+			return MarkUnknown("SumatraPDF exited with code %d (submission state unknown)", exitErr.ExitCode())
+		}
+		return fmt.Errorf("executing SumatraPDF for %q failed: %w", printerName, err)
+	}
+
+	return nil
+}
 
 const (
 	seeMaskNoCloseProcess = 0x00000040
@@ -59,9 +178,22 @@ var (
 	procShellExecuteExW = modShell32.NewProc("ShellExecuteExW")
 )
 
-// platformPrintPDF prints pdfPath on printerName through the registered PDF
-// handler and waits for that handler to exit.
-func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
+// printPDFViaShellHandler submits pdfPath with ShellExecuteExW using the
+// "printto" verb: the application registered for .pdf renders the document
+// and prints it through the selected printer's Windows driver.
+//
+// INTERACTIVE SESSIONS ONLY. GUI handlers hang or crash in Session 0, so
+// platformPrintPDF never routes services here.
+//
+// Safety properties:
+//   - no shell is involved (no cmd.exe, no string-concatenated command line);
+//   - the file path comes from os.CreateTemp inside a 0700 temp directory;
+//   - the printer name carries no quotes (rejected above), so the single
+//     quoted parameter can never terminate early and inject arguments;
+//   - the spawned handler is waited on (SEE_MASK_NOCLOSEPROCESS +
+//     WaitForSingleObject) so a failure is a real error, and the temp file is
+//     only deleted after the handler has exited.
+func printPDFViaShellHandler(ctx context.Context, printerName, pdfPath string) error {
 	verb, err := windows.UTF16PtrFromString("printto")
 	if err != nil {
 		return fmt.Errorf("encode printto verb: %w", err)
@@ -70,8 +202,8 @@ func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
 	if err != nil {
 		return fmt.Errorf("encode PDF path: %w", err)
 	}
-	// ValidatePDFPrinterName has already rejected embedded quotes, so this
-	// parameter can never terminate early and inject further arguments.
+	// Quotes were rejected during sanitization, so this parameter can never
+	// terminate early and inject further arguments.
 	params, err := windows.UTF16PtrFromString(`"` + printerName + `"`)
 	if err != nil {
 		return fmt.Errorf("encode printer name: %w", err)
@@ -143,5 +275,6 @@ func waitPDFHandlerExit(hProcess windows.Handle, printerName string, timeout tim
 		// ambiguity must never be reported as a plain retryable failure.
 		return MarkUnknown("PDF handler for printer %q exited with code %d (submission state unknown)", printerName, exitCode)
 	}
+
 	return nil
 }

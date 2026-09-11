@@ -14,12 +14,18 @@ import { _t } from "@web/core/l10n/translation";
  *   returns true to cancel native browser PDF download, preventing hardware bypass.
  */
 async function silentPrintReportHandler(action, options, env) {
-    if (action.type !== "ir.actions.report") {
+    if (action.type !== "ir.actions.report" || action.report_type !== "qweb-pdf") {
         return false;
     }
 
     const orm = env.services.orm;
     const notification = env.services.notification;
+    const resIds =
+        action.context?.active_ids ||
+        (action.context?.active_id ? [action.context.active_id] : []) ||
+        action.res_ids ||
+        action.docids ||
+        [];
 
     try {
         const res = await orm.call(
@@ -28,7 +34,7 @@ async function silentPrintReportHandler(action, options, env) {
             [],
             {
                 report_name: action.report_name,
-                res_ids: action.context?.active_ids || (action.context?.active_id ? [action.context.active_id] : []),
+                res_ids: resIds,
                 context: action.context || {},
             }
         );

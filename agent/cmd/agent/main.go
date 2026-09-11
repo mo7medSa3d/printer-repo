@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -11,17 +12,20 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kardianos/service"
 	"github.com/odoo-print-agent/agent/internal/agent"
 	"github.com/odoo-print-agent/agent/internal/config"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type program struct {
-	agent  *agent.Agent
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup // tracks the agent run goroutine for graceful stop
+	configPath string
+	agent      *agent.Agent
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup // tracks the agent run goroutine for graceful stop
 }
 
 func (p *program) Start(s service.Service) error {
@@ -29,6 +33,45 @@ func (p *program) Start(s service.Service) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+
+		if err := config.Ensure(p.configPath); err != nil {
+			log.Printf("Failed to prepare canonical config path %s: %v — waiting for resolution...", p.configPath, err)
+			<-p.ctx.Done()
+			return
+		}
+
+		// Attempt to load and validate configuration inside the service loop.
+		// If unconfigured or invalid, do not crash the service (which causes SCM 1053 / restart loops);
+		// instead, log and wait quietly in an Idle / Unpaired state.
+		var cfg *config.Config
+		for {
+			var err error
+			cfg, err = config.Load(p.configPath)
+			if err == nil && cfg != nil && cfg.Validate() == nil && cfg.Agent.ID != "" && cfg.Agent.Secret != "" {
+				break
+			}
+			if err != nil {
+				log.Printf("Agent unconfigured at %s (%v) — idling in unpaired state...", p.configPath, err)
+			} else if cfg == nil || cfg.Agent.ID == "" || cfg.Agent.Secret == "" {
+				log.Printf("Agent at %s is unpaired (missing agent id/secret) — idling in unpaired state...", p.configPath)
+			} else if err := cfg.Validate(); err != nil {
+				log.Printf("Agent configuration invalid (%v) — idling in unpaired state...", err)
+			}
+			select {
+			case <-p.ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+
+		app, err := agent.New(cfg, p.configPath)
+		if err != nil {
+			log.Printf("Failed to initialize agent: %v — waiting for resolution...", err)
+			<-p.ctx.Done()
+			return
+		}
+		p.agent = app
+
 		if err := p.agent.Run(p.ctx); err != nil {
 			log.Printf("Agent error: %v", err)
 		}
@@ -43,7 +86,19 @@ func (p *program) Stop(s service.Service) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	p.wg.Wait()
+	// Bound drain wait to max 8 seconds using a channel to prevent Windows SCM
+	// from forcefully terminating the process (TerminateProcess) during service
+	// shutdown, protecting the SQLite queue from database corruption.
+	stopDone := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(8 * time.Second):
+		log.Printf("WARNING: service stop timed out waiting for agent loop after 8s; closing queue anyway")
+	}
 	if p.agent != nil {
 		if err := p.agent.Close(); err != nil {
 			log.Printf("WARNING: closing local queue failed: %v", err)
@@ -52,31 +107,10 @@ func (p *program) Stop(s service.Service) error {
 	return nil
 }
 
-const (
-	// maxLogBytes rotates agent.log once it grows past this size so a
-	// long-running installation never fills ProgramData with logs.
-	maxLogBytes     = 5 * 1024 * 1024 // 5 MiB
-	maxRotatedFiles = 3
-)
-
-// rotateLogIfFull shifts agent.log -> agent.log.1 -> agent.log.2 ... keeping
-// at most maxRotatedFiles rotated copies beside the live log.
-func rotateLogIfFull(logPath string) {
-	info, err := os.Stat(logPath)
-	if err != nil || info.Size() <= maxLogBytes {
-		return
-	}
-	_ = os.Remove(fmt.Sprintf("%s.%d", logPath, maxRotatedFiles))
-	for i := maxRotatedFiles - 1; i >= 1; i-- {
-		_ = os.Rename(fmt.Sprintf("%s.%d", logPath, i), fmt.Sprintf("%s.%d", logPath, i+1))
-	}
-	_ = os.Rename(logPath, fmt.Sprintf("%s.1", logPath))
-}
-
-// setupLogging opens a writable log file beside the config file
+// setupLogging opens a continuously rotating log file beside the config file
 // (%PROGRAMDATA%\OdooPrintAgent\logs\agent.log on Windows). The agent never
 // writes to Program Files; the config path is the writable runtime root.
-func setupLogging(configPath string) (*os.File, error) {
+func setupLogging(configPath string) (*lumberjack.Logger, error) {
 	logDir := filepath.Dir(configPath)
 	if logDir == "" || logDir == "." {
 		exeDir, err := config.ExecutableDir()
@@ -94,17 +128,23 @@ func setupLogging(configPath string) (*os.File, error) {
 		return nil, fmt.Errorf("secure log directory %s: %w", logDir, err)
 	}
 	logPath := filepath.Join(logDir, "agent.log")
-	rotateLogIfFull(logPath)
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("open log file %s: %w", logPath, err)
+
+	rotator := &lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    10, // 10 megabytes max size
+		MaxBackups: 3,
+		LocalTime:  true,
+		Compress:   false,
 	}
-	// Windows services have no usable stdout; log to the file only. The desktop
-	// smoke tests read this file, so it is the authoritative diagnostic sink.
-	log.SetOutput(f)
+
+	if service.Interactive() || os.Getenv("DOCKER_CONTAINER") != "" {
+		log.SetOutput(io.MultiWriter(os.Stdout, rotator))
+	} else {
+		log.SetOutput(rotator)
+	}
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.Printf("log file: %s", logPath)
-	return f, nil
+	return rotator, nil
 }
 
 // configureServiceRecovery declares SCM failure actions so a crashed agent
@@ -121,8 +161,9 @@ func configureServiceRecovery(serviceName string) {
 		log.Printf("WARNING: sc.exe not found; service recovery actions not configured")
 		return
 	}
-	out, err := exec.Command(sc, "failure", serviceName, "reset=", "86400",
-		"actions=", "restart/60000/restart/60000/restart/60000").CombinedOutput()
+	// Arguments require mandatory space after '=': "reset= 86400" and "actions= restart/..." to prevent Windows Error 87
+	out, err := exec.Command(sc, "failure", serviceName, "reset= 86400",
+		"actions= restart/60000/restart/60000/restart/60000").CombinedOutput()
 	if err != nil {
 		log.Printf("WARNING: configuring service recovery actions failed: %v (%s)", err, strings.TrimSpace(string(out)))
 		return
@@ -138,7 +179,7 @@ func handleServiceControl(rawAction, configPath string) error {
 		Arguments:    []string{"-config", configPath},
 		Dependencies: []string{"Tcpip"},
 	}
-	prg := &program{}
+	prg := &program{configPath: configPath}
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create service wrapper: %w", err)
@@ -153,27 +194,46 @@ func handleServiceControl(rawAction, configPath string) error {
 		}
 		switch status {
 		case service.StatusRunning:
-			log.Println("Service status: running")
+			fmt.Println("OdooPrintAgent service is running")
 		case service.StatusStopped:
-			log.Println("Service status: stopped")
+			fmt.Println("OdooPrintAgent service is stopped")
 		default:
-			log.Printf("Service status: %v", status)
+			fmt.Println("OdooPrintAgent service status is unknown")
 		}
 		return nil
-	case "install", "uninstall", "start", "stop", "restart":
-		if err := service.Control(s, action); err != nil {
-			if action == "install" || action == "uninstall" {
-				log.Printf("Hint: run the command from an elevated PowerShell (Run as Administrator).")
-			}
-			return fmt.Errorf("service control %q failed: %w", action, err)
+	case "install":
+		if err := s.Install(); err != nil {
+			return fmt.Errorf("install service failed: %w", err)
 		}
-		log.Printf("Service control %q completed", action)
-		if action == "install" {
-			configureServiceRecovery(svcConfig.Name)
+		configureServiceRecovery(svcConfig.Name)
+		fmt.Println("OdooPrintAgent service installed successfully")
+		return nil
+	case "uninstall":
+		if err := s.Uninstall(); err != nil {
+			return fmt.Errorf("uninstall service failed: %w", err)
 		}
+		fmt.Println("OdooPrintAgent service uninstalled successfully")
+		return nil
+	case "start":
+		if err := s.Start(); err != nil {
+			return fmt.Errorf("start service failed: %w", err)
+		}
+		fmt.Println("OdooPrintAgent service started successfully")
+		return nil
+	case "stop":
+		if err := s.Stop(); err != nil {
+			return fmt.Errorf("stop service failed: %w", err)
+		}
+		fmt.Println("OdooPrintAgent service stopped successfully")
+		return nil
+	case "restart":
+		if err := s.Restart(); err != nil {
+			return fmt.Errorf("restart service failed: %w", err)
+		}
+		fmt.Println("OdooPrintAgent service restarted successfully")
 		return nil
 	default:
-		return fmt.Errorf("unknown service action %q. Valid actions: install, uninstall, start, stop, restart, status", action)
+		return fmt.Errorf("unknown service action: %q (expected install, uninstall, start, stop, restart, status)", rawAction)
 	}
 }
 
@@ -191,44 +251,15 @@ func main() {
 	}
 
 	// 2. Normal runtime path
-	// Ensure the writable runtime directory and a safe default config exist
-	// before anything else opens a database or connects to the network.
-	effectiveConfigPath := *configPath
-	if err := config.Ensure(effectiveConfigPath); err != nil {
-		if *configPath == config.DefaultConfigPath() {
-			local := config.LocalConfigPath()
-			if localErr := config.Ensure(local); localErr == nil {
-				log.Printf("WARNING: default config path not writable (%v); using per-user fallback %s", err, local)
-				effectiveConfigPath = local
-			} else {
-				log.Fatalf("Failed to prepare config %s: %v", *configPath, err)
-			}
-		} else {
-			log.Fatalf("Failed to prepare config %s: %v", *configPath, err)
-		}
-	}
-	*configPath = effectiveConfigPath
-	logFile, err := setupLogging(*configPath)
+	// Logging setup
+	logRotator, err := setupLogging(*configPath)
 	if err != nil {
 		log.Printf("WARNING: logging unavailable: %v", err)
 	} else {
-		defer logFile.Close()
+		defer logRotator.Close()
 	}
 
 	log.Printf("Using config file: %s", *configPath)
-
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-	if err := cfg.Validate(); err != nil {
-		log.Fatalf("Invalid config %s: %v", *configPath, err)
-	}
-
-	app, err := agent.New(cfg, *configPath)
-	if err != nil {
-		log.Fatalf("Failed to initialize agent: %v", err)
-	}
 
 	svcConfig := &service.Config{
 		Name:         "OdooPrintAgent",
@@ -238,7 +269,7 @@ func main() {
 		Dependencies: []string{"Tcpip"},
 	}
 
-	prg := &program{agent: app}
+	prg := &program{configPath: *configPath}
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
 		log.Fatalf("Failed to create service wrapper: %v", err)
@@ -249,6 +280,9 @@ func main() {
 		log.Printf("WARNING: service logger unavailable: %v", err)
 	}
 
+	// Invoke service.Run() early before performing fatal configuration exits.
+	// If the configuration is missing or unverified, program.Start idles in an Unpaired state
+	// rather than crashing out and triggering Windows SCM Error 1053.
 	err = s.Run()
 	if err != nil {
 		log.Printf("Service run error: %v", err)

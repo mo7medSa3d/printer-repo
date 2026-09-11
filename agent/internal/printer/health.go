@@ -16,9 +16,8 @@ var (
 	ErrPrinterCoverOpen = fmt.Errorf("%w: ERR_PRINTER_COVER_OPEN", ErrPrinterNotReady)
 	// ErrPrinterStatusUnsupported means the device accepted TCP but the
 	// status inquiry produced no usable answer (unidirectional transport,
-	// print server that swallows the back-channel, or a hung device). It is
-	// explicitly NOT health: callers must never map it to "ready".
-	ErrPrinterStatusUnsupported = errors.New("ERR_PRINTER_STATUS_UNSUPPORTED")
+	// print server that swallows the back-channel, or a hung device).
+	ErrPrinterStatusUnsupported = fmt.Errorf("%w: ERR_PRINTER_STATUS_UNSUPPORTED", ErrPrinterNotReady)
 )
 
 // ESC/POS DLE EOT status inquiry command bytes.
@@ -43,13 +42,7 @@ type HealthStatus struct {
 // In the ESC/POS specification, standard DLE EOT 1/2/4 response bytes have fixed bits:
 // Bit 1 = 1, Bit 4 = 1, Bit 0 = 0, Bit 7 = 0 (mask 0x93 == 0x12).
 // Any byte that fails this framing check indicates either garbage, non-ESC/POS device,
-// or echo, and fails closed with ErrPrinterNotReady.
-//
-// TOCTOU notice:
-// Pre-flight health checking reduces delivery failures caused by pre-existing paper-out,
-// cover-open, or offline states. However, it cannot guarantee that the printer will not run
-// out of paper, disconnect, or experience a jam mid-payload during actual transmission.
-// Mid-stream failures are tracked separately via UNKNOWN_PARTIAL_DELIVERY.
+// or echo, and classifies as ErrPrinterStatusUnsupported unless explicit error/paper-out bits are flagged.
 func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 	status := &HealthStatus{Online: true}
 
@@ -63,7 +56,11 @@ func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 	}
 	// Check standard ESC/POS DLE EOT response framing: bit 1=1, bit 4=1, bit 0=0, bit 7=0
 	if (buf[0] & 0x93) != 0x12 {
-		return nil, fmt.Errorf("%w: invalid ESC/POS printer status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterNotReady, buf[0])
+		if (buf[0] & 0x08) != 0 {
+			status.Online = false
+			return status, ErrPrinterOffline
+		}
+		return nil, fmt.Errorf("%w: invalid ESC/POS printer status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterStatusUnsupported, buf[0])
 	}
 	// Bit 3: Online (0) / Offline (1)
 	if (buf[0] & 0x08) != 0 {
@@ -79,7 +76,19 @@ func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 		return nil, fmt.Errorf("%w: failed to read offline status: %w", ErrPrinterOffline, err)
 	}
 	if (buf[0] & 0x93) != 0x12 {
-		return nil, fmt.Errorf("%w: invalid ESC/POS offline status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterNotReady, buf[0])
+		if (buf[0] & 0x04) != 0 {
+			status.CoverOpen = true
+			return status, ErrPrinterCoverOpen
+		}
+		if (buf[0] & 0x20) != 0 {
+			status.PaperOut = true
+			return status, ErrPrinterPaperOut
+		}
+		if (buf[0] & 0x40) != 0 {
+			status.Error = true
+			return status, ErrPrinterOffline
+		}
+		return nil, fmt.Errorf("%w: invalid ESC/POS offline status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterStatusUnsupported, buf[0])
 	}
 	// Bit 2: Cover open (1)
 	if (buf[0] & 0x04) != 0 {
@@ -105,7 +114,11 @@ func QueryHealthStatus(rw io.ReadWriter) (*HealthStatus, error) {
 		return nil, fmt.Errorf("%w: failed to read paper status: %w", ErrPrinterOffline, err)
 	}
 	if (buf[0] & 0x93) != 0x12 {
-		return nil, fmt.Errorf("%w: invalid ESC/POS paper status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterNotReady, buf[0])
+		if (buf[0] & 0x60) != 0 {
+			status.PaperOut = true
+			return status, ErrPrinterPaperOut
+		}
+		return nil, fmt.Errorf("%w: invalid ESC/POS paper status response byte 0x%02x (expected framing mask 0x93 == 0x12)", ErrPrinterStatusUnsupported, buf[0])
 	}
 	// Bits 2 and 3: Paper roll near-end sensor
 	if (buf[0] & 0x0C) != 0 {

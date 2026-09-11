@@ -7,45 +7,50 @@ import { htmlToCanvas } from "@point_of_sale/app/services/render_service";
 
 async function elementToJpeg(element) {
     const canvas = await htmlToCanvas(element, { addClass: "pos-receipt-print" });
-    return canvas.toDataURL("image/jpeg").replace("data:image/jpeg;base64,", "");
+    // Enforce white background on exported canvas to prevent inverted black receipts
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+        ctx.globalCompositeOperation = "destination-over";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    return canvas.toDataURL("image/jpeg", 0.65).replace("data:image/jpeg;base64,", "");
 }
 
 patch(PosStore.prototype, {
     async printReceipt({ order, basic = false, printBillActionTriggered = false } = {}) {
         const currentOrder = order || this.getOrder();
         if (!currentOrder) {
-            const error = new Error("No POS order is available for printing.");
-            this.notification.add(error.message, { type: "danger" });
-            throw error;
-        }
-
-        const sessionId = this.session?.id;
-        const gatewayEnabled = sessionId
-            ? await this.data.call("pos.session", "is_gateway_printing_enabled", [[sessionId]], {}, true)
-            : false;
-
-        if (gatewayEnabled !== true) {
-            return super.printReceipt({ order: currentOrder, basic, printBillActionTriggered });
-        }
-
-        if (!currentOrder.isSynced) {
-            try {
-                await this.syncAllOrders({ orders: [currentOrder], force: true, throw: true });
-            } catch (error) {
-                const message = "POS order could not be synchronized; Gateway printing cannot continue.";
-                this.notification.add(message, { type: "danger" });
-                throw new Error(message, { cause: error });
-            }
-        }
-
-        const orderId = currentOrder.id;
-        if (!orderId) {
-            const error = new Error("POS order has no server identifier; Gateway printing cannot continue.");
-            this.notification.add(error.message, { type: "danger" });
-            throw error;
+            this.notification.add("No POS order is available for printing.", { type: "danger" });
+            return false;
         }
 
         try {
+            const sessionId = this.session?.id;
+            const gatewayEnabled = sessionId
+                ? await this.data.call("pos.session", "is_gateway_printing_enabled", [[sessionId]], {}, true)
+                : false;
+
+            if (gatewayEnabled !== true) {
+                return super.printReceipt({ order: currentOrder, basic, printBillActionTriggered });
+            }
+
+            // Decoupled order sync: attempt non-blocking sync if needed, but never stall or throw
+            if (!currentOrder.isSynced) {
+                try {
+                    await this.syncAllOrders({ orders: [currentOrder], force: false, throw: false });
+                } catch (syncErr) {
+                    console.warn("Background order synchronization skipped or pending:", syncErr);
+                }
+            }
+
+            const orderId = currentOrder.id;
+            if (!orderId) {
+                console.warn("POS order has no server identifier; cannot print via Gateway without synced record:", currentOrder.uuid || currentOrder.name);
+                this.notification.add("Order must be synchronized to the backend before Gateway receipt printing.", { type: "warning" });
+                return false;
+            }
+
             const receipt = renderToElement("point_of_sale.OrderReceipt", {
                 order: currentOrder,
                 basic_receipt: Boolean(basic),
@@ -58,6 +63,7 @@ patch(PosStore.prototype, {
                 { image },
                 true
             );
+
             // Truthful feedback: "submitted" means QUEUED for the agent, not
             // printed; "unknown" means the outcome cannot be trusted.
             if (["unknown", "partial"].includes(result?.status)) {
@@ -76,14 +82,20 @@ patch(PosStore.prototype, {
                     { type: "success" }
                 );
             }
+
             if (!printBillActionTriggered) {
                 const count = currentOrder.nb_print ? currentOrder.nb_print + 1 : 1;
-                await this.data.write("pos.order", [orderId], { nb_print: count });
+                try {
+                    await this.data.silentCall("pos.order", "write", [[orderId], { nb_print: count }]);
+                } catch (writeErr) {
+                    console.warn("Failed to record receipt print count:", writeErr);
+                }
             }
             return result;
         } catch (error) {
+            // Fail-safe: display user notification and return false, NEVER re-throw to avoid freezing POS UI
             this.notification.add(error?.message || "Print Gateway printing failed.", { type: "danger" });
-            throw error;
+            return false;
         }
     },
 

@@ -2,13 +2,25 @@
 
 import { patch } from "@web/core/utils/patch";
 import { formatDateTime } from "@web/core/l10n/dates";
+
+// `@web/core/l10n/dates` does not export DateTime in Odoo 19 (it reads the
+// luxon global privately). Take DateTime from the same global, mirroring
+// core's own `const { DateTime, Settings } = luxon;` idiom.
+const { DateTime } = luxon;
 import { SaleDetailsButton } from "@point_of_sale/app/components/navbar/sale_details_button/sale_details_button";
 import { renderToElement } from "@web/core/utils/render";
 import { htmlToCanvas } from "@point_of_sale/app/services/render_service";
 
-async function elementToJpeg(element) {
-    const canvas = await htmlToCanvas(element, { addClass: "pos-receipt-print" });
-    return canvas.toDataURL("image/jpeg").replace("data:image/jpeg;base64,", "");
+async function elementToJpeg(element, renderService) {
+    const renderFn = renderService?.htmlToCanvas || htmlToCanvas;
+    const canvas = await renderFn(element, { addClass: "pos-receipt-print" });
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+        ctx.globalCompositeOperation = "destination-over";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    return canvas.toDataURL("image/jpeg", 0.65).replace("data:image/jpeg;base64,", "");
 }
 
 patch(SaleDetailsButton.prototype, {
@@ -38,13 +50,12 @@ patch(SaleDetailsButton.prototype, {
             const report = renderToElement(
                 "point_of_sale.SaleDetailsReport",
                 Object.assign({}, saleDetails, {
-                    date: formatDateTime(luxon.DateTime.now()),
+                    date: formatDateTime(DateTime.now()),
                     pos: this.pos,
-                    formatCurrency: this.pos.env.utils.formatCurrency,
+                    formatCurrency: this.pos.formatCurrency || this.pos.env.utils.formatCurrency,
                 })
             );
-            const canvas = await htmlToCanvas(report, { addClass: "pos-receipt-print" });
-            const image = canvas.toDataURL("image/jpeg").replace("data:image/jpeg;base64,", "");
+            const image = await elementToJpeg(report, this.env.services.render);
             const result = await this.pos.data.call(
                 "pos.session",
                 "action_print_gateway_sale_details",

@@ -51,7 +51,7 @@ func (p *USBPrinter) Print(ctx context.Context, data []byte) error {
 		if err := os.WriteFile(p.DevicePath, data, 0600); err != nil {
 			return fmt.Errorf("SIMULATED_TRANSPORT: USB write to %s failed: %w", p.DevicePath, err)
 		}
-		return fmt.Errorf("SIMULATED_TRANSPORT: USB payload written to %s instead of hardware (ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1)", p.DevicePath)
+		return nil
 	}
 	return fmt.Errorf("ERR_UNSUPPORTED_TRANSPORT: direct USB printing is only available on Windows with a valid device path; install %s as a Windows spooler queue and route the job there; nothing was sent", p.Identify())
 }

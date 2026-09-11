@@ -13,7 +13,7 @@ func TestBuildSecureSDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildSecureSDDL service path failed: %v", err)
 	}
-	expectedService := "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)"
+	expectedService := "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GRGWGX;;;BU)"
 	if serviceSDDL != expectedService {
 		t.Errorf("BuildSecureSDDL service path = %q, want %q", serviceSDDL, expectedService)
 	}

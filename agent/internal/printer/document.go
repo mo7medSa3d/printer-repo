@@ -18,8 +18,9 @@ const (
 	KindTSPL   = "tspl"
 	KindLabel  = "label"
 
-	defaultDocumentPrintTimeout = 20 * time.Second
-	defaultPDFDocumentTimeout   = 120 * time.Second
+	defaultDocumentPrintTimeout  = 20 * time.Second
+	defaultRasterDocumentTimeout = 90 * time.Second
+	defaultPDFDocumentTimeout    = 120 * time.Second
 )
 
 type Document struct {
@@ -84,13 +85,17 @@ func SupportsKind(p Printer, kind string) bool {
 // outcome. PDF deliberately detaches from cancellation: once a document has
 // been handed to a real renderer, killing the wait does NOT recall the pages.
 func documentContext(parent context.Context, kind string) (context.Context, context.CancelFunc) {
-	if NormalizeKind(kind) == KindPDF {
+	norm := NormalizeKind(kind)
+	if norm == KindPDF {
 		base := context.WithoutCancel(parent)
 		ctx, cancel := context.WithTimeout(base, defaultPDFDocumentTimeout)
 		return ctx, cancel
 	}
 	if _, hasDeadline := parent.Deadline(); hasDeadline {
 		return parent, func() {}
+	}
+	if norm == KindImage || norm == KindESCPOS {
+		return context.WithTimeout(parent, defaultRasterDocumentTimeout)
 	}
 	return context.WithTimeout(parent, defaultDocumentPrintTimeout)
 }

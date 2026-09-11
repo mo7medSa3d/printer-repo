@@ -20,8 +20,8 @@ var (
 	CutterPartial = []byte{0x1D, 0x56, 0x42, 0x00}
 
 	// Buzzer chimes
-	// Epson internal pulse: ESC c 0 2 -> 0x1B 0x63 0x30 0x02
-	BuzzerEpson = []byte{0x1B, 0x63, 0x30, 0x02}
+	// Epson internal pulse: ESC p 0 25 250 -> 0x1B 0x70 0x00 0x19 0xFA
+	BuzzerEpson = []byte{0x1B, 0x70, 0x00, 0x19, 0xFA}
 	// Star Micronics BEL: 0x07
 	BuzzerStar = []byte{0x07}
 )
@@ -65,11 +65,13 @@ func WrapPeripheralCommands(data []byte, protocol string, profile PeripheralProf
 	// 2. Primary document payload
 	buf.Write(data)
 
-	// 3. Post-print injection (Cutter)
+	// 3. Post-print injection (Feed before cutter to clear thermal head)
 	switch strings.ToLower(strings.TrimSpace(profile.CutterMode)) {
 	case "partial":
+		buf.WriteString("\n\n\n\n\n")
 		buf.Write(CutterPartial)
 	case "full":
+		buf.WriteString("\n\n\n\n\n")
 		buf.Write(CutterFull)
 	}
 

@@ -43,3 +43,16 @@ def migrate(cr, version):
     """)
 
     # runtime_agent_id column is retained on print_gateway_gateway_config as a legacy field
+
+    # Ensure legacy POS receipt bindings default to partial cut to avoid
+    # uncut rolls post-upgrade. The Go raster engine no longer appends a
+    # hardcoded cut; cutting is solely profile-driven, so bindings left at
+    # 'none'/NULL (the old implicit-cut era) must opt into cutting
+    # explicitly. Scoped to POS receipt flows only; labels and documents
+    # keep their configured behavior.
+    cr.execute("""
+        UPDATE print_gateway_binding
+        SET cutter_mode = 'partial'
+        WHERE destination_type IN ('pos', 'pos_printer')
+          AND (cutter_mode = 'none' OR cutter_mode IS NULL)
+    """)

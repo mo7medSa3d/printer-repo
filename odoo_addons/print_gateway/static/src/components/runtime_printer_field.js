@@ -16,13 +16,18 @@ export class RuntimePrinterField extends Component {
     static props = ["*"];
     static template = xml`
         <div class="o_field_widget o_field_runtime_printer">
-            <select class="o_input" t-att-disabled="props.readonly || state.loading || !state.agentId" t-on-change="onChange">
-                <option value=""><t t-esc="state.loading ? 'Loading printers…' : (!state.agentId ? 'Select Gateway Runtime Agent first' : 'Select Gateway Runtime Printer')"/></option>
-                <option t-foreach="filteredPrinters" t-as="printer" t-key="printer.id" t-att-value="printer.id" t-att-selected="printer.id === props.record.data[props.name]">
-                    <t t-esc="printer.name"/> [<t t-esc="printer.deviceClass || 'generic'"/>] — <t t-esc="printer.status"/>
-                </option>
-            </select>
-            <small t-if="state.error" class="text-danger">Gateway printer discovery failed.</small>
+            <t t-if="props.readonly">
+                <span t-esc="props.record.data[props.name] || ''"/>
+            </t>
+            <t t-else="">
+                <select class="o_input" t-att-disabled="state.loading || !state.agentId" t-on-change="onChange">
+                    <option value=""><t t-esc="state.loading ? 'Loading printers…' : (!state.agentId ? 'Select Gateway Runtime Agent first' : 'Select Gateway Runtime Printer')"/></option>
+                    <option t-foreach="filteredPrinters" t-as="printer" t-key="printer.id" t-att-value="printer.id" t-att-selected="printer.id === props.record.data[props.name]">
+                        <t t-esc="printer.name"/> [<t t-esc="printer.deviceClass || 'generic'"/>] — <t t-esc="printer.status"/>
+                    </option>
+                </select>
+                <small t-if="state.error" class="text-danger">Gateway printer discovery failed.</small>
+            </t>
         </div>`;
 
     setup() {
@@ -52,7 +57,7 @@ export class RuntimePrinterField extends Component {
             return thermal.length ? thermal : this.state.printers;
         }
         if (dest === "picking_type") {
-            const labels = this.state.printers.filter(p => ["label", "thermal", "unknown"].includes((p.deviceClass || "").toLowerCase()));
+            const labels = this.state.printers.filter(p => ["label", "thermal", "unknown", "other", "barcode"].includes((p.deviceClass || "").toLowerCase()));
             return labels.length ? labels : this.state.printers;
         }
         return this.state.printers;

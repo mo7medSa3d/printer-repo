@@ -145,12 +145,16 @@ func discoverSNMPPrinters(ctx context.Context, targets []string) []DeviceInfo {
 		jobs <- t
 	}
 	close(jobs)
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	// Ownership law (mirrors network_discovery.go): results is closed ONLY
+	// after every worker has finished sending. Abandoning the wait on
+	// ctx.Done() and closing early made a straggling worker's
+	// `select { case results <- di: case <-ctx.Done(): }` see a
+	// send-on-closed channel that is simultaneously "ready" with the ctx
+	// arm — Go picks uniformly and panics ~50% per late result. The wait is
+	// bounded: workers finish within one perHostTimeout after ctx expires
+	// (probe deadlines start at call time) and sends never block (buffer is
+	// len(targets)), so the discovery budget is exceeded by at most ~1.5s.
+	wg.Wait()
 	close(results)
 	var out []DeviceInfo
 	seen := make(map[string]bool)
@@ -359,12 +363,10 @@ func discoverLPRPrinters(ctx context.Context, targets []string) []DeviceInfo {
 		jobs <- t
 	}
 	close(jobs)
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	// See discoverSNMPPrinters: never close(results) while a worker may
+	// still hold the send. probeLPRHost's conn deadline starts at call
+	// time, so every worker returns within ~800ms of ctx expiry.
+	wg.Wait()
 	close(results)
 	var out []DeviceInfo
 	seen := make(map[string]bool)
@@ -419,118 +421,7 @@ func probeLPRHost(ctx context.Context, host string, timeout time.Duration) *Devi
 	}
 }
 
-// WSD discovery: WS-Discovery Probe via UDP multicast 239.255.255.250:3702
-func discoverWSDPrinters(ctx context.Context) []DeviceInfo {
-	// WSD is Windows-specific, but we implement cross-platform probe; on non-Windows may find little.
-	probe := buildWSDProbe()
-	addr, err := net.ResolveUDPAddr("udp4", "239.255.255.250:3702")
-	if err != nil {
-		return nil
-	}
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		return nil
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err := conn.Write(probe); err != nil {
-		return nil
-	}
-	buf := make([]byte, 8192)
-	var out []DeviceInfo
-	seenIP := make(map[string]bool)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		n, remote, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				break
-			}
-			continue
-		}
-		data := buf[:n]
-		// Rough filter: must contain printer or PrintService
-		if !bytes.Contains(data, []byte("printer")) && !bytes.Contains(data, []byte("Print")) && !bytes.Contains(data, []byte("wsd")) {
-			continue
-		}
-		ip := remote.IP.String()
-		if seenIP[ip] {
-			continue
-		}
-		seenIP[ip] = true
-		// Extract model/manufacturer if present
-		model := extractXMLTag(string(data), "wsdp:ModelName")
-		if model == "" {
-			model = extractXMLTag(string(data), "ModelName")
-		}
-		mfg := extractXMLTag(string(data), "wsdp:Manufacturer")
-		if mfg == "" {
-			mfg = extractXMLTag(string(data), "Manufacturer")
-		}
-		id := StableIDFromNetwork(ip, 3702)
-		caps := map[string]interface{}{"discovered_via": "wsd", "wsd_verified": true}
-		if mfg != "" {
-			caps["manufacturer"] = mfg
-		}
-		if model != "" {
-			caps["model"] = model
-		}
-		di := DeviceInfo{
-			ID:             id,
-			Name:           fmt.Sprintf("WSD Printer %s", ip),
-			DisplayName:    model,
-			ConnectionType: "network",
-			// A WSD probe answer identifies a WS-Print-capable device; it
-			// does NOT prove a raw 9100 byte sink. Undeclared protocol,
-			// unknown status: operator/IPP verification decides.
-			Protocol:       "",
-			Endpoint:       ip,
-			NetworkAddress: ip,
-			Status:         "unknown",
-			Enabled:        true,
-			Capabilities:   caps,
-		}
-		if model != "" {
-			di.Name = model
-		}
-		out = append(out, di)
-	}
-	if len(out) > 0 {
-		log.Printf("[discovery] WSD found %d printers", len(out))
-	}
-	return out
-}
-
-func buildWSDProbe() []byte {
-	uuid := "urn:uuid:00000000-0000-0000-0000-000000000001"
-	msg := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery">
-<soap:Header><wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action><wsa:MessageID>%s</wsa:MessageID><wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To></soap:Header>
-<soap:Body><wsd:Probe><wsd:Types>wprt:PrintDeviceType</wsd:Types></wsd:Probe></soap:Body>
-</soap:Envelope>`, uuid)
-	return []byte(msg)
-}
-
-func extractXMLTag(s, tag string) string {
-	open := "<" + tag
-	idx := strings.Index(s, open)
-	if idx < 0 {
-		return ""
-	}
-	// find > then content then </tag>
-	closeIdx := strings.Index(s[idx:], ">")
-	if closeIdx < 0 {
-		return ""
-	}
-	start := idx + closeIdx + 1
-	endTag := "</" + tag + ">"
-	end := strings.Index(s[start:], endTag)
-	if end < 0 {
-		return ""
-	}
-	return strings.TrimSpace(s[start : start+end])
-}
+// WSD discovery is implemented in wsd_discovery.go
 
 // mDNS full implementation via UDP multicast 224.0.0.251:5353
 func discoverFullMDNS(ctx context.Context) []DeviceInfo {
@@ -713,9 +604,4 @@ func isAllowedCIDR(cidr string) bool {
 		return false
 	}
 	return true
-}
-
-func init() {
-	// Ensure unused helpers are referenced
-	_ = extractXMLTag
 }

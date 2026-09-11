@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/odoo-print-agent/agent/internal/config"
 	"github.com/odoo-print-agent/agent/internal/queue"
@@ -63,6 +64,14 @@ func init() {
 // asked (the operator has physically reconciled the output) the rows whose
 // physical outcome is unknown. Returns (deleted, unknownPurged, unknownKept, err).
 func cleanupJobs(dbPath string, includeUnknown bool) (int, int, int, error) {
+	// Ensure the parent directory exists first: a missing data dir must
+	// yield an empty result, not a sqlite "unable to open" failure, and
+	// this also covers fresh machines where the agent never ran.
+	if dir := filepath.Dir(dbPath); dir != "" {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return 0, 0, 0, fmt.Errorf("create queue directory %s: %w", dir, err)
+		}
+	}
 	q, err := queue.New(dbPath)
 	if err != nil {
 		return 0, 0, 0, err

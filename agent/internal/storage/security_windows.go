@@ -32,14 +32,12 @@ func BuildSecureSDDL(path string) (string, error) {
 		}
 		return fmt.Sprintf("D:P(A;OICI;GA;;;%s)(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", userSID), nil
 	}
-	return "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", nil
+	return "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GRGWGX;;;BU)", nil
 }
 
 // EnsureSecureDirectoryACL enforces strict NTFS permissions on the target directory.
-// It removes inherited permissions and grants Full Control strictly to:
-// - Current User (if under LocalAppData / UserProfile)
-// - NT AUTHORITY\SYSTEM (SY)
-// - BUILTIN\Administrators (BA)
+// It removes inherited permissions and grants Full Control to SYSTEM and Administrators,
+// and Read/Write/Execute to standard Users (for service path configuration).
 func EnsureSecureDirectoryACL(path string) error {
 	sddl, err := BuildSecureSDDL(path)
 	if err != nil {

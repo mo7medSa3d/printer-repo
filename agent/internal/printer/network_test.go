@@ -228,7 +228,7 @@ func TestNetworkPrinterPreFlightCheckScenarios(t *testing.T) {
 
 			payloadReceived := make(chan []byte, 1)
 			go func() {
-				// Handle preflight connection
+				// Handle connection
 				conn1, err := ln.Accept()
 				if err != nil {
 					return
@@ -236,15 +236,10 @@ func TestNetworkPrinterPreFlightCheckScenarios(t *testing.T) {
 				defer conn1.Close()
 				tc.responder(conn1)
 
-				// If print is expected to succeed, accept 2nd connection for payload
+				// If print succeeds, payload is sent on the SAME connection (eliminating socket churn)
 				if tc.expectSuccess {
-					conn2, err := ln.Accept()
-					if err != nil {
-						return
-					}
-					defer conn2.Close()
 					buf := make([]byte, 4096)
-					n, _ := conn2.Read(buf)
+					n, _ := conn1.Read(buf)
 					payloadReceived <- buf[:n]
 				}
 			}()

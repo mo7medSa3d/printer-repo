@@ -39,6 +39,6 @@
         <field name="name">Print intent company isolation</field>
         <field name="model_id" ref="model_print_gateway_intent"/>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
     </record>
 </odoo>

@@ -1723,6 +1723,17 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 			CutterMode:     pl.Peripherals.Cutter,
 			BuzzerMode:     pl.Peripherals.Buzzer,
 		}
+		// Insert a 150ms delay between cash drawer solenoid triggers and thermal print heads
+		// to prevent microcontroller brownouts on 24V power adapters.
+		if (pl.Peripherals.Drawer == "pin2" || pl.Peripherals.Drawer == "pin5") && strings.ToLower(strings.TrimSpace(pl.Protocol)) == "escpos" {
+			drawerCmd := printer.DrawerKickPin2
+			if pl.Peripherals.Drawer == "pin5" {
+				drawerCmd = printer.DrawerKickPin5
+			}
+			_ = p.Print(printCtx, drawerCmd)
+			time.Sleep(150 * time.Millisecond)
+			profile.DrawerKickMode = "none"
+		}
 		printData = printer.WrapPeripheralCommands(printData, pl.Protocol, profile)
 	}
 	printErr := printer.PrintDocument(printCtx, p, printer.Document{Kind: kind, Data: printData, JobID: jobID})

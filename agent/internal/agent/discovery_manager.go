@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/odoo-print-agent/agent/internal/printer"
@@ -43,7 +44,13 @@ func (a *Agent) pollDiscovery(ctx context.Context) {
 				a.executeDiscoverySession(ctx, sessionID)
 			}(id)
 		default:
+			// A skipped session must not linger as "running" on the
+			// gateway until its 60s expiry: report it cancelled now so
+			// dashboards and operators see the truth immediately. The
+			// gateway accepts "cancelled" as a terminal session status
+			// and the next 30s poll tick picks up fresh work.
 			log.Printf("[discovery] session %s deferred: a discovery session is already running", id)
+			go a.reportDiscoveryResult(ctx, id, "cancelled", nil)
 		}
 	}
 }
@@ -57,10 +64,14 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryID string)
 	discoveryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	resultCh := make(chan printer.DiscoveryResult, 1)
 	go func() {
+		defer wg.Done()
 		resultCh <- printer.DiscoverWithContext(discoveryCtx, a.cfg, a.registryPath)
 	}()
+	defer wg.Wait()
 
 	var result printer.DiscoveryResult
 	select {

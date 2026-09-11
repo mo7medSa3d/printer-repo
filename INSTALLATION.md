@@ -28,6 +28,18 @@ Install the Windows Agent/Desktop Manager bundle. Pair the Agent with the Gatewa
 
 The Gateway manager can inspect runtime agents/printers and their health. Odoo does not create or synchronize these resources.
 
+### PDF Printing in Windows Service (Session 0)
+
+The Windows Agent runs as a background service (`LocalSystem`) without interactive GUI capabilities. To enable silent PDF printing without bundling GPL-licensed binaries:
+- **Recommended:** Install SumatraPDF via Windows Package Manager:
+  ```powershell
+  winget install --id SumatraPDF.SumatraPDF -e --silent
+  ```
+- **Alternative (Commercial/Permissive CLI):** Place a standalone CLI tool like PDFtoPrinter.exe in `C:\Program Files\OdooPrintAgent\` and configure `pdf_print_command` in config.yaml:
+  ```yaml
+  pdf_print_command: ["C:\\Program Files\\OdooPrintAgent\\PDFtoPrinter.exe", "{file}", "{printer}"]
+  ```
+
 ## 3. Gateway API key
 
 In the Gateway manager:

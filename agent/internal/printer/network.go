@@ -31,31 +31,32 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 		return fmt.Errorf("payload %d bytes exceeds %d limit", len(data), maxPrintBytes)
 	}
 
-	// Active preflight BEFORE any payload byte is transmitted. ESC/POS
-	// devices have a status back-channel and are probed; a device that does
-	// not answer the status inquiry is reported as status-unsupported, which
-	// is NEVER treated as proof of health (see PreFlightHealthCheck).
-	// TOCTOU notice: preflight cannot eliminate mid-stream paper-out or
-	// disconnects; those are classified via UNKNOWN_PARTIAL_DELIVERY below.
-	if strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		if err := PreFlightHealthCheck(probeCtx, p.Address); err != nil {
-			if errors.Is(err, ErrPrinterStatusUnsupported) {
-				log.Printf("printer %s: ESC/POS status channel unavailable (%v); proceeding without health proof", p.Address, err)
-			} else {
-				return fmt.Errorf("pre-flight health check failed: %w", err)
-			}
-		}
+	// Single connection with keepalive to eliminate connection churn and race conditions.
+	d := net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 10 * time.Second,
 	}
-
-	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
 		// Zero bytes sent: provably pre-dispatch failure, safely retryable.
 		return fmt.Errorf("%w: dial %s: %w", ErrPrinterOffline, p.Address, err)
 	}
 	defer conn.Close()
+
+	// Active preflight on the OPEN connection before streaming raster/command bytes.
+	if strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
+		_ = conn.SetDeadline(time.Now().Add(1500 * time.Millisecond))
+		if _, err := QueryHealthStatus(conn); err != nil {
+			var netErr net.Error
+			if errors.Is(err, ErrPrinterStatusUnsupported) || (errors.As(err, &netErr) && netErr.Timeout()) {
+				log.Printf("printer %s: ESC/POS status channel unavailable (%v); proceeding without health proof", p.Address, err)
+			} else {
+				return fmt.Errorf("pre-flight health check failed: %w", err)
+			}
+		}
+		// Reset read/write deadline
+		_ = conn.SetDeadline(time.Time{})
+	}
 
 	written := 0
 	for written < len(data) {
@@ -87,6 +88,13 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 			return fmt.Errorf("short write 0 bytes to %s", p.Address)
 		}
 	}
+
+	// Graceful shutdown: signal EOF to the printer's TCP stack and allow print buffer drain
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
+		time.Sleep(350 * time.Millisecond)
+	}
+
 	return nil
 }
 
