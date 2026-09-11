@@ -1,3 +1,0 @@
-## 2024-03-24 - [Forms and Inputs]
-**Learning:** For a single input field next to a submit action, placing them inside a `<form>` enables submission via the `Enter` key. Furthermore, the label must be programmatically associated with its input by using an `htmlFor` matching the input's `id`. This makes screen readers read out the input name, and lets users focus the input by clicking the label.
-**Action:** Always wrap actionable inputs and their corresponding buttons in a `<form>` with a properly configured `onSubmit` handler (including `e.preventDefault()`). Use `id` and `htmlFor` props on inputs and labels respectively.
