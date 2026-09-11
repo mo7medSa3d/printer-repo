@@ -2,10 +2,13 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { printJobs } from "../../../../../db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../../lib/odoo-auth";
+import { hasBodyOverLimit } from "../../../../../lib/request-limits";
 import { and, inArray, eq } from "drizzle-orm";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
+
+const MAX_BODY = 8 * 1024 * 1024;
 
 const batchQuerySchema = z.object({
   jobIds: z.array(z.string().trim().min(1).max(120)).min(1).max(100),
@@ -27,6 +30,7 @@ function responseForRow(row: typeof printJobs.$inferSelect) {
 }
 
 export async function POST(req: Request) {
+  if (hasBodyOverLimit(req, MAX_BODY)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
   const odoo = await validateOdooKey(req);
   if (!odoo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

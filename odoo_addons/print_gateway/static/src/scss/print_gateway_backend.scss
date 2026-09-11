@@ -6,7 +6,7 @@
         border: 1px solid var(--pg-input-border) !important; // Slate-300
         border-radius: 6px !important;
         padding: 6px 10px !important;
-        background-color: #ffffff !important;
+        background-color: var(--pg-bg) !important;
         transition: border-color 0.2s ease, box-shadow 0.2s ease;
 
         &:focus {
