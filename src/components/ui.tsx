@@ -401,7 +401,7 @@ export function Field({
 }
 
 export const inputClass =
-  "w-full h-11 rounded-lg border border-edge bg-surface px-3.5 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
+  "w-full h-11 rounded-lg border border-edge bg-surface px-3.5 text-sm text-ink placeholder:text-ink-3 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
 
 export function Input({
   className = "",

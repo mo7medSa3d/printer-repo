@@ -86,9 +86,22 @@ func (p *program) Stop(s service.Service) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	// Bound drain wait to max 8 seconds using a channel to prevent Windows SCM
-	// from forcefully terminating the process (TerminateProcess) during service
-	// shutdown, protecting the SQLite queue from database corruption.
+	// SCM allows ~30s for STOP_PENDING -> STOPPED, and the queue Close
+	// below must complete inside that window: a TerminateProcess during
+	// Close risks WAL damage. 8s always leaves headroom for Close; jobs
+	// interrupted mid-print converge via gateway lease expiry (UNKNOWN,
+	// never silent), and the agent's own 25s shutdown grace still bounds
+	// the normal (non-wedged) drain path inside Run.
+	stopDone := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(8 * time.Second):
+		log.Printf("WARNING: service stop timed out waiting for agent loop; closing queue anyway")
+	}
 	stopDone := make(chan struct{})
 	go func() {
 		p.wg.Wait()

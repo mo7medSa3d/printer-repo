@@ -20,7 +20,9 @@ async function elementToJpeg(element, renderService) {
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-    return canvas.toDataURL("image/jpeg", 0.65).replace("data:image/jpeg;base64,", "");
+    // Strip any Data-URL prefix variant (some browsers emit charset/parameters);
+    // the payload layer only accepts raw base64.
+    return canvas.toDataURL("image/jpeg", 0.65).replace(/^data:image\/[a-z]+;base64,/, "");
 }
 
 patch(SaleDetailsButton.prototype, {

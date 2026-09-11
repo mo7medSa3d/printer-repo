@@ -3,6 +3,7 @@
 package payload
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 )
@@ -95,7 +96,15 @@ func Parse(raw interface{}) (*Payload, error) {
 		return nil, fmt.Errorf("payload exceeds %d byte limit", MaxPayloadBytes)
 	}
 
-	looksLikePDF := len(decoded) >= 5 && string(decoded[:5]) == "%PDF-"
+	// Signature search window (64 bytes) mirrors pdf.go's
+	// pdfHeaderSearchWindow: producers that emit a UTF-8 BOM or stray
+	// leading whitespace must pass intake exactly when execution accepts
+	// them. Anything beyond the window is irrelevant to format detection.
+	head := decoded
+	if len(head) > 64 {
+		head = head[:64]
+	}
+	looksLikePDF := bytes.Contains(head, []byte("%PDF-"))
 	looksLikeJPEG := len(decoded) >= 3 && decoded[0] == 0xff && decoded[1] == 0xd8 && decoded[2] == 0xff
 	if Type(typ) == TypePDF && !looksLikePDF {
 		return nil, fmt.Errorf("PDF payload must start with the %%PDF- signature")

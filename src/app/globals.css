@@ -262,3 +262,13 @@
   .ring-focus:focus-visible { outline: none; box-shadow: var(--focus-ring-shadow); border-color: var(--brand); }
   .skeleton { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%); background-size: 200% 100%; animation: pg-shimmer 1.4s linear infinite; border-radius: var(--r-md); }
 }
+
+/* Respect users who opt out of motion: spinners, shimmer, and transitions
+   collapse to their end state instead of animating. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

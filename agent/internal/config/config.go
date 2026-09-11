@@ -237,19 +237,6 @@ func DefaultConfigPath() string {
 	return filepath.Join(dir, "config.yaml")
 }
 
-func LocalConfigPath() string {
-	if override := os.Getenv("ODOO_PRINT_AGENT_DATA_DIR"); override != "" {
-		return filepath.Join(override, "config.yaml")
-	}
-	if la := os.Getenv("LOCALAPPDATA"); la != "" {
-		return filepath.Join(la, "OdooPrintAgent", "config.yaml")
-	}
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, ".config", "odoo-print-agent", "config.yaml")
-	}
-	return DefaultConfigPath()
-}
-
 func LegacyConfigPath() string {
 	dir, err := ExecutableDir()
 	if err != nil {

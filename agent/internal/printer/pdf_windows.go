@@ -261,7 +261,12 @@ func waitPDFHandlerExit(hProcess windows.Handle, printerName string, timeout tim
 	}
 	if event == uint32(windows.WAIT_TIMEOUT) {
 		// The PDF handler may have been mid-render when our budget expired:
-		// pages can already be sitting in the physical spooler.
+		// pages can already be sitting in the physical spooler. Kill the
+		// hung process NOW — otherwise every timed-out PDF print leaks one
+		// orphaned renderer holding RAM/handles until the next reboot.
+		// Killing cannot worsen the reported outcome: it is already
+		// UNKNOWN (never auto-retried) by the line below.
+		_ = windows.TerminateProcess(hProcess, 1)
 		return MarkUnknown("PDF handler for printer %q did not finish within %s (submission state unknown)", printerName, timeout)
 	}
 

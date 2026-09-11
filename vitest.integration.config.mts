@@ -12,6 +12,7 @@ export default defineConfig({
       "tests/ws-claim-delivery.test.ts",
       "tests/ws-listener-setup-race.test.ts",
       "tests/ws-socket-cap.test.ts",
+      "tests/batch-status.test.ts",
       "tests/job-status-postgres-concurrency.test.ts",
       "tests/auth-rate-limit.test.ts",
       "tests/heartbeat-enabled.test.ts",
