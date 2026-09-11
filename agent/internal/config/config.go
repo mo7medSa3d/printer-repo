@@ -23,11 +23,10 @@ type Config struct {
 		URL string `yaml:"url"`
 	} `yaml:"server"`
 	Agent struct {
-		ID                string   `yaml:"id"`
-		Secret            string   `yaml:"secret"`
-		Name              string   `yaml:"name"`
-		PDFPrintCommand   []string `yaml:"pdf_print_command,omitempty"`
-		ReprintAfterCrash *bool    `yaml:"reprint_after_crash,omitempty"`
+		ID                string `yaml:"id"`
+		Secret            string `yaml:"secret"`
+		Name              string `yaml:"name"`
+		ReprintAfterCrash *bool  `yaml:"reprint_after_crash,omitempty"`
 	} `yaml:"agent"`
 	Printers []PrinterConfig `yaml:"printers"`
 }

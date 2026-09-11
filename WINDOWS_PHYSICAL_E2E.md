@@ -15,14 +15,14 @@ Everything the automated suites do and do not cover is listed in [docs/TESTING.m
 |---|---|
 | OS | Windows 10 1809+ or Windows 11 (x64), administrator account |
 | Printer | At least one real printer, installed as a Windows printer (spooler queue) and printing correctly from Notepad |
-| PDF handler | A PDF application registered for the `printto` verb (Adobe Reader, SumatraPDF …) **or** a helper configured through `agent.pdf_print_command` |
+| PDF renderer | Embedded PDFium/Wasm inside `OdooPrintAgent.exe`; no external PDF application, file association, helper command, or runtime download |
 | Second printer (optional but recommended) | A RAW/ESC-POS thermal printer on TCP :9100 for the capability-mismatch test |
 | Gateway | Reachable over HTTPS from the Windows PC, with a PostgreSQL database migrated through `drizzle/0017_notify_requeued_jobs.sql` |
 | Odoo | A live instance with the `print_gateway` addon installed |
 | Artifacts | `Odoo Print Manager` MSI or NSIS EXE from the `Build Windows Installer` workflow (or a local `cargo tauri build`) |
 
 Record the environment before starting: Windows build, gateway URL/version, Odoo version,
-printer make/model and driver, PDF handler and version.
+printer make/model and driver, Agent version, and embedded PDFium/go-pdfium version.
 
 ---
 

@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -20,11 +19,34 @@ import (
 // and the temporary file it needs must never leak or be attacker-steerable.
 
 func validPDF() []byte {
-	// Minimal but structurally complete one-page PDF.
-	return []byte("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
-		"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
-		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj\n" +
-		"trailer<</Root 1 0 R>>\n%%EOF\n")
+	// Minimal indexed one-page PDF with a valid xref table.
+	return []byte("%PDF-1.4\n" +
+		"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n" +
+		"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n" +
+		"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> /Contents 4 0 R >>\nendobj\n" +
+		"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n" +
+		"xref\n0 5\n0000000000 65535 f \n" +
+		"0000000009 00000 n \n" +
+		"0000000058 00000 n \n" +
+		"0000000115 00000 n \n" +
+		"0000000219 00000 n \n" +
+		"trailer\n<< /Size 5 /Root 1 0 R >>\n" +
+		"startxref\n268\n%%EOF\n")
+}
+func rotatedPDF() []byte {
+	// Same minimal PDF with a valid /Rotate 90 page entry and corrected xref offsets.
+	return []byte("%PDF-1.4\n" +
+		"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n" +
+		"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n" +
+		"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 90 /Resources << >> /Contents 4 0 R >>\nendobj\n" +
+		"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n" +
+		"xref\n0 5\n0000000000 65535 f \n" +
+		"0000000009 00000 n \n" +
+		"0000000058 00000 n \n" +
+		"0000000115 00000 n \n" +
+		"0000000230 00000 n \n" +
+		"trailer\n<< /Size 5 /Root 1 0 R >>\n" +
+		"startxref\n279\n%%EOF\n")
 }
 
 // --- Test 7: valid PDF payload passes validation -------------------------
@@ -355,7 +377,7 @@ func TestTempPDFFileRemovedAfterFailure(t *testing.T) {
 	}
 }
 
-// --- Test 15: printer name / metadata cannot inject commands -------------
+// --- Test 15: printer name / metadata cannot inject commands ------------
 
 func TestPrinterNameCannotInjectCommands(t *testing.T) {
 	malicious := []string{
@@ -378,51 +400,41 @@ func TestPrinterNameCannotInjectCommands(t *testing.T) {
 		}
 	}
 
-	// Legitimate names with spaces/ampersands stay usable and remain exactly
-	// ONE argv element — the helper is executed via exec, never via a shell.
-	name := "Front Desk & Kitchen HP-1234"
-	if err := ValidatePDFPrinterName(name); err != nil {
-		t.Fatalf("legitimate printer name rejected: %v", err)
+	legitimate := []string{
+		"Front Desk & Kitchen HP-1234",
+		"Office Printer 01",
+		"Étage 2 Printer",
 	}
-	argv, err := buildPDFHelperArgs([]string{"/usr/bin/helper", "-print-to", "{printer}", "-silent", "{file}"}, name, "/tmp/x.pdf")
-	if err != nil {
-		t.Fatalf("buildPDFHelperArgs: %v", err)
-	}
-	want := []string{"/usr/bin/helper", "-print-to", name, "-silent", "/tmp/x.pdf"}
-	if len(argv) != len(want) {
-		t.Fatalf("argv length mismatch: %v", argv)
-	}
-	for i := range want {
-		if argv[i] != want[i] {
-			t.Fatalf("argv[%d] = %q, want %q", i, argv[i], want[i])
+	for _, name := range legitimate {
+		if err := ValidatePDFPrinterName(name); err != nil {
+			t.Fatalf("legitimate printer name %q rejected: %v", name, err)
 		}
-	}
-	// A payload-controlled value can never become extra arguments.
-	argv, err = buildPDFHelperArgs([]string{"/usr/bin/helper", "{printer}", "{file}"}, "a b; rm -rf /", "/tmp/x.pdf")
-	if err != nil {
-		t.Fatalf("buildPDFHelperArgs: %v", err)
-	}
-	if len(argv) != 3 || argv[1] != "a b; rm -rf /" {
-		t.Fatalf("shell metacharacters split into separate arguments: %#v", argv)
-	}
-
-	// A helper template without {file} is rejected instead of printing nothing.
-	if _, err := buildPDFHelperArgs([]string{"/usr/bin/helper", "{printer}"}, name, "/tmp/x.pdf"); err == nil {
-		t.Fatal("helper template without {file} must be rejected")
 	}
 }
 
-// The PDF paths must never build a command line for a shell interpreter.
-func TestPDFPathsNeverUseAShell(t *testing.T) {
+// Production PDF code must not contain an external renderer, shell invocation,
+// or file-association dependency. The injected PDF callback used by tests is
+// intentionally path-based, but the production platform implementation is
+// embedded PDFium + GDI only.
+func TestPDFPathHasNoExternalRendererOrShell(t *testing.T) {
 	for _, file := range []string{"pdf.go", "pdf_windows.go", "pdf_other.go"} {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		src := string(data)
-		for _, forbidden := range []string{`"sh", "-c"`, `"bash"`, `"cmd", "/C"`, `"cmd.exe"`, "powershell"} {
-			if strings.Contains(strings.ToLower(src), strings.ToLower(forbidden)) {
-				t.Fatalf("%s must not invoke a shell (found %q)", file, forbidden)
+		src := strings.ToLower(string(data))
+		for _, forbidden := range []string{
+			"sumatrapdf",
+			"shellexecuteexw",
+			"shell execute",
+			"printto",
+			"pdf_print_command",
+			"exec.command",
+			"cmd.exe",
+			"powershell",
+		} {
+			if strings.Contains(src, forbidden) {
+				t.Fatalf("%s contains forbidden external-PDF dependency %q", file, forbidden)
 			}
 		}
 	}
@@ -461,59 +473,5 @@ func TestSupportedKindsPerBackend(t *testing.T) {
 	}
 	if _, ok := ippDocumentFormatFor(KindESCPOS); ok {
 		t.Fatalf("IPP must NOT accept ESC/POS octet spooling")
-	}
-}
-
-// --- Law 1: post-launch PDF failures are ambiguous, never retryable ------
-//
-// Once the external PDF renderer has been launched it owns the spool
-// submission; whether it handed pages to the physical spooler before
-// failing/timing out is not observable. Every post-launch failure must
-// therefore carry an unknown-outcome marker so the gateway never treats it
-// as a provably-not-printed (auto-retryable) result.
-
-func TestPDFHelperTimeoutIsUnknownOutcome(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("sleep.exe availability differs across Windows runners; covered by TestPlatformPDFTimeoutIsUnknownOutcome")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	// Extra template args become script parameters; the script sleeps past
-	// the budget and exec.CommandContext kills it mid-run.
-	err := runPDFHelper(ctx, []string{"sh", "-c", "sleep 5", "{printer}", "{file}"}, "Test Printer", "/tmp/unused.pdf")
-	if err == nil {
-		t.Fatal("expected timeout error from PDF helper")
-	}
-	if !OutcomeUnknown(err) {
-		t.Fatalf("PDF helper timeout must be classified unknown (got: %v)", err)
-	}
-}
-
-func TestPDFHelperNonZeroExitIsUnknownOutcome(t *testing.T) {
-	// buildPDFHelperArgs requires a {file} placeholder; the extra args are
-	// consumed as script parameters, so the helper still exits non-zero.
-	helper := []string{"sh", "-c", "exit 3", "{printer}", "{file}"}
-	if runtime.GOOS == "windows" {
-		helper = []string{"cmd", "/C", "exit 3", "{printer}", "{file}"}
-	}
-	err := runPDFHelper(context.Background(), helper, "Test Printer", "/tmp/unused.pdf")
-	if err == nil {
-		t.Fatal("expected non-zero exit error from PDF helper")
-	}
-	if !OutcomeUnknown(err) {
-		t.Fatalf("PDF helper non-zero exit must be classified unknown (got: %v)", err)
-	}
-}
-
-func TestPDFHelperStartFailureIsPlainRetryable(t *testing.T) {
-	// A helper that never started transmitted nothing: provably
-	// pre-dispatch, so it stays a plain failure (retryable by policy).
-	helper := []string{"/definitely/not/a/real/binary/xyz", "{printer}", "{file}"}
-	err := runPDFHelper(context.Background(), helper, "Test Printer", "/tmp/unused.pdf")
-	if err == nil {
-		t.Fatal("expected start failure from PDF helper")
-	}
-	if OutcomeUnknown(err) {
-		t.Fatalf("helper start failure is provably pre-dispatch and must stay plain (got: %v)", err)
 	}
 }
