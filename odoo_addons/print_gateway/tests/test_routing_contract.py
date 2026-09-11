@@ -315,13 +315,28 @@ class TestPrintGatewayRoutingContract(TransactionCase):
 
     def test_cron_submit_pending_ignores_unknown_jobs(self):
         job_id = self._job("cron-safety-unknown")
+        # Publish the unknown state through a separate COMMITTED cursor (the
+        # same durable pattern _job itself uses), so the cron's verdict
+        # cannot depend on same-transaction visibility subtleties: the row
+        # is unknown to every reader before the cron runs.
+        wcr = self.env.registry.cursor()
+        try:
+            wenv = api.Environment(wcr, self.env.uid, dict(self.env.context))
+            wjob = wenv["print_gateway.print_job"].browse(job_id).exists()
+            self.assertTrue(wjob, "durable job must be visible on a fresh cursor")
+            wjob.write({"status": "unknown", "next_retry_at": False})
+            wcr.commit()
+        finally:
+            wcr.close()
         cr = self.env.registry.cursor()
         try:
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             company = env["res.company"].browse(self.durable_company_id).exists()
             model_env = env["print_gateway.print_job"].with_company(company).env
             job = model_env["print_gateway.print_job"].browse(job_id).exists()
-            job.write({"status": "unknown", "next_retry_at": False})
+            self.assertTrue(job, "durable job must be visible to the cron reader")
+            job.invalidate_recordset()
+            self.assertEqual(job.status, "unknown")
 
             with patch.object(type(job), "action_submit", autospec=True) as mocked_submit:
                 model_env["print_gateway.print_job"].cron_submit_pending()
