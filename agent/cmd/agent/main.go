@@ -17,6 +17,7 @@ import (
 	"github.com/kardianos/service"
 	"github.com/odoo-print-agent/agent/internal/agent"
 	"github.com/odoo-print-agent/agent/internal/config"
+	"github.com/odoo-print-agent/agent/internal/queue"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -38,6 +39,20 @@ func (p *program) Start(s service.Service) error {
 			log.Printf("Failed to prepare canonical config path %s: %v — waiting for resolution...", p.configPath, err)
 			<-p.ctx.Done()
 			return
+		}
+
+		// Materialize the durable queue database on every boot, BEFORE the
+		// pairing gate below. An unpaired agent idles without ever reaching
+		// agent.New (which opens the queue), but first-run initialization
+		// promises a ready outbox: config dir, default config, logs, AND
+		// the SQLite database with its schema. The handle is closed
+		// immediately; agent.New reopens the same file after pairing.
+		if dbPath := config.QueueDBPath(p.configPath); dbPath != "" {
+			if q, qerr := queue.New(dbPath); qerr != nil {
+				log.Printf("WARNING: durable queue unavailable at %s: %v", dbPath, qerr)
+			} else {
+				_ = q.Close()
+			}
 		}
 
 		// Attempt to load and validate configuration inside the service loop.
