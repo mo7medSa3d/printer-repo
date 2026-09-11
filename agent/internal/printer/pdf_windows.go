@@ -3,283 +3,479 @@
 package printer
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
+	"image"
 	"log"
+	"math"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"syscall"
-	"time"
+	"sync"
 	"unsafe"
 
+	pdfium "github.com/klippa-app/go-pdfium"
+	"github.com/klippa-app/go-pdfium/requests"
+	"github.com/klippa-app/go-pdfium/responses"
+	"github.com/klippa-app/go-pdfium/webassembly"
+	"github.com/tetratelabs/wazero"
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/svc"
 )
 
-// Windows PDF printing.
+// Embedded Windows PDF pipeline.
 //
-// Two paths, chosen by execution context:
+// PDFium runs in an embedded WebAssembly module through wazero. go-pdfium's
+// WebAssembly implementation embeds the PDFium WASM binary, so the Agent has
+// no PDFium DLL, native PDF runtime, desktop PDF application, registry association,
+// PATH requirement, or runtime download.
 //
-//  1. Headless CLI renderer (SumatraPDF preferred, pdf_print_command first
-//     via pdf.go). Deterministic, dialog-free, Session-0 safe. This is the
-//     ONLY path used when running as a Windows Service: GUI handlers
-//     (Adobe/Edge) hang or crash in Session 0, which has no interactive
-//     desktop for GDI/DDE.
-//  2. ShellExecuteExW "printto" fallback, interactive sessions ONLY. Keeps
-//     every currently-working desktop setup printing when no headless
-//     renderer is installed. Never used from a service.
-//
-// SumatraPDF resolution order:
-//   1. Next to the executing binary (e.g. C:\Program Files\OdooPrintAgent\SumatraPDF.exe)
-//   2. Next to the config file (%ProgramData%\OdooPrintAgent\bin\SumatraPDF.exe)
-//   3. Standard installation paths in %ProgramFiles% or %ProgramFiles(x86)%
-//   4. PATH lookup
-
-func findSumatraPDF() (string, error) {
-	// Check beside executable
-	if exe, err := os.Executable(); err == nil {
-		beside := filepath.Join(filepath.Dir(exe), "SumatraPDF.exe")
-		if _, err := os.Stat(beside); err == nil {
-			return beside, nil
-		}
-		// Also check bin/ subfolder
-		sub := filepath.Join(filepath.Dir(exe), "bin", "SumatraPDF.exe")
-		if _, err := os.Stat(sub); err == nil {
-			return sub, nil
-		}
-	}
-
-	// Check ProgramData
-	if pd := os.Getenv("ProgramData"); pd != "" {
-		p := filepath.Join(pd, "OdooPrintAgent", "bin", "SumatraPDF.exe")
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	// Check ProgramFiles
-	for _, envVar := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
-		if val := os.Getenv(envVar); val != "" {
-			cand := filepath.Join(val, "SumatraPDF", "SumatraPDF.exe")
-			if _, err := os.Stat(cand); err == nil {
-				return cand, nil
-			}
-		}
-	}
-
-	// Check PATH
-	if p, err := exec.LookPath("SumatraPDF.exe"); err == nil {
-		return p, nil
-	}
-
-	return "", fmt.Errorf("SumatraPDF.exe not found in application directories, ProgramFiles, or PATH")
-}
-
-// runningAsService reports whether this process runs as a Windows Service
-// (Session 0). On any doubt it reports service=true: the headless path is
-// always safe, while the GUI path is only safe interactively.
-func runningAsService() bool {
-	isSvc, err := svc.IsWindowsService()
-	if err != nil {
-		return true
-	}
-	return isSvc
-}
-
-// platformPrintPDF prints pdfPath on printerName, choosing the safe renderer
-// for the current execution context.
-func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
-	// Sanitize printer name: remove trailing backslashes (they escape the
-	// closing quote under CommandLineToArgvW rules) and reject quotes.
-	sanitizedPrinter := strings.TrimRight(printerName, "\\")
-	if strings.ContainsAny(sanitizedPrinter, "\"") {
-		return fmt.Errorf("invalid printer name %q: contains quotes", printerName)
-	}
-
-	if sumatraPath, err := findSumatraPDF(); err == nil {
-		log.Printf("PDF on %q via headless renderer %s", sanitizedPrinter, sumatraPath)
-		return printPDFViaSumatra(ctx, sumatraPath, sanitizedPrinter, pdfPath)
-	}
-
-	if runningAsService() {
-		return fmt.Errorf(
-			"Session 0 headless PDF printing requires SumatraPDF (no interactive handler is usable from a Windows Service): %w (place SumatraPDF.exe in the agent directory or set pdf_print_command in agent.yaml)",
-			fmt.Errorf("SumatraPDF.exe not found"),
-		)
-	}
-
-	log.Printf("PDF on %q via system printto handler (no headless renderer installed)", sanitizedPrinter)
-	return printPDFViaShellHandler(ctx, sanitizedPrinter, pdfPath)
-}
-
-// printPDFViaSumatra executes headless PDF printing using SumatraPDF.exe:
-// -print-to <printerName> : prints to specified printer
-// -silent                 : suppresses error dialogs
-// -exit-when-done         : terminates SumatraPDF when printing completes
-func printPDFViaSumatra(ctx context.Context, sumatraPath, printerName, pdfPath string) error {
-	cmd := exec.CommandContext(ctx, sumatraPath, "-print-to", printerName, "-silent", "-exit-when-done", pdfPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true,
-	}
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			// Print was killed by timeout/cancel; bytes may have already been dispatched to spooler.
-			return MarkUnknown("headless PDF printing on %q did not finish within budget (submission state unknown): %v", printerName, ctx.Err())
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			msg := strings.TrimSpace(stderr.String())
-			if msg != "" {
-				return MarkUnknown("SumatraPDF exited with code %d: %s (submission state unknown)", exitErr.ExitCode(), msg)
-			}
-			return MarkUnknown("SumatraPDF exited with code %d (submission state unknown)", exitErr.ExitCode())
-		}
-		return fmt.Errorf("executing SumatraPDF for %q failed: %w", printerName, err)
-	}
-
-	return nil
-}
+// Pages are rendered one at a time and submitted through a printer HDC using
+// Windows GDI. The same Windows printer stack remains responsible for printer
+// selection and physical spooling; RAW/ESC-POS traffic never enters this path.
 
 const (
-	seeMaskNoCloseProcess = 0x00000040
-	seeMaskFlagNoUI       = 0x00000400
-	seeMaskNoAsync        = 0x00000100
-	swHide                = 0
+	maxPDFPages        = 500
+	maxPDFRenderPixels = 16_000_000 // <= 64 MiB for one 32-bit bitmap.
+
+	// GetDeviceCaps indices.
+	capHorzRes         = 8
+	capVertRes         = 10
+	capLogPixelsX      = 88
+	capLogPixelsY      = 90
+	capPhysicalOffsetX = 112
+	capPhysicalOffsetY = 113
+
+	biRGB        = 0
+	dibRGBColors = 0
+	srccopy      = 0x00CC0020
+	halftone     = 4
 )
 
-type shellExecuteInfoW struct {
-	cbSize         uint32
-	fMask          uint32
-	hwnd           windows.Handle
-	lpVerb         *uint16
-	lpFile         *uint16
-	lpParameters   *uint16
-	lpDirectory    *uint16
-	nShow          int32
-	hInstApp       windows.Handle
-	lpIDList       uintptr
-	lpClass        *uint16
-	hkeyClass      windows.Handle
-	dwHotKey       uint32
-	hIconOrMonitor windows.Handle
-	hProcess       windows.Handle
+type winBITMAPINFOHEADER struct {
+	BiSize          uint32
+	BiWidth         int32
+	BiHeight        int32
+	BiPlanes        uint16
+	BiBitCount      uint16
+	BiCompression   uint32
+	BiSizeImage     uint32
+	BiXPelsPerMeter int32
+	BiYPelsPerMeter int32
+	BiClrUsed       uint32
+	BiClrImportant  uint32
+}
+
+type winBITMAPINFO struct {
+	Header winBITMAPINFOHEADER
+	Colors [1]uint32
+}
+
+type winDOCINFOW struct {
+	CbSize         int32
+	LpszDocName    *uint16
+	LpszOutputFile *uint16
+	LpszDatatype   *uint16
+	FwType         uint32
 }
 
 var (
-	modShell32          = windows.NewLazySystemDLL("shell32.dll")
-	procShellExecuteExW = modShell32.NewProc("ShellExecuteExW")
+	pdfiumOnce sync.Once
+	pdfiumPool pdfium.Pool
+	pdfiumErr  error
+
+	// PDFium is limited to one live worker. This both bounds memory and keeps
+	// GDI page submission serialized so independent PDF jobs cannot overlap
+	// on the same renderer/print pipeline.
+	embeddedPDFPrintMu sync.Mutex
+
+	modGDI32              = windows.NewLazySystemDLL("gdi32.dll")
+	procCreateDCW         = modGDI32.NewProc("CreateDCW")
+	procDeleteDC          = modGDI32.NewProc("DeleteDC")
+	procGetDeviceCaps     = modGDI32.NewProc("GetDeviceCaps")
+	procStartDocW         = modGDI32.NewProc("StartDocW")
+	procEndDoc            = modGDI32.NewProc("EndDoc")
+	procStartPage         = modGDI32.NewProc("StartPage")
+	procEndPage           = modGDI32.NewProc("EndPage")
+	procStretchDIBits     = modGDI32.NewProc("StretchDIBits")
+	procSetStretchBltMode = modGDI32.NewProc("SetStretchBltMode")
 )
 
-// printPDFViaShellHandler submits pdfPath with ShellExecuteExW using the
-// "printto" verb: the application registered for .pdf renders the document
-// and prints it through the selected printer's Windows driver.
-//
-// INTERACTIVE SESSIONS ONLY. GUI handlers hang or crash in Session 0, so
-// platformPrintPDF never routes services here.
-//
-// Safety properties:
-//   - no shell is involved (no cmd.exe, no string-concatenated command line);
-//   - the file path comes from os.CreateTemp inside a 0700 temp directory;
-//   - the printer name carries no quotes (rejected above), so the single
-//     quoted parameter can never terminate early and inject arguments;
-//   - the spawned handler is waited on (SEE_MASK_NOCLOSEPROCESS +
-//     WaitForSingleObject) so a failure is a real error, and the temp file is
-//     only deleted after the handler has exited.
-func printPDFViaShellHandler(ctx context.Context, printerName, pdfPath string) error {
-	verb, err := windows.UTF16PtrFromString("printto")
-	if err != nil {
-		return fmt.Errorf("encode printto verb: %w", err)
-	}
-	file, err := windows.UTF16PtrFromString(pdfPath)
-	if err != nil {
-		return fmt.Errorf("encode PDF path: %w", err)
-	}
-	// Quotes were rejected during sanitization, so this parameter can never
-	// terminate early and inject further arguments.
-	params, err := windows.UTF16PtrFromString(`"` + printerName + `"`)
-	if err != nil {
-		return fmt.Errorf("encode printer name: %w", err)
-	}
-
-	info := shellExecuteInfoW{
-		fMask:        seeMaskNoCloseProcess | seeMaskFlagNoUI | seeMaskNoAsync,
-		lpVerb:       verb,
-		lpFile:       file,
-		lpParameters: params,
-		nShow:        swHide,
-	}
-	info.cbSize = uint32(unsafe.Sizeof(info))
-
-	ret, _, lastErr := procShellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
-	if ret == 0 {
-		// ShellExecuteExW failed before any handler process existed, so no
-		// page can have been rendered — provably pre-dispatch.
-		return fmt.Errorf(
-			"ShellExecuteExW(printto) failed for printer %q: %v — install a PDF handler that supports the printto verb (e.g. Adobe Reader, SumatraPDF) or configure pdf_print_command in agent.yaml",
-			printerName, lastErr,
-		)
-	}
-	if info.hProcess == 0 {
-		// No handler process to wait on: we cannot prove the document was
-		// submitted, so this is reported as a failure instead of a silent OK.
-		return fmt.Errorf(
-			"PDF handler for printer %q did not start a process; cannot confirm submission — configure pdf_print_command in agent.yaml for a deterministic PDF path",
-			printerName,
-		)
-	}
-	defer windows.CloseHandle(info.hProcess)
-
-	timeout := defaultPDFPrintTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining > 0 {
-			timeout = remaining
-		}
-	}
-	return waitPDFHandlerExit(info.hProcess, printerName, timeout)
+func getPDFiumPool() (pdfium.Pool, error) {
+	pdfiumOnce.Do(func() {
+		pdfiumPool, pdfiumErr = webassembly.Init(webassembly.Config{
+			MinIdle:       0,
+			MaxIdle:       1,
+			MaxTotal:      1,
+			ReuseWorkers:  true,
+			RuntimeConfig: wazero.NewRuntimeConfig().WithCloseOnContextDone(true),
+			FSConfig:      wazero.NewFSConfig(),
+		})
+	})
+	return pdfiumPool, pdfiumErr
 }
 
-// waitPDFHandlerExit waits for an ALREADY-LAUNCHED PDF handler process and
-// classifies its terminal state. The handler owns the spool submission, so
-// anything observed after launch is ambiguous: a timeout, a killed process,
-// a failed exit-code read, or a non-zero exit code must NEVER be reported
-// as a provably-not-printed (auto-retryable) failure. Only a clean zero
-// exit is a definitive "submitted" (LAW: no retry after possible
-// transmission).
-func waitPDFHandlerExit(hProcess windows.Handle, printerName string, timeout time.Duration) error {
-	waitMillis := uint32(timeout / time.Millisecond)
-	event, err := windows.WaitForSingleObject(hProcess, waitMillis)
+func openPrinterDC(printerName string) (uintptr, error) {
+	driver, err := windows.UTF16PtrFromString("WINSPOOL")
 	if err != nil {
-		return MarkUnknown("waiting for PDF handler of printer %q: %v (submission state unknown)", printerName, err)
+		return 0, fmt.Errorf("encode WINSPOOL driver name: %w", err)
 	}
-	if event == uint32(windows.WAIT_TIMEOUT) {
-		// The PDF handler may have been mid-render when our budget expired:
-		// pages can already be sitting in the physical spooler. Kill the
-		// hung process NOW — otherwise every timed-out PDF print leaks one
-		// orphaned renderer holding RAM/handles until the next reboot.
-		// Killing cannot worsen the reported outcome: it is already
-		// UNKNOWN (never auto-retried) by the line below.
-		_ = windows.TerminateProcess(hProcess, 1)
-		return MarkUnknown("PDF handler for printer %q did not finish within %s (submission state unknown)", printerName, timeout)
+	device, err := windows.UTF16PtrFromString(printerName)
+	if err != nil {
+		return 0, fmt.Errorf("encode printer name: %w", err)
 	}
+	hdc, _, callErr := procCreateDCW.Call(
+		uintptr(unsafe.Pointer(driver)),
+		uintptr(unsafe.Pointer(device)),
+		0,
+		0,
+	)
+	if hdc == 0 {
+		return 0, fmt.Errorf("CreateDCW(%q) failed: %w", printerName, callErr)
+	}
+	return hdc, nil
+}
 
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(hProcess, &exitCode); err != nil {
-		return MarkUnknown("reading PDF handler exit code for printer %q: %v (submission state unknown)", printerName, err)
-	}
-	if exitCode != 0 {
-		// The renderer reports failure, but whether it handed pages to the
-		// spooler before failing is not observable here. Post-launch
-		// ambiguity must never be reported as a plain retryable failure.
-		return MarkUnknown("PDF handler for printer %q exited with code %d (submission state unknown)", printerName, exitCode)
-	}
+func deviceCaps(hdc uintptr, index int) int {
+	ret, _, _ := procGetDeviceCaps.Call(hdc, uintptr(index))
+	return int(int32(ret))
+}
 
+func startGDIPrint(hdc uintptr, jobID, printerName string) error {
+	title := "OdooPrintAgent PDF"
+	if jobID != "" {
+		title += " " + jobID
+	}
+	titlePtr, err := windows.UTF16PtrFromString(title)
+	if err != nil {
+		return fmt.Errorf("encode print document name: %w", err)
+	}
+	info := winDOCINFOW{
+		CbSize:      int32(unsafe.Sizeof(winDOCINFOW{})),
+		LpszDocName: titlePtr,
+	}
+	ret, _, callErr := procStartDocW.Call(hdc, uintptr(unsafe.Pointer(&info)))
+	if int32(ret) <= 0 {
+		return fmt.Errorf("StartDocW(%q) failed: %w", printerName, callErr)
+	}
 	return nil
+}
+
+func endGDIPrint(hdc uintptr) error {
+	ret, _, callErr := procEndDoc.Call(hdc)
+	if int32(ret) <= 0 {
+		return fmt.Errorf("EndDoc failed: %w", callErr)
+	}
+	return nil
+}
+
+func startGDIPage(hdc uintptr) error {
+	ret, _, callErr := procStartPage.Call(hdc)
+	if int32(ret) <= 0 {
+		return fmt.Errorf("StartPage failed: %w", callErr)
+	}
+	return nil
+}
+
+func endGDIPage(hdc uintptr) error {
+	ret, _, callErr := procEndPage.Call(hdc)
+	if int32(ret) <= 0 {
+		return fmt.Errorf("EndPage failed: %w", callErr)
+	}
+	return nil
+}
+
+func renderBounds(printableWidth, printableHeight int) (int, int, error) {
+	if printableWidth <= 0 || printableHeight <= 0 {
+		return 0, 0, fmt.Errorf("printer reported invalid printable area %dx%d", printableWidth, printableHeight)
+	}
+	maxW, maxH := printableWidth, printableHeight
+	area := int64(maxW) * int64(maxH)
+	if area > maxPDFRenderPixels {
+		scale := math.Sqrt(float64(maxPDFRenderPixels) / float64(area))
+		maxW = max(1, int(float64(maxW)*scale))
+		maxH = max(1, int(float64(maxH)*scale))
+	}
+	return maxW, maxH, nil
+}
+
+func rgbaToBGRAInPlace(src *image.RGBA) error {
+	if src == nil {
+		return fmt.Errorf("PDFium returned a nil bitmap")
+	}
+	width, height := src.Rect.Dx(), src.Rect.Dy()
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("PDFium returned an empty bitmap %dx%d", width, height)
+	}
+	if src.Stride != width*4 {
+		return fmt.Errorf("PDFium returned unsupported bitmap stride %d for width %d", src.Stride, width)
+	}
+	for i := 0; i < len(src.Pix); i += 4 {
+		r, g, b, a := src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3]
+		if a != 255 {
+			inv := uint32(255 - a)
+			r = uint8((uint32(r)*uint32(a) + 255*inv) / 255)
+			g = uint8((uint32(g)*uint32(a) + 255*inv) / 255)
+			b = uint8((uint32(b)*uint32(a) + 255*inv) / 255)
+		}
+		src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3] = b, g, r, 0
+	}
+	return nil
+}
+
+func drawBitmapToPrinter(hdc uintptr, bitmap []byte, width, height, printableWidth, printableHeight, offsetX, offsetY int) error {
+	if width <= 0 || height <= 0 || len(bitmap) != width*height*4 {
+		return fmt.Errorf("invalid rendered bitmap %dx%d (%d bytes)", width, height, len(bitmap))
+	}
+	info := winBITMAPINFO{
+		Header: winBITMAPINFOHEADER{
+			BiSize:        uint32(unsafe.Sizeof(winBITMAPINFOHEADER{})),
+			BiWidth:       int32(width),
+			BiHeight:      -int32(height), // top-down DIB
+			BiPlanes:      1,
+			BiBitCount:    32,
+			BiCompression: biRGB,
+			BiSizeImage:   uint32(len(bitmap)),
+		},
+	}
+
+	x := offsetX + (printableWidth-width)/2
+	y := offsetY + (printableHeight-height)/2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	procSetStretchBltMode.Call(hdc, halftone)
+	ret, _, callErr := procStretchDIBits.Call(
+		hdc,
+		uintptr(x), uintptr(y), uintptr(width), uintptr(height),
+		0, 0, uintptr(width), uintptr(height),
+		uintptr(unsafe.Pointer(&bitmap[0])),
+		uintptr(unsafe.Pointer(&info)),
+		dibRGBColors,
+		srccopy,
+	)
+	if int32(ret) <= 0 {
+		return fmt.Errorf("StretchDIBits failed for %dx%d bitmap: %w", width, height, callErr)
+	}
+	return nil
+}
+
+func renderPageWithContext(ctx context.Context, instance pdfium.Pdfium, request *requests.RenderPageInPixels) (*image.RGBA, func(), error) {
+	type outcome struct {
+		rendered *responses.RenderPageInPixels
+		err      error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		rendered, err := instance.RenderPageInPixels(request)
+		done <- outcome{rendered: rendered, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			return nil, nil, result.err
+		}
+		if result.rendered == nil {
+			return nil, nil, fmt.Errorf("PDFium returned no render result")
+		}
+		return result.rendered.Result.Image, result.rendered.Cleanup, nil
+	case <-ctx.Done():
+		// Kill is the go-pdfium-supported way to interrupt an in-flight WASM
+		// worker. The caller decides whether the physical outcome is already
+		// ambiguous based on whether StartDocW has occurred.
+		_ = instance.Kill()
+		return nil, nil, ctx.Err()
+	}
+}
+
+// platformPrintPDF reads the generated temporary PDF file and submits it to
+// the Windows GDI print pipeline rendered via embedded PDFium.
+func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		return fmt.Errorf("read PDF file %q: %w", pdfPath, err)
+	}
+	return renderAndPrintPDFWithPDFium(ctx, printerName, data)
+}
+
+func renderAndPrintPDFWithPDFium(ctx context.Context, printerName string, data []byte) (retErr error) {
+	embeddedPDFPrintMu.Lock()
+	defer embeddedPDFPrintMu.Unlock()
+
+	if err := ValidatePDFPrinterName(printerName); err != nil {
+		return err
+	}
+	if err := ValidatePDF(data); err != nil {
+		return err
+	}
+	if err := runPreflightBounded(printerName, preflightTimeout, ctx, func() error {
+		return preFlightSpoolerCheck(printerName)
+	}); err != nil {
+		return fmt.Errorf("pre-flight spooler check failed: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	pool, err := getPDFiumPool()
+	if err != nil {
+		return fmt.Errorf("initialize embedded PDFium renderer: %w", err)
+	}
+	instance, err := pool.GetInstanceWithContext(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire embedded PDFium worker: %w", err)
+	}
+	defer func() {
+		if err := instance.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close embedded PDFium worker: %w", err)
+		}
+	}()
+
+	doc, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
+	if err != nil {
+		return fmt.Errorf("open PDF with embedded PDFium: %w", err)
+	}
+	defer instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+
+	pages, err := instance.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
+	if err != nil {
+		return fmt.Errorf("read PDF page count: %w", err)
+	}
+	if pages.PageCount <= 0 {
+		return fmt.Errorf("PDF contains no printable pages")
+	}
+	if pages.PageCount > maxPDFPages {
+		return fmt.Errorf("PDF page count %d exceeds embedded renderer limit %d", pages.PageCount, maxPDFPages)
+	}
+
+	hdc, err := openPrinterDC(printerName)
+	if err != nil {
+		return err
+	}
+	defer procDeleteDC.Call(hdc)
+
+	printableWidth := deviceCaps(hdc, capHorzRes)
+	printableHeight := deviceCaps(hdc, capVertRes)
+	offsetX := deviceCaps(hdc, capPhysicalOffsetX)
+	offsetY := deviceCaps(hdc, capPhysicalOffsetY)
+	dpiX := deviceCaps(hdc, capLogPixelsX)
+	dpiY := deviceCaps(hdc, capLogPixelsY)
+	if printableWidth <= 0 || printableHeight <= 0 {
+		return fmt.Errorf("printer %q returned invalid printable area %dx%d", printerName, printableWidth, printableHeight)
+	}
+	maxW, maxH, err := renderBounds(printableWidth, printableHeight)
+	if err != nil {
+		return err
+	}
+	log.Printf("Embedded PDF print on %q: printable=%dx%d offset=%d,%d dpi=%d,%d render-cap=%dx%d pages=%d",
+		printerName, printableWidth, printableHeight, offsetX, offsetY, dpiX, dpiY, maxW, maxH, pages.PageCount)
+
+	// Render the first page before StartDocW. A renderer failure here is a
+	// deterministic pre-dispatch error, not an unknown physical outcome.
+	first, cleanup, err := renderPageWithContext(ctx, instance, &requests.RenderPageInPixels{
+		Page:   requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: 0}},
+		Width:  maxW,
+		Height: maxH,
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("render PDF page 1/%d: %w", pages.PageCount, err)
+	}
+	if cleanup == nil {
+		cleanup = func() {}
+	}
+	if err := rgbaToBGRAInPlace(first); err != nil {
+		cleanup()
+		return fmt.Errorf("prepare PDF page 1/%d bitmap: %w", pages.PageCount, err)
+	}
+
+	if err := startGDIPrint(hdc, "embedded-pdf", printerName); err != nil {
+		cleanup()
+		return err
+	}
+	docStarted := true
+	docEnded := false
+	cleanupFirst := true
+	defer func() {
+		if cleanupFirst {
+			cleanup()
+		}
+		if docStarted && !docEnded {
+			if endErr := endGDIPrint(hdc); endErr != nil && retErr == nil {
+				retErr = markPDFDispatchUnknown(printerName, "could not finalize the spool document", endErr)
+			}
+		}
+	}()
+
+	printPage := func(pageNumber int, img *image.RGBA) error {
+		if err := startGDIPage(hdc); err != nil {
+			return markPDFDispatchUnknown(printerName, fmt.Sprintf("could not start page %d", pageNumber), err)
+		}
+		if err := drawBitmapToPrinter(hdc, img.Pix, img.Rect.Dx(), img.Rect.Dy(), printableWidth, printableHeight, offsetX, offsetY); err != nil {
+			_ = endGDIPage(hdc)
+			return markPDFDispatchUnknown(printerName, fmt.Sprintf("could not render page %d to the printer", pageNumber), err)
+		}
+		if err := endGDIPage(hdc); err != nil {
+			return markPDFDispatchUnknown(printerName, fmt.Sprintf("could not finalize page %d", pageNumber), err)
+		}
+		return nil
+	}
+
+	if err := printPage(1, first); err != nil {
+		cleanup()
+		cleanupFirst = false
+		return err
+	}
+	cleanup()
+	cleanupFirst = false
+
+	for pageIndex := 1; pageIndex < pages.PageCount; pageIndex++ {
+		select {
+		case <-ctx.Done():
+			return markPDFDispatchUnknown(printerName, fmt.Sprintf("was cancelled before page %d", pageIndex+1), ctx.Err())
+		default:
+		}
+
+		img, cleanupPage, err := renderPageWithContext(ctx, instance, &requests.RenderPageInPixels{
+			Page:   requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: pageIndex}},
+			Width:  maxW,
+			Height: maxH,
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				_ = instance.Kill()
+				return markPDFDispatchUnknown(printerName, fmt.Sprintf("was cancelled while rendering page %d", pageIndex+1), ctx.Err())
+			}
+			return markPDFDispatchUnknown(printerName, fmt.Sprintf("failed while rendering page %d", pageIndex+1), err)
+		}
+		if cleanupPage == nil {
+			cleanupPage = func() {}
+		}
+		if err := rgbaToBGRAInPlace(img); err != nil {
+			cleanupPage()
+			return markPDFDispatchUnknown(printerName, fmt.Sprintf("failed while preparing page %d", pageIndex+1), err)
+		}
+		if err := printPage(pageIndex+1, img); err != nil {
+			cleanupPage()
+			return err
+		}
+		cleanupPage()
+	}
+
+	if err := endGDIPrint(hdc); err != nil {
+		docEnded = true // EndDocW was already attempted; never issue it twice.
+		return markPDFDispatchUnknown(printerName, "could not finalize the print job", err)
+	}
+	docEnded = true
+	return nil
+}
+
+func markPDFDispatchUnknown(printerName, operation string, cause error) error {
+	return MarkUnknown("embedded PDF print on %q %s after StartDocW; physical outcome is unknown: %v", printerName, operation, cause)
 }

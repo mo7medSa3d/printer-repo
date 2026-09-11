@@ -41,7 +41,6 @@ agent:
   id: agt_7f3c                            # written by pairing
   secret: "<agent secret>"                # written by pairing; DPAPI-sealed on Windows
   name: "POS PC 1"
-  pdf_print_command: ["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]
   # Safe default: an interrupted physical print is UNKNOWN and is not reprinted automatically.
   # Set true only when the business explicitly accepts at-least-once reprinting and duplicates.
   reprint_after_crash: false
@@ -68,7 +67,7 @@ printers:
 ## 4. Startup sequence
 
 1. Resolve the config path, create the runtime directory, open `agent.log`.
-2. Load `config.yaml`; register `agent.pdf_print_command` as the global PDF helper.
+2. Load `config.yaml`; initialize the normal agent configuration. The Windows PDF renderer is embedded and requires no helper configuration.
 3. Open the SQLite queue (WAL, `busy_timeout=5000`, single writer connection).
 4. `DiscoverQuick` (config + spooler + registry) synchronously, then merge into
    `printers.json`; full discovery (network 9100, USB, IPP 631) runs asynchronously ~2 s later.
@@ -132,7 +131,7 @@ back to the Gateway without burning retry budget) with in-flight de-duplication 
 5. capability gate (`SupportsKind`) ⇒ `CAPABILITY_MISMATCH` before anything is written;
 6. per-printer mutex; local `queue.Push` + `printing`; `PATCH printing`;
 7. `printer.PrintDocument` with the bounded `printDocumentTimeout(payloadBytes)` context
-   (2 minutes base plus 30 seconds per MiB; PDF paths may use their configured helper);
+   (2 minutes base plus 30 seconds per MiB; PDF paths use the embedded PDFium renderer);
 8. local `success`/`failed` inside the lock, then `PATCH success|failed` with the real error
    text outside the lock (network I/O never holds the printer mutex).
 
@@ -156,7 +155,7 @@ closes the SQLite database, so the queue is never closed mid-write.
 | Platform | Behaviour |
 |---|---|
 | Windows | Full functionality: spooler (RAW + PDF), USB `CreateFile`, `EnumPrintersW`/`SetupDi` discovery, DPAPI secret sealing, service integration. **COMPILE VERIFIED** by the Windows CI workflow; hardware paths remain **NOT VERIFIED** until a real printer is exercised. |
-| Linux/macOS | Development and CI only: spooler backend uses test/simulation paths, raw USB is simulated, PDF without a helper returns an explicit not-supported error, secrets fall back to a 0600 base64 file |
+| Linux/macOS | Development and CI only: spooler backend uses test/simulation paths, raw USB is simulated, PDF on non-Windows returns an explicit capability-mismatch error, secrets fall back to a 0600 base64 file |
 
 ## 12. Environment variables
 

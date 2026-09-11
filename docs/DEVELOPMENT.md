@@ -43,8 +43,7 @@ go run ./cmd/agent -config ./dev-config.yaml
 ```
 
 On non-Windows the spooler backend writes `.prn`/`.pdf` files to the temp directory and logs
-that the print was SIMULATED; PDF printing without an `agent.pdf_print_command` fails with an
-explicit "not supported on this OS" error by design.
+that the print was SIMULATED; the Windows PDF backend is exercised only on Windows because it integrates with the Windows printer stack. Non-Windows builds intentionally do not claim PDF printer capability.
 
 ## 4. Repository layout
 

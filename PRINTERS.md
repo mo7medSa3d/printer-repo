@@ -58,37 +58,37 @@ before anything is written anywhere and fails the job with
 `CAPABILITY_MISMATCH: printer <id> cannot print <kind> payloads`, which the gateway stores
 in `job.error` with `job.status = failed`.
 
-## 4. Windows PDF printing (real, not RAW passthrough)
+## 4. Windows PDF printing (embedded PDFium)
 
-`agent/internal/printer/pdf.go` + `pdf_windows.go`:
+`agent/internal/printer/pdf.go` + `agent/internal/printer/pdf_windows.go` use the
+embedded PDFium WebAssembly runtime provided by `github.com/klippa-app/go-pdfium`
+(v1.19.8) through Wazero. PDF bytes are validated, materialised only in a secure
+0600 temporary file for the existing print seam, opened by PDFium, rendered one
+page at a time, and submitted through the Windows printer device context.
 
-1. **Validate** — must actually be a PDF: `%PDF-` inside the first 64 bytes, `%%EOF` inside
-   the last 4 KiB, non-empty, ≤ 5 MiB (the shared payload limit is preserved).
-2. **Materialise securely** — `os.MkdirTemp` (0700 directory) + `os.CreateTemp` (0600 file).
-   Both names come from the OS random-name APIs; nothing from the job id, printer name or
-   payload metadata influences the path.
-3. **Submit through a PDF-aware mechanism**
-   * configured helper (any OS, first choice when set): `agent.pdf_print_command`, e.g.
-     `["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]`.
-     `{printer}` and `{file}` are substituted as **whole argv elements** and executed with
-     `exec.CommandContext` — no shell, no string concatenation;
-   * Windows default: `ShellExecuteExW` with the `printto` verb, i.e. the registered PDF
-     handler renders the document through the printer's Windows driver;
-   * any other OS without a helper: an explicit "not supported" error. **Never a RAW
-     fallback.**
-4. **Wait for the outcome** — `SEE_MASK_NOCLOSEPROCESS` + `WaitForSingleObject` +
-   `GetExitCodeProcess` (or `cmd.Run()` for the helper), 120 s default timeout. A non-zero
-   exit, a timeout, or a missing handler is a real error reported to the gateway.
-5. **Clean up** — the temp directory is removed on every exit path (success, failure, panic).
+There is no external PDF application, shell verb, file association, PATH lookup,
+runtime renderer download, browser engine, or customer-installed PDF software.
+The PDFium WASM module is embedded in the Agent binary by go-pdfium, and the
+Wazero filesystem is explicitly isolated from the host filesystem.
 
-Printer names are validated before use (`ValidatePDFPrinterName`): no control characters, no
-quote characters, ≤ 220 bytes. A rejected name fails the job instead of being silently
-"sanitised" into a different printer.
+The shared Agent payload limit remains 5 MiB. PDF-specific protection also
+limits documents to 500 pages and caps one rendered page at 16 million pixels
+(about 64 MiB for the 32-bit bitmap before renderer overhead). The renderer pool
+has one live worker and PDF jobs are serialized so PDF rendering cannot create
+unbounded renderer memory or goroutine pressure.
 
-Status: the pipeline's validation, temp-file lifecycle, argument construction and error
-propagation are **VERIFIED** by `agent/internal/printer/pdf_test.go`; the Windows
-`ShellExecuteExW` submission itself is **COMPILE VERIFIED** (`GOOS=windows go build/vet`)
-and **NOT VERIFIED** on hardware — see [WINDOWS_PHYSICAL_E2E.md](WINDOWS_PHYSICAL_E2E.md).
+The first page is rendered before `StartDocW`, so deterministic renderer/printer
+pre-dispatch failures are returned normally. Once `StartDocW` has succeeded,
+rendering, cancellation, page submission, spooler, and finalization failures are
+reported using the Agent's existing unknown-physical-outcome semantics rather
+than claiming that the document was not printed.
+
+Page dimensions come from the PDF and are fitted to the printer-reported
+printable area while preserving aspect ratio; printer physical offsets and DPI
+are honoured. A4, Letter, receipt-sized pages, portrait/landscape documents,
+rotated pages, images, text, vector content, grayscale, and multi-page jobs are
+covered by the renderer path; physical output still requires Windows hardware
+verification.
 
 ## 5. Backend reference (one section per implemented backend)
 

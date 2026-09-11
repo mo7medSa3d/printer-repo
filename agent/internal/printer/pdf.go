@@ -3,69 +3,43 @@ package printer
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
 
 // PDF printing.
 //
-// A PDF is a *document*, not a byte stream: handing it to a RAW spooler job
-// (StartDocPrinterW datatype "RAW") only works for the rare printer whose
-// firmware understands PDF directly. Everything else prints pages of
-// gibberish. This file implements a real PDF path:
+// PDFs are rendered by the embedded PDFium backend on Windows. The renderer
+// produces one bounded bitmap at a time and the Windows backend submits each
+// page through a Windows printer device context. There is deliberately no
+// shell, file association, external PDF application, or runtime download in
+// the production path.
 //
-//	validate PDF bytes -> secure temp file (0600, random name, private dir)
-//	-> PDF-aware print submission -> wait for completion -> delete temp file
-//
-// The submission itself is platform specific:
-//
-//	windows  — ShellExecuteExW with the "printto" verb, i.e. the registered
-//	           PDF handler renders the document through the Windows printer
-//	           driver (pdf_windows.go). No shell, no string concatenation.
-//	all OSes — an explicitly configured PDF helper command
-//	           (pdf_print_command in agent.yaml) executed with argv slices.
-//	other    — an explicit "not supported" error (pdf_other.go). PDF is never
-//	           downgraded to RAW.
+// A path-based callback remains as a dependency-injection seam for tests and
+// platform-specific implementations. Production passes nil and therefore
+// selects platformPrintPDF.
 const (
 	pdfHeaderMarker = "%PDF-"
 	pdfEOFMarker    = "%%EOF"
+
 	// The header must appear at the very start of the file; a small window is
 	// tolerated only for a UTF-8 BOM / stray whitespace written by exporters.
 	pdfHeaderSearchWindow = 64
 	// %%EOF is the last token of a well-formed PDF; some writers append a few
 	// bytes of padding/newlines after it.
 	pdfEOFSearchWindow = 4096
-	// Upper bound for one PDF submission (rendering + spooling by the handler).
+
+	// Maximum time assigned to the embedded render/print pipeline. The agent's
+	// caller budget remains authoritative for non-PDF transports, while PDF
+	// keeps its existing dedicated budget so a larger document is not clipped
+	// by a nearly-expired outer context.
 	defaultPDFPrintTimeout = 120 * time.Second
 )
 
 type PDFPrintFunc func(ctx context.Context, printerName, pdfPath string) error
-
-var pdfHelperCommand []string
-
-func SetPDFHelperCommand(argv []string) {
-	if len(argv) == 0 {
-		pdfHelperCommand = nil
-		return
-	}
-	cp := make([]string, len(argv))
-	copy(cp, argv)
-	pdfHelperCommand = cp
-}
-
-func PDFHelperCommand() []string {
-	if pdfHelperCommand == nil {
-		return nil
-	}
-	cp := make([]string, len(pdfHelperCommand))
-	copy(cp, pdfHelperCommand)
-	return cp
-}
 
 func ValidatePDF(data []byte) error {
 	if len(data) == 0 {
@@ -127,17 +101,17 @@ func writeSecurePDFTemp(data []byte) (string, func(), error) {
 	}
 	path := f.Name()
 	if err := f.Chmod(0o600); err != nil && !isWindowsChmodUnsupported(err) {
-		f.Close()
+		_ = f.Close()
 		cleanup()
 		return "", func() {}, fmt.Errorf("restrict temp PDF permissions: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		cleanup()
 		return "", func() {}, fmt.Errorf("write temp PDF: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		cleanup()
 		return "", func() {}, fmt.Errorf("flush temp PDF: %w", err)
 	}
@@ -152,64 +126,9 @@ func isWindowsChmodUnsupported(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not supported")
 }
 
-func buildPDFHelperArgs(template []string, printerName, pdfPath string) ([]string, error) {
-	if len(template) == 0 {
-		return nil, fmt.Errorf("no PDF helper command configured")
-	}
-	out := make([]string, 0, len(template))
-	sawFile := false
-	for _, part := range template {
-		switch part {
-		case "{printer}":
-			out = append(out, printerName)
-		case "{file}":
-			out = append(out, pdfPath)
-			sawFile = true
-		default:
-			out = append(out, part)
-		}
-	}
-	if !sawFile {
-		return nil, fmt.Errorf("PDF helper command must contain the {file} placeholder")
-	}
-	return out, nil
-}
-
-func runPDFHelper(ctx context.Context, template []string, printerName, pdfPath string) error {
-	argv, err := buildPDFHelperArgs(template, printerName, pdfPath)
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// The helper process is killed by exec.CommandContext when the
-		// print budget expires. A killed or timed-out helper may have
-		// already handed pages to the spooler, so the physical outcome is
-		// ambiguous: report unknown, never a plain retryable failure.
-		if ctx.Err() != nil {
-			return MarkUnknown("PDF helper %s did not finish within its budget (submission state unknown): %v", argv[0], ctx.Err())
-		}
-		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			return fmt.Errorf("PDF helper %s failed: %w: %s", argv[0], err, msg)
-		}
-		// A non-zero helper exit can mean the renderer failed before or
-		// after spooling pages — the boundary is not observable, so the
-		// outcome must stay unknown (LAW: no retry after transmission).
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return MarkUnknown("PDF helper %s exited with code %d (submission state unknown)", argv[0], exitErr.ExitCode())
-		}
-		return fmt.Errorf("PDF helper %s failed: %w", argv[0], err)
-	}
-	return nil
-}
-
-// PrintPDF gives the PDF submission its own 120-second deadline while still
-// propagating caller cancellation. This avoids accidentally inheriting a
-// nearly-expired print-job deadline and collapsing a valid PDF budget.
+// PrintPDF gives the embedded PDF submission its own 120-second deadline
+// while still propagating caller cancellation. A callback can be supplied for
+// deterministic tests; production uses the platform renderer.
 func PrintPDF(ctx context.Context, printerName string, doc Document, printFn PDFPrintFunc) error {
 	if err := ValidatePDF(doc.Data); err != nil {
 		return err
@@ -219,28 +138,15 @@ func PrintPDF(ctx context.Context, printerName string, doc Document, printFn PDF
 	}
 
 	if printFn == nil {
-		if helper := PDFHelperCommand(); len(helper) > 0 {
-			printFn = func(ctx context.Context, name, path string) error {
-				return runPDFHelper(ctx, helper, name, path)
-			}
-		} else {
-			printFn = platformPrintPDF
-		}
+		printFn = platformPrintPDF
 	}
 
 	path, cleanup, err := writeSecurePDFTemp(doc.Data)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		// Ensure background spooler subsystem / print driver finishes reading
-		// the file before unlinking to prevent Win32 ERROR_FILE_NOT_FOUND / sharing violations.
-		time.Sleep(100 * time.Millisecond)
-		cleanup()
-	}()
+	defer cleanup()
 
-	// Keep cancellation semantics from the parent job, but do not inherit its
-	// potentially nearly-expired deadline. The helper gets a fresh full budget.
 	printCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultPDFPrintTimeout)
 	defer cancel()
 	parentDone := make(chan struct{})
@@ -257,6 +163,6 @@ func PrintPDF(ctx context.Context, printerName string, doc Document, printFn PDF
 	if err := printFn(printCtx, printerName, path); err != nil {
 		return fmt.Errorf("PDF print on %q failed: %w", printerName, err)
 	}
-	log.Printf("PDF job %s (%d bytes) submitted to printer %q via PDF path", doc.JobID, len(doc.Data), printerName)
+	log.Printf("PDF job %s (%d bytes) submitted to printer %q via embedded PDFium path", doc.JobID, len(doc.Data), printerName)
 	return nil
 }

@@ -3,86 +3,131 @@
 package printer
 
 import (
+	"context"
+	"image"
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
-	"golang.org/x/sys/windows"
+	"github.com/klippa-app/go-pdfium/requests"
 )
 
-// launchProcessForTest starts a guaranteed-available process (cmd.exe, which
-// always exists on Windows) through the same ShellExecuteExW path used for
-// real PDF handlers, and returns the process handle. Tests exercise
-// waitPDFHandlerExit directly so the LAW 1 outcome classification is proven
-// without depending on a .pdf handler association (bare CI runners have
-// none, and an unassociated file fails pre-launch - a different branch).
-func launchProcessForTest(t *testing.T, args string) windows.Handle {
-	t.Helper()
-	verb, err := windows.UTF16PtrFromString("open")
+func TestPDFiumEmbeddedRendererSmoke(t *testing.T) {
+	pool, err := getPDFiumPool()
 	if err != nil {
-		t.Fatalf("encode verb: %v", err)
+		t.Fatalf("embedded PDFium initialization failed: %v", err)
 	}
-	file, err := windows.UTF16PtrFromString("cmd.exe")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	instance, err := pool.GetInstanceWithContext(ctx)
 	if err != nil {
-		t.Fatalf("encode file: %v", err)
+		t.Fatalf("get PDFium worker: %v", err)
 	}
-	params, err := windows.UTF16PtrFromString(args)
+	defer instance.Close()
+
+	data := validPDF()
+	doc, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
 	if err != nil {
-		t.Fatalf("encode params: %v", err)
+		t.Fatalf("open minimal PDF: %v", err)
 	}
-	info := shellExecuteInfoW{
-		fMask:        seeMaskNoCloseProcess | seeMaskFlagNoUI | seeMaskNoAsync,
-		lpVerb:       verb,
-		lpFile:       file,
-		lpParameters: params,
-		nShow:        swHide,
+	defer instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+
+	count, err := instance.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
+	if err != nil {
+		t.Fatalf("get page count: %v", err)
 	}
-	info.cbSize = uint32(unsafe.Sizeof(info))
-	ret, _, lastErr := procShellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
-	if ret == 0 || info.hProcess == 0 {
-		t.Fatalf("launch cmd.exe %q: %v", args, lastErr)
+	if count.PageCount != 1 {
+		t.Fatalf("page count = %d, want 1", count.PageCount)
 	}
-	return info.hProcess
+
+	rendered, err := instance.RenderPageInPixels(&requests.RenderPageInPixels{
+		Page:   requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: 0}},
+		Width:  600,
+		Height: 800,
+	})
+	if err != nil {
+		t.Fatalf("render PDF page: %v", err)
+	}
+	defer rendered.Cleanup()
+	if rendered.Result.Image == nil {
+		t.Fatal("PDFium returned nil RGBA bitmap")
+	}
+	if rendered.Result.Image.Bounds().Empty() {
+		t.Fatal("PDFium returned an empty bitmap")
+	}
 }
 
-// A handler still running when the budget expires may have already spooled
-// pages: the outcome must be unknown, never a plain retryable failure.
-func TestPlatformPDFTimeoutIsUnknownOutcome(t *testing.T) {
-	h := launchProcessForTest(t, "/c ping -n 20 127.0.0.1 >nul")
-	defer windows.CloseHandle(h)
-	err := waitPDFHandlerExit(h, "Test Printer", 300*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout error from waitPDFHandlerExit")
+func TestPDFiumRendersRotatedPage(t *testing.T) {
+	data := rotatedPDF()
+	pool, err := getPDFiumPool()
+	if err != nil {
+		t.Fatalf("embedded PDFium initialization failed: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	instance, err := pool.GetInstanceWithContext(ctx)
+	if err != nil {
+		t.Fatalf("get PDFium worker: %v", err)
+	}
+	defer instance.Close()
+	doc, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
+	if err != nil {
+		t.Fatalf("open rotated PDF: %v", err)
+	}
+	defer instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+	rendered, err := instance.RenderPageInPixels(&requests.RenderPageInPixels{
+		Page:  requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: 0}},
+		Width: 600, Height: 800,
+	})
+	if err != nil {
+		t.Fatalf("render rotated page: %v", err)
+	}
+	defer rendered.Cleanup()
+	if rendered.Result.Image == nil || rendered.Result.Image.Bounds().Empty() {
+		t.Fatal("rotated page produced no bitmap")
+	}
+	if rendered.Result.Image.Bounds().Dx() <= rendered.Result.Image.Bounds().Dy() {
+		t.Fatalf("rotation was not reflected in rendered dimensions: %v", rendered.Result.Image.Bounds())
+	}
+}
+
+func TestRGBAConversionCompositesTransparency(t *testing.T) {
+	img := &image.RGBA{Pix: []byte{
+		255, 0, 0, 128,
+		0, 255, 0, 255,
+	}, Stride: 8, Rect: image.Rect(0, 0, 2, 1)}
+	if err := rgbaToBGRAInPlace(img); err != nil {
+		t.Fatalf("rgbaToBGRAInPlace: %v", err)
+	}
+	// Semi-transparent red becomes a white-composited red, stored B,G,R,X.
+	if img.Pix[0] != 127 || img.Pix[1] != 127 || img.Pix[2] != 255 || img.Pix[3] != 0 {
+		t.Fatalf("unexpected transparent conversion: %v", img.Pix[:4])
+	}
+	// Opaque green remains green.
+	if img.Pix[4] != 0 || img.Pix[5] != 255 || img.Pix[6] != 0 || img.Pix[7] != 0 {
+		t.Fatalf("unexpected opaque conversion: %v", img.Pix[4:8])
+	}
+}
+
+func TestRenderBoundsNeverExceedConfiguredCap(t *testing.T) {
+	w, h, err := renderBounds(4960, 7016)
+	if err != nil {
+		t.Fatalf("renderBounds: %v", err)
+	}
+	if int64(w)*int64(h) > maxPDFRenderPixels {
+		t.Fatalf("render area %dx%d exceeds cap %d", w, h, maxPDFRenderPixels)
+	}
+	if _, _, err := renderBounds(0, 1); err == nil {
+		t.Fatal("invalid printable area must fail closed")
+	}
+}
+
+func TestEmbeddedPDFErrorClassificationMarker(t *testing.T) {
+	err := markPDFDispatchUnknown("Office", "failed while rendering page 2", context.DeadlineExceeded)
 	if !OutcomeUnknown(err) {
-		t.Fatalf("PDF handler timeout must be classified unknown (got: %v)", err)
+		t.Fatalf("expected UNKNOWN_PARTIAL_DELIVERY marker, got %v", err)
 	}
 	if !strings.HasPrefix(err.Error(), "UNKNOWN_PARTIAL_DELIVERY") {
-		t.Fatalf("wire marker missing from message: %v", err)
-	}
-}
-
-// A non-zero exit code is the renderer's own verdict, but pages may have
-// been spooled before it failed: post-launch ambiguity must not be reported
-// as provably-not-printed.
-func TestPlatformPDFNonZeroExitIsUnknownOutcome(t *testing.T) {
-	h := launchProcessForTest(t, "/c exit 7")
-	defer windows.CloseHandle(h)
-	err := waitPDFHandlerExit(h, "Test Printer", 20*time.Second)
-	if err == nil {
-		t.Fatal("expected error for non-zero handler exit")
-	}
-	if !OutcomeUnknown(err) {
-		t.Fatalf("PDF handler non-zero exit must be classified unknown (got: %v)", err)
-	}
-}
-
-// A clean zero exit is the only definitive "submitted" outcome.
-func TestPlatformPDFCleanExitIsDefinitive(t *testing.T) {
-	h := launchProcessForTest(t, "/c exit 0")
-	defer windows.CloseHandle(h)
-	if err := waitPDFHandlerExit(h, "Test Printer", 20*time.Second); err != nil {
-		t.Fatalf("clean exit must be definitive success, got: %v", err)
+		t.Fatalf("missing unknown-outcome wire marker: %v", err)
 	}
 }

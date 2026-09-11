@@ -247,10 +247,6 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 		discoverySem:     make(chan struct{}, 1),
 	}
 
-	// An explicitly configured PDF helper takes precedence over the platform
-	// PDF path for every PDF-capable backend on this agent.
-	printer.SetPDFHelperCommand(cfg.Agent.PDFPrintCommand)
-
 	// 1. Load configured printers from YAML (legacy, still supported for backward compat)
 	for _, pc := range cfg.Printers {
 		p, err := printer.New(pc)
