@@ -139,7 +139,7 @@ func TestNetworkPrinterDialFailure(t *testing.T) {
 }
 
 func TestNetworkPrinterPartialDelivery(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:19999")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestNetworkPrinterPartialDelivery(t *testing.T) {
 		_ = conn.Close()
 	}()
 
-	p := &NetworkPrinter{Address: "127.0.0.1:19999"}
+	p := &NetworkPrinter{Address: ln.Addr().String()}
 	// Large payload (2MB) to ensure write loop has multiple iterations and gets interrupted
 	largeData := make([]byte, 2*1024*1024)
 	for i := range largeData {

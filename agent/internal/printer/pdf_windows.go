@@ -8,6 +8,7 @@ import (
 	"image"
 	"log"
 	"math"
+	"os"
 	"sync"
 	"unsafe"
 
@@ -289,6 +290,16 @@ func renderPageWithContext(ctx context.Context, instance pdfium.Pdfium, request 
 	}
 }
 
+// platformPrintPDF reads the generated temporary PDF file and submits it to
+// the Windows GDI print pipeline rendered via embedded PDFium.
+func platformPrintPDF(ctx context.Context, printerName, pdfPath string) error {
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		return fmt.Errorf("read PDF file %q: %w", pdfPath, err)
+	}
+	return renderAndPrintPDFWithPDFium(ctx, printerName, data)
+}
+
 func renderAndPrintPDFWithPDFium(ctx context.Context, printerName string, data []byte) (retErr error) {
 	embeddedPDFPrintMu.Lock()
 	defer embeddedPDFPrintMu.Unlock()
@@ -299,7 +310,7 @@ func renderAndPrintPDFWithPDFium(ctx context.Context, printerName string, data [
 	if err := ValidatePDF(data); err != nil {
 		return err
 	}
-	if err := runPreflightBounded(printerName, preflightTimeout, func() error {
+	if err := runPreflightBounded(printerName, preflightTimeout, ctx, func() error {
 		return preFlightSpoolerCheck(printerName)
 	}); err != nil {
 		return fmt.Errorf("pre-flight spooler check failed: %w", err)
