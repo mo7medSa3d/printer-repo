@@ -43,27 +43,62 @@ func (p *program) Start(s service.Service) error {
 		// Attempt to load and validate configuration inside the service loop.
 		// If unconfigured or invalid, do not crash the service (which causes SCM 1053 / restart loops);
 		// instead, log and wait quietly in an Idle / Unpaired state.
-		var cfg *config.Config
-		for {
-			var err error
-			cfg, err = config.Load(p.configPath)
-			if err == nil && cfg != nil && cfg.Validate() == nil && cfg.Agent.ID != "" && cfg.Agent.Secret != "" {
-				break
-			}
-			if err != nil {
-				log.Printf("Agent unconfigured at %s (%v) — idling in unpaired state...", p.configPath, err)
-			} else if cfg == nil || cfg.Agent.ID == "" || cfg.Agent.Secret == "" {
-				log.Printf("Agent at %s is unpaired (missing agent id/secret) — idling in unpaired state...", p.configPath)
-			} else if err := cfg.Validate(); err != nil {
-				log.Printf("Agent configuration invalid (%v) — idling in unpaired state...", err)
-			}
-			select {
-			case <-p.ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-		}
+main.go main.go // Attempt to load and validate configuration inside the service loop.
+main.go main.go // If unconfigured or invalid, do not crash the service (which causes SCM 1053 / restart loops);
+main.go main.go // instead, log and wait quietly in an Idle / Unpaired state.
+main.go main.go var cfg *config.Config
+main.go main.go backoff := 5 * time.Second
+main.go main.go maxBackoff := 60 * time.Second
+main.go main.go consecutiveParseErrors := 0
+main.go main.go const maxConsecutiveParseErrors = 5
 
+main.go main.go for {
+main.go main.go main.go var err error
+main.go main.go main.go cfg, err = config.Load(p.configPath)
+
+main.go main.go main.go // Check if file exists first
+main.go main.go main.go fileExists := true
+main.go main.go main.go if os.IsNotExist(err) {
+main.go main.go main.go main.go fileExists = false
+main.go main.go main.go }
+
+main.go main.go main.go if err == nil && cfg != nil && cfg.Validate() == nil && cfg.Agent.ID != "" && cfg.Agent.Secret != "" {
+main.go main.go main.go main.go break
+main.go main.go main.go }
+
+main.go main.go main.go // Handle different error scenarios
+main.go main.go main.go if err != nil {
+main.go main.go main.go main.go // Distinguish between missing file and parse/corruption errors
+main.go main.go main.go main.go if !fileExists {
+main.go main.go main.go main.go main.go // Missing file is expected during initial setup - use exponential backoff
+main.go main.go main.go main.go main.go log.Printf("Agent unconfigured at %s (config file missing) — idling in unpaired state...", p.configPath)
+main.go main.go main.go main.go main.go consecutiveParseErrors = 0
+main.go main.go main.go main.go } else {
+main.go main.go main.go main.go main.go // File exists but failed to parse - likely corruption
+main.go main.go main.go main.go main.go consecutiveParseErrors++
+main.go main.go main.go main.go main.go if consecutiveParseErrors >= maxConsecutiveParseErrors {
+main.go main.go main.go main.go main.go main.go log.Fatalf("Agent configuration at %s failed to parse after %d consecutive attempts (%v) — configuration file may be corrupted. Please restore from backup or re-pair the agent.", p.configPath, consecutiveParseErrors, err)
+main.go main.go main.go main.go main.go }
+main.go main.go main.go main.go main.go log.Printf("Agent configuration at %s failed to parse (%v) [attempt %d/%d] — configuration file may be corrupted...", p.configPath, err, consecutiveParseErrors, maxConsecutiveParseErrors)
+main.go main.go main.go main.go }
+main.go main.go main.go } else if cfg == nil || cfg.Agent.ID == "" || cfg.Agent.Secret == "" {
+main.go main.go main.go main.go log.Printf("Agent at %s is unpaired (missing agent id/secret) — idling in unpaired state...", p.configPath)
+main.go main.go main.go main.go consecutiveParseErrors = 0
+main.go main.go main.go } else if err := cfg.Validate(); err != nil {
+main.go main.go main.go main.go log.Printf("Agent configuration invalid (%v) — idling in unpaired state...", err)
+main.go main.go main.go main.go consecutiveParseErrors = 0
+main.go main.go main.go }
+
+main.go main.go main.go select {
+main.go main.go main.go case <-p.ctx.Done():
+main.go main.go main.go main.go return
+main.go main.go main.go case <-time.After(backoff):
+main.go main.go main.go main.go // Exponential backoff with cap for missing files and validation errors
+main.go main.go main.go main.go if backoff < maxBackoff {
+main.go main.go main.go main.go main.go backoff *= 2
+main.go main.go main.go main.go }
+main.go main.go main.go }
+main.go main.go }
 		app, err := agent.New(cfg, p.configPath)
 		if err != nil {
 			log.Printf("Failed to initialize agent: %v — waiting for resolution...", err)

@@ -1,33 +1,69 @@
+```
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# Dependencies
 node_modules/
-.next/
-dist/
-dist-desktop/
-src-tauri/target/
 
-agent/OdooPrintAgent.exe
-agent/odoo-agent-cli.exe
-
-*.tsbuildinfo
-
+# Environment
 .env
-.env.*
-!.env.example
+.env.local
+*.env.*
 
+# Logs
 *.log
 
-# Local agent runtime state
-agent/agent.db
-agent/sudo
+# IDE
+.vscode/
+.idea/
 
-# Go build artifacts
-agent/*.exe
-
-# Python / Odoo
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.odoo/
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Go
+*.o
+*.a
+*.so
+*.exe
+*.dll
+*.dylib
+*.test
+*.prof
+vendor/
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Distribution
+dist/
+build/
+*.tar.gz
 *.egg-info/
-odoo_addons/**/__pycache__/
-odoo_addons/**/*.pyc
+.eggs/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Cache
+.mypy_cache/
+.pytest_cache/
+.gradle/
+target/
+```

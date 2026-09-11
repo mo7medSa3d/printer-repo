@@ -41,14 +41,15 @@ export function isValidPairingCode(value: unknown): value is string {
   return true;
 }
 
+/**
+ * Constant-time string comparison using SHA-256 hashing to prevent timing attacks.
+ * Both inputs are hashed to fixed 32-byte buffers before comparison, ensuring
+ * the comparison always takes the same time regardless of input length differences.
+ */
 function timingSafeStringEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) {
-    timingSafeEqual(bufA, bufA);
-    return false;
-  }
-  return timingSafeEqual(bufA, bufB);
+  const hashA = createHash("sha256").update(a, "utf8").digest();
+  const hashB = createHash("sha256").update(b, "utf8").digest();
+  return timingSafeEqual(hashA, hashB);
 }
 
 export async function validateAgent(authHeader: string | null) {
