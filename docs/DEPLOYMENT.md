@@ -107,7 +107,7 @@ Recommended per-site checklist:
 1. Install and start the service (`-service install` + `-service start`).
 2. Pair with the six-character agent pairing code issued by the dashboard.
 3. Run discovery and verify capabilities in the dashboard.
-4. Install SumatraPDF (e.g. `winget install --id SumatraPDF.SumatraPDF -e --silent`) on every site that prints PDFs — the Windows Service cannot use interactive PDF readers.
+4. PDF printing needs nothing extra: the installer bundles the embedded PDFium renderer (`resources\pdfium.dll`) next to the agent. Do not install a PDF application for printing.
 5. The crash policy is safe-by-default: `agent.reprint_after_crash: false` refuses automatic
    reprint after an interrupted physical print because the previous output is unknown. Set it
    to `true` only when the business explicitly accepts at-least-once delivery and possible

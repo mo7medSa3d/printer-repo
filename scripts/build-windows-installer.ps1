@@ -122,6 +122,13 @@ foreach ($exe in @("OdooPrintAgent.exe", "odoo-agent-cli.exe")) {
   Write-Host "  $exe -> $([math]::Round($size / 1MB, 1)) MB"
 }
 
+# The embedded PDFium renderer ships beside the agent (app-directory DLL
+# search); the Tauri resources map in tauri.conf.json bundles it the same
+# way as the EXEs above.
+$rendererPath = Join-Path $agentDir "third_party\pdfium\win-x64\pdfium.dll"
+if (-not (Test-Path $rendererPath)) { throw "Missing embedded PDF renderer: $rendererPath (run agent/third_party/pdfium/fetch.sh)" }
+Write-Host ("  pdfium.dll -> {0} MB" -f [math]::Round((Get-Item $rendererPath).Length / 1MB, 1))
+
 # ── 6. Tauri bundle ──────────────────────────────────────────────────────────
 Write-Step "cargo tauri build (--target $Target --bundles $Bundles)"
 Push-Location $repoRoot

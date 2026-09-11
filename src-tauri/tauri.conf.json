@@ -45,7 +45,8 @@
     ],
     "resources": {
       "../agent/OdooPrintAgent.exe": "resources/OdooPrintAgent.exe",
-      "../agent/odoo-agent-cli.exe": "resources/odoo-agent-cli.exe"
+      "../agent/odoo-agent-cli.exe": "resources/odoo-agent-cli.exe",
+      "../agent/third_party/pdfium/win-x64/pdfium.dll": "resources/pdfium.dll"
     },
     "windows": {
       "nsis": {

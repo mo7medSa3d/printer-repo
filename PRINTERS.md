@@ -69,11 +69,11 @@ in `job.error` with `job.status = failed`.
    payload metadata influences the path.
 3. **Submit through a PDF-aware mechanism**
    * configured helper (any OS, first choice when set): `agent.pdf_print_command`, e.g.
-     `["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]`.
+     `["C:\\Tools\\PDFtoPrinter.exe", "{printer}", "{file}"]`.
      `{printer}` and `{file}` are substituted as **whole argv elements** and executed with
      `exec.CommandContext` — no shell, no string concatenation;
-   * Windows default: `ShellExecuteExW` with the `printto` verb, i.e. the registered PDF
-     handler renders the document through the printer's Windows driver;
+   * Windows default: embedded PDFium renderer — pages are rasterized in-process
+     and painted through the printer's GDI device context (see `docs/PDF_RENDERING.md`);
    * any other OS without a helper: an explicit "not supported" error. **Never a RAW
      fallback.**
 4. **Wait for the outcome** — `SEE_MASK_NOCLOSEPROCESS` + `WaitForSingleObject` +

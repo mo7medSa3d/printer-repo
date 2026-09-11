@@ -24,9 +24,10 @@ import (
 //
 // The submission itself is platform specific:
 //
-//	windows  — ShellExecuteExW with the "printto" verb, i.e. the registered
-//	           PDF handler renders the document through the Windows printer
-//	           driver (pdf_windows.go). No shell, no string concatenation.
+//	windows  — embedded PDFium renderer: pages are rasterized in-process
+//	           and painted through the printer's GDI device context
+//	           (pdf_windows.go + pdf_gdi_windows.go). No GUI, no shell,
+//	           Session-0 safe.
 //	all OSes — an explicitly configured PDF helper command
 //	           (pdf_print_command in agent.yaml) executed with argv slices.
 //	other    — an explicit "not supported" error (pdf_other.go). PDF is never

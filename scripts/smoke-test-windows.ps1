@@ -58,9 +58,11 @@ Write-Host "Agent data dir: $agentDataDir"
 $appExe = Join-Path $InstallDir "odoo-print-manager.exe"
 $agentExe = Join-Path $InstallDir "resources\OdooPrintAgent.exe"
 $cliExe = Join-Path $InstallDir "resources\odoo-agent-cli.exe"
+$rendererDll = Join-Path $InstallDir "resources\pdfium.dll"
 Assert-Path $appExe "Installed desktop executable"
 Assert-Path $agentExe "Bundled agent executable"
 Assert-Path $cliExe "Bundled CLI executable"
+Assert-Path $rendererDll "Bundled embedded PDF renderer (no external PDF app required)"
 
 # Start from a deterministic state so the run does not create duplicates.
 Get-Process -Name "OdooPrintAgent" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

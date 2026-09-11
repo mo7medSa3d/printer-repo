@@ -41,7 +41,9 @@ agent:
   id: agt_7f3c                            # written by pairing
   secret: "<agent secret>"                # written by pairing; DPAPI-sealed on Windows
   name: "POS PC 1"
-  pdf_print_command: ["C:\\Tools\\SumatraPDF.exe", "-print-to", "{printer}", "-silent", "{file}"]
+  # Optional: explicit PDF helper command. Omit to use the embedded PDFium
+  # renderer (default, no external application). Placeholders: {printer} {file}.
+  # pdf_print_command: ["C:\\Tools\\PDFtoPrinter.exe", "{printer}", "{file}"]
   # Safe default: an interrupted physical print is UNKNOWN and is not reprinted automatically.
   # Set true only when the business explicitly accepts at-least-once reprinting and duplicates.
   reprint_after_crash: false

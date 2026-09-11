@@ -251,6 +251,13 @@ func New(cfg *config.Config, configPath string) (*Agent, error) {
 	// PDF path for every PDF-capable backend on this agent.
 	printer.SetPDFHelperCommand(cfg.Agent.PDFPrintCommand)
 
+	// Constrain DLL resolution before any renderer (or future plugin) can
+	// load: application directory + System32 only. Warn-only; printing
+	// must never fail to start over a hardening call.
+	if err := printer.HardenDllSearch(); err != nil {
+		log.Printf("WARNING: DLL search hardening unavailable: %v", err)
+	}
+
 	// 1. Load configured printers from YAML (legacy, still supported for backward compat)
 	for _, pc := range cfg.Printers {
 		p, err := printer.New(pc)

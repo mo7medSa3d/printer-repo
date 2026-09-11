@@ -10,8 +10,9 @@ agent:
   # Safe default: false prevents silent duplicate physical output after a crash.
   # Set true only when the business accepts at-least-once reprinting.
   reprint_after_crash: false
-  # Optional deterministic Windows PDF helper command, e.g. SumatraPDF.
-  # pdf_print_command: ["C:\\Program Files\\SumatraPDF\\SumatraPDF.exe", "-print-to", "{printer}", "{file}"]
+  # Optional explicit PDF helper command (default: embedded PDFium renderer,
+  # no external application). Placeholders: {printer} {file} ({file} required).
+  # pdf_print_command: ["C:\\Program Files\\OdooPrintAgent\\PDFtoPrinter.exe", "{printer}", "{file}"]
 
 printers:
   - id: "printer_kitchen"

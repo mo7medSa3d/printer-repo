@@ -15,7 +15,7 @@ Everything the automated suites do and do not cover is listed in [docs/TESTING.m
 |---|---|
 | OS | Windows 10 1809+ or Windows 11 (x64), administrator account |
 | Printer | At least one real printer, installed as a Windows printer (spooler queue) and printing correctly from Notepad |
-| PDF handler | A PDF application registered for the `printto` verb (Adobe Reader, SumatraPDF …) **or** a helper configured through `agent.pdf_print_command` |
+| PDF handler | None — PDFs render with the embedded PDFium engine. Record the bundled `pdfium.dll` version from `agent/third_party/pdfium/README.md` |
 | Second printer (optional but recommended) | A RAW/ESC-POS thermal printer on TCP :9100 for the capability-mismatch test |
 | Gateway | Reachable over HTTPS from the Windows PC, with a PostgreSQL database migrated through `drizzle/0017_notify_requeued_jobs.sql` |
 | Odoo | A live instance with the `print_gateway` addon installed |

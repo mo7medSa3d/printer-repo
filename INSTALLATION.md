@@ -39,12 +39,9 @@ The Gateway manager can inspect runtime agents/printers and their health. Odoo d
 
 ### PDF Printing in Windows Service (Session 0)
 
-The Windows Agent runs as a background service (`LocalSystem`) without interactive GUI capabilities. To enable silent PDF printing without bundling GPL-licensed binaries:
-- **Recommended:** Install SumatraPDF via Windows Package Manager:
-  ```powershell
-  winget install --id SumatraPDF.SumatraPDF -e --silent
-  ```
-- **Alternative (Commercial/Permissive CLI):** Place a standalone CLI tool like PDFtoPrinter.exe in `C:\Program Files\OdooPrintAgent\` and configure `pdf_print_command` in config.yaml:
+The Windows Agent runs as a background service (`LocalSystem`) without interactive GUI capabilities. PDF documents are rendered by the **embedded PDFium engine** (`pdfium.dll`, installed beside the agent — no separate download, no external PDF application):
+- Nothing to install: do NOT install SumatraPDF, Adobe Reader, or any other PDF application for printing.
+- **Optional override:** an explicitly configured `pdf_print_command` in config.yaml takes precedence over the embedded renderer:
   ```yaml
   pdf_print_command: ["C:\\Program Files\\OdooPrintAgent\\PDFtoPrinter.exe", "{file}", "{printer}"]
   ```
