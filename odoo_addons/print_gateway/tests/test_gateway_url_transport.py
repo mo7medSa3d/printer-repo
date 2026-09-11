@@ -21,7 +21,8 @@ class TestPrintGatewayURLTransport(TransactionCase):
 
     def test_http_gateway_url_is_accepted_for_any_host(self):
         # Zero-configuration: plain HTTP works for LAN IPs, public hosts,
-        # and loopback with no environment opt-in.
+        # and loopback with no environment opt-in. Validated directly
+        # without DB writes (gateway configs are UNIQUE per company).
         for url in (
             'http://gateway.example.com',
             'http://192.168.1.50:3000',
@@ -30,8 +31,9 @@ class TestPrintGatewayURLTransport(TransactionCase):
             'http://127.0.0.1:3000',
         ):
             with self.subTest(url=url):
-                config = self._config(url)
-                self.assertEqual(config.gateway_url, url.rstrip('/'))
+                self.assertEqual(
+                    PrintGatewayConfig._validate_gateway_url(url), url.rstrip('/')
+                )
 
     def test_unsupported_gateway_url_scheme_is_rejected(self):
         with self.assertRaises(ValidationError):

@@ -53,13 +53,13 @@
     "@types/react-dom": "19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
-    "eslint": "^10.0.0",
+    "eslint": "^9.39.5",
     "eslint-config-next": "16.3.4",
     "jsdom": "^30.0.1",
     "postcss": "^8.5.28",
     "tailwindcss": "4.3.3",
     "vitest": "^4.1.11",
-    "typescript": "^7.0.2",
+    "typescript": "^5.7.2",
     "vite": "^8.2.2"
   },
   "overrides": {

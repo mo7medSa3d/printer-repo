@@ -42,13 +42,14 @@ export function isValidPairingCode(value: unknown): value is string {
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) {
-    timingSafeEqual(bufA, bufA);
-    return false;
-  }
-  return timingSafeEqual(bufA, bufB);
+  // Length-oracle hardening: hash both inputs to fixed 32-byte digests
+  // before comparing, so no code path branches on secret length and
+  // timingSafeEqual never receives mismatched buffers (the old
+  // length-mismatch branch compared a buffer to itself, leaking length
+  // via response-time differences).
+  const digestA = createHash("sha256").update(a, "utf8").digest();
+  const digestB = createHash("sha256").update(b, "utf8").digest();
+  return timingSafeEqual(digestA, digestB);
 }
 
 export async function validateAgent(authHeader: string | null) {

@@ -24,6 +24,7 @@ class TestPrintGatewayArchitectureContract(TransactionCase):
         allowed = {
             "__init__.py",
             "binding.py",
+            "crypto.py",
             "gateway_config.py",
             "runtime_assignment.py",
             "ir_actions_report.py",

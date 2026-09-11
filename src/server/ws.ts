@@ -172,16 +172,18 @@ function trackAgentSocket(agentId: string, ws: AgentSocket) {
     set = new Set();
     agentSockets.set(agentId, set);
   }
-  set.add(ws);
-  if (set.size > MAX_AGENT_SOCKETS) {
-    // Shed the oldest socket first: the newest connection is the live one
-    // (reconnect overlap), and delivery always prefers an open socket.
+  // Cap enforced BEFORE adding: when the set is already full, the oldest
+  // socket is evicted first so the set never transiently holds
+  // MAX_AGENT_SOCKETS + 1 entries under rapid-reconnect churn. The newest
+  // connection is the live one (reconnect overlap), so the eviction victim
+  // is always the oldest socket — never the incoming one.
+  while (set.size >= MAX_AGENT_SOCKETS) {
     const oldest = set.values().next().value as AgentSocket | undefined;
-    if (oldest && oldest !== ws) {
-      try { oldest.terminate(); } catch {}
-      set.delete(oldest);
-    }
+    if (!oldest) break;
+    try { oldest.terminate(); } catch {}
+    set.delete(oldest);
   }
+  set.add(ws);
   void incrementMetric("websocket_connections_opened_total");
   ws.on("close", () => {
     set!.delete(ws);

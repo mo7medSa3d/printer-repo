@@ -42,25 +42,38 @@ func (p *program) Start(s service.Service) error {
 
 		// Attempt to load and validate configuration inside the service loop.
 		// If unconfigured or invalid, do not crash the service (which causes SCM 1053 / restart loops);
-		// instead, log and wait quietly in an Idle / Unpaired state.
+		// instead, log and wait quietly in an Idle / Unpaired state with
+		// exponential backoff (5s doubling, capped at 60s) so a wedged
+		// setup does not burn CPU or flood rotating logs. A file that
+		// EXISTS but fails parsing is corruption, not absence: log a fatal
+		// error and exit immediately so the failure is visible instead of
+		// spinning forever.
 		var cfg *config.Config
+		backoff := 5 * time.Second
+		const maxBackoff = 60 * time.Second
 		for {
 			var err error
 			cfg, err = config.Load(p.configPath)
-			if err == nil && cfg != nil && cfg.Validate() == nil && cfg.Agent.ID != "" && cfg.Agent.Secret != "" {
-				break
-			}
 			if err != nil {
-				log.Printf("Agent unconfigured at %s (%v) — idling in unpaired state...", p.configPath, err)
+				if _, statErr := os.Stat(p.configPath); statErr == nil {
+					log.Fatalf("Agent configuration at %s is corrupt and cannot be parsed (%v) — refusing to run; fix or delete the file and restart", p.configPath, err)
+				}
+				log.Printf("Agent unconfigured at %s (%v) — retrying in %s...", p.configPath, err, backoff)
 			} else if cfg == nil || cfg.Agent.ID == "" || cfg.Agent.Secret == "" {
-				log.Printf("Agent at %s is unpaired (missing agent id/secret) — idling in unpaired state...", p.configPath)
+				log.Printf("Agent at %s is unpaired (missing agent id/secret) — idling in unpaired state, retrying in %s...", p.configPath, backoff)
 			} else if err := cfg.Validate(); err != nil {
-				log.Printf("Agent configuration invalid (%v) — idling in unpaired state...", err)
+				log.Printf("Agent configuration invalid (%v) — idling in unpaired state, retrying in %s...", err, backoff)
+			} else {
+				break
 			}
 			select {
 			case <-p.ctx.Done():
 				return
-			case <-time.After(5 * time.Second):
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
 			}
 		}
 
