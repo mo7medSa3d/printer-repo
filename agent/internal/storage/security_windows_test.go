@@ -3,6 +3,8 @@
 package storage
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,9 +15,12 @@ func TestBuildSecureSDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildSecureSDDL service path failed: %v", err)
 	}
-	expectedService := "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GRGWGX;;;BU)"
+	expectedService := "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)"
 	if serviceSDDL != expectedService {
 		t.Errorf("BuildSecureSDDL service path = %q, want %q", serviceSDDL, expectedService)
+	}
+	if strings.Contains(serviceSDDL, ";;;BU)") || strings.Contains(serviceSDDL, ";;;BG)") {
+		t.Fatalf("service data ACL must not grant write/read access to broad built-in groups: %q", serviceSDDL)
 	}
 
 	// User path (e.g. AppData)
@@ -35,5 +40,12 @@ func TestEnsureSecureDirectoryACL_Windows(t *testing.T) {
 	dir := t.TempDir()
 	if err := EnsureSecureDirectoryACL(dir); err != nil {
 		t.Fatalf("EnsureSecureDirectoryACL failed on temp dir: %v", err)
+	}
+	file := filepath.Join(dir, "secret.dat")
+	if err := os.WriteFile(file, []byte("secret"), 0600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	if err := EnsureSecureFileACL(file); err != nil {
+		t.Fatalf("EnsureSecureFileACL failed: %v", err)
 	}
 }

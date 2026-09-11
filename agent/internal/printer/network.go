@@ -19,8 +19,9 @@ const (
 )
 
 type NetworkPrinter struct {
-	Address  string
-	Protocol string
+	Address        string
+	Protocol       string
+	RasterMaxWidth int
 }
 
 func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
@@ -89,10 +90,13 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 		}
 	}
 
-	// Graceful shutdown: signal EOF to the printer's TCP stack and allow print buffer drain
+	// Graceful shutdown: signal EOF after all application bytes have been
+	// accepted by the socket. TCP close semantics provide delivery ordering;
+	// an arbitrary sleep is not a correctness mechanism.
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.CloseWrite()
-		time.Sleep(350 * time.Millisecond)
+		if err := tcpConn.CloseWrite(); err != nil {
+			return MarkUnknown("failed to half-close print connection after sending %d bytes: %v", written, err)
+		}
 	}
 
 	return nil
@@ -128,7 +132,7 @@ func (p *NetworkPrinter) PrintDocument(ctx context.Context, doc Document) error 
 		if !strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
 			return CapabilityMismatchf("image payloads are raster-converted for ESC/POS devices only (device protocol %q)", p.Protocol)
 		}
-		data, err := JPEGToESCPOS(doc.Data)
+		data, err := JPEGToESCPOSWithMaxWidth(doc.Data, DefaultRasterSliceHeight, p.RasterMaxWidth)
 		if err != nil {
 			return fmt.Errorf("render image for raw TCP printer: %w", err)
 		}

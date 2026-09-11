@@ -10,7 +10,7 @@
     # headers before forwarding the request.
     reverse_proxy gateway:3000 {
         header_up Host {http.request.host}
-        header_up X-Gateway-Proxy-Token {$TRUST_PROXY_SECRET}
+        header_up X-Gateway-Proxy-Token {file./run/secrets/trust_proxy_secret}
         header_up X-Forwarded-For {http.request.remote.host}
         header_up -X-Real-Ip
     }

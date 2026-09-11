@@ -25,9 +25,10 @@ func discoverWSDPrinters(ctx context.Context) ([]DeviceInfo, error) {
 		return nil, fmt.Errorf("resolve multicast address: %w", err)
 	}
 
-	probeMsg := buildWSDSOAPProbe()
-	if _, err := conn.WriteToUDP(probeMsg, mcastAddr); err != nil {
-		return nil, fmt.Errorf("send WSD probe: %w", err)
+	for _, probeMsg := range buildWSDSOAPProbes() {
+		if _, err := conn.WriteToUDP(probeMsg, mcastAddr); err != nil {
+			return nil, fmt.Errorf("send WSD probe: %w", err)
+		}
 	}
 
 	deadline := time.Now().Add(2500 * time.Millisecond)
@@ -68,13 +69,44 @@ func discoverWSDPrinters(ctx context.Context) ([]DeviceInfo, error) {
 }
 
 func buildWSDSOAPProbe() []byte {
+	return buildWSDProbeModern(generateUUID())
+}
+
+// buildWSDSOAPProbes emits the normative WS-Discovery 1.1 message and the
+// older Microsoft/WSD namespace variant still used by some Windows-era
+// devices. Both probes share the same MessageID as required when a multicast
+// discovery probe is repeated for the same discovery attempt.
+func buildWSDSOAPProbes() [][]byte {
 	msgUUID := generateUUID()
+	return [][]byte{
+		buildWSDProbeModern(msgUUID),
+		buildWSDProbeLegacy(msgUUID),
+	}
+}
+
+func buildWSDProbeModern(msgUUID string) []byte {
+	msg := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:wsa="http://www.w3.org/2005/08/addressing"
+               xmlns:wsd="http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01">
+  <soap:Header>
+    <wsa:Action>http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/Probe</wsa:Action>
+    <wsa:MessageID>urn:uuid:%s</wsa:MessageID>
+    <wsa:To>urn:docs-oasis-open-org:ws-dd:ns:discovery:2009:01</wsa:To>
+  </soap:Header>
+  <soap:Body>
+    <wsd:Probe/>
+  </soap:Body>
+</soap:Envelope>`, msgUUID)
+	return []byte(msg)
+}
+
+func buildWSDProbeLegacy(msgUUID string) []byte {
 	msg := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
                xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
                xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery"
-               xmlns:wsdp="http://schemas.microsoft.com/windows/2006/08/wdp/print"
-               xmlns:dn="http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01">
+               xmlns:wsdp="http://schemas.microsoft.com/windows/2006/08/wdp/print">
   <soap:Header>
     <wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action>
     <wsa:MessageID>urn:uuid:%s</wsa:MessageID>
@@ -82,7 +114,7 @@ func buildWSDSOAPProbe() []byte {
   </soap:Header>
   <soap:Body>
     <wsd:Probe>
-      <wsd:Types>wsdp:PrintDeviceType dn:NetworkPrinter</wsd:Types>
+      <wsd:Types>wsdp:PrintDeviceType</wsd:Types>
     </wsd:Probe>
   </soap:Body>
 </soap:Envelope>`, msgUUID)
@@ -156,9 +188,10 @@ func parseWSDProbeMatches(data []byte, remoteAddr *net.UDPAddr) []DeviceInfo {
 			}
 
 			caps := map[string]interface{}{
-				"wsd_verified":   true,
+				"wsd_detected":   true,
 				"discovered_via": "wsd",
 				"wsd_endpoint":   xaddr,
+				"verification":   "device_detected_only",
 			}
 			if epRef != "" {
 				caps["endpoint_reference"] = epRef
@@ -166,16 +199,19 @@ func parseWSDProbeMatches(data []byte, remoteAddr *net.UDPAddr) []DeviceInfo {
 			}
 
 			di := DeviceInfo{
-				ID:             StableIDFromNetwork(ip, 9100),
+				ID:             StableIDForDevice(DeviceInfo{NetworkAddress: ip, Endpoint: xaddr, Name: fmt.Sprintf("WSD Printer %s", ip)}),
 				Name:           fmt.Sprintf("WSD Printer %s", ip),
 				DisplayName:    fmt.Sprintf("WSD Printer %s", ip),
 				PrinterType:    "unknown",
 				ConnectionType: "network",
-				Protocol:       "raw",
-				Endpoint:       net.JoinHostPort(ip, "9100"),
+				// WSD proves that a print-capable WSD device answered discovery;
+				// it does not prove RAW/9100. Keep transport/protocol undeclared
+				// until an explicit print endpoint is verified.
+				Protocol:       "",
+				Endpoint:       xaddr,
 				NetworkAddress: ip,
-				Port:           9100,
-				Status:         "online",
+				Port:           0,
+				Status:         "unknown",
 				Enabled:        true,
 				Type:           "network",
 				Capabilities:   caps,
@@ -222,9 +258,10 @@ func parseWSDProbeMatches(data []byte, remoteAddr *net.UDPAddr) []DeviceInfo {
 	}
 
 	caps := map[string]interface{}{
-		"wsd_verified":   true,
+		"wsd_detected":   true,
 		"discovered_via": "wsd",
 		"wsd_endpoint":   xaddr,
+		"verification":   "device_detected_only",
 	}
 	if epRef != "" {
 		caps["endpoint_reference"] = epRef
@@ -232,16 +269,16 @@ func parseWSDProbeMatches(data []byte, remoteAddr *net.UDPAddr) []DeviceInfo {
 	}
 
 	di := DeviceInfo{
-		ID:             StableIDFromNetwork(ip, 9100),
+		ID:             StableIDForDevice(DeviceInfo{NetworkAddress: ip, Endpoint: xaddr, Name: fmt.Sprintf("WSD Printer %s", ip)}),
 		Name:           fmt.Sprintf("WSD Printer %s", ip),
 		DisplayName:    fmt.Sprintf("WSD Printer %s", ip),
 		PrinterType:    "unknown",
 		ConnectionType: "network",
-		Protocol:       "raw",
-		Endpoint:       net.JoinHostPort(ip, "9100"),
+		Protocol:       "",
+		Endpoint:       xaddr,
 		NetworkAddress: ip,
-		Port:           9100,
-		Status:         "online",
+		Port:           0,
+		Status:         "unknown",
 		Enabled:        true,
 		Type:           "network",
 		Capabilities:   caps,

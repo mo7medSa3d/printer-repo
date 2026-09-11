@@ -8,3 +8,5 @@ import "github.com/odoo-print-agent/agent/internal/storage"
 func EnsureSecureDirectoryACL(path string) error {
 	return storage.EnsureSecureDirectoryACL(path)
 }
+
+func EnsureSecureFileACL(path string) error { return storage.EnsureSecureFileACL(path) }

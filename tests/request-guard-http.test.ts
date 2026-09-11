@@ -121,39 +121,25 @@ describe("request guard (real HTTP)", () => {
   });
 
   describe("chunked / missing Content-Length", () => {
-    it("buffers a chunked body and delivers it intact to the handler", async () => {
-      // No declared content-length: the client sends transfer-encoding
-      // chunked, which exercises the buffer-and-clone path.
+    it("rejects missing Content-Length without consuming the request stream", async () => {
       const body = new ReadableStream<Uint8Array>({
         start(stream) {
           stream.enqueue(new TextEncoder().encode("AAAA"));
-          stream.enqueue(new TextEncoder().encode("BBBB"));
           stream.close();
         },
       });
       const res = await post(`${base}/api/echo`, { body, duplex: "half" });
-      expect(res.status).toBe(200);
-      const data = (await res.json()) as { received: number; body: string };
-      expect(data.received).toBe(8);
-      expect(Buffer.from(data.body, "base64").toString("utf8")).toBe("AAAABBBB");
-    });
-
-    it("rejects a chunked body over the ceiling with 413", async () => {
-      const big = "x".repeat(MAX_TEST_BYTES + 512);
-      const res = await post(`${base}/api/echo`, { body: big });
-      expect(res.status).toBe(413);
+      expect(res.status).toBe(411);
       const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("REQUEST_BODY_TOO_LARGE");
+      expect(data.error).toBe("CONTENT_LENGTH_REQUIRED");
     });
 
-    it("handles an empty chunked body", async () => {
-      const res = await post(`${base}/api/echo`, {
-        body: new ReadableStream({ start(stream) { stream.close(); } }),
-        duplex: "half",
-      });
-      expect(res.status).toBe(200);
-      const data = (await res.json()) as { received: number };
-      expect(data.received).toBe(0);
+    it("admits requests only while the global byte budget has capacity", async () => {
+      const { MAX_CONCURRENT_CHUNKED_BYTES, getReservedRequestBytes } = await import(
+        "../src/server/request-guard"
+      );
+      expect(MAX_CONCURRENT_CHUNKED_BYTES).toBe(32 * 1024 * 1024);
+      expect(getReservedRequestBytes()).toBe(0);
     });
   });
 

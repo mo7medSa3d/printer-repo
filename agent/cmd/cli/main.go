@@ -51,7 +51,7 @@ func main() {
 		// writable, elevate or pass an explicit -config in a writable
 		// location (the service itself always uses the canonical path).
 		if err := config.Ensure(*configPath); err != nil {
-			log.Fatalf("Failed to prepare config %s: %v. Run as administrator, or pass -config with a writable path.", *configPath, err)
+			log.Fatalf("Failed to prepare protected service config %s: %v. Pairing on Windows must be performed from an elevated Administrator context.", *configPath, err)
 		}
 		err := agent.Register(*serverURL, strings.ToUpper(strings.TrimSpace(*pairingCode)), *configPath)
 		if err != nil {

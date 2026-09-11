@@ -118,32 +118,63 @@ func probeSNMPPrinterWithPort(ctx context.Context, ip string, snmpPort int, prin
 		name = fmt.Sprintf("SNMP Printer %s", ip)
 	}
 
-	protocol := inferSNMPProtocol(sysDescrLower, strings.ToLower(name))
-
+	// SNMP identifies the device as a printer, but it does not prove that
+	// TCP printerPort is enabled. Verify that transport separately before
+	// assigning an endpoint/protocol that the print pipeline could use.
+	printEndpointVerified := verifyTCPPrintEndpoint(ctx, ip, printerPort)
 	caps := map[string]interface{}{
-		"snmp_verified":  true,
 		"discovered_via": "snmp",
 		"sysDescr":       sysDescr,
 		"serial":         prtSerial,
+		"snmp_detected":  true,
+	}
+	protocol := ""
+	endpoint := ip
+	port := 0
+	status := "unknown"
+	if printEndpointVerified {
+		protocol = inferSNMPProtocol(sysDescrLower, strings.ToLower(name))
+		endpoint = net.JoinHostPort(ip, strconv.Itoa(printerPort))
+		port = printerPort
+		status = "online"
+		caps["snmp_verified"] = true
+		caps["print_endpoint_verified"] = true
+	} else {
+		caps["verification"] = "device_detected_only"
 	}
 
 	di := DeviceInfo{
-		ID:             StableIDFromNetwork(ip, printerPort),
+		ID:             StableIDForDevice(DeviceInfo{NetworkAddress: ip, Endpoint: endpoint, Name: name}),
 		Name:           name,
 		DisplayName:    name,
 		PrinterType:    "unknown",
 		ConnectionType: "network",
 		Protocol:       protocol,
-		Endpoint:       net.JoinHostPort(ip, strconv.Itoa(printerPort)),
+		Endpoint:       endpoint,
 		NetworkAddress: ip,
-		Port:           printerPort,
-		Status:         "online",
+		Port:           port,
+		Status:         status,
 		Enabled:        true,
 		Type:           "network",
 		Capabilities:   caps,
 	}
 
 	return di, true
+}
+
+func verifyTCPPrintEndpoint(ctx context.Context, ip string, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	d := net.Dialer{Timeout: 500 * time.Millisecond}
+	probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	conn, err := d.DialContext(probeCtx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func extractSNMPPDUString(pdu gosnmp.SnmpPDU) string {
@@ -171,6 +202,6 @@ func inferSNMPProtocol(sysDescrLower, nameLower string) string {
 		strings.Contains(combined, "thermal") || strings.Contains(combined, "star"):
 		return "escpos"
 	default:
-		return "raw"
+		return "unknown"
 	}
 }

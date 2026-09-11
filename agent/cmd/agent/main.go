@@ -80,18 +80,14 @@ func (p *program) Start(s service.Service) error {
 }
 
 // Stop is invoked by the service manager (or on Ctrl+C in interactive mode).
-// It cancels the agent, waits for in-flight print jobs to drain, and only
-// then closes the SQLite queue so the database is never closed mid-write.
+// It cancels the agent, waits for Run() to complete its bounded shutdown, and
+// only then closes the SQLite queue so the database is never closed mid-write.
 func (p *program) Stop(s service.Service) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	// SCM allows ~30s for STOP_PENDING -> STOPPED, and the queue Close
-	// below must complete inside that window: a TerminateProcess during
-	// Close risks WAL damage. 8s always leaves headroom for Close; jobs
-	// interrupted mid-print converge via gateway lease expiry (UNKNOWN,
-	// never silent), and the agent's own 25s shutdown grace still bounds
-	// the normal (non-wedged) drain path inside Run.
+	// SCM control handling is time-bounded. Keep SQLite open until Run() has
+	// returned; otherwise a late worker can touch a closed WAL-backed database.
 	stopDone := make(chan struct{})
 	go func() {
 		p.wg.Wait()
@@ -99,25 +95,19 @@ func (p *program) Stop(s service.Service) error {
 	}()
 	select {
 	case <-stopDone:
-	case <-time.After(8 * time.Second):
-		log.Printf("WARNING: service stop timed out waiting for agent loop; closing queue anyway")
-	}
-	stopDone := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(stopDone)
-	}()
-	select {
-	case <-stopDone:
-	case <-time.After(8 * time.Second):
-		log.Printf("WARNING: service stop timed out waiting for agent loop after 8s; closing queue anyway")
-	}
-	if p.agent != nil {
-		if err := p.agent.Close(); err != nil {
-			log.Printf("WARNING: closing local queue failed: %v", err)
+		if p.agent != nil {
+			if err := p.agent.Close(); err != nil {
+				return fmt.Errorf("close local queue: %w", err)
+			}
 		}
+		return nil
+	case <-time.After(27 * time.Second):
+		// Do not close SQLite while Run() may still be using it. Windows SCM
+		// gives the service-control handler about 30s; returning an error here
+		// preserves database integrity at the cost of SCM escalating the stop.
+		log.Printf("ERROR: service stop exceeded 27s; refusing to close local queue while agent loop is still running")
+		return fmt.Errorf("agent shutdown exceeded 27s; local queue left open")
 	}
-	return nil
 }
 
 // setupLogging opens a continuously rotating log file beside the config file
@@ -141,6 +131,16 @@ func setupLogging(configPath string) (*lumberjack.Logger, error) {
 		return nil, fmt.Errorf("secure log directory %s: %w", logDir, err)
 	}
 	logPath := filepath.Join(logDir, "agent.log")
+	// Existing logs/backups may predate the hardened directory ACL; repair
+	// their explicit file DACLs as well. New lumberjack files inherit the
+	// protected directory ACL.
+	if matches, err := filepath.Glob(filepath.Join(logDir, "agent*.log*")); err == nil {
+		for _, path := range matches {
+			if err := config.EnsureSecureFileACL(path); err != nil {
+				return nil, fmt.Errorf("secure existing log %s: %w", path, err)
+			}
+		}
+	}
 
 	rotator := &lumberjack.Logger{
 		Filename:   logPath,

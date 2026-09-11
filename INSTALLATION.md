@@ -2,6 +2,15 @@
 
 The system has three runtime components: Gateway, Windows Agent/Desktop Manager, and the Odoo integration addon.
 
+
+### Gateway connection
+
+The Odoo addon is zero-configuration: no extra Python libraries and no
+server environment variables are required. The `gateway_api_key` is stored
+as entered (masked in the UI) and both `http://` and `https://` Gateway URLs
+work with any hostname or IP (LAN, public, or loopback) with no opt-in.
+
+
 ## 1. Gateway
 
 ```bash

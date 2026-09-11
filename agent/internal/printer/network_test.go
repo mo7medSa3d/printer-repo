@@ -66,6 +66,53 @@ func TestNetworkPrinterPrintSuccessAndOffline(t *testing.T) {
 	}
 }
 
+func TestNetworkPrinterCloseWriteDeliversEOF(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	data := []byte("complete receipt\n\n")
+	eof := make(chan error, 1)
+	received := make(chan []byte, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			eof <- err
+			return
+		}
+		defer conn.Close()
+		got, readErr := io.ReadAll(conn)
+		received <- got
+		eof <- readErr
+	}()
+
+	p := &NetworkPrinter{Address: ln.Addr().String()}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := p.Print(ctx, data); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		if string(got) != string(data) {
+			t.Fatalf("received %q, want %q", got, data)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for complete receipt and EOF")
+	}
+	select {
+	case err := <-eof:
+		if err != nil {
+			t.Fatalf("server read after CloseWrite: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for EOF")
+	}
+}
+
 func TestNetworkPrinterPrintEmptyAndOversized(t *testing.T) {
 	p := &NetworkPrinter{Address: "127.0.0.1:9100"}
 	if err := p.Print(context.Background(), []byte{}); err == nil {

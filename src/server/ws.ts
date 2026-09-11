@@ -31,6 +31,84 @@ const PG_NOTIFY_CHANNEL = "print_gateway_agent_jobs";
 const PG_SESSIONS_CHANNEL = "print_gateway_agent_sessions";
 const PG_NOTIFY_RECONNECT_MIN_MS = 1_000;
 const PG_NOTIFY_RECONNECT_MAX_MS = 30_000;
+const WS_MESSAGE_BUCKET_CAPACITY = 20;
+const WS_MESSAGE_REFILL_PER_SECOND = 5;
+
+class TokenBucket {
+  private tokens = WS_MESSAGE_BUCKET_CAPACITY;
+  private lastRefillMs = Date.now();
+
+  consume(cost = 1): boolean {
+    const now = Date.now();
+    const elapsed = Math.max(0, now - this.lastRefillMs) / 1000;
+    this.tokens = Math.min(
+      WS_MESSAGE_BUCKET_CAPACITY,
+      this.tokens + elapsed * WS_MESSAGE_REFILL_PER_SECOND,
+    );
+    this.lastRefillMs = now;
+    if (this.tokens < cost) return false;
+    this.tokens -= cost;
+    return true;
+  }
+}
+
+/**
+ * Persistent per-agent message rate limiters, keyed by agentId and
+ * independent of individual socket lifetimes. Reconnecting must NOT reset
+ * the bucket: token state is retained across reconnects and refreshed
+ * strictly from elapsed time inside TokenBucket.consume().
+ */
+type WsBucketEntry = { bucket: TokenBucket; lastSeenMs: number };
+const wsMessageBucketsByAgentId = new Map<string, WsBucketEntry>();
+const WS_BUCKET_IDLE_TTL_MS = 60 * 60 * 1000; // prune limiters idle > 1 hour
+const WS_BUCKET_GC_INTERVAL_MS = 10 * 60 * 1000; // GC runs every 10 minutes
+
+function getBucketForAgent(agentId: string): TokenBucket {
+  const now = Date.now();
+  const existing = wsMessageBucketsByAgentId.get(agentId);
+  if (existing) {
+    existing.lastSeenMs = now;
+    return existing.bucket;
+  }
+  const bucket = new TokenBucket();
+  wsMessageBucketsByAgentId.set(agentId, { bucket, lastSeenMs: now });
+  return bucket;
+}
+
+function pruneIdleWsBuckets(nowMs = Date.now()): number {
+  let pruned = 0;
+  for (const [agentId, entry] of wsMessageBucketsByAgentId) {
+    if (nowMs - entry.lastSeenMs > WS_BUCKET_IDLE_TTL_MS) {
+      wsMessageBucketsByAgentId.delete(agentId);
+      pruned += 1;
+    }
+  }
+  return pruned;
+}
+
+// Background GC: every 10 minutes prune agent limiters idle for > 1 hour
+// so the global Map cannot grow without bound from churned agentIds.
+const wsBucketGcTimer =
+  typeof setInterval === "function"
+    ? setInterval(() => {
+        try {
+          pruneIdleWsBuckets();
+        } catch (error) {
+          console.warn("[ws] bucket GC failed:", error);
+        }
+      }, WS_BUCKET_GC_INTERVAL_MS)
+    : null;
+if (wsBucketGcTimer && typeof (wsBucketGcTimer as { unref?: () => void }).unref === "function") {
+  (wsBucketGcTimer as { unref: () => void }).unref();
+}
+
+export function __pruneIdleWsBucketsForTests(nowMs?: number): number {
+  return pruneIdleWsBuckets(nowMs);
+}
+
+export function __clearWsBucketsForTests(): void {
+  wsMessageBucketsByAgentId.clear();
+}
 
 export function closeAgentSockets(agentId: string): void {
   const set = agentSockets.get(agentId);
@@ -414,6 +492,9 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
         aws.isAlive = true;
         aws.on("pong", () => { aws.isAlive = true; });
         trackAgentSocket(agent!.id, aws);
+        // No per-connection bucket init here: getBucketForAgent(agentId)
+        // lazily creates or reuses the persistent agent-level limiter, so
+        // reconnects retain token state instead of resetting evasion budget.
         wss.emit("connection", ws, req);
       });
     } catch (error) {
@@ -432,6 +513,12 @@ export function attachAgentWSS(server: HttpServer, options: AgentWSSOptions = {}
       const agentId = ws.agentId;
       if (!agentId) return;
       const raw = typeof data === "string" ? data : data.toString();
+      const bucket = getBucketForAgent(agentId);
+      if (!bucket.consume()) {
+        void incrementMetric("websocket_messages_rate_limited_total");
+        try { ws.close(4429, "message rate limit exceeded"); } catch {}
+        return;
+      }
       handleAgentMessage(agentId, raw).catch((e) => console.warn(`[ws] failed to handle message from agent ${agentId}:`, e));
     });
     ws.on("error", () => { try { ws.close(); } catch {} });

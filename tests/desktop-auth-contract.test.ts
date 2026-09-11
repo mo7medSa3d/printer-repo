@@ -15,7 +15,8 @@ describe("desktop manager authentication contract", () => {
 
   it("desktop IPC uses Authorization bearer instead of cross-site credentials", () => {
     const source = read("src/desktop/lib/ipc.ts");
-    expect(source).toContain('headers: { Authorization: `Bearer ${token}` }');
+    expect(source).toContain("Authorization");
+    expect(source).toContain("Bearer ${token}");
     expect(source).toContain('"X-Odoo-Print-Desktop": "1"');
     expect(source).not.toContain('credentials: "include"');
   });

@@ -222,7 +222,7 @@ func probeSNMPHost(ctx context.Context, host string, timeout time.Duration) *Dev
 		NetworkAddress: host,
 		Status:         "unknown",
 		Enabled:        true,
-		Capabilities:   map[string]interface{}{"discovered_via": "snmp", "sysDescr": sysDescr, "snmp_verified": true},
+		Capabilities:   map[string]interface{}{"discovered_via": "snmp", "sysDescr": sysDescr, "snmp_detected": true, "verification": "device_detected_only"},
 	}
 	// Try to parse manufacturer/model from sysDescr
 	if parts := strings.Fields(sysDescr); len(parts) >= 2 {

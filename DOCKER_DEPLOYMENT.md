@@ -2,6 +2,15 @@
 
 This stack runs the Next.js gateway and PostgreSQL together. The Agent connects to the gateway over HTTP/WebSocket; the Windows Agent remains installed on the client PC and is not containerized here.
 
+
+### Gateway connection
+
+The Odoo addon is zero-configuration: no extra Python libraries and no
+server environment variables are required. The `gateway_api_key` is stored
+as entered (masked in the UI) and both `http://` and `https://` Gateway URLs
+work with any hostname or IP (LAN, public, or loopback) with no opt-in.
+
+
 ## 1. Prepare the server
 
 Install Docker Engine and the Docker Compose plugin on the Linux server, then clone the repository:

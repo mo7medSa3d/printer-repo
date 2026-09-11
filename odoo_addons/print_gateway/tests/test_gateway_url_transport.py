@@ -9,20 +9,29 @@ from odoo.addons.print_gateway.models.gateway_config import PrintGatewayConfig
 
 class TestPrintGatewayURLTransport(TransactionCase):
     def _config(self, url):
-        with patch.object(PrintGatewayConfig, '_validate_gateway_host'):
-            return self.env['print_gateway.gateway_config'].create({
-                'company_id': self.env.company.id,
-                'gateway_url': url,
-                'gateway_api_key': 'test-key',
-            })
+        return self.env['print_gateway.gateway_config'].create({
+            'company_id': self.env.company.id,
+            'gateway_url': url,
+            'gateway_api_key': 'test-key',
+        })
 
     def test_https_gateway_url_is_accepted(self):
         config = self._config('https://gateway.example.com')
         self.assertEqual(config.gateway_url, 'https://gateway.example.com')
 
-    def test_http_gateway_url_is_accepted_for_explicit_deployment(self):
-        config = self._config('http://gateway.example.com')
-        self.assertEqual(config.gateway_url, 'http://gateway.example.com')
+    def test_http_gateway_url_is_accepted_for_any_host(self):
+        # Zero-configuration: plain HTTP works for LAN IPs, public hosts,
+        # and loopback with no environment opt-in.
+        for url in (
+            'http://gateway.example.com',
+            'http://192.168.1.50:3000',
+            'http://10.0.0.5:3000',
+            'http://localhost:3000',
+            'http://127.0.0.1:3000',
+        ):
+            with self.subTest(url=url):
+                config = self._config(url)
+                self.assertEqual(config.gateway_url, url.rstrip('/'))
 
     def test_unsupported_gateway_url_scheme_is_rejected(self):
         with self.assertRaises(ValidationError):

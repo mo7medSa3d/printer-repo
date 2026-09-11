@@ -32,26 +32,23 @@ export interface RuntimePaths {
 }
 
 export function normalizeGatewayUrl(raw: string): string {
-  const url = raw.trim();
-  if (!url) return "";
-  if (/\s/.test(url)) {
-    throw new Error("Gateway URL cannot contain whitespace");
-  }
-  if (!/^https?:\/\//i.test(url)) {
-    throw new Error("Gateway URL must use http:// or https://");
-  }
+  const value = raw.trim();
+  if (!value) return "";
+  if (/\s/.test(value)) throw new Error("Gateway URL cannot contain whitespace");
+  let parsed: URL;
   try {
-    const parsed = new URL(url);
-    if (parsed.username || parsed.password) {
-      throw new Error("Gateway URL cannot include embedded credentials");
-    }
-    if (parsed.search || parsed.hash) {
-      throw new Error("Gateway URL cannot include query strings or fragments");
-    }
-    return parsed.toString().replace(/\/+$/, "");
+    parsed = new URL(value);
   } catch {
     throw new Error("Gateway URL is invalid");
   }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("Gateway URL cannot include credentials, query strings, or fragments");
+  }
+  const scheme = parsed.protocol.toLowerCase();
+  // Zero-configuration: both http and https are accepted for any valid
+  // hostname or IP (LAN, public, loopback) with no environment opt-in.
+  if (scheme !== "https:" && scheme !== "http:") throw new Error("Gateway URL must use http:// or https://");
+  return parsed.toString().replace(/\/+$/, "");
 }
 
 function getManagerToken(): string | null {
@@ -90,6 +87,12 @@ export interface ManagerSessionStatus {
 }
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  // Browser fetch is intentionally retained only for the Vite preview harness.
+  // The packaged Tauri app uses the Rust gateway_request command so CSP can
+  // remain narrow and the WebView cannot call arbitrary remote origins.
+  if (isTauri) {
+    throw new Error("Tauri gateway requests must use gatewayRequest");
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -97,6 +100,32 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   } finally {
     clearTimeout(timer);
   }
+}
+
+interface GatewayResponse {
+  status: number;
+  body: string;
+}
+
+async function gatewayRequest(
+  gatewayUrl: string,
+  path: string,
+  method = "GET",
+  headers: Record<string, string> = {},
+  body?: string,
+): Promise<GatewayResponse> {
+  const base = normalizeGatewayUrl(gatewayUrl);
+  if (!isTauri) {
+    const response = await fetchWithTimeout(`${base}${path}`, {
+      method,
+      headers,
+      body,
+    });
+    return { status: response.status, body: await response.text() };
+  }
+  return invoke<GatewayResponse>("gateway_request", {
+    args: { path, method, headers, body: body ?? null },
+  });
 }
 
 export async function loginManager(
@@ -107,23 +136,22 @@ export async function loginManager(
   const base = normalizeGatewayUrl(gatewayUrl);
   if (!username.trim() || !password) throw new Error("Username and password are required");
 
-  const res = await fetchWithTimeout(`${base}/api/auth/manager/login`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Odoo-Print-Desktop": "1",
-    },
-    body: JSON.stringify({ username: username.trim(), password }),
-  });
-  const data = (await res.json().catch(() => ({}))) as {
+  const { status, body } = await gatewayRequest(
+    base,
+    "/api/auth/manager/login",
+    "POST",
+    { "Content-Type": "application/json", "X-Odoo-Print-Desktop": "1" },
+    JSON.stringify({ username: username.trim(), password }),
+  );
+  const data = (JSON.parse(body || "{}")) as {
     ok?: boolean;
     expiresAt?: string;
     accessToken?: string;
     error?: string;
   };
-  if (!res.ok || !data.ok || !data.accessToken) {
-    const err: Error & { status?: number } = new Error(data.error || `Manager login failed (${res.status})`);
-    err.status = res.status;
+  if (status < 200 || status >= 300 || !data.ok || !data.accessToken) {
+    const err: Error & { status?: number } = new Error(data.error || `Manager login failed (${status})`);
+    err.status = status;
     throw err;
   }
   setManagerToken(data.accessToken);
@@ -135,15 +163,13 @@ export async function getManagerSession(gatewayUrl: string): Promise<ManagerSess
   const token = getManagerToken();
   if (!token) return { authenticated: false };
 
-  const res = await fetchWithTimeout(`${base}/api/auth/manager/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401 || res.status === 403) {
+  const { status, body } = await gatewayRequest(base, "/api/auth/manager/me", "GET", { Authorization: `Bearer ${token}` });
+  if (status === 401 || status === 403) {
     clearManagerToken();
     return { authenticated: false };
   }
-  if (!res.ok) throw new Error(`Manager session check failed (${res.status})`);
-  const data = (await res.json()) as { authenticated?: boolean; exp?: number };
+  if (status < 200 || status >= 300) throw new Error(`Manager session check failed (${status})`);
+  const data = JSON.parse(body) as { authenticated?: boolean; exp?: number };
   if (!data.authenticated || typeof data.exp !== "number") {
     clearManagerToken();
     return { authenticated: false };
@@ -157,10 +183,7 @@ export async function logoutManager(gatewayUrl: string): Promise<void> {
   try {
     const headers: Record<string, string> = {};
     if (token) headers.Authorization = `Bearer ${token}`;
-    await fetchWithTimeout(`${base}/api/auth/manager/logout`, {
-      method: "POST",
-      headers,
-    });
+    await gatewayRequest(base, "/api/auth/manager/logout", "POST", headers);
   } finally {
     clearManagerToken();
   }
@@ -310,21 +333,18 @@ export async function fetchGatewayJobs(
     err.status = 401;
     throw err;
   }
-  const res = await fetchWithTimeout(`${base}/api/jobs?limit=50`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401 || res.status === 403) {
+  const { status, body } = await gatewayRequest(base, "/api/jobs?limit=50", "GET", { Authorization: `Bearer ${token}` });
+  if (status === 401 || status === 403) {
     clearManagerToken();
   }
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
+  if (status < 200 || status >= 300) {
     const err: Error & { status?: number } = new Error(
-      txt || `jobs fetch failed ${res.status}`
+      body || `jobs fetch failed ${status}`
     );
-    err.status = res.status;
+    err.status = status;
     throw err;
   }
-  return (await res.json()) as Record<string, unknown>[];
+  return JSON.parse(body) as Record<string, unknown>[];
 }
 
 /** Tray menu "Restart Agent" event. Returns the unlisten function. */
@@ -350,14 +370,7 @@ export async function fetchGatewayHealth(
   gatewayUrl: string
 ): Promise<Record<string, unknown>> {
   const base = normalizeGatewayUrl(gatewayUrl);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${base}/api/health`, {
-      signal: controller.signal,
-    });
-    return (await res.json()) as Record<string, unknown>;
-  } finally {
-    clearTimeout(timer);
-  }
+  const { status, body } = await gatewayRequest(base, "/api/health", "GET");
+  if (status < 200 || status >= 300) throw new Error(`Gateway health failed (${status})`);
+  return JSON.parse(body) as Record<string, unknown>;
 }

@@ -16,7 +16,9 @@ import (
 // - bounded concurrency (32), per-host 500ms, global 8s timeout
 // - context cancellation
 // - deduplication via stable ID
-// Returns DeviceInfos with ConnectionType network, Protocol raw, Status online.
+// Returns DeviceInfos with ConnectionType network and a verified TCP endpoint.
+// Port 9100 reachability does not identify the print language, so Protocol
+// remains unknown until an operator or a protocol-specific probe identifies it.
 func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 	// Global timeout for network discovery
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -177,7 +179,7 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 						DisplayName:    name,
 						PrinterType:    "unknown",
 						ConnectionType: "network",
-						Protocol:       "raw",
+						Protocol:       "unknown",
 						Endpoint:       target,
 						NetworkAddress: host,
 						Port:           port,
@@ -185,9 +187,9 @@ func discoverNetworkPrinters(ctx context.Context) ([]DeviceInfo, error) {
 						Enabled:        true,
 						Type:           "network",
 						Capabilities: map[string]interface{}{
-							"discovered_via": "tcp_raw_scan",
+							"discovered_via": "tcp_port_scan",
 							"port":           port,
-							"verification":   "candidate",
+							"verification":   "print_endpoint_verified",
 							"confidence":     "low",
 						},
 					}
@@ -360,10 +362,9 @@ func mergeNetworkDevices(devices []DeviceInfo) []DeviceInfo {
 		}
 
 		snmpV := isCapabilityVerified(existing.Capabilities, "snmp_verified") || isCapabilityVerified(d.Capabilities, "snmp_verified")
-		wsdV := isCapabilityVerified(existing.Capabilities, "wsd_verified") || isCapabilityVerified(d.Capabilities, "wsd_verified")
 		mdnsV := isCapabilityVerified(existing.Capabilities, "mdns_verified") || isCapabilityVerified(d.Capabilities, "mdns_verified")
 
-		if snmpV || wsdV || mdnsV {
+		if snmpV || mdnsV {
 			existing.Capabilities["verification"] = "verified"
 			existing.Capabilities["confidence"] = "high"
 		}

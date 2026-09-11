@@ -376,8 +376,19 @@ func TestSNMPParserAndProbe(t *testing.T) {
 		}
 	}()
 
+	printLn, err := net.Listen("tcp", "127.0.0.1:9100")
+	if err != nil {
+		// CI may already own 9100; use a deterministic ephemeral endpoint in
+		// that case and pass its port into the probe.
+		printLn, err = net.Listen("tcp", "127.0.0.1:0")
+	}
+	if err != nil {
+		t.Fatalf("listen TCP print endpoint: %v", err)
+	}
+	defer printLn.Close()
+	printerPort := printLn.Addr().(*net.TCPAddr).Port
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	dev, ok := probeSNMPPrinterWithPort(ctx, "127.0.0.1", localAddr.Port, 9100)
+	dev, ok := probeSNMPPrinterWithPort(ctx, "127.0.0.1", localAddr.Port, printerPort)
 	cancel()
 	close(stopServer)
 	_ = pc.Close()
@@ -401,8 +412,8 @@ func TestSNMPParserAndProbe(t *testing.T) {
 	if dev.Capabilities["serial"] != "VNC3R01234" {
 		t.Errorf("expected serial 'VNC3R01234', got %v", dev.Capabilities["serial"])
 	}
-	if dev.Port != 9100 {
-		t.Errorf("expected port 9100, got %d", dev.Port)
+	if dev.Port != printerPort {
+		t.Errorf("expected verified print port %d, got %d", printerPort, dev.Port)
 	}
 
 	// Test protocol heuristics
@@ -417,7 +428,7 @@ func TestSNMPParserAndProbe(t *testing.T) {
 		{"TSPL barcode printer", "", "tspl"},
 		{"EPSON TM-T20II Receipt POS", "TM-T20II", "escpos"},
 		{"Star Micronics TSP100 Thermal Receipt", "TSP100", "escpos"},
-		{"HP LaserJet MFP M426fdw", "LaserJet", "raw"},
+		{"HP LaserJet MFP M426fdw", "LaserJet", "unknown"},
 	}
 	for _, tc := range cases {
 		got := inferSNMPProtocol(strings.ToLower(tc.descr), strings.ToLower(tc.name))
@@ -523,23 +534,29 @@ func TestWSDProbeMatchesParser(t *testing.T) {
 	if d.NetworkAddress != "192.168.1.55" {
 		t.Errorf("expected NetworkAddress 192.168.1.55, got %q", d.NetworkAddress)
 	}
-	if d.Port != 9100 {
-		t.Errorf("expected Port 9100, got %d", d.Port)
+	if d.Port != 0 {
+		t.Errorf("expected Port 0 until a print transport is verified, got %d", d.Port)
 	}
-	if d.Status != "online" {
-		t.Errorf("expected Status online, got %q", d.Status)
+	if d.Status != "unknown" {
+		t.Errorf("expected Status unknown for discovery-only WSD, got %q", d.Status)
 	}
-	if d.Protocol != "raw" {
-		t.Errorf("expected Protocol raw, got %q", d.Protocol)
+	if d.Protocol != "" {
+		t.Errorf("expected empty Protocol until a print protocol is identified, got %q", d.Protocol)
 	}
-	if d.Capabilities["wsd_verified"] != true {
-		t.Errorf("expected wsd_verified to be true")
+	if d.Capabilities["wsd_detected"] != true {
+		t.Errorf("expected wsd_detected to be true")
+	}
+	if d.Capabilities["verification"] != "device_detected_only" {
+		t.Errorf("expected WSD detection-only verification state, got %v", d.Capabilities["verification"])
 	}
 	if d.Capabilities["discovered_via"] != "wsd" {
 		t.Errorf("expected discovered_via to be 'wsd'")
 	}
 	if d.Capabilities["wsd_endpoint"] != "http://192.168.1.55:5357/3fa85f64-5717-4562-b3fc-2c963f66afa6" {
 		t.Errorf("unexpected wsd_endpoint: %v", d.Capabilities["wsd_endpoint"])
+	}
+	if d.Protocol != "" || d.Port != 0 || d.Status != "unknown" {
+		t.Fatalf("WSD detection must not invent a print transport: protocol=%q port=%d status=%q", d.Protocol, d.Port, d.Status)
 	}
 	if d.Capabilities["uuid"] != "3fa85f64-5717-4562-b3fc-2c963f66afa6" {
 		t.Errorf("unexpected uuid: %v", d.Capabilities["uuid"])

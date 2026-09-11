@@ -91,6 +91,7 @@ fn main() {
             commands::pair_agent,
             commands::get_gateway_config,
             commands::set_gateway_config,
+            commands::gateway_request,
             commands::get_runtime_paths,
             commands::get_app_version,
             commands::get_printers,

@@ -62,13 +62,19 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestConfigValidateAcceptsHTTPAndHTTPSByDefault(t *testing.T) {
-	// Plain HTTP is accepted without any development opt-in (LAN appliances
-	// and local ports are commonly served over HTTP).
-	for _, url := range []string{"http://127.0.0.1:3000", "https://gateway.example.com"} {
+	// Zero-configuration: both http and https are accepted for any valid
+	// hostname or IP (LAN, public, loopback) with no environment opt-in.
+	for _, url := range []string{
+		"http://127.0.0.1:3000",
+		"http://192.168.1.50:3000",
+		"http://10.0.0.5:3000",
+		"http://gateway.example.com",
+		"https://gateway.example.com",
+	} {
 		c := &Config{}
 		c.Server.URL = url
 		if err := c.Validate(); err != nil {
-			t.Fatalf("expected %q to be valid by default, got %v", url, err)
+			t.Fatalf("expected %q to be valid, got %v", url, err)
 		}
 	}
 }

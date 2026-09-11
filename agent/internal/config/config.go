@@ -56,17 +56,24 @@ func (c *Config) ReprintAfterCrashEnabled() bool {
 }
 
 func validateServerURL(raw string) error {
-	u, err := url.Parse(raw)
+	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return fmt.Errorf("server.url invalid: %w", err)
 	}
-	if u.Host == "" {
+	if u.Hostname() == "" {
 		return fmt.Errorf("server.url host is empty")
 	}
-	if u.Scheme == "https" || u.Scheme == "http" {
-		return nil
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("server.url must not contain credentials, query strings, or fragments")
 	}
-	return fmt.Errorf("server.url scheme must be http or https, got %q", u.Scheme)
+	// Zero-configuration: both http and https are accepted for any valid
+	// hostname or IP (LAN, public, loopback) with no environment opt-in.
+	switch strings.ToLower(u.Scheme) {
+	case "https", "http":
+		return nil
+	default:
+		return fmt.Errorf("server.url scheme must be http or https, got %q", u.Scheme)
+	}
 }
 
 func defaultConfig() *Config {
@@ -174,6 +181,9 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create config dir %s: %w", dir, err)
 	}
+	if err := EnsureSecureDirectoryACL(dir); err != nil {
+		return fmt.Errorf("secure config dir %s: %w", dir, err)
+	}
 
 	toSave := *c
 	if c.Agent.Secret != "" {
@@ -204,11 +214,19 @@ func (c *Config) Save(path string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close temp config %s: %w", tmp, err)
 	}
+	// Protect the transient file itself before the atomic replace. On Windows,
+	// a restrictive parent directory does not rewrite an existing child DACL.
+	if err := EnsureSecureFileACL(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("secure temp config %s: %w", tmp, err)
+	}
 	if err := replaceFile(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("commit config %s: %w", tmp, err)
 	}
-	_ = os.Chmod(path, 0600)
+	if err := EnsureSecureFileACL(path); err != nil {
+		return fmt.Errorf("secure config file %s: %w", path, err)
+	}
 	return nil
 }
 

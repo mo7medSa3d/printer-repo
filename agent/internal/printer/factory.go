@@ -33,7 +33,7 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 		}
 		switch proto {
 		case "raw", "escpos", "zpl", "tspl":
-			return &NetworkPrinter{Address: cfg.Endpoint, Protocol: proto}, nil
+			return &NetworkPrinter{Address: cfg.Endpoint, Protocol: proto, RasterMaxWidth: RasterMaxWidthFromCapabilities(cfg.Capabilities)}, nil
 		case "ipp", "ipps":
 			// Network printer explicitly using IPP protocol -> treat as IPP
 			return NewIPPPrinter(cfg.Endpoint, cfg.Name)

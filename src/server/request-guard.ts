@@ -1,50 +1,18 @@
 import { IncomingMessage, type ServerResponse } from "http";
 
 /**
- * Hard ceiling for API request bodies (print payloads are capped at 5MB).
- *
- * IMPORTANT: this guard must never *tap* the original request stream.
- * Next.js 16 builds its Web Request from the same IncomingMessage, and any
- * prior consumption of the stream ("data" listener, `read()`, ...) makes
- * undici reject the request with "Response body object should not be
- * disturbed or locked" — which silently 500'd every POST/PUT/PATCH/DELETE
- * /api/* request in production.
- *
- * Strategy:
- *   - Declared Content-Length: validated from the header only; the request
- *     stream is passed through completely untouched.
- *   - Chunked / missing Content-Length: the body is fully buffered (bounded
- *     by the ceiling) and handed to Next.js inside a NEW IncomingMessage,
- *     so the original stream is consumed by this guard and never re-read.
+ * API body limit. The custom Next server must never consume the IncomingMessage
+ * stream before Next has converted it to a Web Request. In production Caddy
+ * also enforces this same 8 MiB ceiling at the edge.
  */
 export const MAX_API_BODY_BYTES = 8 * 1024 * 1024;
+export const MAX_CONCURRENT_CHUNKED_BYTES = 32 * 1024 * 1024;
 
 const MUTATING_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
+let reservedRequestBytes = 0;
 
 export interface ApiBodyGuardOptions {
   maxBytes?: number;
-}
-
-export class ApiBodyTooLargeError extends Error {
-  constructor() {
-    super("REQUEST_BODY_TOO_LARGE");
-    this.name = "ApiBodyTooLargeError";
-  }
-}
-
-export class ApiBodyAbortedError extends Error {
-  constructor() {
-    super("REQUEST_ABORTED");
-    this.name = "ApiBodyAbortedError";
-  }
-}
-
-function rejectOversizedRequest(res: ServerResponse): void {
-  if (res.headersSent || res.writableEnded) return;
-  res.statusCode = 413;
-  res.setHeader("content-type", "application/json; charset=utf-8");
-  res.setHeader("connection", "close");
-  res.end(JSON.stringify({ success: false, error: "REQUEST_BODY_TOO_LARGE" }));
 }
 
 function rejectRequest(res: ServerResponse, status: number, code: string): void {
@@ -55,79 +23,75 @@ function rejectRequest(res: ServerResponse, status: number, code: string): void 
   res.end(JSON.stringify({ success: false, error: code }));
 }
 
-/**
- * Reads the full request body into memory, rejecting once `maxBytes` is
- * exceeded. Resolves only for complete bodies.
- */
-export function readBoundedBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let settled = false;
+function reserve(bytes: number): boolean {
+  if (bytes < 0 || !Number.isSafeInteger(bytes)) return false;
+  if (reservedRequestBytes + bytes > MAX_CONCURRENT_CHUNKED_BYTES) return false;
+  reservedRequestBytes += bytes;
+  return true;
+}
 
-    const settle = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      req.removeListener("data", onData);
-      req.removeListener("end", onEnd);
-      req.removeListener("aborted", onAborted);
-      req.removeListener("error", onError);
-      if (error) reject(error);
-    };
-
-    const onData = (chunk: Buffer | string) => {
-      if (settled) return;
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += buf.length;
-      if (total > maxBytes) {
-        settle(new ApiBodyTooLargeError());
-        req.destroy();
-        return;
-      }
-      chunks.push(buf);
-    };
-    const onEnd = () => {
-      if (settled) return;
-      settle();
-      resolve(Buffer.concat(chunks));
-    };
-    const onAborted = () => settle(new ApiBodyAbortedError());
-    const onError = (err: Error) => settle(err);
-
-    req.on("data", onData);
-    req.on("end", onEnd);
-    req.on("aborted", onAborted);
-    req.on("error", onError);
-  });
+function release(bytes: number): void {
+  reservedRequestBytes = Math.max(0, reservedRequestBytes - bytes);
 }
 
 /**
- * Builds a fresh IncomingMessage carrying the buffered body. The original
- * request's stream is never handed downstream; only its (immutable)
- * metadata and the new body stream are.
+ * Release a previous reservation against the concurrent chunked budget.
+ * Idempotency is enforced by the caller via `releaseOnce`; this export
+ * exists so the reservation lifecycle is explicit and greppable, and so
+ * tests/edge proxies can reconcile the budget.
  */
-export function cloneRequestWithBody(source: IncomingMessage, body: Buffer): IncomingMessage {
-  const clone = new IncomingMessage(source.socket);
-  clone.method = source.method;
-  clone.url = source.url;
-  clone.headers = source.headers;
-  clone.httpVersion = source.httpVersion;
-  clone.httpVersionMajor = source.httpVersionMajor;
-  clone.httpVersionMinor = source.httpVersionMinor;
-  clone.complete = true;
-  clone.push(body);
-  clone.push(null);
-  return clone;
+export function releaseChunkedBody(bytes: number): void {
+  release(bytes);
+}
+
+export function getReservedRequestBytes(): number {
+  return reservedRequestBytes;
+}
+
+/** Payload-bearing endpoints whose bodies reserve the concurrency budget. */
+function isPayloadBearingEndpoint(url: string | undefined): boolean {
+  if (!url) return false;
+  return url.startsWith("/api/agent/") || url.startsWith("/api/print/");
 }
 
 /**
- * Guards a mutating /api/* request.
+ * Pre-auth check: runs BEFORE any byte is reserved against
+ * MAX_CONCURRENT_CHUNKED_BYTES so unauthenticated Slowloris/chunked
+ * streams cannot exhaust the 32 MiB budget and 503 legitimate traffic.
+ */
+function hasAuthHeaders(req: IncomingMessage): boolean {
+  const headers = req.headers;
+  const authorization = headers["authorization"];
+  if (typeof authorization === "string" && authorization.trim() !== "") return true;
+  if (Array.isArray(authorization) && authorization.some((v) => v.trim() !== "")) return true;
+  const apiKey = headers["x-api-key"];
+  if (typeof apiKey === "string" && apiKey.trim() !== "") return true;
+  if (Array.isArray(apiKey) && apiKey.some((v) => v.trim() !== "")) return true;
+  const cookie = headers["cookie"];
+  if (typeof cookie === "string" && cookie.trim() !== "") return true;
+  if (Array.isArray(cookie) && cookie.some((v) => v.trim() !== "")) return true;
+  return false;
+}
+
+/**
+ * Admission-only request guard. It validates Content-Length and reserves the
+ * maximum admitted bytes without touching the request stream. Chunked requests
+ * are rejected with 411 because enforcing a hard byte ceiling without consuming
+ * or replacing the stream would require the exact clone/lock workaround that
+ * previously broke Next.js 16. Edge proxies should enforce Content-Length/body
+ * limits before forwarding.
  *
- * @returns the request to pass to the framework — either the ORIGINAL
- * request (declared size within limits: stream untouched) or a fresh
- * request wrapping the buffered chunked body. Returns `null` when the
- * response was already answered (413/499/400) and the connection must not
- * be forwarded.
+ * Pre-auth DoS hardening:
+ * - Authentication headers (`Authorization`, `X-API-Key`, cookies) are
+ *   inspected BEFORE any byte is reserved against
+ *   MAX_CONCURRENT_CHUNKED_BYTES.
+ * - Unauthenticated chunked requests to payload-bearing endpoints
+ *   (`/api/agent/`, `/api/print/`) are rejected with 401 UNAUTHORIZED
+ *   without reserving budget.
+ * - Reservation applies ONLY to payload-bearing endpoints; other /api/*
+ *   routes are size-checked but never charge the concurrency budget.
+ * - Every reservation is released via releaseChunkedBody() on response
+ *   `finish`/`close` and request `close`/`error`.
  */
 export async function guardApiRequest(
   req: IncomingMessage,
@@ -135,38 +99,60 @@ export async function guardApiRequest(
   options: ApiBodyGuardOptions = {},
 ): Promise<IncomingMessage | null> {
   const maxBytes = options.maxBytes ?? MAX_API_BODY_BYTES;
-
   if (!req.url?.startsWith("/api/")) return req;
   if (!MUTATING_METHODS.includes(req.method ?? "")) return req;
 
+  const payloadBearing = isPayloadBearingEndpoint(req.url);
+
   const rawLength = req.headers["content-length"];
-  if (rawLength !== undefined) {
-    const length = Number(rawLength);
-    if (!Number.isInteger(length) || length < 0 || length > maxBytes) {
-      rejectOversizedRequest(res);
-      // Stop consuming the declared oversized body once the 413 is flushed.
-      res.once("finish", () => req.destroy());
+  if (rawLength === undefined) {
+    // Chunked / missing length: auth first, never allocate for anonymous
+    // Slowloris streams on payload-bearing endpoints.
+    if (payloadBearing && !hasAuthHeaders(req)) {
+      rejectRequest(res, 401, "UNAUTHORIZED");
+      req.destroy();
       return null;
     }
-    // Declared size is within the ceiling: pass the request through
-    // WITHOUT attaching any stream listeners.
-    return req;
-  }
-
-  // Chunked transfer (or missing Content-Length): buffer with a hard cap,
-  // then hand a fresh request to the framework.
-  try {
-    const body = await readBoundedBody(req, maxBytes);
-    return cloneRequestWithBody(req, body);
-  } catch (error) {
-    if (error instanceof ApiBodyTooLargeError) {
-      rejectOversizedRequest(res);
-    } else if (error instanceof ApiBodyAbortedError) {
-      rejectRequest(res, 499, "REQUEST_ABORTED");
-    } else {
-      rejectRequest(res, 400, "REQUEST_BODY_INVALID");
-    }
+    rejectRequest(res, 411, "CONTENT_LENGTH_REQUIRED");
     req.destroy();
     return null;
   }
+
+  const length = Number(rawLength);
+  if (!Number.isInteger(length) || length < 0 || length > maxBytes) {
+    rejectRequest(res, 413, "REQUEST_BODY_TOO_LARGE");
+    req.destroy();
+    return null;
+  }
+
+  // Non-payload endpoints are size-checked only; they never reserve the
+  // shared 32 MiB concurrency budget.
+  if (!payloadBearing) return req;
+
+  // Auth is inspected before allocating any bytes against
+  // MAX_CONCURRENT_CHUNKED_BYTES. Unauthenticated declared-length requests
+  // forward WITHOUT reserving budget so the route handler still owns the
+  // 401/400 contract, while anonymous streams can never exhaust the 32 MiB
+  // concurrency budget and 503 legitimate traffic.
+  if (!hasAuthHeaders(req)) {
+    return req;
+  }
+
+  if (!reserve(length)) {
+    rejectRequest(res, 503, "REQUEST_BODY_CAPACITY_EXCEEDED");
+    req.destroy();
+    return null;
+  }
+
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    releaseChunkedBody(length);
+  };
+  res.once("finish", releaseOnce);
+  res.once("close", releaseOnce);
+  req.once("close", releaseOnce);
+  req.once("error", releaseOnce);
+  return req;
 }

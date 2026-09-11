@@ -11,6 +11,10 @@ import (
 )
 
 const (
+	// SafeRasterMaxWidth is the conservative default when printer paper
+	// capability is unknown. 384 dots fits common 58mm thermal media; an
+	// explicitly configured max_paper_width can raise this to the actual limit.
+	SafeRasterMaxWidth         = 384
 	maxRasterWidth             = 576
 	DefaultRasterSliceHeight   = 256
 	LowBufferRasterSliceHeight = 128
@@ -20,15 +24,31 @@ const (
 // Breaking large thermal prints into discrete vertical bands (default 256px) prevents
 // printer buffer overflows and ensures 100% Arabic text and QR code compatibility on budget printers.
 func JPEGToESCPOS(data []byte) ([]byte, error) {
-	return JPEGToESCPOSWithBanding(data, DefaultRasterSliceHeight)
+	return JPEGToESCPOSWithMaxWidth(data, DefaultRasterSliceHeight, SafeRasterMaxWidth)
+}
+
+// JPEGToESCPOSWithMaxWidth converts a JPEG raster while respecting the
+// configured printer width. A non-positive maxWidth uses SafeRasterMaxWidth.
+func JPEGToESCPOSWithMaxWidth(data []byte, sliceHeight, maxWidth int) ([]byte, error) {
+	if maxWidth <= 0 {
+		maxWidth = SafeRasterMaxWidth
+	}
+	return jpegToESCPOS(data, sliceHeight, maxWidth)
 }
 
 // JPEGToESCPOSWithBanding slices the raster into chunks of at most sliceHeight pixels.
 // Note: Hardcoded cuts have been removed from this function so cutting is governed solely
 // by peripheral profile configurations in WrapPeripheralCommands.
 func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
+	return jpegToESCPOS(data, sliceHeight, maxRasterWidth)
+}
+
+func jpegToESCPOS(data []byte, sliceHeight, maxWidth int) ([]byte, error) {
 	if sliceHeight <= 0 {
 		sliceHeight = DefaultRasterSliceHeight
+	}
+	if maxWidth <= 0 {
+		maxWidth = SafeRasterMaxWidth
 	}
 	cfg, err := decodeJPEGConfig(data)
 	if err != nil {
@@ -43,13 +63,10 @@ func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
 		return nil, fmt.Errorf("decode JPEG: %w", err)
 	}
 
-	// Dynamic target width: 384px for 58mm paper, 576px for 80mm paper
-	targetWidth := maxRasterWidth
-	if img.Bounds().Dx() <= 384 {
-		targetWidth = 384
-	}
-	if img.Bounds().Dx() > targetWidth {
-		img = resizeNearest(img, targetWidth)
+	// Never exceed the printer's declared raster width. This is deliberately
+	// capability-driven rather than inferred from the input image dimensions.
+	if img.Bounds().Dx() > maxWidth {
+		img = resizeNearest(img, maxWidth)
 	}
 
 	w := img.Bounds().Dx()

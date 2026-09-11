@@ -68,18 +68,18 @@ suite("manager authentication hardening", () => {
     expect(verifyManagerToken(`${data}.${signature}`)).toBeNull();
   });
 
-  it("accepts a valid scrypt password hash", () => {
+  it("accepts a valid scrypt password hash", async () => {
     const salt = "principal-audit-salt";
     const hash = scryptSync("correct-password", salt, 32).toString("hex");
     process.env.MANAGER_PASSWORD_HASH = `${salt}:${hash}`;
-    expect(verifyManagerPassword("manager", "correct-password")).toBe(true);
-    expect(verifyManagerPassword("manager", "wrong-password")).toBe(false);
+    await expect(verifyManagerPassword("manager", "correct-password")).resolves.toBe(true);
+    await expect(verifyManagerPassword("manager", "wrong-password")).resolves.toBe(false);
   });
 
-  it("rejects plaintext passwords in production", () => {
+  it("rejects plaintext passwords in production", async () => {
     delete process.env.MANAGER_PASSWORD_HASH;
     process.env.MANAGER_PASSWORD = "plain-password";
     vi.stubEnv("NODE_ENV", "production");
-    expect(verifyManagerPassword("manager", "plain-password")).toBe(false);
+    await expect(verifyManagerPassword("manager", "plain-password")).resolves.toBe(false);
   });
 });

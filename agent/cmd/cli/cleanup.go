@@ -14,26 +14,12 @@ import (
 // flag-based CLI parser runs. The existing CLI binary is already bundled with
 // the Desktop Manager, so cleanup does not require shipping another binary.
 func init() {
-	if len(os.Args) < 3 || os.Args[1] != "jobs" || os.Args[2] != "cleanup" {
+	configPath, jsonOutput, includeUnknown, ok, err := parseCleanupArgs(os.Args[1:])
+	if !ok {
 		return
 	}
-
-	configPath := config.DefaultConfigPath()
-	jsonOutput := false
-	includeUnknown := false
-	for i := 3; i < len(os.Args); i++ {
-		switch os.Args[i] {
-		case "--json", "-json":
-			jsonOutput = true
-		case "--include-unknown":
-			includeUnknown = true
-		case "--config", "-config":
-			if i+1 >= len(os.Args) || os.Args[i+1] == "" {
-				fatalCleanup("--config requires a path")
-			}
-			configPath = os.Args[i+1]
-			i++
-		}
+	if err != nil {
+		fatalCleanup(err.Error())
 	}
 
 	dbPath := config.QueueDBPath(configPath)
@@ -58,6 +44,53 @@ func init() {
 		fmt.Printf("Removed %d provably terminal local print jobs. %d unknown-outcome record(s) were KEPT: verify the printer, then re-run with --include-unknown once reconciled.\n", deleted, remainingUnknown)
 	}
 	os.Exit(0)
+}
+
+// parseCleanupArgs accepts both documented forms:
+//
+//	jobs cleanup --config <path>
+//	--config <path> jobs cleanup
+//
+// Global flags may therefore appear before or after the maintenance command,
+// while unrelated arguments make the command not match and are left to the
+// normal CLI parser. This keeps cleanup deterministic without depending on the
+// standard flag package's "flags before first positional" rule.
+func parseCleanupArgs(args []string) (configPath string, jsonOutput, includeUnknown, matched bool, err error) {
+	configPath = config.DefaultConfigPath()
+	jobsIndex, cleanupIndex := -1, -1
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "jobs":
+			if jobsIndex != -1 {
+				return "", false, false, true, fmt.Errorf("jobs cleanup command may appear only once")
+			}
+			jobsIndex = i
+		case "cleanup":
+			if cleanupIndex != -1 {
+				return "", false, false, true, fmt.Errorf("jobs cleanup command may appear only once")
+			}
+			cleanupIndex = i
+		}
+	}
+	if jobsIndex == -1 || cleanupIndex != jobsIndex+1 {
+		return "", false, false, false, nil
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json", "-json":
+			jsonOutput = true
+		case "--include-unknown":
+			includeUnknown = true
+		case "--config", "-config":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return "", false, false, true, fmt.Errorf("--config requires a path")
+			}
+			configPath = args[i+1]
+			i++
+		}
+	}
+	return configPath, jsonOutput, includeUnknown, true, nil
 }
 
 // cleanupJobs removes provably terminal rows, and only when explicitly

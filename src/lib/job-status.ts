@@ -73,16 +73,16 @@ export function isTerminal(status: JobStatus): boolean {
   return status === "success" || status === "failed" || status === "expired";
 }
 
-// Agents may report expiration of a delivered job that has crossed its
-// business TTL before local processing; the API additionally verifies that
-// expiresAt has actually passed before accepting the terminal transition.
-// Claiming itself remains server-side only.
+// Expiration is a server-controlled terminal transition. Agents may request it
+// only through the dedicated route branch, which atomically enforces expires_at
+// <= NOW() plus claim fencing. It is intentionally absent from the general
+// transition table so an agent cannot arbitrarily terminalize a live job.
 const ALLOWED_TRANSITIONS: Record<JobStatus, ReadonlySet<JobStatus>> = {
-  queued: new Set(["expired"]),
+  queued: new Set([]),
   // claimed -> queued is the agent's explicit fenced rejection path (see the
   // header). It is never a general re-queueing capability.
-  claimed: new Set(["printing", "failed", "queued", "expired"]),
-  printing: new Set(["success", "failed", "expired"]),
+  claimed: new Set(["printing", "failed", "queued"]),
+  printing: new Set(["success", "failed"]),
   // Terminal states have NO outgoing transitions in the general table.
   // The failed -> success late physical-outcome override is an explicitly
   // authorized exception passed in via options, never a default.
@@ -119,6 +119,15 @@ const LATE_SUCCESS_ERROR_MARKERS = ["AGENT_EXECUTION_TIMEOUT", "AGENT_RESTART_DU
 /** A late success override is only meaningful while the failure is recent. */
 export const LATE_SUCCESS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Physical grace window for prints that completed right at the TTL
+ * boundary. An agent reporting success on a recently expired job (expiry
+ * within this window) is recorded as success with physical outcome
+ * PRINTED_POST_EXPIRATION instead of a blind 409 Conflict.
+ */
+export const EXPIRED_LATE_SUCCESS_GRACE_MS = 5 * 60 * 1000;
+export const PRINTED_POST_EXPIRATION_MARKER = "PRINTED_POST_EXPIRATION";
+
 export interface LateSuccessCandidate {
   status: JobStatus;
   error: string | null;
@@ -131,6 +140,29 @@ export function isLateSuccessAllowed(job: LateSuccessCandidate, nowMs: number): 
   if (!LATE_SUCCESS_ERROR_MARKERS.some((marker) => error.startsWith(marker))) return false;
   const age = nowMs - new Date(job.updatedAt).getTime();
   return age >= 0 && age <= LATE_SUCCESS_MAX_AGE_MS;
+}
+
+export interface ExpiredLateSuccessCandidate {
+  status: JobStatus;
+  expiresAt: Date | string;
+  updatedAt: Date | string;
+}
+
+/**
+ * An expired job may still be flipped to success when the agent proves the
+ * physical print completed within the grace window after TTL expiry.
+ * The window is measured from the database TTL (expiresAt), not from when
+ * the sweeper happened to terminalize the row.
+ */
+export function isExpiredLateSuccessAllowed(
+  job: ExpiredLateSuccessCandidate,
+  nowMs: number,
+): boolean {
+  if (job.status !== "expired") return false;
+  const expiresMs = new Date(job.expiresAt).getTime();
+  if (!Number.isFinite(expiresMs)) return false;
+  const age = nowMs - expiresMs;
+  return age >= 0 && age <= EXPIRED_LATE_SUCCESS_GRACE_MS;
 }
 
 /**
