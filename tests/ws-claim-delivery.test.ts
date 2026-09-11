@@ -510,10 +510,13 @@ suite("WS claim-before-delivery", () => {
     }));
     expect(printing.status).toBe(200);
     await pool().query(`UPDATE print_jobs SET expires_at = now() - interval '1 second' WHERE id = 'job_exp_print'`);
+    // The agent explicitly reports expiry: the dedicated expired branch
+    // terminalizes the row (never the generic success write), stamping
+    // delivery evidence because the fenced report proved the hold.
     const expired = await agentJobsPATCH(agentRequest(f, "PATCH", {
-      jobId: "job_exp_print", status: "success", claimToken: claim!.claimToken,
+      jobId: "job_exp_print", status: "expired", claimToken: claim!.claimToken,
     }));
-    expect(expired.status).toBe(409); // expiry branch, not the success write
+    expect(expired.status).toBe(200); // explicit expiry acknowledgement
     const body = await expired.json();
     expect(body.status).toBe("expired");
     expect(body.physicalOutcome).toBe("unknown");
@@ -521,6 +524,36 @@ suite("WS claim-before-delivery", () => {
     expect(row.status).toBe("expired");
     expect(row.error).toMatch(/^JOB_EXPIRED_DURING_PRINT/);
     expect(row.delivered_at).not.toBeNull(); // justified: fenced report proved the hold
+  });
+
+  it("agent success within the post-expiry grace window records PRINTED_POST_EXPIRATION", async () => {
+    // A print physically completed right at the TTL boundary: the row was
+    // already terminalized to expired by the sweep (expiry 1s ago, inside
+    // EXPIRED_LATE_SUCCESS_GRACE_MS), then the claim holder reports the
+    // completed print. Recorded as success with PRINTED_POST_EXPIRATION
+    // rather than a blind 409.
+    await insertQueuedJob(f, "job_exp_late_success");
+    const claim = await claimJobForDelivery("job_exp_late_success", f.agentId);
+    const printing = await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_exp_late_success", status: "printing", claimToken: claim!.claimToken,
+    }));
+    expect(printing.status).toBe(200);
+    await pool().query(`UPDATE print_jobs SET expires_at = now() - interval '1 second' WHERE id = 'job_exp_late_success'`);
+    await sweepPrintJobs();
+    const swept = await jobRow("job_exp_late_success");
+    expect(swept.status).toBe("expired");
+    const late = await agentJobsPATCH(agentRequest(f, "PATCH", {
+      jobId: "job_exp_late_success", status: "success", claimToken: claim!.claimToken,
+    }));
+    expect(late.status).toBe(200);
+    const body = await late.json();
+    expect(body.status).toBe("success");
+    expect(body.physicalOutcome).toBe("printed");
+    expect(body.physicalDetail).toBe("PRINTED_POST_EXPIRATION");
+    const row = await jobRow("job_exp_late_success");
+    expect(row.status).toBe("success");
+    expect(row.error).toMatch(/^PRINTED_POST_EXPIRATION/);
+    expect(row.delivered_at).not.toBeNull();
   });
 
   it("poll stale-reclaim refuses a job at the delivery-attempt ceiling without claiming it", async () => {
