@@ -352,9 +352,21 @@ func preFlightSpoolerCheck(spoolerName string) error {
 // Win32 WritePrinter is inherently synchronous: a wedged call blocks until
 // Win32 returns, so caller-side timeouts isolate the CALLER (see the select
 // below) while the per-printer session mutex isolates OTHER printers.
-// tryBeginSession acquires this printer's session slot with a bounded waiting lock (15-second timeout).
-// A refusal is a plain pre-dispatch failure: no document bytes were ever submitted.
-func (p *SpoolerPrinter) tryBeginSession(ctx context.Context) error {
+// tryBeginSession acquires this printer's session slot WITHOUT waiting:
+// it is a pure try-lock. Contention is refused immediately as a plain
+// pre-dispatch failure (no document bytes were ever submitted), so rapid
+// overlap can never accumulate waiters behind a wedged session.
+func (p *SpoolerPrinter) tryBeginSession() error {
+	if p.sessionMu.TryLock() {
+		return nil
+	}
+	return fmt.Errorf("%w: spooler session for %q is already in progress", ErrPrinterNotReady, p.SpoolerName)
+}
+
+// waitBeginSession acquires this printer's session slot with a bounded
+// waiting lock (15-second timeout), honoring ctx cancellation. Used by
+// Print to serialize full sessions per printer.
+func (p *SpoolerPrinter) waitBeginSession(ctx context.Context) error {
 	const lockTimeout = 15 * time.Second
 	deadline := time.NewTimer(lockTimeout)
 	defer deadline.Stop()
@@ -417,7 +429,7 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	}
 
 	// Serialize full sessions per printer with a bounded 15s wait.
-	if err := p.tryBeginSession(ctx); err != nil {
+	if err := p.waitBeginSession(ctx); err != nil {
 		return err
 	}
 	defer p.endSession()

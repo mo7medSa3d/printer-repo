@@ -130,11 +130,11 @@ func TestBoundedPreflightSingleFlightRefusesOverlap(t *testing.T) {
 
 func TestSpoolerSessionTryLockRefusesOverlap(t *testing.T) {
 	p := &SpoolerPrinter{Name: "T", SpoolerName: "session_mutex_test"}
-	if err := p.tryBeginSession(context.Background()); err != nil {
+	if err := p.tryBeginSession(); err != nil {
 		t.Fatalf("first session must acquire the slot, got %v", err)
 	}
 	start := time.Now()
-	err := p.tryBeginSession(context.Background())
+	err := p.tryBeginSession()
 	elapsed := time.Since(start)
 	if err == nil {
 		p.endSession()
@@ -150,7 +150,7 @@ func TestSpoolerSessionTryLockRefusesOverlap(t *testing.T) {
 		t.Fatalf("pre-dispatch refusal must not be classified unknown: %v", err)
 	}
 	p.endSession()
-	if err := p.tryBeginSession(context.Background()); err != nil {
+	if err := p.tryBeginSession(); err != nil {
 		t.Fatalf("slot must be reusable after the session ends, got %v", err)
 	}
 	p.endSession()
