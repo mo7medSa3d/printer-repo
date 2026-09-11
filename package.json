@@ -1,11 +1,11 @@
 {
   "name": "odoo-print-gateway",
   "version": "1.0.0",
-  "description": "Odoo Local Print Agent — cloud print gateway (Next.js + PostgreSQL + Drizzle), Windows Go agent, and Tauri desktop manager",
+  "description": "Odoo Local Print Agent \u2014 cloud print gateway (Next.js + PostgreSQL + Drizzle), Windows Go agent, and Tauri desktop manager",
   "license": "MIT",
   "private": true,
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.15.0"
   },
   "scripts": {
     "dev": "tsx server.ts",
@@ -36,29 +36,31 @@
     "lucide-react": "^1.41.0",
     "nanoid": "^6.0.1",
     "next": "16.3.4",
-    "pg": "8.20.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
+    "pg": "8.23.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "tailwind-merge": "^3.6.0",
     "ws": "8.21.3",
-    "zod": "^4.5.4",
-    "tsx": "^4.23.13"
+    "zod": "^4.6.1",
+    "tsx": "^4.23.13",
+    "drizzle-kit": "0.31.10"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "4.1.17",
+    "@tailwindcss/postcss": "4.3.3",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
-    "drizzle-kit": "0.31.10",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.3.4",
     "jsdom": "^30.0.1",
     "postcss": "^8.5.28",
-    "tailwindcss": "4.1.17",
-    "vitest": "^4.1.11"
+    "tailwindcss": "4.3.3",
+    "vitest": "^4.1.11",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.2"
   },
   "overrides": {
     "esbuild": "0.28.2"

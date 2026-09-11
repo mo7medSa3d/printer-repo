@@ -81,7 +81,7 @@ export default function LoginPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-ink">Sign in to continue</h1>
             <p className="mt-1 text-sm text-ink-3">
-              Manager access to agents, printers and the live print queue.
+              Manager access to agents, printers and the current print queue.
             </p>
           </div>
         </div>
@@ -98,7 +98,8 @@ export default function LoginPage() {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
-              autoFocus
+              required
+              aria-invalid={err ? true : undefined}
             />
           </Field>
 
@@ -110,6 +111,8 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
+              required
+              aria-invalid={err ? true : undefined}
             />
           </Field>
 
@@ -128,9 +131,8 @@ export default function LoginPage() {
           <div id="login-help" className="surface-accent flex items-start gap-2.5 rounded-xl border border-edge-accent p-3.5">
             <ShieldCheck className="mt-0.5 h-4 w-4 flex-shrink-0 text-brand" aria-hidden />
             <p className="text-xs leading-relaxed text-ink-2">
-              Your session is a short-lived, revocable cookie. Credentials come from the gateway environment (
-              <code className="font-mono text-ink">MANAGER_USERNAME</code> /{" "}
-              <code className="font-mono text-ink">MANAGER_PASSWORD_HASH</code>).
+              Your session is a short-lived, revocable cookie issued after the
+              manager credentials configured on the Gateway are verified.
             </p>
           </div>
         </form>

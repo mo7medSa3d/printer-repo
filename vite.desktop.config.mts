@@ -29,6 +29,11 @@ const previewHarness = {
   },
 };
 
+const additionalAllowedHosts = (process.env.VITE_ALLOWED_HOSTS ?? "")
+  .split(",")
+  .map((host) => host.trim())
+  .filter(Boolean);
+
 export default defineConfig({
   root: "src/desktop",
   plugins: [react(), previewHarness],
@@ -45,8 +50,6 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    // The dev server is sometimes reached through a proxied preview host
-    // (sandboxes, remote review) rather than plain localhost.
-    allowedHosts: true,
+    allowedHosts: ["localhost", "127.0.0.1", ...additionalAllowedHosts],
   },
 });

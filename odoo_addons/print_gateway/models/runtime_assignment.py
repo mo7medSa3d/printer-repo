@@ -16,8 +16,9 @@ class PrintGatewayRuntimeAgentAssignment(models.Model):
         domain="[('parent_id', '=', False)]",
     )
     branch_id = fields.Many2one(
-        "res.company", string="Odoo Branch", required=True,
-        ondelete="restrict", index=True, domain="[('parent_id', '=', company_id)]",
+        "res.company", string="Odoo Branch", required=False,
+        ondelete="restrict", index=True,
+        domain="['|', ('parent_id', '=', company_id), ('id', '=', company_id)]",
     )
     runtime_agent_id = fields.Char(
         string="Gateway Runtime Agent", required=True, copy=False, index=True,
@@ -60,13 +61,17 @@ class PrintGatewayRuntimeAgentAssignment(models.Model):
     @api.constrains("company_id", "branch_id", "runtime_agent_id")
     def _check_assignment(self):
         for record in self:
-            if record.company_id not in self.env.companies:
+            if record.company_id not in self.env.user.company_ids:
                 raise ValidationError(_("The selected Odoo Company is not available to the current user."))
             if record.company_id.parent_id:
                 raise ValidationError(_("Odoo Company must be a parent Company, not a Branch."))
-            if record.branch_id not in self.env.companies:
-                raise ValidationError(_("The selected Odoo Branch is not available to the current user."))
-            if not record.branch_id.parent_id or record.branch_id.parent_id != record.company_id:
-                raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
+            # Standalone organizations without child branches leave branch
+            # empty (company-wide assignment). Only a DISTINCT, set branch
+            # must belong to the selected company.
+            if record.branch_id and record.branch_id != record.company_id:
+                if record.branch_id not in self.env.user.company_ids:
+                    raise ValidationError(_("The selected Odoo Branch is not available to the current user."))
+                if not record.branch_id.parent_id or record.branch_id.parent_id != record.company_id:
+                    raise ValidationError(_("Odoo Branch must belong directly to the selected Odoo Company."))
             if not isinstance(record.runtime_agent_id, str) or not record.runtime_agent_id.strip():
                 raise ValidationError(_("A non-empty Gateway runtime agent ID is required."))

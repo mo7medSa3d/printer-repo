@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
+use std::collections::HashMap;
 
 use crate::agent;
 use crate::logging;
@@ -227,6 +228,73 @@ fn run_pairing(app: tauri::AppHandle, code: &str, gateway_url: &str) -> Result<S
     // the agent id and a success hint; keep that contract on the Rust side.
     logging::info(&format!("pairing succeeded: {stdout}"));
     Ok(stdout)
+}
+
+#[derive(Deserialize)]
+pub struct GatewayRequestArgs {
+    pub path: String,
+    pub method: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub body: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct GatewayResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+fn method_from_str(value: &str) -> Result<reqwest::Method, String> {
+    value.parse::<reqwest::Method>().map_err(|_| "unsupported HTTP method".into())
+}
+
+fn configured_gateway_origin() -> Result<url::Url, String> {
+    let cfg = get_gateway_config();
+    if cfg.url.is_empty() {
+        return Err("Gateway URL is not configured".into());
+    }
+    normalize_gateway_url(&cfg.url)?.parse::<url::Url>().map_err(|e| format!("invalid configured gateway URL: {e}"))
+}
+
+#[tauri::command]
+pub async fn gateway_request(args: GatewayRequestArgs) -> Result<GatewayResponse, String> {
+    let origin = configured_gateway_origin()?;
+    let path = args.path.trim();
+    if !path.starts_with("/api/") || path.contains("..") || path.contains('\\') {
+        return Err("gateway request path must be an API-relative path".into());
+    }
+    let target = origin.join(path.trim_start_matches('/')).map_err(|e| format!("invalid gateway request path: {e}"))?;
+    if target.scheme() != origin.scheme() || target.host_str() != origin.host_str() || target.port_or_known_default() != origin.port_or_known_default() {
+        return Err("gateway request must stay on the configured Gateway origin".into());
+    }
+    let method = method_from_str(&args.method)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("build HTTP client: {e}"))?;
+    let mut request = client.request(method, target);
+    for (name, value) in args.headers {
+        if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("cookie") {
+            continue;
+        }
+        request = request.header(name, value);
+    }
+    if let Some(body) = args.body {
+        if body.len() > 8 * 1024 * 1024 {
+            return Err("gateway request body exceeds 8 MiB".into());
+        }
+        request = request.body(body);
+    }
+    let response = request.send().await.map_err(|e| format!("Gateway request failed: {e}"))?;
+    let status = response.status().as_u16();
+    let body = response.text().await.map_err(|e| format!("read Gateway response: {e}"))?;
+    if body.len() > 8 * 1024 * 1024 {
+        return Err("Gateway response exceeds 8 MiB".into());
+    }
+    Ok(GatewayResponse { status, body })
 }
 
 #[derive(Serialize, Deserialize, Clone)]

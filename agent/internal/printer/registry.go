@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/odoo-print-agent/agent/internal/config"
 	"sync"
 	"time"
 )
@@ -121,6 +123,9 @@ func saveRegistryLocked(registryPath string, printers []DeviceInfo) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
+	if err := config.EnsureSecureDirectoryACL(dir); err != nil {
+		return fmt.Errorf("secure registry dir: %w", err)
+	}
 	data, err := json.MarshalIndent(printers, "", "  ")
 	if err != nil {
 		return err
@@ -147,7 +152,17 @@ func saveRegistryLocked(registryPath string, printers []DeviceInfo) error {
 		os.Remove(tmpName)
 		return err
 	}
-	return os.Rename(tmpName, registryPath)
+	if err := config.EnsureSecureFileACL(tmpName); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("secure registry temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, registryPath); err != nil {
+		return err
+	}
+	if err := config.EnsureSecureFileACL(registryPath); err != nil {
+		return fmt.Errorf("secure registry file: %w", err)
+	}
+	return nil
 }
 
 // Upsert merges discovered printers into the registry idempotently:

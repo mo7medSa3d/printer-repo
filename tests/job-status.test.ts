@@ -58,8 +58,13 @@ describe("job-status", () => {
     expect(canTransition("claimed", "queued")).toBe(true);
   });
   it("expired jobs may be finalized by an agent after local TTL observation", () => {
-    expect(canTransition("claimed", "expired")).toBe(true);
-    expect(canTransition("printing", "expired")).toBe(true);
+    // Expiration is isolated to the dedicated atomic route branch
+    // (expires_at <= NOW() + fencedJobWrite). It is intentionally absent
+    // from the generic transition table so a live job can never be
+    // terminalized early via canTransition.
+    expect(canTransition("claimed", "expired")).toBe(false);
+    expect(canTransition("printing", "expired")).toBe(false);
+    expect(canTransition("queued", "expired")).toBe(false);
   });
   it("disallowed: queued is agent never sets", () => {
     expect(canTransition("queued", "printing")).toBe(false);

@@ -92,10 +92,10 @@ export function Sidebar({
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <div className="truncate text-[15px] font-bold leading-tight tracking-[-0.01em] text-ink">
-              Print Gateway
+              Odoo Print Manager
             </div>
             <div className="truncate text-[12px] font-medium leading-tight text-ink-3">
-              Odoo Print Manager
+              Print Gateway
             </div>
           </div>
         )}
@@ -181,7 +181,7 @@ export function Sidebar({
             <StatusLine
               tone={isOnline ? "ok" : "bad"}
               title={isOnline ? "Agent running" : "Agent stopped"}
-              detail={`v${version || "1.0.0"} · checked ${lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}`}
+              detail={`v${version || "—"} · checked ${lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : "—"}`}
               pulse={isOnline}
             />
           </div>

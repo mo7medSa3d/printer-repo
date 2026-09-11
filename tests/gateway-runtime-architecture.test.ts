@@ -129,7 +129,7 @@ describe("gateway runtime ownership contract", () => {
   it("keeps only the active Odoo integration model files", () => {
     const modelsDir = join(root, "odoo_addons/print_gateway/models");
     expect(readdirSync(modelsDir).filter((name) => name.endsWith(".py")).sort()).toEqual([
-      "__init__.py", "account_move.py", "binding.py", "gateway_config.py", "ir_actions_report.py", "pos_order.py", "pos_session.py", "print_intent.py", "print_job.py", "print_policy.py", "print_router.py", "runtime_assignment.py", "stock_picking.py",
+      "__init__.py", "account_move.py", "binding.py", "crypto.py", "gateway_config.py", "ir_actions_report.py", "pos_order.py", "pos_session.py", "print_intent.py", "print_job.py", "print_policy.py", "print_router.py", "runtime_assignment.py", "stock_picking.py",
     ]);
   });
 

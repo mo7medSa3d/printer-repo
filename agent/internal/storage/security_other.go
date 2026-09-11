@@ -10,3 +10,8 @@ import (
 func EnsureSecureDirectoryACL(path string) error {
 	return os.Chmod(path, 0700)
 }
+
+// EnsureSecureFileACL is a no-op on POSIX; restrictive file modes are applied when files are created.
+func EnsureSecureFileACL(path string) error {
+	return os.Chmod(path, 0600)
+}

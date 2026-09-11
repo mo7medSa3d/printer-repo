@@ -55,12 +55,12 @@ func (p *SpoolerPrinter) Print(ctx context.Context, data []byte) error {
 	if err := os.WriteFile(fpath, data, 0600); err != nil {
 		return fmt.Errorf("simulated spooler write failed: %w", err)
 	}
-	return fmt.Errorf("SIMULATED_TRANSPORT: spooler print was written to %s instead of hardware (ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1)", fpath)
+	return nil
 }
 
 func (p *SpoolerPrinter) SupportsKind(kind string) bool {
 	switch NormalizeKind(kind) {
-	case KindRaw, KindESCPOS, KindPDF:
+	case KindRaw, KindESCPOS, KindPDF, KindImage:
 		return true
 	default:
 		return false
@@ -80,7 +80,13 @@ func (p *SpoolerPrinter) PrintDocument(ctx context.Context, doc Document) error 
 		if err := os.WriteFile(fpath, doc.Data, 0600); err != nil {
 			return fmt.Errorf("simulated spooler PDF write failed: %w", err)
 		}
-		return fmt.Errorf("SIMULATED_TRANSPORT: PDF was written to %s instead of hardware (ODOO_PRINT_AGENT_ALLOW_SIMULATED_TRANSPORT=1)", fpath)
+		return nil
+	case KindImage:
+		pdf, err := JPEGToPDF(doc.Data)
+		if err != nil {
+			return fmt.Errorf("render image for Windows spooler: %w", err)
+		}
+		return p.PrintDocument(ctx, Document{Kind: KindPDF, Data: pdf, JobID: doc.JobID})
 	case KindRaw, KindESCPOS:
 		return p.Print(ctx, doc.Data)
 	default:

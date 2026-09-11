@@ -16,13 +16,22 @@ export class RuntimeAgentField extends Component {
     static props = ["*"];
     static template = xml`
         <div class="o_field_widget o_field_runtime_agent">
-            <select class="o_input" t-att-disabled="props.readonly || state.loading || !state.companyId" t-on-change="onChange">
-                <option value=""><t t-esc="state.loading ? 'Loading agents…' : (!state.companyId ? 'Select an Odoo Company first' : 'Select Gateway Runtime Agent')"/></option>
-                <option t-foreach="state.agents" t-as="agent" t-key="agent.id" t-att-value="agent.id" t-att-selected="agent.id === props.record.data[props.name]">
-                    <t t-esc="agent.name"/> — <t t-esc="agent.id"/> — <t t-esc="agent.status"/>
-                </option>
-            </select>
-            <small t-if="state.error" class="text-danger">Gateway agent discovery failed.</small>
+            <t t-if="props.readonly">
+                <span t-esc="props.record.data[props.name] || ''"/>
+            </t>
+            <t t-else="">
+                <select class="o_input" aria-label="Gateway Runtime Agent" t-att-disabled="state.loading || !state.companyId" t-att-aria-invalid="state.error ? 'true' : undefined" t-att-aria-describedby="state.error ? 'o_pg_agent_error' : undefined" t-on-change="onChange">
+                    <option value=""><t t-esc="state.loading ? 'Loading agents…' : (!state.companyId ? 'Select an Odoo Company first' : 'Select Gateway Runtime Agent')"/></option>
+                    <option t-foreach="state.agents" t-as="agent" t-key="agent.id" t-att-value="agent.id" t-att-selected="agent.id === props.record.data[props.name]">
+                        <t t-esc="agent.name"/> — <t t-esc="agent.id"/> — <t t-esc="agent.status"/>
+                    </option>
+                    <option t-if="!state.loading &amp;&amp; !state.error &amp;&amp; state.companyId &amp;&amp; !state.agents.length" value="" disabled="disabled">No active agents found — pair one from Gateway Configuration</option>
+                </select>
+                <div t-if="state.error" class="mt-1 d-flex align-items-center gap-2">
+                    <small id="o_pg_agent_error" class="text-danger">Gateway agent discovery failed. Check the Gateway connection, then retry.</small>
+                    <button type="button" class="btn btn-link btn-sm p-0" t-on-click="retryLoad">Retry</button>
+                </div>
+            </t>
         </div>`;
 
     setup() {
@@ -78,8 +87,11 @@ export class RuntimeAgentField extends Component {
     onChange(event) {
         this.props.record.update({
             [this.props.name]: event.target.value || false,
-            printer_id: false,
         });
+    }
+
+    retryLoad() {
+        this.load(this.props);
     }
 }
 

@@ -212,7 +212,7 @@ export default function DashboardClient({
     const expiredJobs = initialJobs.filter((j) => j.status.toLowerCase() === "expired").length;
 
     const successRate =
-      initialJobs.length > 0 ? Math.round((completedJobs / initialJobs.length) * 100) : 100;
+      initialJobs.length > 0 ? Math.round((completedJobs / initialJobs.length) * 100) : null;
 
     return {
       totalAgents,
@@ -360,10 +360,10 @@ export default function DashboardClient({
   // Helper for printer connection icon
   const getConnectionIcon = (connectionType: string) => {
     const c = connectionType.toLowerCase();
-    if (c === "usb") return <span title="USB Connection"><Usb className="h-4 w-4 text-ink-3" /></span>;
+    if (c === "usb") return <span role="img" aria-label="USB Connection"><Usb className="h-4 w-4 text-ink-3" aria-hidden="true" /></span>;
     if (c === "network" || c === "tcp")
-      return <span title="Network Connection"><Wifi className="h-4 w-4 text-ink-3" /></span>;
-    return <span title="Spooler / System"><Layers className="h-4 w-4 text-ink-3" /></span>;
+      return <span role="img" aria-label="Network Connection"><Wifi className="h-4 w-4 text-ink-3" aria-hidden="true" /></span>;
+    return <span role="img" aria-label="Spooler or system connection"><Layers className="h-4 w-4 text-ink-3" aria-hidden="true" /></span>;
   };
 
   return (
@@ -385,33 +385,35 @@ export default function DashboardClient({
           tone={kpis.onlinePrinters > 0 ? "ok" : "neutral"}
         />
         <StatCard
-          title="Queue Throughput"
+          title="Active Jobs"
           value={kpis.inFlightJobs}
-          subtitle={`${kpis.inFlightJobs} in-flight / processing`}
+          subtitle={`${kpis.inFlightJobs} queued, claimed, or printing right now`}
           icon={<Server className="h-5 w-5 text-info" />}
           tone="info"
         />
         <StatCard
           title="Success Rate"
-          value={`${kpis.successRate}%`}
+          value={kpis.successRate === null ? "—" : `${kpis.successRate}%`}
           subtitle={
-            kpis.attentionJobs > 0
-              ? `${kpis.attentionJobs} with unknown outcome - verify the printer`
-              : kpis.failedJobs > 0
-                ? `${kpis.failedJobs} failed before printing`
-                : kpis.expiredJobs > 0
-                  ? `${kpis.expiredJobs} expired unclaimed`
-                  : "All jobs accounted for"
+            initialJobs.length === 0
+              ? "No jobs in the recent list yet"
+              : kpis.attentionJobs > 0
+                ? `${kpis.attentionJobs} with unknown outcome - verify the printer`
+                : kpis.failedJobs > 0
+                  ? `${kpis.failedJobs} failed before printing`
+                  : kpis.expiredJobs > 0
+                    ? `${kpis.expiredJobs} expired unclaimed`
+                    : "All recent jobs accounted for"
           }
           icon={<CheckCircle2 className="h-5 w-5 text-ok" />}
-          tone={kpis.attentionJobs > 0 ? "warn" : kpis.successRate >= 90 ? "ok" : "warn"}
+          tone={kpis.successRate === null || kpis.attentionJobs > 0 ? (kpis.successRate === null ? "neutral" : "warn") : kpis.successRate >= 90 ? "ok" : "warn"}
         />
       </section>
 
       {/* Global alert / message banner */}
       {message && (
         <div
-          role="status"
+          role={message.type === "ok" ? "status" : "alert"}
           className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm shadow-xs ${
             message.type === "ok"
               ? "border-ok-edge bg-ok-bg text-ok"
@@ -437,11 +439,11 @@ export default function DashboardClient({
 
       {/* 2. Pairing Hero Card (when active code present) */}
       {activePairing && (
-        <div className="relative overflow-hidden rounded-2xl border-2 border-brand/40 bg-gradient-to-br from-brand-subtle via-surface to-surface-2 p-6 shadow-md">
+        <div className="rounded-2xl border border-edge bg-surface p-6 shadow-xs">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
-                <span className="flex h-2 w-2 rounded-full bg-brand animate-ping" />
+                <span className="flex h-2 w-2 rounded-full bg-brand" aria-hidden="true" />
                 <span className="text-xs font-bold uppercase tracking-wider text-brand">
                   Active Pairing Session
                 </span>
@@ -645,10 +647,12 @@ export default function DashboardClient({
             icon={<PrinterIcon className="h-5 w-5 text-brand" />}
             actions={
               <div className="flex items-center gap-2">
-                <div className="flex rounded-lg border border-edge bg-surface-2 p-0.5">
+                <div className="flex rounded-lg border border-edge bg-surface-2 p-0.5" role="group" aria-label="Printer list layout">
                   <button
                     type="button"
                     title="Grid view"
+                    aria-label="Grid view"
+                    aria-pressed={printerViewMode === "grid"}
                     onClick={() => setPrinterViewMode("grid")}
                     className={`rounded-md p-1.5 transition-colors ${
                       printerViewMode === "grid"
@@ -661,6 +665,8 @@ export default function DashboardClient({
                   <button
                     type="button"
                     title="Table view"
+                    aria-label="Table view"
+                    aria-pressed={printerViewMode === "table"}
                     onClick={() => setPrinterViewMode("table")}
                     className={`rounded-md p-1.5 transition-colors ${
                       printerViewMode === "table"
@@ -679,10 +685,11 @@ export default function DashboardClient({
             {/* Filter & Search Bar */}
             <div className="flex flex-col sm:flex-row items-center gap-3">
               <div className="relative w-full flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-3" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-3" aria-hidden="true" />
                 <Input
                   className="pl-9"
                   placeholder="Search printers by name, ID, or connection..."
+                  aria-label="Search printers by name, ID, or connection"
                   value={printerSearch}
                   onChange={(e) => setPrinterSearch(e.target.value)}
                 />
@@ -692,6 +699,7 @@ export default function DashboardClient({
                   value={printerStatusFilter}
                   onChange={(e) => setPrinterStatusFilter(e.target.value)}
                   className="w-full sm:w-36"
+                  aria-label="Filter printers by status"
                 >
                   <option value="all">All Status</option>
                   <option value="online">Online</option>
@@ -876,7 +884,7 @@ export default function DashboardClient({
       <Card>
         <CardHeader
           title="Recent Print Jobs"
-          subtitle="Real-time telemetry, execution tracking, and diagnostic payload inspector"
+          subtitle="Latest queue snapshot, execution tracking, and diagnostic payload inspector"
           icon={<Server className="h-5 w-5 text-brand" />}
           actions={
             <Button
@@ -894,16 +902,17 @@ export default function DashboardClient({
           {/* Search and Status Filters */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="relative w-full sm:w-80">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-3" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-3" aria-hidden="true" />
               <Input
                 className="pl-9"
                 placeholder="Search by job ID, destination..."
+                aria-label="Search jobs by ID or destination"
                 value={jobSearch}
                 onChange={(e) => setJobSearch(e.target.value)}
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto w-full sm:w-auto">
+            <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto w-full sm:w-auto" role="group" aria-label="Filter jobs by status">
               {[
                 { id: "all", label: "All Jobs" },
                 { id: "active", label: "In Flight" },
@@ -916,6 +925,7 @@ export default function DashboardClient({
                 <button
                   key={tab.id}
                   onClick={() => setJobStatusFilter(tab.id)}
+                  aria-pressed={jobStatusFilter === tab.id}
                   className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                     jobStatusFilter === tab.id
                       ? "bg-brand text-brand-contrast shadow-xs"
@@ -953,7 +963,15 @@ export default function DashboardClient({
                       <tr
                         key={job.id}
                         onClick={() => setSelectedJob(job)}
-                        className="cursor-pointer transition-colors hover:bg-surface-2/50"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setSelectedJob(job);
+                          }
+                        }}
+                        tabIndex={0}
+                        aria-label={`Inspect job ${job.id}`}
+                        className="cursor-pointer transition-colors hover:bg-surface-2/50 focus-visible:outline-2 focus-visible:outline-brand"
                       >
                         <td className="px-4 py-3 font-mono font-medium text-ink">
                           <Mono>{job.id}</Mono>

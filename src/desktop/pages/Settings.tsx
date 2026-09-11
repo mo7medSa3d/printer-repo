@@ -63,7 +63,7 @@ export function SettingsPage({ s }: { s: DesktopState }) {
             </div>
             <StatusBadge
               tone={s.gatewayConnected ? "ok" : s.gatewayUrl ? "bad" : "neutral"}
-              label={s.gatewayConnected ? "Online" : s.gatewayUrl ? "Offline" : "Not set"}
+              label={s.gatewayConnected ? "Connected" : s.gatewayUrl ? "Unreachable" : "Not configured"}
             />
           </div>
 
@@ -272,7 +272,7 @@ export function SettingsPage({ s }: { s: DesktopState }) {
                 const report = [
                   `=== Odoo Print Agent Diagnostic Export ===`,
                   `Generated At: ${new Date().toISOString()}`,
-                  `App Version: ${s.version || "1.0.0"}`,
+                  `App Version: ${s.version || "unknown"}`,
                   `Agent Running: ${s.isOnline}`,
                   `Gateway URL: ${s.gatewayUrl || "Not configured"}`,
                   `Gateway Reachable: ${s.gatewayConnected}`,
@@ -385,7 +385,7 @@ export function SettingsPage({ s }: { s: DesktopState }) {
               ) : (
                 <p className="text-[13px] text-ink-3">Loading paths…</p>
               )}
-              <p className="mt-5 text-[13px] text-ink-3">Odoo Print Manager · v{s.version || "1.0.0"} · © 2026 Odoo Print</p>
+              <p className="mt-5 text-[13px] text-ink-3">Odoo Print Manager · v{s.version || "—"} · © 2026 Odoo Print</p>
             </div>
           </div>
         )}

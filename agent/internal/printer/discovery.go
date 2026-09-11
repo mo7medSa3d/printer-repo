@@ -583,7 +583,10 @@ func DiscoverWithContext(ctx context.Context, cfg *config.Config, registryPath s
 		log.Printf("[discovery] starting WSD discovery")
 		subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
-		infos := discoverWSDPrinters(subCtx)
+		infos, err := discoverWSDPrinters(subCtx)
+		if err != nil {
+			addErr(fmt.Sprintf("wsd discovery: %v", err))
+		}
 		add(infos)
 	}()
 

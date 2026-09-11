@@ -33,7 +33,7 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 		}
 		switch proto {
 		case "raw", "escpos", "zpl", "tspl":
-			return &NetworkPrinter{Address: cfg.Endpoint, Protocol: proto}, nil
+			return &NetworkPrinter{Address: cfg.Endpoint, Protocol: proto, RasterMaxWidth: RasterMaxWidthFromCapabilities(cfg.Capabilities)}, nil
 		case "ipp", "ipps":
 			// Network printer explicitly using IPP protocol -> treat as IPP
 			return NewIPPPrinter(cfg.Endpoint, cfg.Name)
@@ -60,7 +60,20 @@ func New(cfg config.PrinterConfig) (Printer, error) {
 		if protoErr != nil {
 			return nil, protoErr
 		}
-		// CASE A: USB device has a Windows spooler queue -> use spooler (preferred)
+		// CASE A: Raw USB device path detected -> route directly to USBPrinter
+		if strings.HasPrefix(cfg.Endpoint, `\\?\`) || strings.HasPrefix(cfg.Endpoint, `\\.\`) {
+			vid := parseHex16(cfg.USBVID)
+			pid := parseHex16(cfg.USBPID)
+			return &USBPrinter{
+				ID:           cfg.ID,
+				Name:         cfg.Name,
+				VID:          vid,
+				PID:          pid,
+				SerialNumber: cfg.USBSerial,
+				DevicePath:   cfg.Endpoint,
+			}, nil
+		}
+		// CASE B: USB device has a Windows spooler queue -> use spooler (preferred)
 		if cfg.SpoolerName != "" {
 			return NewSpooler(cfg.SpoolerName, cfg.Name), nil
 		}

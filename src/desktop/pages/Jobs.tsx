@@ -41,8 +41,8 @@ import {
   jobId,
   jobPrinterId,
   jobStatus,
-  jobTone,
   labelJob,
+  toneJob,
 } from "../lib/printers";
 
 const TABS = ["all", "queued", "printing", "printed", "unknown", "failed", "expired"] as const;
@@ -373,7 +373,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
                     <td className="whitespace-nowrap px-4 py-4 text-[14px] text-ink-2">
                       {String(s.printers.find((p) => p.id === jobPrinterId(j))?.name || jobPrinterId(j) || "—")}
                     </td>
-                    <td className="px-4 py-4"><StatusBadge tone={jobTone(jobStatus(j))} label={labelJob(jobStatus(j))} /></td>
+                    <td className="px-4 py-4"><StatusBadge tone={toneJob(jobStatus(j), j.error)} label={labelJob(jobStatus(j), j.error)} /></td>
                     <td className="whitespace-nowrap px-4 py-4 text-[13px] text-ink-3">
                       {j.createdAt ? new Date(String(j.createdAt)).toLocaleString() : "—"}
                     </td>

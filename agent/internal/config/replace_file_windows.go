@@ -5,11 +5,13 @@ package config
 import (
 	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 const (
 	moveFileReplaceExisting = 0x1
+	moveFileCopyAllowed     = 0x2
 	moveFileWriteThrough    = 0x8
 )
 
@@ -24,16 +26,33 @@ func replaceFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	r, _, callErr := procMoveFileExW.Call(
-		uintptr(unsafe.Pointer(from)),
-		uintptr(unsafe.Pointer(to)),
-		moveFileReplaceExisting|moveFileWriteThrough,
-	)
-	if r == 0 {
-		if callErr != nil {
-			return fmt.Errorf("MoveFileExW failed: %w", callErr)
+
+	flags := uintptr(moveFileReplaceExisting | moveFileCopyAllowed | moveFileWriteThrough)
+
+	// Retry with exponential backoff on transient Windows file lock contention (e.g. antivirus, desktop scanner)
+	const maxAttempts = 3
+	backoff := 50 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		r, _, callErr := procMoveFileExW.Call(
+			uintptr(unsafe.Pointer(from)),
+			uintptr(unsafe.Pointer(to)),
+			flags,
+		)
+		if r != 0 {
+			return nil
 		}
-		return fmt.Errorf("MoveFileExW failed")
+		if callErr != nil {
+			lastErr = callErr
+		} else {
+			lastErr = fmt.Errorf("MoveFileExW failed")
+		}
+
+		if attempt < maxAttempts {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
 	}
-	return nil
+	return fmt.Errorf("MoveFileExW failed after %d attempts: %w", maxAttempts, lastErr)
 }

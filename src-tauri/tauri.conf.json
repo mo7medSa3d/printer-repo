@@ -22,14 +22,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self';"
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:*; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self';"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "publisher": "Odoo Print",
-    "copyright": "Copyright © 2026 Odoo Print",
+    "copyright": "Copyright \u00a9 2026 Odoo Print",
     "shortDescription": "Local print manager for Odoo POS/ERP",
     "longDescription": "Odoo Print Manager pairs this Windows PC with the Odoo Print Gateway, runs the local print agent, and shows gateway/agent health from the system tray.",
     "icon": [

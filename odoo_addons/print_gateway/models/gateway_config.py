@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 """Minimal Gateway connection configuration for the Odoo integration."""
 
-import ipaddress
-import os
-import socket
 from urllib.parse import urlparse
 
 import requests
@@ -45,32 +42,12 @@ class PrintGatewayConfig(models.Model):
         "Only one Print Gateway configuration is allowed per Odoo company.",
     )
 
-    @staticmethod
-    def _allowed_private_hosts():
-        raw = os.environ.get("ODOO_PRINT_GATEWAY_ALLOWED_HOSTS", "")
-        return {item.strip().lower().rstrip(".") for item in raw.split(",") if item.strip()}
-
     @classmethod
     def _validate_gateway_host(cls, hostname, *, resolve=False):
-        hostname = hostname.strip().rstrip(".").lower()
-        allow_private = os.environ.get("ODOO_PRINT_GATEWAY_ALLOW_PRIVATE") == "1"
-        explicitly_allowed = hostname in cls._allowed_private_hosts()
-        try:
-            addresses = {ipaddress.ip_address(hostname)}
-        except ValueError:
-            if not resolve:
-                return
-            try:
-                addresses = {
-                    ipaddress.ip_address(item[4][0])
-                    for item in socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-                }
-            except OSError as exc:
-                raise ValidationError(_("Gateway hostname cannot be resolved.")) from exc
-        for address in addresses:
-            if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved or address.is_multicast or address.is_unspecified:
-                if not (allow_private and explicitly_allowed):
-                    raise ValidationError(_("Private or local Gateway addresses require explicit deployment allow-listing."))
+        # Zero-configuration: any hostname or IP (LAN, public, loopback,
+        # DNS) is accepted. Kept as a no-op so older tests/tools that patch
+        # this hook keep working.
+        return None
 
     @classmethod
     def _validate_gateway_url(cls, value, *, resolve_host=False):
@@ -80,13 +57,13 @@ class PrintGatewayConfig(models.Model):
         if len(raw) > 2048 or "\r" in raw or "\n" in raw:
             raise ValidationError(_("Gateway URL is invalid."))
         parsed = urlparse(raw)
-        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        scheme = parsed.scheme.lower()
+        if scheme not in ("http", "https") or not parsed.hostname:
             raise ValidationError(_("Gateway URL must use HTTP or HTTPS and include a host."))
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValidationError(_("Gateway URL must not contain credentials, query parameters, or fragments."))
         if parsed.path not in ("", "/"):
             raise ValidationError(_("Gateway URL must be the Gateway origin, without an API path."))
-        cls._validate_gateway_host(parsed.hostname, resolve=resolve_host)
         return raw.rstrip("/")
 
     @api.constrains("gateway_url")
@@ -108,8 +85,9 @@ class PrintGatewayConfig(models.Model):
         self.ensure_one()
         if not self.gateway_api_key:
             raise ValidationError(_("Gateway API key is not configured."))
+        api_key = self.gateway_api_key
         return {
-            "Authorization": "Bearer %s" % self.gateway_api_key,
+            "Authorization": "Bearer %s" % api_key,
             "Accept": "application/json",
             "Cache-Control": "no-store",
             "X-Odoo-Database": self.env.cr.dbname,
@@ -127,10 +105,13 @@ class PrintGatewayConfig(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         self._check_admin()
-        for vals in vals_list:
+        normalized = []
+        for original in vals_list:
+            vals = dict(original)
             vals.setdefault("company_id", self.env.company.id)
             self._validate_gateway_url(vals.get("gateway_url"))
-        return super().create(vals_list)
+            normalized.append(vals)
+        return super().create(normalized)
 
     def action_test_connection(self):
         self.ensure_one()
@@ -199,6 +180,18 @@ class PrintGatewayConfig(models.Model):
             "view_mode": "form",
             "target": "new",
             "context": {"default_config_id": self.id},
+        }
+
+    def action_open_runtime_assignments(self):
+        """Navigation only: open the branch → agent assignments for this company."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Branch Agent Assignments"),
+            "res_model": "print_gateway.runtime_agent_assignment",
+            "view_mode": "list,form",
+            "domain": [("company_id", "=", self.company_id.id)],
+            "context": {"default_company_id": self.company_id.id},
         }
 
 

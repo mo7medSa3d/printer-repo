@@ -22,9 +22,6 @@ class PrintGatewayRuntimePrinterController(http.Controller):
             if not company or company not in env.companies:
                 raise Forbidden("Access Denied: The active Odoo Company is not available to the current user.")
 
-        if company.parent_id:
-            raise ValidationError("The selected Odoo Company must be a parent Company, not a Branch.")
-
         branch = False
         if branch_id:
             try:
@@ -33,8 +30,20 @@ class PrintGatewayRuntimePrinterController(http.Controller):
                 raise Forbidden("Access Denied: Invalid Odoo Branch.")
             if not branch or branch not in env.companies:
                 raise Forbidden("Access Denied: The selected Odoo Branch is not available to the current user.")
-            if branch.parent_id != company:
+
+        if company.parent_id:
+            # Tolerate branch-scoped callers (e.g. a branch cashier whose
+            # active company is the branch itself): lift to the parent
+            # company instead of rejecting.
+            if not branch:
+                branch = company
+            elif branch.id != company.id and branch.parent_id.id != company.id:
                 raise ValidationError("Odoo Branch must belong directly to the selected Odoo Company.")
+            company = company.parent_id
+
+        if branch and branch.parent_id and branch.parent_id.id != company.id:
+            raise ValidationError("Odoo Branch must belong directly to the selected Odoo Company.")
+
         return company, branch
 
     def _get_config(self, company, env=None):
@@ -53,7 +62,7 @@ class PrintGatewayRuntimePrinterController(http.Controller):
         try:
             response = requests.get(
                 '%s/api/odoo/agents' % config._gateway_base(for_request=True),
-                headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False,
+                headers=config._gateway_headers(), timeout=(3, 5), allow_redirects=False,
             )
             if response.status_code != 200:
                 raise ValidationError('Gateway agent discovery failed (HTTP %s).' % response.status_code)
@@ -79,7 +88,7 @@ class PrintGatewayRuntimePrinterController(http.Controller):
                 'status': agent.get('status') if isinstance(agent.get('status'), str) else 'offline',
             })
         assignment = request.env['print_gateway.runtime_agent_assignment'].sudo().search([
-            ('company_id', '=', root_company.id), ('branch_id', '=', branch.id), ('enabled', '=', True),
+            ('company_id', '=', root_company.id), ('branch_id', '=', branch.id if branch else False), ('enabled', '=', True),
         ], limit=1)
         return {'enabled': True, 'selectedAgentId': assignment.runtime_agent_id if assignment else False, 'agents': sanitized}
 
@@ -94,7 +103,7 @@ class PrintGatewayRuntimePrinterController(http.Controller):
         try:
             response = requests.get(
                 '%s/api/odoo/printers' % config._gateway_base(for_request=True),
-                headers=config._gateway_headers(), timeout=(5, 10), allow_redirects=False,
+                headers=config._gateway_headers(), timeout=(3, 5), allow_redirects=False,
             )
             if response.status_code != 200:
                 raise ValidationError('Gateway printer discovery failed (HTTP %s).' % response.status_code)

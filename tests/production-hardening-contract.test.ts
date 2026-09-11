@@ -13,7 +13,21 @@ describe("production hardening contracts", () => {
     expect(hasBodyOverLimit(new Request("http://test"), 2048)).toBe(false);
   });
 
-  it("keeps the API body guard stream-safe (declared size via header only, chunked via buffered clone)", () => {
+  it("fences agent-driven expiration at the database clock", () => {
+    const route = read("src/app/api/agent/jobs/route.ts");
+    const jobStatus = read("src/lib/job-status.ts");
+    expect(jobStatus).toContain('claimed: new Set(["printing", "failed", "queued"])');
+    expect(jobStatus).toContain('printing: new Set(["success", "failed"])');
+    expect(route).toContain('if (requestedStatus !== "expired" && job.claimToken && claimToken !== job.claimToken)');
+    expect(route).toContain('requestedStatus === "expired"');
+    expect(route).toContain('fencedJobWrite(jobId, agent.id, currentStatus, claimToken)');
+    expect(route).toContain('sql`${printJobs.expiresAt} <= now()`');
+    expect(route).toContain('code: "JOB_NOT_EXPIRED_OR_STALE"');
+    expect(route).toContain('JOB_EXPIRED_DURING_PRINT: physical output is unknown');
+    expect(route).toContain('UNKNOWN_PARTIAL_DELIVERY: job expired after delivery without an execution report');
+  });
+
+  it("keeps the API body guard stream-safe without request cloning", () => {
     const server = read("server.ts");
     const guard = read("src/server/request-guard.ts");
     expect(server).toContain("guardApiRequest(req, res)");
@@ -21,8 +35,10 @@ describe("production hardening contracts", () => {
     expect(guard).toContain("export const MAX_API_BODY_BYTES = 8 * 1024 * 1024;");
     expect(guard).toContain('const MUTATING_METHODS = ["POST", "PUT", "PATCH", "DELETE"];');
     expect(guard).toContain("REQUEST_BODY_TOO_LARGE");
-    expect(guard).toContain("function cloneRequestWithBody(source: IncomingMessage, body: Buffer)");
-    expect(guard).toContain('new IncomingMessage(source.socket)');
+    expect(guard).toContain("MAX_CONCURRENT_CHUNKED_BYTES");
+    expect(guard).not.toContain("cloneRequestWithBody");
+    expect(guard).not.toContain("new IncomingMessage");
+    expect(guard).toContain("CONTENT_LENGTH_REQUIRED");
   });
 
   it("keeps the bundled Caddy sanitizing forwarded-IP headers and capping request bodies", () => {
@@ -100,6 +116,7 @@ describe("production hardening contracts", () => {
     const workflow = read(".github/workflows/main-governance.yml");
     expect(workflow).toContain("Require protected main branch");
     expect(workflow).toContain("Configure GitHub branch protection or a ruleset");
-    expect(workflow).not.toContain("blocks PR merges");
+    expect(workflow).toContain("security-audit");
+    expect(workflow).toContain("exit 1");
   });
 });

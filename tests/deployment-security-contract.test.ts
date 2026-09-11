@@ -30,7 +30,7 @@ describe("deployment security contracts", () => {
     expect(server).toContain("isTrustedProxyRequest");
     expect(server).toContain("TRUSTED_PROXY_REQUIRED");
     expect(server).toContain("TRUST_PROXY_SECRET");
-    expect(caddy).toContain("header_up X-Gateway-Proxy-Token {$TRUST_PROXY_SECRET}");
+    expect(caddy).toContain("header_up X-Gateway-Proxy-Token {file./run/secrets/trust_proxy_secret}");
     expect(caddy).toContain("header_up X-Forwarded-For {http.request.remote.host}");
     expect(caddy).toContain("header_up -X-Real-Ip");
   });

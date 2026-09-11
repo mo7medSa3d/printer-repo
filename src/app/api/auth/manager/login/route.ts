@@ -51,7 +51,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Authentication temporarily unavailable" }, { status: 503 });
   }
 
-  if (!verifyManagerPassword(username, password)) {
+  if (!(await verifyManagerPassword(username, password))) {
     let locked: { allowed: false; retryAfterSec: number } | null = null;
     try {
       const after = await recordAuthFailure(ip, username);

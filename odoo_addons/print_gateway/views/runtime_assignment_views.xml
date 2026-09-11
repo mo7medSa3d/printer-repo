@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Branch → Runtime Agent assignments. Written by the Pair Agent wizard
+         and reconciled from active bindings; exposed read-mostly here so an
+         administrator can audit which agent serves each branch. -->
+    <record id="view_print_gateway_runtime_assignment_list" model="ir.ui.view">
+        <field name="name">print_gateway.runtime_agent_assignment.list</field>
+        <field name="model">print_gateway.runtime_agent_assignment</field>
+        <field name="arch" type="xml">
+            <list string="Branch Agent Assignments" class="o_pg_list">
+                <field name="company_id" string="Odoo Company"/>
+                <field name="branch_id" string="Odoo Branch"/>
+                <field name="runtime_agent_id" string="Gateway Runtime Agent"/>
+                <field name="enabled" widget="boolean_toggle"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_print_gateway_runtime_assignment_form" model="ir.ui.view">
+        <field name="name">print_gateway.runtime_agent_assignment.form</field>
+        <field name="model">print_gateway.runtime_agent_assignment</field>
+        <field name="arch" type="xml">
+            <form string="Branch Agent Assignment" class="o_pg_view o_pg_form">
+                <sheet>
+                    <group>
+                        <field name="company_id" string="Odoo Company" options="{'no_create': True}"/>
+                        <field name="branch_id" string="Odoo Branch" options="{'no_create': True}" help="Empty means this assignment applies to the whole company."/>
+                        <field name="runtime_agent_id" string="Gateway Runtime Agent" help="ID of the active agent as shown on the Gateway Agents page."/>
+                        <field name="enabled" widget="boolean_toggle"/>
+                    </group>
+                    <group string="Record">
+                        <field name="name" readonly="1" string="Summary"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_print_gateway_runtime_assignments" model="ir.actions.act_window">
+        <field name="name">Branch Agent Assignments</field>
+        <field name="res_model">print_gateway.runtime_agent_assignment</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

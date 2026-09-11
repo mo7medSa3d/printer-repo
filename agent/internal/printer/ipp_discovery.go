@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/grandcat/zeroconf"
 )
 
 // discoverIPPPrinters performs IPP/IPPS discovery via TCP 631 scan and mDNS.
@@ -55,6 +57,17 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
+		// Skip virtual adapters
+		ifNameLower := strings.ToLower(iface.Name)
+		if strings.HasPrefix(ifNameLower, "veth") ||
+			strings.HasPrefix(ifNameLower, "docker") ||
+			strings.HasPrefix(ifNameLower, "br-") ||
+			strings.HasPrefix(ifNameLower, "tailscale") ||
+			strings.HasPrefix(ifNameLower, "tap") ||
+			strings.HasPrefix(ifNameLower, "tun") {
+			continue
+		}
+
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
@@ -72,6 +85,9 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 				continue
 			}
 			mask := ipNet.Mask
+			if len(mask) == 16 {
+				mask = mask[12:]
+			}
 			if len(mask) == 4 {
 				ones, bits := ipNet.Mask.Size()
 				if bits == 32 && ones < 24 {
@@ -147,12 +163,18 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 				// Use ipp:// URL as endpoint for later printing
 				ippURL := fmt.Sprintf("ipp://%s/ipp/print", target)
 				name := fmt.Sprintf("IPP Printer %s", host)
-				if names, err := net.LookupAddr(host); err == nil && len(names) > 0 {
+
+				// Bounded rDNS reverse lookup (500ms)
+				rDnsCtx, rDnsCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+				var resolver net.Resolver
+				if names, err := resolver.LookupAddr(rDnsCtx, host); err == nil && len(names) > 0 {
 					n := strings.TrimSuffix(names[0], ".")
 					if n != "" {
 						name = fmt.Sprintf("IPP Printer %s (%s)", host, n)
 					}
 				}
+				rDnsCancel()
+
 				di := DeviceInfo{
 					ID:             id,
 					Name:           name,
@@ -177,20 +199,21 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 			}
 		}()
 	}
+targetLoop:
 	for _, t := range targets {
 		select {
 		case jobs <- t:
 		case <-ctx.Done():
-			break
+			break targetLoop
 		}
 	}
 	close(jobs)
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	// Channel-ownership law (see discoverSNMPPrinters in
+	// discovery_extended.go): close(results) only after EVERY worker has
+	// finished its send. Workers are bounded: dial/rDNS/IPP-probe contexts
+	// all derive from this ctx, so each returns within ~1s of expiry and
+	// buffered sends never block.
+	wg.Wait()
 	close(results)
 	var out []DeviceInfo
 	seenID := make(map[string]bool)
@@ -203,26 +226,171 @@ func discoverIPPviaTCP(ctx context.Context) ([]DeviceInfo, error) {
 	return out, nil
 }
 
-// discoverMDNSPrinters performs mDNS query for _ipp._tcp.local and _ipps._tcp.local
-// It is best-effort; if it fails, it returns empty and logs.
+// discoverMDNSPrinters performs mDNS query for _ipp._tcp, _ipps._tcp, and _printer._tcp.
 func discoverMDNSPrinters(ctx context.Context) []DeviceInfo {
-	// Minimal mDNS implementation: send DNS PTR query to 224.0.0.251:5353
-	// For now, we implement a stub that logs and returns empty, but does not fail.
-	// A full implementation would use a library like github.com/grandcat/zeroconf or
-	// github.com/miekg/dns. To keep dependencies minimal, we do a best-effort UDP multicast
-	// with a handcrafted DNS packet and parse responses for PTR/SRV/TXT.
+	resolver, err := zeroconf.NewResolver(nil)
+	if err != nil {
+		log.Printf("[discovery] zeroconf resolver init error: %v", err)
+		return nil
+	}
 
-	// Try to perform mDNS discovery with timeout 2s
-	mdnsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	browseCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 
-	// Use a simple approach: try to resolve _ipp._tcp.local via net.Lookup (which may use mDNS on some systems)
-	// This is not reliable, so we just log and return empty for now, but keep the hook for future.
-	// We attempt a quick UDP multicast to avoid blocking.
-	_ = mdnsCtx
+	services := []string{"_ipp._tcp", "_ipps._tcp", "_printer._tcp"}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var out []DeviceInfo
+	seen := make(map[string]bool)
 
-	// Log that mDNS was attempted
-	// To avoid spamming logs on every discovery, only log at debug level
-	// For now, return empty
-	return nil
+	for _, svc := range services {
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			ch := make(chan *zeroconf.ServiceEntry, 32)
+			doneCh := make(chan struct{})
+			go func() {
+				defer close(doneCh)
+				for entry := range ch {
+					di, ok := parseMDNSServiceEntry(entry)
+					if !ok {
+						continue
+					}
+					key := fmt.Sprintf("%s:%d", strings.ToLower(di.NetworkAddress), di.Port)
+					mu.Lock()
+					if !seen[key] {
+						seen[key] = true
+						out = append(out, di)
+					}
+					mu.Unlock()
+				}
+			}()
+
+			_ = resolver.Browse(browseCtx, s, "local.", ch)
+			<-doneCh
+		}(svc)
+	}
+
+	wg.Wait()
+	return out
+}
+
+func parseMDNSServiceEntry(entry *zeroconf.ServiceEntry) (DeviceInfo, bool) {
+	if entry == nil || len(entry.AddrIPv4) == 0 || entry.AddrIPv4[0] == nil {
+		return DeviceInfo{}, false
+	}
+	ip := entry.AddrIPv4[0].String()
+	port := entry.Port
+	if port <= 0 {
+		port = 631
+	}
+
+	txtMeta := parseMDNSTXT(entry.Text)
+
+	name := txtMeta.ty
+	if name == "" {
+		name = txtMeta.product
+	}
+	if name == "" && txtMeta.model != "" {
+		name = txtMeta.model
+	}
+	if name == "" {
+		name = entry.Instance
+	}
+	if name == "" {
+		name = fmt.Sprintf("mDNS Printer %s", ip)
+	}
+
+	rp := txtMeta.rp
+	if rp == "" {
+		rp = "ipp/print"
+	}
+	rpClean := strings.TrimPrefix(rp, "/")
+
+	protocol := "ipp"
+	endpointScheme := "ipp"
+	if strings.Contains(entry.Service, "_ipps") {
+		protocol = "ipps"
+		endpointScheme = "ipps"
+	}
+
+	endpoint := fmt.Sprintf("%s://%s:%d/%s", endpointScheme, ip, port, rpClean)
+
+	caps := map[string]interface{}{
+		"mdns_verified":  true,
+		"discovered_via": "mdns",
+		"pdl":            txtMeta.pdlList,
+	}
+	if txtMeta.mfg != "" {
+		caps["manufacturer"] = txtMeta.mfg
+	}
+	if txtMeta.model != "" {
+		caps["model"] = txtMeta.model
+	}
+	if txtMeta.ty != "" {
+		caps["ty"] = txtMeta.ty
+	}
+	if txtMeta.rp != "" {
+		caps["rp"] = txtMeta.rp
+	}
+
+	di := DeviceInfo{
+		ID:             StableIDFromNetwork(ip, port),
+		Name:           name,
+		DisplayName:    name,
+		PrinterType:    "unknown",
+		ConnectionType: "ipp",
+		Protocol:       protocol,
+		Endpoint:       endpoint,
+		NetworkAddress: ip,
+		Port:           port,
+		Status:         "online",
+		Enabled:        true,
+		Type:           "ipp",
+		Capabilities:   caps,
+	}
+	return di, true
+}
+
+type mdnsTXTMetadata struct {
+	ty      string
+	product string
+	rp      string
+	pdlList []string
+	mfg     string
+	model   string
+}
+
+func parseMDNSTXT(text []string) mdnsTXTMetadata {
+	var meta mdnsTXTMetadata
+	for _, t := range text {
+		parts := strings.SplitN(t, "=", 2)
+		k := strings.ToLower(strings.TrimSpace(parts[0]))
+		v := ""
+		if len(parts) == 2 {
+			v = strings.TrimSpace(parts[1])
+		}
+		switch k {
+		case "ty":
+			meta.ty = v
+		case "product":
+			meta.product = strings.Trim(v, "()")
+		case "rp":
+			meta.rp = v
+		case "pdl":
+			if v != "" {
+				for _, p := range strings.Split(v, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						meta.pdlList = append(meta.pdlList, p)
+					}
+				}
+			}
+		case "usb_mfg":
+			meta.mfg = v
+		case "usb_mdl":
+			meta.model = v
+		}
+	}
+	return meta
 }

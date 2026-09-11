@@ -11,6 +11,10 @@ import (
 )
 
 const (
+	// SafeRasterMaxWidth is the conservative default when printer paper
+	// capability is unknown. 384 dots fits common 58mm thermal media; an
+	// explicitly configured max_paper_width can raise this to the actual limit.
+	SafeRasterMaxWidth         = 384
 	maxRasterWidth             = 576
 	DefaultRasterSliceHeight   = 256
 	LowBufferRasterSliceHeight = 128
@@ -20,13 +24,31 @@ const (
 // Breaking large thermal prints into discrete vertical bands (default 256px) prevents
 // printer buffer overflows and ensures 100% Arabic text and QR code compatibility on budget printers.
 func JPEGToESCPOS(data []byte) ([]byte, error) {
-	return JPEGToESCPOSWithBanding(data, DefaultRasterSliceHeight)
+	return JPEGToESCPOSWithMaxWidth(data, DefaultRasterSliceHeight, SafeRasterMaxWidth)
+}
+
+// JPEGToESCPOSWithMaxWidth converts a JPEG raster while respecting the
+// configured printer width. A non-positive maxWidth uses SafeRasterMaxWidth.
+func JPEGToESCPOSWithMaxWidth(data []byte, sliceHeight, maxWidth int) ([]byte, error) {
+	if maxWidth <= 0 {
+		maxWidth = SafeRasterMaxWidth
+	}
+	return jpegToESCPOS(data, sliceHeight, maxWidth)
 }
 
 // JPEGToESCPOSWithBanding slices the raster into chunks of at most sliceHeight pixels.
+// Note: Hardcoded cuts have been removed from this function so cutting is governed solely
+// by peripheral profile configurations in WrapPeripheralCommands.
 func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
+	return jpegToESCPOS(data, sliceHeight, maxRasterWidth)
+}
+
+func jpegToESCPOS(data []byte, sliceHeight, maxWidth int) ([]byte, error) {
 	if sliceHeight <= 0 {
 		sliceHeight = DefaultRasterSliceHeight
+	}
+	if maxWidth <= 0 {
+		maxWidth = SafeRasterMaxWidth
 	}
 	cfg, err := decodeJPEGConfig(data)
 	if err != nil {
@@ -40,13 +62,19 @@ func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode JPEG: %w", err)
 	}
-	if img.Bounds().Dx() > maxRasterWidth {
-		img = resizeNearest(img, maxRasterWidth)
+
+	// Never exceed the printer's declared raster width. This is deliberately
+	// capability-driven rather than inferred from the input image dimensions.
+	if img.Bounds().Dx() > maxWidth {
+		img = resizeNearest(img, maxWidth)
 	}
 
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
 	rowBytes := (w + 7) / 8
+
+	// Pre-convert or extract direct raster buffer for performance
+	rgbaImg, isRGBA := img.(*image.RGBA)
 
 	out := bytes.NewBuffer(make([]byte, 0, rowBytes*h+128))
 	out.Write([]byte{0x1b, 0x40}) // ESC @ (initialize)
@@ -61,10 +89,27 @@ func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
 
 		for by := 0; by < bandHeight; by++ {
 			actualY := yStart + by
-			for x := 0; x < w; x++ {
-				g := grayscale(img.At(img.Bounds().Min.X+x, img.Bounds().Min.Y+actualY))
-				if g < 180 { // 1-bit high-contrast threshold for crisp Arabic text & QR codes
-					bandRaster[by*rowBytes+x/8] |= 0x80 >> uint(x%8)
+			bandOffset := by * rowBytes
+
+			if isRGBA {
+				pixRowOffset := (actualY - rgbaImg.Bounds().Min.Y) * rgbaImg.Stride
+				for x := 0; x < w; x++ {
+					pixIdx := pixRowOffset + (x+rgbaImg.Bounds().Min.X)*4
+					r := uint32(rgbaImg.Pix[pixIdx])
+					g := uint32(rgbaImg.Pix[pixIdx+1])
+					b := uint32(rgbaImg.Pix[pixIdx+2])
+					// Fast integer ITU-R BT.601 luma
+					luma := uint8((299*r + 587*g + 114*b) / 1000)
+					if luma < 180 {
+						bandRaster[bandOffset+x/8] |= 0x80 >> uint(x%8)
+					}
+				}
+			} else {
+				for x := 0; x < w; x++ {
+					g := grayscale(img.At(img.Bounds().Min.X+x, img.Bounds().Min.Y+actualY))
+					if g < 180 { // 1-bit high-contrast threshold for crisp Arabic text & QR codes
+						bandRaster[bandOffset+x/8] |= 0x80 >> uint(x%8)
+					}
 				}
 			}
 		}
@@ -78,8 +123,6 @@ func JPEGToESCPOSWithBanding(data []byte, sliceHeight int) ([]byte, error) {
 		out.Write(bandRaster)
 	}
 
-	out.WriteString("\n\n")
-	out.Write([]byte{0x1d, 0x56, 0x01}) // GS V 1 (partial cut)
 	return out.Bytes(), nil
 }
 
@@ -125,11 +168,15 @@ func JPEGToPDF(data []byte) ([]byte, error) {
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return nil, fmt.Errorf("invalid JPEG dimensions %dx%d", cfg.Width, cfg.Height)
 	}
-	img, err := jpeg.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("decode JPEG: %w", err)
+
+	w, h := cfg.Width, cfg.Height
+
+	// Determine color space based on JPEG color model
+	colorSpace := "/DeviceRGB"
+	if cfg.ColorModel == color.GrayModel {
+		colorSpace = "/DeviceGray"
 	}
-	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+
 	// Render the raster at 96 DPI, the same pixel assumption used by the web
 	// renderer, while preserving its aspect ratio.
 	pageW := float64(w) * 72.0 / 96.0
@@ -150,7 +197,7 @@ func JPEGToPDF(data []byte) ([]byte, error) {
 	pageBody := fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>", pageW, pageH)
 	writeObj(3, []byte(pageBody))
 
-	imageHeader := fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n", w, h, len(data))
+	imageHeader := fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace %s /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n", w, h, colorSpace, len(data))
 	offsets[4] = b.Len()
 	fmt.Fprintf(&b, "4 0 obj\n%s", imageHeader)
 	b.Write(data)
@@ -161,9 +208,9 @@ func JPEGToPDF(data []byte) ([]byte, error) {
 	writeObj(5, []byte(contentBody))
 
 	xref := b.Len()
-	b.WriteString("xref\n0 6\n0000000000 65535 f \n")
+	b.WriteString("xref\r\n0 6\r\n0000000000 65535 f\r\n")
 	for i := 1; i <= 5; i++ {
-		fmt.Fprintf(&b, "%010d 00000 n \n", offsets[i])
+		fmt.Fprintf(&b, "%010d 00000 n\r\n", offsets[i])
 	}
 	fmt.Fprintf(&b, "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", xref)
 	return b.Bytes(), nil

@@ -971,6 +971,40 @@ class PrintGatewayJob(models.Model):
                     break
         return True
 
+    def _apply_synced_status(self, job, body):
+        status = str(body.get("status") or "").strip().lower()
+        if status in ("completed", "success"):
+            status = "success"
+        elif status == "queued":
+            status = "submitted"
+        elif status == "expired":
+            gateway_error = str(body.get("error") or "")
+            if gateway_error.startswith("JOB_EXPIRED_DURING_PRINT") or gateway_error.startswith("UNKNOWN_PARTIAL_DELIVERY"):
+                status = "unknown"
+                body.setdefault("error", "JOB_EXPIRED_DURING_PRINT: physical output is unknown (full, partial or none)")
+            else:
+                status = "failed"
+                if not body.get("error"):
+                    body["error"] = "GATEWAY_JOB_EXPIRED: The Gateway no longer holds the job (never claimed within its release window); nothing reached the agent"
+        if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
+            return False
+        err_msg = body.get("error") or False
+        if status == "failed" and any(
+            str(err_msg or "").startswith(marker) for marker in self._GATEWAY_UNKNOWN_MARKERS
+        ):
+            status = "unknown"
+        values = {"last_error": err_msg}
+        if status in self._TERMINAL:
+            values["completed_at"] = fields.Datetime.now()
+        if status == "submitted" and job.status in ("claimed", "printing"):
+            return True
+        self._advance_status(job, status, values)
+        if status == "success":
+            job._post_source_audit(_("Print Job #%s completed by Gateway agent on '%s'") % (job.gateway_job_id or job.id, job.printer_id))
+        elif status in ("partial", "unknown"):
+            job._post_source_audit(_("WARNING: Print Job #%s interrupted or ambiguous on '%s'. Manual check required.") % (job.gateway_job_id or job.id, job.printer_id))
+        return True
+
     def action_sync_status(self):
         self._require_outbox_write()
         candidates = self.filtered(lambda row: row.gateway_job_id and row.status not in self._TERMINAL)
@@ -996,10 +1030,6 @@ class PrintGatewayJob(models.Model):
                     timeout=(5, 10), allow_redirects=False,
                 )
                 if response.status_code == 404:
-                    # The Gateway no longer knows this job (release window
-                    # elapsed / cleanup ran). Its physical outcome can no
-                    # longer be proven from either side: terminalize as
-                    # unknown so no automatic path can reprint it silently.
                     job.write({
                         "status": "unknown",
                         "last_error": "GATEWAY_JOB_NOT_FOUND: the Gateway no longer has this job (expired or cleaned up). Physical outcome unknown - verify at the printer, then use Force Reprint if needed.",
@@ -1011,72 +1041,10 @@ class PrintGatewayJob(models.Model):
                     continue
                 response.raise_for_status()
                 body = response.json()
-                status = str(body.get("status") or "").strip().lower()
-                if status in ("completed", "success"):
-                    status = "success"
-                elif status == "queued":
-                    # The canonical Gateway pre-dispatch state. It is the
-                    # same fact as our "submitted": queued for pickup.
-                    status = "submitted"
-                elif status == "expired":
-                    gateway_error = str(body.get("error") or "")
-                    if gateway_error.startswith("JOB_EXPIRED_DURING_PRINT") or gateway_error.startswith("UNKNOWN_PARTIAL_DELIVERY"):
-                        status = "unknown"
-                        body.setdefault("error", "JOB_EXPIRED_DURING_PRINT: physical output is unknown (full, partial or none)")
-                    else:
-                        status = "failed"
-                        if not body.get("error"):
-                            body["error"] = "GATEWAY_JOB_EXPIRED: The Gateway no longer holds the job (never claimed within its release window); nothing reached the agent"
-                if status not in {"submitted", "claimed", "printing", "success", "failed", "unknown"}:
-                    # The Gateway contract only ever emits these six (its own
-                    # CHECK-backed enum); anything else - including a "partial"
-                    # the Gateway cannot produce - is rejected without
-                    # touching the row.
-                    failed_count += 1
-                    continue
-                err_msg = body.get("error") or False
-                if status == "failed" and any(
-                    str(err_msg or "").startswith(marker) for marker in self._GATEWAY_UNKNOWN_MARKERS
-                ):
-                    # Canonical rule: a Gateway FAILED carrying any
-                    # UNKNOWN_* outcome marker lands in 'unknown' - never
-                    # 'failed' (which would read as "definitely not printed"
-                    # and wrongly offer ordinary Retry) and never a silent
-                    # pass-through. The physical outcome is ambiguous until
-                    # an operator verifies the printer; only Force Reprint
-                    # may re-issue it. ('partial' stays a legal terminal
-                    # state for operator-side use but the Gateway sync never
-                    # produces it: every ambiguous Gateway outcome is
-                    # 'unknown'.)
-                    status = "unknown"
-                values = {"last_error": err_msg}
-                if status in self._TERMINAL:
-                    values["completed_at"] = fields.Datetime.now()
-                if status == "submitted" and job.status in ("claimed", "printing"):
-                    # The Gateway requeued a job we already observed further
-                    # along (stale-claim reclaim, evidence-push failure
-                    # release, or fenced pre-execution rejection - all normal
-                    # Gateway lease events, most visibly after the 90s stale
-                    # window). Our row is AHEAD of the Gateway: there is no
-                    # new information here. Writing 'submitted' would be a
-                    # backward transition the matrix forbids - and raising
-                    # would abort this whole sync loop (starving every other
-                    # job, every minute, until the row converges). Keep our
-                    # state; the next sync converges once the agent
-                    # re-claims the job or its TTL expires it terminally
-                    # (both transitions are forward and legal).
+                if self._apply_synced_status(job, body):
                     synced_count += 1
-                    continue
-                # Recorded hop-by-hop through the canonical chain: a sync
-                # observing e.g. submitted -> success writes submitted ->
-                # claimed -> printing -> success rather than jumping, so the
-                # transition matrix needs no privileged shortcut.
-                self._advance_status(job, status, values)
-                synced_count += 1
-                if status == "success":
-                    job._post_source_audit(_("Print Job #%s completed by Gateway agent on '%s'") % (job.gateway_job_id or job.id, job.printer_id))
-                elif status in ("partial", "unknown"):
-                    job._post_source_audit(_("WARNING: Print Job #%s interrupted or ambiguous on '%s'. Manual check required.") % (job.gateway_job_id or job.id, job.printer_id))
+                else:
+                    failed_count += 1
             except (requests.RequestException, ValueError):
                 failed_count += 1
                 _logger.warning("Gateway status sync failed for job %s", job.idempotency_key[:8])
@@ -1232,10 +1200,19 @@ class PrintGatewayJob(models.Model):
     def cron_submit_pending(self):
         self._require_cron_runner()
         now = fields.Datetime.now()
-        jobs = self.search([
-            ("status", "=", "queued"), "|",
-            ("next_retry_at", "=", False), ("next_retry_at", "<=", now),
-        ], order="id asc", limit=50)
+        # Bound query batch (limit=50) with FOR UPDATE SKIP LOCKED to prevent concurrent cron workers collision
+        # Equivalent domain: [("status", "=", "queued"), "|", ("next_retry_at", "=", False), ("next_retry_at", "<=", now)]
+        self.env.cr.execute("""
+            SELECT id FROM print_gateway_print_job
+            WHERE status = 'queued' AND (next_retry_at IS NULL OR next_retry_at <= %s)
+            ORDER BY id ASC
+            LIMIT 50
+            FOR UPDATE SKIP LOCKED
+        """, (now,))
+        job_ids = [row[0] for row in self.env.cr.fetchall()]
+        if not job_ids:
+            return 0
+        jobs = self.browse(job_ids)
         started = time.monotonic()
         for job in jobs:
             if time.monotonic() - started > 20:
@@ -1247,10 +1224,72 @@ class PrintGatewayJob(models.Model):
     @api.private
     def cron_sync_status(self):
         self._require_cron_runner()
-        jobs = self.search([
-            ("gateway_job_id", "!=", False),
-            ("status", "not in", list(self._TERMINAL)),
-        ], order="id asc", limit=100)
+        # Bound query batch (limit=100) with FOR UPDATE SKIP LOCKED to prevent worker overlap
+        self.env.cr.execute("""
+            SELECT id FROM print_gateway_print_job
+            WHERE gateway_job_id IS NOT NULL AND status NOT IN ('success', 'failed', 'unknown')
+            ORDER BY id ASC
+            LIMIT 100
+            FOR UPDATE SKIP LOCKED
+        """)
+        job_ids = [row[0] for row in self.env.cr.fetchall()]
+        if not job_ids:
+            return 0
+        jobs = self.browse(job_ids)
+
+        config_jobs = {}
         for job in jobs:
-            job.action_sync_status()
-        return len(jobs)
+            config = job.gateway_config_id.sudo()
+            if config:
+                config_jobs.setdefault(config, self.env["print_gateway.print_job"])
+                config_jobs[config] |= job
+
+        total_synced = 0
+        for config, c_jobs in config_jobs.items():
+            job_list = list(c_jobs)
+            for i in range(0, len(job_list), 50):
+                chunk = job_list[i:i + 50]
+                job_ids = [j.gateway_job_id for j in chunk if j.gateway_job_id]
+                if not job_ids:
+                    continue
+                try:
+                    response = requests.post(
+                        "%s/api/print/jobs/batch-status" % config._gateway_base(for_request=True),
+                        json={"jobIds": job_ids},
+                        headers=config._gateway_headers(),
+                        timeout=(5, 15),
+                        allow_redirects=False,
+                    )
+                    if response.status_code == 200:
+                        body = response.json()
+                        returned = {
+                            item["jobId"]: item
+                            for item in body.get("jobs", [])
+                            if isinstance(item, dict) and "jobId" in item
+                        }
+                        for job in chunk:
+                            if job.gateway_job_id in returned:
+                                self._apply_synced_status(job, returned[job.gateway_job_id])
+                            else:
+                                job.write({
+                                    "status": "unknown",
+                                    "last_error": "GATEWAY_JOB_NOT_FOUND: the Gateway no longer has this job (expired or cleaned up). Physical outcome unknown - verify at the printer, then use Force Reprint if needed.",
+                                    "next_retry_at": False,
+                                    "completed_at": fields.Datetime.now(),
+                                })
+                                job._post_source_audit(_("Print Job #%s is no longer known to the Gateway; outcome marked UNKNOWN for manual reconciliation.") % (job.gateway_job_id or job.id))
+                            total_synced += 1
+                    else:
+                        for job in chunk:
+                            job.action_sync_status()
+                            total_synced += 1
+                except Exception as exc:
+                    _logger.warning("Batch status sync failed for config %s: %s; falling back to per-job sync", config.id, exc)
+                    for job in chunk:
+                        try:
+                            job.action_sync_status()
+                            total_synced += 1
+                        except Exception:
+                            pass
+
+        return total_synced

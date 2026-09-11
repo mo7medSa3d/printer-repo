@@ -29,13 +29,16 @@ export function deriveOutcome(status: string, error?: string | null): PhysicalOu
 }
 
 export function jobTone(status: string, outcome?: PhysicalOutcome): Tone {
+  // An ambiguous physical outcome is never red: unknown means "may have
+  // printed", which must read as attention (amber), not failure.
+  if (outcome === "unknown") return "warn";
   switch (status.toLowerCase()) {
     case "success":
       return "ok";
     case "failed":
-      return outcome === "unknown" ? "warn" : "bad";
+      return "bad";
     case "expired":
-      return "warn";
+      return "bad";
     case "printing":
       return "info";
     case "claimed":

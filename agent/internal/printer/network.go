@@ -19,8 +19,9 @@ const (
 )
 
 type NetworkPrinter struct {
-	Address  string
-	Protocol string
+	Address        string
+	Protocol       string
+	RasterMaxWidth int
 }
 
 func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
@@ -31,31 +32,32 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 		return fmt.Errorf("payload %d bytes exceeds %d limit", len(data), maxPrintBytes)
 	}
 
-	// Active preflight BEFORE any payload byte is transmitted. ESC/POS
-	// devices have a status back-channel and are probed; a device that does
-	// not answer the status inquiry is reported as status-unsupported, which
-	// is NEVER treated as proof of health (see PreFlightHealthCheck).
-	// TOCTOU notice: preflight cannot eliminate mid-stream paper-out or
-	// disconnects; those are classified via UNKNOWN_PARTIAL_DELIVERY below.
-	if strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		if err := PreFlightHealthCheck(probeCtx, p.Address); err != nil {
-			if errors.Is(err, ErrPrinterStatusUnsupported) {
-				log.Printf("printer %s: ESC/POS status channel unavailable (%v); proceeding without health proof", p.Address, err)
-			} else {
-				return fmt.Errorf("pre-flight health check failed: %w", err)
-			}
-		}
+	// Single connection with keepalive to eliminate connection churn and race conditions.
+	d := net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 10 * time.Second,
 	}
-
-	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
 		// Zero bytes sent: provably pre-dispatch failure, safely retryable.
 		return fmt.Errorf("%w: dial %s: %w", ErrPrinterOffline, p.Address, err)
 	}
 	defer conn.Close()
+
+	// Active preflight on the OPEN connection before streaming raster/command bytes.
+	if strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
+		_ = conn.SetDeadline(time.Now().Add(1500 * time.Millisecond))
+		if _, err := QueryHealthStatus(conn); err != nil {
+			var netErr net.Error
+			if errors.Is(err, ErrPrinterStatusUnsupported) || (errors.As(err, &netErr) && netErr.Timeout()) {
+				log.Printf("printer %s: ESC/POS status channel unavailable (%v); proceeding without health proof", p.Address, err)
+			} else {
+				return fmt.Errorf("pre-flight health check failed: %w", err)
+			}
+		}
+		// Reset read/write deadline
+		_ = conn.SetDeadline(time.Time{})
+	}
 
 	written := 0
 	for written < len(data) {
@@ -87,6 +89,16 @@ func (p *NetworkPrinter) Print(ctx context.Context, data []byte) error {
 			return fmt.Errorf("short write 0 bytes to %s", p.Address)
 		}
 	}
+
+	// Graceful shutdown: signal EOF after all application bytes have been
+	// accepted by the socket. TCP close semantics provide delivery ordering;
+	// an arbitrary sleep is not a correctness mechanism.
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if err := tcpConn.CloseWrite(); err != nil {
+			return MarkUnknown("failed to half-close print connection after sending %d bytes: %v", written, err)
+		}
+	}
+
 	return nil
 }
 
@@ -120,7 +132,7 @@ func (p *NetworkPrinter) PrintDocument(ctx context.Context, doc Document) error 
 		if !strings.EqualFold(strings.TrimSpace(p.Protocol), "escpos") {
 			return CapabilityMismatchf("image payloads are raster-converted for ESC/POS devices only (device protocol %q)", p.Protocol)
 		}
-		data, err := JPEGToESCPOS(doc.Data)
+		data, err := JPEGToESCPOSWithMaxWidth(doc.Data, DefaultRasterSliceHeight, p.RasterMaxWidth)
 		if err != nil {
 			return fmt.Errorf("render image for raw TCP printer: %w", err)
 		}

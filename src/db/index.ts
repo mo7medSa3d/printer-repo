@@ -45,9 +45,15 @@ function createPool(): Pool {
         password: pgPassword,
       };
 
+  // Pin the session timezone to UTC: the schema stores naive timestamps
+  // and every lease/TTL/sweep compares SQL now() against app-written times.
+  // Against a cloud database running a non-UTC zone, an unpinned session
+  // would silently shift all thresholds by the UTC offset.
+  const sessionOptions = ["-c timezone=UTC"];
   if (searchPath) {
-    poolConfig.options = `-c search_path=${searchPath}`;
+    sessionOptions.push(`-c search_path=${searchPath}`);
   }
+  poolConfig.options = sessionOptions.join(" ");
 
   poolConfig.max = 20;
   poolConfig.idleTimeoutMillis = 30_000;

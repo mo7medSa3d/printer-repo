@@ -2,7 +2,7 @@ import type { AgentStatus, PrinterInfo, RuntimePaths } from "./lib/ipc";
 
 export type Page = "dashboard" | "printers" | "jobs" | "agents" | "settings";
 export type JobTab = "all" | "queued" | "printing" | "printed" | "failed" | "unknown" | "expired";
-export type PrinterStatusFilter = "all" | "online" | "offline";
+export type PrinterStatusFilter = "all" | "online" | "offline" | "busy" | "error" | "unknown";
 
 export type AgentStatusView = Partial<AgentStatus> & { error?: string };
 export type ToastMessage = { text: string; type: "success" | "error" | "info" } | null;

@@ -1,7 +1,7 @@
 import { db } from "../db";
 import { managerSessions } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { requiredRuntimeSecret, runtimeSecret } from "./runtime-secret";
 
 const COOKIE_NAME = "mgr_session";
@@ -153,7 +153,16 @@ function compareStringsSafe(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function verifyManagerPassword(username: string, input: string): boolean {
+function scryptAsync(password: string, salt: string, keylen: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, keylen, (error, derivedKey) => {
+      if (error) return reject(error);
+      resolve(derivedKey);
+    });
+  });
+}
+
+export async function verifyManagerPassword(username: string, input: string): Promise<boolean> {
   const expectedUser = runtimeSecret("MANAGER_USERNAME");
   const expectedHash = runtimeSecret("MANAGER_PASSWORD_HASH");
   const expectedPass = runtimeSecret("MANAGER_PASSWORD");
@@ -161,9 +170,11 @@ export function verifyManagerPassword(username: string, input: string): boolean 
 
   const userOk = compareStringsSafe(username, expectedUser);
   if (!userOk) {
+    // Preserve a comparable amount of password KDF work for unknown users
+    // without blocking the Node.js event loop.
     if (expectedHash?.includes(":")) {
       const [salt] = expectedHash.split(":", 1);
-      if (salt) scryptSync(input, salt, 32);
+      if (salt) await scryptAsync(input, salt, 32).catch(() => undefined);
     }
     return false;
   }
@@ -171,8 +182,8 @@ export function verifyManagerPassword(username: string, input: string): boolean 
   if (expectedHash && expectedHash.includes(":")) {
     const [salt, hash] = expectedHash.split(":");
     if (!salt || !hash || !/^[0-9a-fA-F]{64}$/.test(hash)) return false;
-    const derived = scryptSync(input, salt, 32).toString("hex");
-    return compareStringsSafe(derived, hash.toLowerCase());
+    const derived = await scryptAsync(input, salt, 32);
+    return compareStringsSafe(derived.toString("hex"), hash.toLowerCase());
   }
 
   if (process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD !== "1" || !expectedPass) return false;

@@ -60,7 +60,7 @@ class PrintGatewayPolicy(models.Model):
     ], string="Raw Protocol", default="zpl")
     raw_template = fields.Text(
         string="Raw Command Template",
-        help="Raw printer command string with optional {record.<field>} or {<field>} placeholders.",
+        help="Raw printer command string with optional {<field>} placeholders (bare field names only, e.g. {name}). Dotted paths like {record.name} are not allowed.",
     )
     binding_id = fields.Many2one(
         "print_gateway.binding", string="Target Binding", ondelete="restrict",
@@ -152,6 +152,18 @@ class PrintGatewayPolicy(models.Model):
         "account.move": {"invoice_posted"},
         "pos.order": {"pos_order_paid"},
     }
+    
+    @api.onchange("action_type")
+    def _onchange_action_type(self):
+        """Clear mutually exclusive fields when switching action type to prevent validation lock."""
+        for policy in self:
+            if policy.action_type == "report":
+                policy.raw_template = False
+                policy.raw_protocol = False
+            elif policy.action_type == "raw_template":
+                policy.report_id = False
+
+
 
     @api.constrains("action_type", "report_id", "raw_template", "raw_protocol", "domain_filter", "model_id", "event_type", "binding_id")
     def _check_action_configuration(self):

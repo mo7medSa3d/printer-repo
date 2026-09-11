@@ -4,10 +4,11 @@
 
 
 !macro NSIS_HOOK_PREINSTALL
-  DetailPrint "Stopping existing Odoo Print Agent..."
+  DetailPrint "Stopping existing Odoo Print Agent and Desktop Manager..."
   nsExec::Exec 'net stop OdooPrintAgent'
   nsExec::Exec 'sc stop OdooPrintAgent'
   nsExec::Exec 'taskkill /F /T /IM OdooPrintAgent.exe'
+  nsExec::Exec 'taskkill /F /T /IM OdooPrintManager.exe'
 !macroend
 
 
@@ -27,6 +28,10 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   DetailPrint "Stopping and removing Odoo Print Agent Windows Service..."
+  nsExec::Exec 'net stop OdooPrintAgent'
+  nsExec::Exec 'sc stop OdooPrintAgent'
+  nsExec::Exec 'taskkill /F /T /IM OdooPrintManager.exe'
+  nsExec::Exec 'taskkill /F /T /IM OdooPrintAgent.exe'
   IfFileExists "$INSTDIR\resources\OdooPrintAgent.exe" 0 +4
     nsExec::Exec '"$INSTDIR\resources\OdooPrintAgent.exe" -service stop'
     nsExec::Exec '"$INSTDIR\resources\OdooPrintAgent.exe" -service uninstall'

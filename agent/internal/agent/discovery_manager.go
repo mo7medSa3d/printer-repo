@@ -39,12 +39,39 @@ func (a *Agent) pollDiscovery(ctx context.Context) {
 		select {
 		case a.discoverySem <- struct{}{}:
 			go func(sessionID string) {
-				defer func() { <-a.discoverySem }()
 				a.executeDiscoverySession(ctx, sessionID)
 			}(id)
 		default:
+			// A skipped session must not linger as "running" on the
+			// gateway until its 60s expiry: report it cancelled now so
+			// dashboards and operators see the truth immediately. The
+			// gateway accepts "cancelled" as a terminal session status
+			// and the next 30s poll tick picks up fresh work.
 			log.Printf("[discovery] session %s deferred: a discovery session is already running", id)
+			go a.reportDiscoveryResult(ctx, id, "cancelled", nil)
 		}
+	}
+}
+
+// runBoundedDiscovery separates orchestration lifetime from an underlying
+// discovery call that may be synchronous/uncancellable at the OS boundary.
+// The caller gets a bounded result while finishedCh remains the sole signal used
+// to release ownership of the worker/semaphore.
+func runBoundedDiscovery(ctx context.Context, max time.Duration, discover func(context.Context) printer.DiscoveryResult) (printer.DiscoveryResult, bool, <-chan struct{}) {
+	boundedCtx, cancel := context.WithTimeout(ctx, max)
+	defer cancel()
+	resultCh := make(chan printer.DiscoveryResult, 1)
+	finishedCh := make(chan struct{})
+	go func() {
+		defer close(finishedCh)
+		resultCh <- discover(boundedCtx)
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result, true, finishedCh
+	case <-boundedCtx.Done():
+		return printer.DiscoveryResult{}, false, finishedCh
 	}
 }
 
@@ -57,41 +84,31 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryID string)
 	discoveryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	resultCh := make(chan printer.DiscoveryResult, 1)
-	go func() {
-		resultCh <- printer.DiscoverWithContext(discoveryCtx, a.cfg, a.registryPath)
-	}()
-
-	var result printer.DiscoveryResult
-	select {
-	case result = <-resultCh:
-	case <-discoveryCtx.Done():
+	result, completed, finishedCh := runBoundedDiscovery(discoveryCtx, 30*time.Second, func(scanCtx context.Context) printer.DiscoveryResult {
+		return printer.DiscoverWithContext(scanCtx, a.cfg, a.registryPath)
+	})
+	if !completed {
 		status := "failed"
 		if discoveryCtx.Err() == context.Canceled {
 			status = "cancelled"
 		}
 		log.Printf("[discovery] session %s exceeded 30s bound: %v", discoveryID, discoveryCtx.Err())
 		a.reportDiscoveryResult(ctx, discoveryID, status, nil)
+		// Do not release the discovery semaphore until the underlying scan has
+		// actually returned. This matters on Windows because EnumPrintersW is
+		// synchronous and does not accept Go context cancellation. At most one
+		// such blocked scan can exist, so cancellation cannot create an
+		// unbounded goroutine/worker leak.
+		go func() {
+			<-finishedCh
+			<-a.discoverySem
+		}()
 		return
 	}
 
 	var devices []map[string]interface{}
 	for _, di := range result.Printers {
-		verification := "candidate"
-		if di.Protocol == "ipp" || di.Protocol == "ipps" || di.ConnectionType == "spooler" {
-			verification = "verified"
-		}
-		if di.Capabilities != nil {
-			if v, ok := di.Capabilities["snmp_verified"]; ok && v == true {
-				verification = "verified"
-			}
-			if v, ok := di.Capabilities["wsd_verified"]; ok && v == true {
-				verification = "verified"
-			}
-			if v, ok := di.Capabilities["mdns_verified"]; ok && v == true {
-				verification = "verified"
-			}
-		}
+		verification := discoveryVerification(di)
 
 		sources := []string{}
 		if di.Capabilities != nil {
@@ -141,6 +158,25 @@ func (a *Agent) executeDiscoverySession(ctx context.Context, discoveryID string)
 	}
 
 	a.reportDiscoveryResult(ctx, discoveryID, status, devices)
+	<-a.discoverySem
+}
+
+func discoveryVerification(di printer.DeviceInfo) string {
+	verification := "candidate"
+	if di.Protocol == "ipp" || di.Protocol == "ipps" || di.ConnectionType == "spooler" {
+		verification = "verified"
+	}
+	if di.Capabilities != nil {
+		if v, ok := di.Capabilities["snmp_verified"].(bool); ok && v {
+			verification = "verified"
+		}
+		if v, ok := di.Capabilities["mdns_verified"].(bool); ok && v {
+			verification = "verified"
+		}
+	}
+	// WSD is discovery evidence only. A stale capability emitted by an older
+	// agent must never elevate a device to routable/verified status by itself.
+	return verification
 }
 
 func (a *Agent) reportDiscoveryResult(ctx context.Context, discoveryID, status string, devices []map[string]interface{}) {

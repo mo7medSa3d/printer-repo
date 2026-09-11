@@ -52,8 +52,8 @@ func normalizeAndValidatePairingCode(raw string) (string, error) {
 }
 
 // Register pairs this machine with the Gateway and persists the credentials
-// next to the existing config file. The secret is written to
-// %PROGRAMDATA%\OdooPrintAgent\config.yaml and is never echoed to stdout.
+// next to the existing config file. The secret is sealed in the secure store
+// and is not persisted in plaintext config.yaml or echoed to stdout.
 func Register(serverURL, pairingCode, configPath string) error {
 	serverURL = strings.TrimRight(strings.TrimSpace(serverURL), "/")
 	if err := validateServerURL(serverURL); err != nil {

@@ -3,10 +3,10 @@ import { printJobs } from "../../../../db/schema";
 import { validateAgent } from "../../../../lib/agent-auth";
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { isJobStatus, canTransition, isTerminal, isLateSuccessAllowed, derivePhysicalOutcome, AGENT_REQUEUE_REASONS, type JobStatus } from "../../../../lib/job-status";
+import { isJobStatus, canTransition, isTerminal, isLateSuccessAllowed, isExpiredLateSuccessAllowed, derivePhysicalOutcome, AGENT_REQUEUE_REASONS, PRINTED_POST_EXPIRATION_MARKER, type JobStatus } from "../../../../lib/job-status";
 import { logInfo, logWarn, requestIdFrom } from "../../../../lib/log";
 import { incrementMetric } from "../../../../lib/metrics";
-import { sweepPrintJobs, STALE_CLAIM_SECONDS, MAX_RETRIES } from "../../../../lib/job-maintenance";
+import { STALE_CLAIM_SECONDS, MAX_RETRIES } from "../../../../lib/job-maintenance";
 import { CLAIM_RETURNING, MAX_DELIVERY_ATTEMPTS, MAX_AGENT_IN_FLIGHT_JOBS } from "../../../../lib/job-delivery";
 import { fencedJobWrite } from "../../../../lib/job-fencing";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
@@ -38,7 +38,6 @@ export async function GET(req: Request) {
   const agent = await validateAgent(req.headers.get("Authorization"));
   if (!agent) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  await sweepPrintJobs({ agentId: agent.id });
 
   const claimJobs = async (tx: { execute: typeof db.execute }) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agent.id}`}))`);
@@ -177,34 +176,56 @@ export async function PATCH(req: Request) {
   // NOT the security boundary: every lifecycle UPDATE below repeats the
   // token inside its WHERE predicate (fencedJobWrite), so a token that
   // changes between this read and the write matches zero rows atomically.
-  if (job.claimToken && claimToken !== job.claimToken) {
+  if (requestedStatus !== "expired" && job.claimToken && claimToken !== job.claimToken) {
     logWarn("job.status.stale_claim", { requestId, jobId, agentId: agent.id });
     return NextResponse.json({ error: "Stale claim token: this attempt was superseded by a newer claim", code: "STALE_CLAIM", status: currentStatus }, { status: 409 });
   }
 
-  if (!isTerminal(currentStatus) && new Date(job.expiresAt).getTime() <= Date.now()) {
-    const delivered = Boolean(job.deliveredAt || job.ackedAt);
+  // Expiration is deliberately isolated from the generic state machine. The
+  // only authoritative expiry path is this atomic UPDATE, fenced by the
+  // current claim token and by the database clock. A live job can therefore
+  // never be terminalized early by an authenticated but stale/compromised
+  // agent.
+  if (requestedStatus === "expired") {
     const expiryError = currentStatus === "printing"
       ? "JOB_EXPIRED_DURING_PRINT: physical output is unknown"
-      : delivered && currentStatus === "claimed"
+      : currentStatus === "claimed" && Boolean(job.deliveredAt || job.ackedAt)
         ? "UNKNOWN_PARTIAL_DELIVERY: job expired after delivery without an execution report"
         : null;
+
     const expired = await db.update(printJobs)
-      // Delivery evidence only when the expired row was actually held
-      // (claimed/printing): a queued row that merely timed out was never
-      // possessed by any agent, so stamping it would fabricate evidence.
-      .set({ status: "expired", error: expiryError, updatedAt: new Date(), deliveredAt: sql`CASE WHEN ${printJobs.status} IN ('claimed', 'printing') THEN COALESCE(${printJobs.deliveredAt}, now()) ELSE ${printJobs.deliveredAt} END` })
-      .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
+      .set({
+        status: "expired",
+        error: expiryError,
+        updatedAt: new Date(),
+        deliveredAt: sql`CASE WHEN ${printJobs.status} IN ('claimed', 'printing') THEN COALESCE(${printJobs.deliveredAt}, now()) ELSE ${printJobs.deliveredAt} END`,
+      })
+      .where(and(
+        fencedJobWrite(jobId, agent.id, currentStatus, claimToken),
+        sql`${printJobs.expiresAt} <= now()`,
+      ))
       .returning({ status: printJobs.status, error: printJobs.error });
+
     if (expired.length === 1) {
       incrementMetric("print_jobs_expired_total");
       if (expiryError) incrementMetric("print_jobs_unknown_total");
-      logInfo("print.job.expired", { requestId, jobId, agentId: agent.id, physicalOutcome: expiryError ? "unknown" : "not_printed" });
-      return NextResponse.json({ error: "Job has expired", status: "expired", physicalOutcome: derivePhysicalOutcome("expired", expiryError) }, { status: 409 });
+      const physicalOutcome = derivePhysicalOutcome("expired", expiryError);
+      logInfo("print.job.expired", { requestId, jobId, agentId: agent.id, physicalOutcome });
+      return NextResponse.json({
+        success: true,
+        status: "expired",
+        physicalOutcome,
+      });
     }
-    const winner = await db.query.printJobs.findFirst({ where: whereClause });
-    const winnerStatus = winner?.status as JobStatus | undefined;
-    return NextResponse.json({ error: `Job transition raced with another update${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
+
+    // Zero-row is intentionally normalized to one conflict code. The row may
+    // still exist, but either its TTL has not elapsed, the claim was replaced,
+    // or another writer already moved it terminal. None is safe to report as a
+    // successful agent-driven expiry.
+    return NextResponse.json({
+      error: "Job has not expired or the worker claim is stale",
+      code: "JOB_NOT_EXPIRED_OR_STALE",
+    }, { status: 409 });
   }
 
   if (requestedStatus === "queued" && currentStatus === "claimed") {
@@ -252,6 +273,38 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Invalid status transition: failed -> success (late success not allowed for this job)" }, { status: 409 });
     }
     lateSuccess = true;
+  }
+
+  // Late physical print completed right at the TTL boundary: an agent
+  // reporting success on a recently expired job (within the physical grace
+  // window) is recorded as success with physical outcome
+  // PRINTED_POST_EXPIRATION rather than a blind 409 Conflict. The write
+  // stays fenced on id + agent + observed expired status so only the
+  // holder of the terminal row can claim the post-expiration print.
+  if (currentStatus === "expired" && requestedStatus === "success") {
+    if (!isExpiredLateSuccessAllowed({ status: currentStatus, expiresAt: job.expiresAt, updatedAt: job.updatedAt }, Date.now())) {
+      return NextResponse.json({ error: "Invalid status transition: expired -> success (outside physical grace window)", status: currentStatus }, { status: 409 });
+    }
+    const postExpiryError = `${PRINTED_POST_EXPIRATION_MARKER}: physical print completed after TTL expiry${errorMessage ? ` (${errorMessage})` : ""}`.slice(0, MAX_ERROR_LENGTH);
+    const postExpired = await db.update(printJobs)
+      .set({
+        status: "success",
+        error: postExpiryError,
+        updatedAt: new Date(),
+        deliveredAt: sql`COALESCE(${printJobs.deliveredAt}, now())`,
+      })
+      .where(fencedJobWrite(jobId, agent.id, currentStatus, claimToken))
+      .returning({ status: printJobs.status, error: printJobs.error });
+    if (postExpired.length !== 1) {
+      const winner = await db.query.printJobs.findFirst({ where: whereClause });
+      const winnerStatus = winner?.status as JobStatus | undefined;
+      return NextResponse.json({ error: `Concurrent status transition rejected${winnerStatus ? `; current status is ${winnerStatus}` : ""}`, status: winnerStatus ?? "unknown" }, { status: 409 });
+    }
+    const physicalOutcome = derivePhysicalOutcome("success", postExpiryError);
+    incrementMetric("print_jobs_success_total");
+    incrementMetric("print_jobs_late_success_total");
+    logInfo("print.job.success_post_expiration", { requestId, jobId, agentId: agent.id, physicalOutcome: PRINTED_POST_EXPIRATION_MARKER });
+    return NextResponse.json({ success: true, status: "success", physicalOutcome, physicalDetail: PRINTED_POST_EXPIRATION_MARKER });
   }
 
   if (!canTransition(currentStatus, requestedStatus, { allowLateSuccess: lateSuccess })) {

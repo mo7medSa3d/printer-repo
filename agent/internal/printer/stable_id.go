@@ -15,7 +15,7 @@ func StableIDFromSpooler(spoolerName string) string {
 	norm := strings.ToLower(strings.TrimSpace(spoolerName))
 	norm = strings.ReplaceAll(norm, " ", "_")
 	h := sha256.Sum256([]byte("spooler:" + norm))
-	return fmt.Sprintf("printer_spooler_%x", h[:4])
+	return fmt.Sprintf("printer_spooler_%x", h[:8])
 }
 
 // StableIDFromUSB derives a deterministic ID from USB identifiers.
@@ -30,7 +30,7 @@ func StableIDFromUSB(vid, pid, serial, location string) string {
 		key = fmt.Sprintf("usb-vidpid:%s:%s", strings.ToLower(vid), strings.ToLower(pid))
 	}
 	h := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("printer_usb_%x", h[:4])
+	return fmt.Sprintf("printer_usb_%x", h[:8])
 }
 
 // StableIDFromNetwork derives a deterministic ID from IP and port.
@@ -43,14 +43,14 @@ func StableIDFromNetwork(ip string, port int) string {
 	}
 	key := fmt.Sprintf("net:%s:%d", host, port)
 	h := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("printer_net_%x", h[:4])
+	return fmt.Sprintf("printer_net_%x", h[:8])
 }
 
 // StableIDFromEndpoint derives ID from endpoint string if IP parsing fails.
 func StableIDFromEndpoint(endpoint string) string {
 	key := fmt.Sprintf("endpoint:%s", strings.ToLower(strings.TrimSpace(endpoint)))
 	h := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("printer_ep_%x", h[:4])
+	return fmt.Sprintf("printer_ep_%x", h[:8])
 }
 
 // StableIDForDevice returns deterministic ID based on available fields.
@@ -104,5 +104,5 @@ func StableIDForDevice(d DeviceInfo) string {
 		return StableIDFromEndpoint(d.Endpoint)
 	}
 	h := sha256.Sum256([]byte("name:" + strings.ToLower(d.Name)))
-	return fmt.Sprintf("printer_%x", h[:4])
+	return fmt.Sprintf("printer_%x", h[:8])
 }

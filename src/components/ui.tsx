@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useId, useRef } from "react";
 import Link from "next/link";
-import { X, Check, Loader2, Copy, AlertTriangle } from "lucide-react";
+import { X, Check, Loader2, Copy, AlertTriangle, ChevronDown } from "lucide-react";
 
 /* ============================================================
    Odoo Print Gateway — shared UI primitives
@@ -401,7 +401,7 @@ export function Field({
 }
 
 export const inputClass =
-  "w-full h-11 rounded-lg border border-edge bg-surface px-3.5 text-sm text-ink placeholder:text-ink-4 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
+  "w-full h-11 rounded-lg border border-edge bg-surface px-3.5 text-sm text-ink placeholder:text-ink-3 shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-edge-strong focus:border-brand focus:outline-none focus:shadow-[var(--focus-ring-shadow)] disabled:opacity-50 disabled:bg-surface-2";
 
 export function Input({
   className = "",
@@ -427,20 +427,65 @@ export function Select({
   ...props
 }: React.SelectHTMLAttributes<HTMLSelectElement> & { error?: boolean }) {
   return (
-    <select
-      className={`${inputClass} appearance-none pr-8 ${
-        error
-          ? "border-bad-edge focus:border-bad focus:shadow-[0_0_0_3px_var(--danger-border)]"
-          : ""
-      } ${className}`}
-      {...props}
-    >
-      {children}
-    </select>
+    <span className={`relative inline-flex items-center [&>svg]:pointer-events-none ${className}`}>
+      <select
+        className={`${inputClass} w-full appearance-none pr-8 ${
+          error
+            ? "border-bad-edge focus:border-bad focus:shadow-[0_0_0_3px_var(--danger-border)]"
+            : ""
+        }`}
+        {...props}
+      >
+        {children}
+      </select>
+      <ChevronDown className="absolute right-2.5 h-4 w-4 shrink-0 text-ink-3" aria-hidden="true" />
+    </span>
   );
 }
 
 /* ---------- Modal / Drawer ---------- */
+
+// Tracks elements made inert while a dialog is open so background access
+// can be restored exactly on close. Module-level: shared by every Modal
+// and Drawer instance (including nested dialogs) on the page.
+const inertedBackground = new Set<HTMLElement>();
+let openDialogCount = 0;
+
+function refreshBackgroundIsolation(): void {
+  if (typeof document === "undefined") return;
+  if (openDialogCount === 0) {
+    inertedBackground.forEach((el) => {
+      el.inert = false;
+    });
+    inertedBackground.clear();
+    return;
+  }
+  // Inert every top-level background branch that does not host an open
+  // dialog root. Walking up from each [data-dialog-root] keeps nested
+  // dialogs reachable while everything behind them stays inert to both
+  // keyboard (Tab) and assistive technology.
+  document.querySelectorAll<HTMLElement>("[data-dialog-root]").forEach((root) => {
+    let el: HTMLElement | null = root;
+    while (el && el !== document.body) {
+      const parent: HTMLElement | null = el.parentElement;
+      if (!parent) break;
+      [...parent.children].forEach((sib) => {
+        if (
+          sib instanceof HTMLElement &&
+          sib !== el &&
+          !sib.contains(el) &&
+          !sib.hasAttribute("data-dialog-root") &&
+          sib.querySelector("[data-dialog-root]") === null &&
+          !inertedBackground.has(sib)
+        ) {
+          sib.inert = true;
+          inertedBackground.add(sib);
+        }
+      });
+      el = parent;
+    }
+  });
+}
 
 function useDialog(
   open: boolean,
@@ -449,10 +494,40 @@ function useDialog(
 ) {
   useEffect(() => {
     if (!open) return;
+    openDialogCount += 1;
+    refreshBackgroundIsolation();
+    const focusables = (): HTMLElement[] => {
+      const panel = panelRef.current;
+      if (!panel) return [];
+      const nodes = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      // offsetParent is null for hidden elements; treat as non-tabbable.
+      // Fall back to the full list when layout is unavailable (e.g. tests).
+      const visible = [...nodes].filter((el) => el.offsetParent !== null);
+      return visible.length > 0 ? visible : [...nodes];
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
+        return;
+      }
+      // Focus trap: Tab cycles inside the panel while the modal is active.
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
     document.addEventListener("keydown", onKey);
@@ -460,6 +535,8 @@ function useDialog(
     panelRef.current?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
+      openDialogCount = Math.max(0, openDialogCount - 1);
+      refreshBackgroundIsolation();
       prev?.focus?.();
     };
   }, [open, onClose, panelRef]);
@@ -483,10 +560,11 @@ export function Modal({
   wide?: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const descId = useId();
   useDialog(open, onClose, panelRef);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div data-dialog-root className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
         className="pg-fade-in absolute inset-0 backdrop-blur-[2px]"
         style={{ backgroundColor: "var(--overlay)" }}
@@ -498,6 +576,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        aria-describedby={description ? descId : undefined}
         tabIndex={-1}
         className={`pg-rise-in relative w-full ${
           wide ? "sm:max-w-3xl" : "sm:max-w-xl"
@@ -507,7 +586,7 @@ export function Modal({
           <div className="min-w-0">
             <h2 className="text-[19px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
             {description && (
-              <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>
+              <p id={descId} className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>
             )}
           </div>
           <IconButton label="Close dialog" onClick={onClose}>
@@ -539,10 +618,11 @@ export function Drawer({
   children: React.ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const descId = useId();
   useDialog(open, onClose, panelRef);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div data-dialog-root className="fixed inset-0 z-50 flex justify-end">
       <div
         className="pg-fade-in absolute inset-0"
         style={{ backgroundColor: "var(--overlay)" }}
@@ -554,6 +634,7 @@ export function Drawer({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        aria-describedby={description ? descId : undefined}
         tabIndex={-1}
         className="pg-slide-in-right relative flex h-full w-full max-w-lg flex-col border-l border-edge bg-surface shadow-xl outline-none"
       >
@@ -561,7 +642,7 @@ export function Drawer({
           <div className="min-w-0">
             <h2 className="text-[19px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
             {description && (
-              <p className="mt-1 truncate text-[13px] text-ink-3">{description}</p>
+              <p id={descId} className="mt-1 truncate text-[13px] text-ink-3">{description}</p>
             )}
           </div>
           <IconButton label="Close panel" onClick={onClose}>
@@ -589,9 +670,35 @@ export function Tabs<T extends string>({
   counts?: Partial<Record<T, number>>;
   className?: string;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const onListKeyDown = (e: React.KeyboardEvent) => {
+    // Roving focus per the ARIA tab pattern: arrows move between tabs
+    // (and activate), Home/End jump to the ends. Tabs stay in the Tab
+    // sequence via roving tabindex so Tab enters/exits the list once.
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const idx = tabs.indexOf(active);
+    let next = idx;
+    if (e.key === "ArrowRight") next = (idx + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next !== idx) {
+      onChange(tabs[next]);
+      // Focus follows the newly selected tab after re-render.
+      requestAnimationFrame(() => {
+        listRef.current
+          ?.querySelector<HTMLElement>(`[data-tab="${tabs[next]}"]`)
+          ?.focus();
+      });
+    }
+  };
   return (
     <div
+      ref={listRef}
       role="tablist"
+      aria-label="Filter options"
+      onKeyDown={onListKeyDown}
       className={`flex items-center gap-1 overflow-x-auto border-b border-edge ${className}`}
     >
       {tabs.map((t) => {
@@ -602,6 +709,8 @@ export function Tabs<T extends string>({
             key={t}
             role="tab"
             aria-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            data-tab={t}
             onClick={() => onChange(t)}
             className={`relative flex items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-shadow)] ${
               selected ? "text-ink" : "text-ink-3 hover:text-ink-2"

@@ -45,13 +45,29 @@ export function JobTimeline({ status, error = null, claimedAt = null }: Timeline
   const terminalLabel = done || failed || unknown ? jobLabel(s, outcome) : "Outcome";
   const terminalTone = done ? "ok" : unknown ? "warn" : failed ? "bad" : "todo";
 
+  const fullSteps = [
+    ...steps.map((step) => ({
+      label: step.label,
+      state: step.state as string,
+    })),
+    { label: terminalLabel, state: terminalTone === "todo" ? "todo" : terminalTone === "ok" ? "done" : "attention" },
+  ];
+  const srSummary = fullSteps
+    .map(
+      (step, i) =>
+        `Step ${i + 1} of ${fullSteps.length}: ${step.label} — ${
+          step.state === "done" ? "completed" : step.state === "current" ? "in progress" : step.state === "todo" ? "not reached" : "needs attention"
+        }`
+    )
+    .join(". ");
+
   return (
     <div
       className="rounded-xl border border-edge-accent bg-surface-accent px-5 py-4"
-      role="img"
-      aria-label={`Job pipeline: ${terminalLabel}`}
+      role="group"
+      aria-label={`Job progress. ${srSummary}`}
     >
-      <ol className="flex items-start">
+      <ol className="flex items-start" aria-hidden="true">
         {steps.map((step, i) => (
           <li key={step.label} className="flex flex-1 items-start">
             {i > 0 && (

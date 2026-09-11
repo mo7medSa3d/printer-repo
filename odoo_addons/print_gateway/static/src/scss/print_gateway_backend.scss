@@ -1,5 +1,7 @@
-/* Print Gateway backend UI — deliberately scoped to the add-on views. */
-.o_pg_view, .o_form_view {
+/* Print Gateway backend UI — strictly scoped to the add-on views (every
+   print_gateway form carries o_pg_view). Never target bare Odoo classes:
+   a leaked selector would restyle unrelated Odoo screens. */
+.o_pg_view {
     .o_field_widget input,
     .o_field_widget select,
     .o_input {

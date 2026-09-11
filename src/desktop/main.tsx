@@ -71,8 +71,8 @@ import {
   jobId,
   jobPrinterId,
   jobStatus,
-  jobTone,
   labelJob,
+  toneJob,
   labelPrinter,
   printerEndpoint,
   printerTone,
@@ -190,7 +190,7 @@ export default function App() {
       const status = Number((e as { status?: number })?.status ?? 0);
       setJobsError(
         status === 401 || status === 403
-          ? "Gateway requires a manager session — sign in at the gateway dashboard to view jobs."
+          ? "Gateway requires a manager session — sign in below to view jobs."
           : `Could not load jobs: ${errMsg(e)}`
       );
     } finally {
@@ -572,24 +572,11 @@ export default function App() {
   return (
     <div className="min-h-screen bg-app text-ink">
       {!isAdmin && (
-        <div style={{
-          backgroundColor: "#fee2e2",
-          borderBottom: "2px solid #ef4444",
-          color: "#991b1b",
-          padding: "12px 16px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          fontWeight: "bold",
-          fontSize: "14px",
-          zIndex: 9999
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span style={{ fontSize: "18px" }}>⚠️</span>
-            <span>
-              <strong>تنبيه صلاحيات:</strong> التطبيق لا يعمل بصلاحيات المسؤول (Administrator). لن تتمكن من كتابة الإعدادات أو التحكم في الخدمة. يرجى إغلاق التطبيق وإعادة تشغيله عبر <u>Run as administrator</u>.
-            </span>
-          </div>
+        <div className="flex items-center gap-2.5 border-b border-bad-edge bg-bad-bg px-4 py-3 text-sm font-bold text-bad" role="alert">
+          <AlertTriangle className="h-[18px] w-[18px] flex-shrink-0" aria-hidden="true" />
+          <span>
+            <strong>Permission Warning:</strong> The application is not running with Administrator privileges. You will not be able to save settings or control the service. Please close the app and restart it via <u>Run as administrator</u>.
+          </span>
         </div>
       )}
       <Sidebar
@@ -640,7 +627,7 @@ export default function App() {
                   <>
                     <StatusBadge
                       tone={isOnline ? "ok" : "bad"}
-                      label={isOnline ? "Agent online" : "Agent offline"}
+                      label={isOnline ? "Agent running" : "Agent stopped"}
                     />
                     <Button
                       variant="secondary"
@@ -785,8 +772,8 @@ export default function App() {
           <div className="space-y-6">
             <div className="space-y-4">
               <StatusBadge
-                tone={jobTone(jobStatus(selectedJob))}
-                label={labelJob(jobStatus(selectedJob))}
+                tone={toneJob(jobStatus(selectedJob), selectedJob.error)}
+                label={labelJob(jobStatus(selectedJob), selectedJob.error)}
               />
               <JobTimeline
                 status={jobStatus(selectedJob)}

@@ -52,6 +52,7 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0024_claim_fencing_and_payload_contract.sql",
       "0025_constraint_scope_and_protocol_contract_fix.sql",
       "0026_printer_type_default_alignment.sql",
+      "0027_printers_protocol_check_windows_spooler.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
@@ -158,6 +159,17 @@ suite("production-like PostgreSQL migration upgrade", () => {
         VALUES ('job_bad_contract', $1, $2, 'queued', '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [agentId, printerId])).rejects.toThrow(/constraint|check/i);
       await pool.query(`INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at)
         VALUES ('job_good_contract', $1, $2, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [agentId, printerId]);
+      // 0027: Windows spooler queues reported with protocol windows_spooler
+      // must sync instead of failing the CHECK with 23514.
+      await pool.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle)
+        VALUES ('printer_ws_fixture', $1, 'Spooler Queue', 'physical', 'other', 'spooler', 'windows_spooler', 'online', 'active')`, [agentId]);
+      // 0027: SNMP-discovered Zebra/TSC candidates (zpl/tspl) must persist
+      // instead of aborting the discovery session with 23514.
+      await pool.query(`INSERT INTO discovery_sessions (id, agent_id, status) VALUES ('disc_upgrade_fixture', $1, 'completed') ON CONFLICT (id) DO NOTHING`, [agentId]);
+      await pool.query(`INSERT INTO discovered_devices (id, discovery_id, agent_id, protocol) VALUES ('dev_zpl_fixture', 'disc_upgrade_fixture', $1, 'zpl')`, [agentId]);
+      await pool.query(`INSERT INTO discovered_devices (id, discovery_id, agent_id, protocol) VALUES ('dev_tspl_fixture', 'disc_upgrade_fixture', $1, 'tspl')`, [agentId]);
+      const devprotos = await pool.query(`SELECT protocol FROM discovered_devices WHERE id IN ('dev_zpl_fixture','dev_tspl_fixture') ORDER BY id`);
+      expect(devprotos.rows.map((r) => r.protocol).sort()).toEqual(["tspl", "zpl"]);
     } finally { await pool.end(); }
   });
 });

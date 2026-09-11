@@ -66,6 +66,53 @@ func TestNetworkPrinterPrintSuccessAndOffline(t *testing.T) {
 	}
 }
 
+func TestNetworkPrinterCloseWriteDeliversEOF(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	data := []byte("complete receipt\n\n")
+	eof := make(chan error, 1)
+	received := make(chan []byte, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			eof <- err
+			return
+		}
+		defer conn.Close()
+		got, readErr := io.ReadAll(conn)
+		received <- got
+		eof <- readErr
+	}()
+
+	p := &NetworkPrinter{Address: ln.Addr().String()}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := p.Print(ctx, data); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		if string(got) != string(data) {
+			t.Fatalf("received %q, want %q", got, data)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for complete receipt and EOF")
+	}
+	select {
+	case err := <-eof:
+		if err != nil {
+			t.Fatalf("server read after CloseWrite: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for EOF")
+	}
+}
+
 func TestNetworkPrinterPrintEmptyAndOversized(t *testing.T) {
 	p := &NetworkPrinter{Address: "127.0.0.1:9100"}
 	if err := p.Print(context.Background(), []byte{}); err == nil {
@@ -228,7 +275,7 @@ func TestNetworkPrinterPreFlightCheckScenarios(t *testing.T) {
 
 			payloadReceived := make(chan []byte, 1)
 			go func() {
-				// Handle preflight connection
+				// Handle connection
 				conn1, err := ln.Accept()
 				if err != nil {
 					return
@@ -236,15 +283,10 @@ func TestNetworkPrinterPreFlightCheckScenarios(t *testing.T) {
 				defer conn1.Close()
 				tc.responder(conn1)
 
-				// If print is expected to succeed, accept 2nd connection for payload
+				// If print succeeds, payload is sent on the SAME connection (eliminating socket churn)
 				if tc.expectSuccess {
-					conn2, err := ln.Accept()
-					if err != nil {
-						return
-					}
-					defer conn2.Close()
 					buf := make([]byte, 4096)
-					n, _ := conn2.Read(buf)
+					n, _ := conn1.Read(buf)
 					payloadReceived <- buf[:n]
 				}
 			}()

@@ -232,7 +232,12 @@ func PrintPDF(ctx context.Context, printerName string, doc Document, printFn PDF
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer func() {
+		// Ensure background spooler subsystem / print driver finishes reading
+		// the file before unlinking to prevent Win32 ERROR_FILE_NOT_FOUND / sharing violations.
+		time.Sleep(100 * time.Millisecond)
+		cleanup()
+	}()
 
 	// Keep cancellation semantics from the parent job, but do not inherit its
 	// potentially nearly-expired deadline. The helper gets a fresh full budget.

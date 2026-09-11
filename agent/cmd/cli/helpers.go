@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
+	"strings"
 
 	"github.com/odoo-print-agent/agent/internal/config"
 	"github.com/odoo-print-agent/agent/internal/printer"
@@ -102,6 +105,18 @@ func addPrinterHelper(cfg *config.Config, registryPath string, info struct {
 	}
 	if di.ID == "" {
 		di.ID = printer.StableIDForDevice(di)
+	}
+	// Split a host:port endpoint into address + port so heartbeat payloads
+	// and diagnostics carry structured network identity instead of blanks.
+	if ep := strings.TrimSpace(info.Endpoint); ep != "" {
+		if host, portStr, err := net.SplitHostPort(ep); err == nil {
+			di.NetworkAddress = host
+			if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+				di.Port = p
+			}
+		} else if ip := net.ParseIP(ep); ip != nil {
+			di.NetworkAddress = ip.String()
+		}
 	}
 	_, err := printer.RegisterManual(registryPath, di)
 	return err

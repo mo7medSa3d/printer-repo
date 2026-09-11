@@ -45,21 +45,14 @@ func main() {
 		if strings.TrimSpace(*pairingCode) == "" {
 			log.Fatal("-pair requires a non-empty pairing code")
 		}
-		effectiveConfigPath := *configPath
-		if err := config.Ensure(effectiveConfigPath); err != nil {
-			if *configPath == config.DefaultConfigPath() {
-				local := config.LocalConfigPath()
-				if localErr := config.Ensure(local); localErr == nil {
-					log.Printf("WARNING: default config path not writable (%v); using per-user fallback %s", err, local)
-					effectiveConfigPath = local
-				} else {
-					log.Fatalf("Failed to prepare config: %v", err)
-				}
-			} else {
-				log.Fatalf("Failed to prepare config: %v", err)
-			}
+		// Strict single-home: pair into the canonical config path only.
+		// A per-user fallback would split-brain pairing state away from
+		// the Windows Service (%PROGRAMDATA%). If the default path is not
+		// writable, elevate or pass an explicit -config in a writable
+		// location (the service itself always uses the canonical path).
+		if err := config.Ensure(*configPath); err != nil {
+			log.Fatalf("Failed to prepare protected service config %s: %v. Pairing on Windows must be performed from an elevated Administrator context.", *configPath, err)
 		}
-		*configPath = effectiveConfigPath
 		err := agent.Register(*serverURL, strings.ToUpper(strings.TrimSpace(*pairingCode)), *configPath)
 		if err != nil {
 			log.Fatalf("Pairing failed: %v", err)
