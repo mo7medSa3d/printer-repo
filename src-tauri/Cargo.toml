@@ -17,7 +17,7 @@ serde_json = "1"
 tauri = { version = "=2.11.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 url = "2.5.7"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "__rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 [features]
 default = [ "custom-protocol" ]
 custom-protocol = [ "tauri/custom-protocol" ]
