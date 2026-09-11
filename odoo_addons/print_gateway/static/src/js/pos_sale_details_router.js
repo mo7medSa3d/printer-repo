@@ -81,8 +81,11 @@ patch(SaleDetailsButton.prototype, {
             }
             return result;
         } catch (error) {
+            // Fail-safe parity with the receipt router: notify once and
+            // return false instead of re-throwing, so a Gateway failure
+            // cannot freeze the Sale Details button with a double dialog.
             this.env.services.notification.add(error?.message || "Sale Details printing failed.", { type: "danger" });
-            throw error;
+            return false;
         }
     },
 });

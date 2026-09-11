@@ -63,7 +63,7 @@ export default async function DashboardPage() {
             <h1 className="text-[26px] font-bold leading-tight tracking-[-0.02em] text-ink">Management console</h1>
             <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${databaseError ? "border-bad-edge bg-bad-bg text-bad" : "border-edge-accent bg-brand-subtle text-brand-subtle-text"}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${databaseError ? "bg-bad-solid" : "bg-ok-solid"}`} aria-hidden />
-              {databaseError ? "Database unavailable" : "Live"}
+              {databaseError ? "Database unavailable" : "Updated on load"}
             </span>
           </div>
           <p className="mt-1.5 max-w-3xl text-[15px] leading-relaxed text-ink-3">

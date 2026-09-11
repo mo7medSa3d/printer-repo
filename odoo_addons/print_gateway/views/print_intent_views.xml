@@ -29,12 +29,12 @@
         <field name="name">print_gateway.intent.form</field>
         <field name="model">print_gateway.intent</field>
         <field name="arch" type="xml">
-            <form string="Automated Print Intent" create="0" delete="0">
+            <form string="Automated Print Intent" create="0" delete="0" class="o_pg_view o_pg_form">
                 <header>
                     <button name="action_rearm_intent" type="object" string="Re-arm for Dispatch" class="btn-warning"
                             confirm="Re-arming re-enqueues this failed print intent for immediate dispatch. If the previous attempt produced any output, a duplicate may print. Confirm you have verified the physical result."
                             invisible="status != 'failed'" groups="base.group_system"/>
-                    <field name="status" widget="statusbar" statusbar_visible="pending,claimed,dispatched"
+                    <field name="status" widget="statusbar" statusbar_visible="pending,claimed,dispatched,failed,skipped"
                            decoration-danger="status == 'failed'" decoration-warning="status == 'claimed'"/>
                 </header>
                 <sheet>

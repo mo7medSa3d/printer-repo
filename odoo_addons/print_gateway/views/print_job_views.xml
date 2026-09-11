@@ -5,14 +5,14 @@
         <field name="model">print_gateway.print_job</field>
         <field name="arch" type="xml">
             <search string="Search Print Jobs">
-                <field name="idempotency_key" string="Job / Idempotency Key"/>
+                <field name="idempotency_key" string="Job Reference"/>
                 <field name="printer_id" string="Printer"/>
                 <field name="destination" string="Destination"/>
                 <field name="gateway_job_id" string="Gateway Job ID"/>
 
                 <filter name="filter_attention" string="Needs Attention - May Have Printed" domain="['|', ('status', '=', 'partial'), ('status', '=', 'unknown')]"/>
                 <filter name="filter_failed" string="Failed" domain="[('status', '=', 'failed')]"/>
-                <filter name="filter_active" string="In-Flight" domain="[('status', 'in', ['claimed', 'printing', 'submitted'])]"/>
+                <filter name="filter_active" string="In-Flight" domain="[('status', 'in', ['queued', 'claimed', 'printing', 'submitted'])]"/>
                 <filter name="filter_success" string="Success" domain="[('status', '=', 'success')]"/>
 
                 <separator/>
@@ -34,7 +34,7 @@
                 <field name="create_date" string="Created"/>
                 <field name="company_id" optional="hide"/>
                 <field name="destination" string="Destination"/>
-                <field name="document_type" string="Format" optional="show"/>
+                <field name="document_type" string="Document" optional="show"/>
                 <field name="printer_id" string="Target Printer"/>
                 <field name="status" widget="badge" decoration-danger="status == 'failed'" decoration-warning="status in ('partial', 'unknown')" decoration-success="status == 'success'" decoration-info="status in ('queued', 'submitted', 'claimed', 'printing')"/>
                 <field name="physical_outcome" widget="badge" decoration-danger="physical_outcome == 'not_printed'" decoration-warning="physical_outcome == 'unknown'" decoration-success="physical_outcome == 'printed'"/>
@@ -62,7 +62,7 @@
                     <!-- Amber Callout for UNKNOWN_PARTIAL_DELIVERY -->
                     <div class="o_pg_partial_alert" invisible="status not in ('partial', 'unknown') and physical_outcome != 'unknown'">
                         <div class="o_pg_partial_content">
-                            <span class="o_pg_partial_icon">⚠️</span>
+                            <span class="o_pg_partial_icon"><i class="fa fa-exclamation-triangle" role="img" aria-label="Warning"/></span>
                             <div>
                                 <h4>Print status is unknown - the printer may have received part or all of the job</h4>
                                 <p>Automatic retry is paused to prevent duplicate printing. Verify the printer (paper tray, last pages) before reprinting. If nothing came out, use Force Reprint - it deliberately re-sends the original document under a new operation key.</p>
@@ -71,7 +71,7 @@
                     </div>
 
                     <div class="o_pg_record_header">
-                        <span class="o_pg_record_icon">📄</span>
+                        <span class="o_pg_record_icon"><i class="fa fa-print" role="img" aria-label="Print job"/></span>
                         <div>
                             <h1><field name="destination" readonly="1"/></h1>
                             <p class="text-muted mb-0"><field name="idempotency_key" readonly="1" class="o_pg_mono"/></p>

@@ -6,9 +6,9 @@
         <field name="arch" type="xml">
             <list string="Print Gateway Bindings" create="1" delete="1" class="o_pg_list">
                 <field name="company_id" string="Odoo Company" optional="hide"/>
-                <field name="branch_id" string="Odoo Branch" placeholder="All Branches / Root Default"/>
+                <field name="branch_id" string="Odoo Branch" placeholder="All Branches / Root Default" help="Empty means this binding applies to the whole company as the default route."/>
                 <field name="effective_company_id" column_invisible="1"/>
-                <field name="destination_type" string="Operational Area" widget="badge" decoration-info="destination_type == 'pos'" decoration-success="destination_type == 'report'" decoration-warning="destination_type == 'picking_type'"/>
+                <field name="destination_type" string="Destination Type" widget="badge" decoration-info="destination_type == 'pos'" decoration-success="destination_type == 'report'" decoration-warning="destination_type == 'picking_type'"/>
                 <field name="destination_ref" string="Odoo Destination"/>
                 <field name="document_type" string="Document Type"/>
                 <field name="runtime_agent_id" string="Gateway Runtime Agent" optional="show"/>
@@ -23,9 +23,10 @@
         <field name="name">print_gateway.binding.form</field>
         <field name="model">print_gateway.binding</field>
         <field name="arch" type="xml">
-            <form string="Print Gateway Binding">
+            <form string="Print Gateway Binding" class="o_pg_view o_pg_form">
                 <header>
-                    <button name="action_send_test_print" type="object" string="Send Test Page" class="btn btn-primary" icon="fa-print" invisible="not runtime_agent_id or not printer_id"/>
+                    <button name="action_send_test_print" type="object" string="Send Test Page" class="btn btn-primary" icon="fa-print" invisible="not runtime_agent_id or not printer_id"
+                            confirm="This will print a physical test page on the bound printer. Continue?"/>
                     <button name="action_verify_remote_hardware" type="object" string="Validate Registration (Gateway)" class="btn btn-secondary" icon="fa-check-circle" invisible="not runtime_agent_id or not printer_id"/>
                 </header>
                 <sheet>
@@ -43,21 +44,21 @@
                     <group string="Context">
                         <field name="company_id" string="Company" domain="[('parent_id', '=', False)]" options="{'no_create': True}"/>
                         <field name="branch_id" string="Branch" domain="[('parent_id', '=', company_id)]"
-                               invisible="not company_id" placeholder="All Branches / Root Default" options="{'no_create': True}"/>
+                               invisible="not company_id" placeholder="All Branches / Root Default" options="{'no_create': True}" help="Empty means this binding applies to the whole company as the default route."/>
                     </group>
 
                     <group string="Destination">
                         <field name="destination_type" string="Destination Type" widget="radio" options="{'horizontal': true}"/>
-                        <field name="destination_pos_config_id" string="Destination"
+                        <field name="destination_pos_config_id" string="POS Shop"
                                invisible="destination_type != 'pos'" required="destination_type == 'pos'"
                                domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
-                        <field name="destination_pos_printer_id" string="Destination"
+                        <field name="destination_pos_printer_id" string="Kitchen Printer"
                                invisible="destination_type != 'pos_printer'" required="destination_type == 'pos_printer'"
                                domain="['|', ('company_id', '=', False), ('company_id', '=', effective_company_id)]"/>
                         <field name="destination_picking_type_id" string="Operation Type"
                                invisible="destination_type != 'picking_type'" required="destination_type == 'picking_type'"
                                domain="['&amp;', '|', ('company_id', '=', False), ('company_id', '=', effective_company_id), ('active', '=', True)]"/>
-                        <field name="destination_report_id" string="Destination"
+                        <field name="destination_report_id" string="Report"
                                invisible="destination_type != 'report'" required="destination_type == 'report'"/>
                         <field name="report_id" string="Document / Report"
                                invisible="destination_type == 'pos_printer'" required="destination_type != 'pos_printer'"/>

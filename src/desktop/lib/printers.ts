@@ -14,6 +14,7 @@ export {
 import {
   deriveOutcome as deriveOutcomeImpl,
   jobLabel as jobLabelImpl,
+  jobTone as jobToneImpl,
   printerLabel as printerLabelImpl,
 } from "../../shared/job-vocabulary";
 
@@ -65,8 +66,12 @@ export function labelPrinter(status: string): string {
   return printerLabelImpl(status);
 }
 
-export function labelJob(status: string): string {
-  return jobLabelImpl(status, deriveOutcomeImpl(status, ""));
+export function labelJob(status: string, error?: unknown): string {
+  return jobLabelImpl(status, deriveOutcomeImpl(status, error == null ? "" : String(error)));
+}
+
+export function toneJob(status: string, error?: unknown): Tone {
+  return jobToneImpl(status, deriveOutcomeImpl(status, error == null ? "" : String(error)));
 }
 
 /* ---------- Human-friendly descriptions ---------- */

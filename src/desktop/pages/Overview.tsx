@@ -39,8 +39,8 @@ import {
   jobId,
   jobPrinterId,
   jobStatus,
-  jobTone,
   labelJob,
+  toneJob,
   labelPrinter,
   printerEndpoint,
   printerTone,
@@ -186,7 +186,13 @@ export function OverviewPage({ s }: { s: DesktopState }) {
           value={
             s.gatewayUrl ? (s.gatewayConnected ? "Connected" : "Unreachable") : "Not configured"
           }
-          sub={s.gatewayUrl ? "Reachable" : "Set Gateway URL in Settings"}
+          sub={
+            !s.gatewayUrl
+              ? "Set Gateway URL in Settings"
+              : s.gatewayConnected
+                ? "Reachable"
+                : "Failed last check — verify the URL and network"
+          }
           tone={s.gatewayConnected ? "ok" : s.gatewayUrl ? "bad" : "neutral"}
           icon={<Server className="h-[22px] w-[22px]" aria-hidden />}
         />
@@ -235,6 +241,12 @@ export function OverviewPage({ s }: { s: DesktopState }) {
           <div className="px-6 pb-6">
             {s.printersLoading ? (
               <LoadingState rows={3} />
+            ) : s.printersError ? (
+              <ErrorState
+                title="Unable to load printers"
+                message={s.printersError}
+                retry={s.refreshPrinters}
+              />
             ) : shownPrinters.length === 0 ? (
               <EmptyState
                 icon={<PrinterIcon className="h-10 w-10" />}
@@ -362,13 +374,13 @@ export function OverviewPage({ s }: { s: DesktopState }) {
                 <span className="font-semibold uppercase tracking-wider text-ink-3">
                   Gateway Queue
                 </span>
-                <span className={`font-semibold ${s.pendingJobs > 20 ? "text-warn" : s.pendingJobs > 0 ? "text-brand" : "text-ok"}`}>
-                  {s.pendingJobs > 20 ? "Backlogged" : s.pendingJobs > 0 ? "In Flight" : "Clear"}
+                <span className={`font-semibold ${s.jobsError || s.jobsLoading ? "text-ink-3" : s.pendingJobs > 20 ? "text-warn" : s.pendingJobs > 0 ? "text-brand" : "text-ok"}`}>
+                  {s.jobsLoading ? "Checking…" : s.jobsError ? "Unavailable" : s.pendingJobs > 20 ? "Backlogged" : s.pendingJobs > 0 ? "In Flight" : "Clear"}
                 </span>
               </div>
               <div className="flex items-baseline justify-between text-xs">
                 <span className="text-ink font-bold text-sm">
-                  {s.pendingJobs}
+                  {s.jobsLoading || s.jobsError ? "—" : s.pendingJobs}
                   <span className="text-ink-3 font-normal"> waiting at the Gateway</span>
                 </span>
                 <span className="text-ink-3">last 50 jobs shown</span>
@@ -465,8 +477,8 @@ export function OverviewPage({ s }: { s: DesktopState }) {
                     </td>
                     <td className="px-4 py-4">
                       <StatusBadge
-                        tone={jobTone(jobStatus(j))}
-                        label={labelJob(jobStatus(j))}
+                        tone={toneJob(jobStatus(j), j.error)}
+                        label={labelJob(jobStatus(j), j.error)}
                       />
                     </td>
                     <td className="px-6 py-4 text-right text-[13px] text-ink-3">

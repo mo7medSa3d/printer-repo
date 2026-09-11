@@ -182,6 +182,18 @@ class PrintGatewayConfig(models.Model):
             "context": {"default_config_id": self.id},
         }
 
+    def action_open_runtime_assignments(self):
+        """Navigation only: open the branch → agent assignments for this company."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Branch Agent Assignments"),
+            "res_model": "print_gateway.runtime_agent_assignment",
+            "view_mode": "list,form",
+            "domain": [("company_id", "=", self.company_id.id)],
+            "context": {"default_company_id": self.company_id.id},
+        }
+
 
 class PrintGatewayPairAgentWizard(models.TransientModel):
     _name = "print_gateway.pair_agent_wizard"

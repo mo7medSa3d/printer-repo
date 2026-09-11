@@ -21,7 +21,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <p>© 2026 Print Gateway · Enterprise Print Operations</p>
           <div className="flex items-center gap-4">
             <span className="inline-flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-ok-solid" aria-hidden /> Gateway operational
+              <span className="h-2 w-2 rounded-full bg-ink-3" aria-hidden /> Print Gateway Console
             </span>
             <span className="font-mono">v1.0.0</span>
           </div>

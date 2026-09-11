@@ -71,8 +71,8 @@ import {
   jobId,
   jobPrinterId,
   jobStatus,
-  jobTone,
   labelJob,
+  toneJob,
   labelPrinter,
   printerEndpoint,
   printerTone,
@@ -190,7 +190,7 @@ export default function App() {
       const status = Number((e as { status?: number })?.status ?? 0);
       setJobsError(
         status === 401 || status === 403
-          ? "Gateway requires a manager session — sign in at the gateway dashboard to view jobs."
+          ? "Gateway requires a manager session — sign in below to view jobs."
           : `Could not load jobs: ${errMsg(e)}`
       );
     } finally {
@@ -627,7 +627,7 @@ export default function App() {
                   <>
                     <StatusBadge
                       tone={isOnline ? "ok" : "bad"}
-                      label={isOnline ? "Agent online" : "Agent offline"}
+                      label={isOnline ? "Agent running" : "Agent stopped"}
                     />
                     <Button
                       variant="secondary"
@@ -772,8 +772,8 @@ export default function App() {
           <div className="space-y-6">
             <div className="space-y-4">
               <StatusBadge
-                tone={jobTone(jobStatus(selectedJob))}
-                label={labelJob(jobStatus(selectedJob))}
+                tone={toneJob(jobStatus(selectedJob), selectedJob.error)}
+                label={labelJob(jobStatus(selectedJob), selectedJob.error)}
               />
               <JobTimeline
                 status={jobStatus(selectedJob)}

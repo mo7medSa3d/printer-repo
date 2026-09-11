@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Copy, KeyRound, Shield, Trash2 } from "lucide-react";
+import { Ban, Copy, KeyRound, Shield, Trash2 } from "lucide-react";
 import { Button, Card, CardHeader, Input, Field, StatusBadge } from "../../components/ui";
 import { copyTextToClipboard } from "../../lib/clipboard";
 
@@ -20,6 +20,7 @@ export default function ApiKeysPage() {
   const [name, setName] = useState("Odoo");
   const [rawKey, setRawKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -33,17 +34,36 @@ export default function ApiKeysPage() {
     let cancelled = false;
     void fetch("/api/odoo/keys", { cache: "no-store", credentials: "include" })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Unable to load API keys.");
+        if (!response.ok) throw new Error("Unable to load API keys. Check the Gateway connection and try again.");
         const data = await response.json() as ApiKey[];
         if (!cancelled) setKeys(data);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  function retryLoad() {
+    setError(null);
+    setLoading(true);
+    void fetch("/api/odoo/keys", { cache: "no-store", credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load API keys. Check the Gateway connection and try again.");
+        setKeys(await response.json() as ApiKey[]);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }
 
   async function generate() {
     setBusy(true);
@@ -132,10 +152,17 @@ export default function ApiKeysPage() {
         <Link href="/dashboard" className="text-sm font-semibold text-brand hover:underline">Back to Console</Link>
       </div>
 
-      {error && <div role="alert" className="mb-5 rounded-xl border border-bad-edge bg-bad-bg px-4 py-3 text-sm text-bad">{error}</div>}
+      {error && (
+        <div role="alert" className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-bad-edge bg-bad-bg px-4 py-3 text-sm text-bad">
+          <span>{error}</span>
+          <Button type="button" variant="secondary" size="sm" onClick={retryLoad} disabled={loading}>
+            {loading ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
+      )}
 
       {rawKey && (
-        <Card className="mb-6 border-brand/30 bg-brand/5">
+        <Card className="mb-6 border-edge-accent bg-surface-2">
           <CardHeader title="New API Key" subtitle="Copy it now. It will not be displayed again." icon={<Shield className="h-5 w-5 text-brand" />} />
           <div className="px-6 pb-6">
             <div className="flex flex-col gap-2 sm:flex-row">
@@ -159,8 +186,10 @@ export default function ApiKeysPage() {
       <Card>
         <CardHeader title="Existing Keys" subtitle="Metadata only. Raw secrets are never recoverable." icon={<Shield className="h-5 w-5 text-brand" />} />
         <div className="divide-y divide-edge">
-          {keys.length === 0 ? (
-            <div className="px-6 py-8 text-sm text-ink-3">No API keys configured.</div>
+          {loading ? (
+            <div className="px-6 py-8 text-sm text-ink-3" role="status">Loading API keys…</div>
+          ) : keys.length === 0 ? (
+            <div className="px-6 py-8 text-sm text-ink-3">No API keys configured. Generate one above to connect Odoo.</div>
           ) : keys.map((item) => (
             <div key={item.id} className="flex flex-col gap-3 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
@@ -172,7 +201,7 @@ export default function ApiKeysPage() {
                 <div className="mt-1 font-mono text-[11px] text-ink-3">{item.id}</div>
               </div>
               {!item.revokedAt ? (
-                <Button type="button" variant="secondary" onClick={() => revoke(item.id)} disabled={busy} icon={<Trash2 className="h-4 w-4" />}>Revoke</Button>
+                <Button type="button" variant="secondary" onClick={() => revoke(item.id)} disabled={busy} icon={<Ban className="h-4 w-4" />}>Revoke</Button>
               ) : (
                 <Button type="button" variant="danger" onClick={() => removeKey(item.id)} disabled={busy} icon={<Trash2 className="h-4 w-4" />}>Remove</Button>
               )}

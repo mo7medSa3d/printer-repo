@@ -122,7 +122,7 @@ export function AgentsPage({ s }: { s: DesktopState }) {
             <DetailList
               rows={[
                 {
-                  label: "Last heartbeat",
+                  label: "Last status check",
                   value: (
                     <Mono>
                       {s.lastHeartbeat
@@ -137,7 +137,7 @@ export function AgentsPage({ s }: { s: DesktopState }) {
                 },
                 {
                   label: "Version",
-                  value: <Mono>{String(anyStatus?.version || s.version || "1.0.0")}</Mono>,
+                  value: <Mono>{String(anyStatus?.version || s.version || "—")}</Mono>,
                 },
                 {
                   label: "Hostname",
