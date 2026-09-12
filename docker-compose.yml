@@ -11,12 +11,6 @@ services:
       - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
     networks:
       - printer_backend
 
@@ -64,6 +58,9 @@ services:
       MANAGER_USERNAME: ${MANAGER_USERNAME:-admin}
       MANAGER_PASSWORD_HASH_FILE: /run/secrets/manager_password_hash
       ALLOW_PLAINTEXT_MANAGER_PASSWORD:
+      # Keep Secure enabled for HTTPS. Set COOKIE_SECURE=0 only for an
+      # intentionally HTTP-only test deployment.
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
       STALE_AGENT_THRESHOLD_SECONDS: ${STALE_AGENT_THRESHOLD_SECONDS:-90}
       TRUST_PROXY: ${TRUST_PROXY:-1}
       TRUST_PROXY_SECRET_FILE: /run/secrets/trust_proxy_secret
