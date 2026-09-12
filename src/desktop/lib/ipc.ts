@@ -327,7 +327,8 @@ export function setAutostart(enabled: boolean): Promise<string> {
 }
 
 export async function fetchGatewayJobs(
-  gatewayUrl: string
+  gatewayUrl: string,
+  options?: { status?: string; search?: string; limit?: number }
 ): Promise<Record<string, unknown>[]> {
   const base = normalizeGatewayUrl(gatewayUrl);
   const token = getManagerToken();
@@ -336,7 +337,16 @@ export async function fetchGatewayJobs(
     err.status = 401;
     throw err;
   }
-  const { status, body } = await gatewayRequest(base, "/api/jobs?limit=50", "GET", { Authorization: `Bearer ${token}` });
+  const params = new URLSearchParams();
+  params.set("limit", String(options?.limit ?? 50));
+  if (options?.status && options.status !== "all") {
+    params.set("status", options.status);
+  }
+  if (options?.search?.trim()) {
+    params.set("search", options.search.trim());
+  }
+  const endpoint = `/api/jobs?${params.toString()}`;
+  const { status, body } = await gatewayRequest(base, endpoint, "GET", { Authorization: `Bearer ${token}` });
   if (status === 401 || status === 403) {
     clearManagerToken();
   }

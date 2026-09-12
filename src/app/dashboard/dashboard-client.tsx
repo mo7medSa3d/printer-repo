@@ -5,6 +5,7 @@ import {
   createAgent,
   createTestPrintJob,
   deleteAgent,
+  getDashboardJobs,
   getDashboardState,
   reprintJob,
   setAgentLifecycle,
@@ -148,7 +149,9 @@ export default function DashboardClient({
 }) {
   const [agents, setAgents] = useState<Agent[]>(initialAgents);
   const [printers, setPrinters] = useState<Printer[]>(initialPrinters);
+  const [kpiJobs, setKpiJobs] = useState<Job[]>(initialJobs);
   const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [jobsLoading, setJobsLoading] = useState(false);
 
   const [prevAgents, setPrevAgents] = useState(initialAgents);
   if (prevAgents !== initialAgents) {
@@ -165,6 +168,7 @@ export default function DashboardClient({
   const [prevJobs, setPrevJobs] = useState(initialJobs);
   if (prevJobs !== initialJobs) {
     setPrevJobs(initialJobs);
+    setKpiJobs(initialJobs);
     setJobs(initialJobs);
   }
 
@@ -177,6 +181,51 @@ export default function DashboardClient({
   const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
   const [pendingAgentAction, setPendingAgentAction] = useState<{ agent: Agent; next: "disabled" | "retired" } | null>(null);
   const [reprintCandidate, setReprintCandidate] = useState<Job | null>(null);
+
+  // Filter & view states
+  const [printerViewMode, setPrinterViewMode] = useState<"grid" | "table">("grid");
+  const [printerSearch, setPrinterSearch] = useState("");
+  const [printerStatusFilter, setPrinterStatusFilter] = useState<string>("all");
+
+  const [jobSearch, setJobSearch] = useState("");
+  const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
+  const [jobStatusFilter, setJobStatusFilter] = useState<string>("all");
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+
+  const filterRef = React.useRef({ status: "all", search: "" });
+  filterRef.current = { status: jobStatusFilter, search: debouncedJobSearch };
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedJobSearch(jobSearch), 250);
+    return () => clearTimeout(timer);
+  }, [jobSearch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFilteredJobs() {
+      setJobsLoading(true);
+      try {
+        const res = await getDashboardJobs({
+          status: jobStatusFilter,
+          search: debouncedJobSearch,
+          limit: 100,
+        });
+        if (!cancelled) {
+          setJobs(res as unknown as Job[]);
+        }
+      } catch (err) {
+        console.error("Dashboard jobs query failed:", err);
+      } finally {
+        if (!cancelled) {
+          setJobsLoading(false);
+        }
+      }
+    }
+    void loadFilteredJobs();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobStatusFilter, debouncedJobSearch]);
 
   // Wall-clock used for heartbeat freshness (stale agents are not shown as online).
   // Ticked every 5s so heartbeat lapses (90s stale rule) update presence immediately without page reload.
@@ -192,7 +241,20 @@ export default function DashboardClient({
       if (data) {
         setAgents(data.agents as Agent[]);
         setPrinters(data.printers as Printer[]);
-        setJobs(data.jobs as Job[]);
+        setKpiJobs(data.jobs as Job[]);
+
+        const current = filterRef.current;
+        if (current.status === "all" && !current.search) {
+          setJobs(data.jobs as Job[]);
+        } else {
+          void getDashboardJobs({
+            status: current.status,
+            search: current.search,
+            limit: 100,
+          }).then((res) => {
+            setJobs(res as unknown as Job[]);
+          });
+        }
 
         setActivePairing((currentPairing) => {
           if (!currentPairing) return null;
@@ -232,15 +294,6 @@ export default function DashboardClient({
     return () => clearInterval(timer);
   }, [activePairing, refreshData]);
 
-  // Filter & view states
-  const [printerViewMode, setPrinterViewMode] = useState<"grid" | "table">("grid");
-  const [printerSearch, setPrinterSearch] = useState("");
-  const [printerStatusFilter, setPrinterStatusFilter] = useState<string>("all");
-
-  const [jobSearch, setJobSearch] = useState("");
-  const [jobStatusFilter, setJobStatusFilter] = useState<string>("all");
-  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-
   // Active pairing countdown tick
   useEffect(() => {
     if (!activePairing) return;
@@ -264,24 +317,24 @@ export default function DashboardClient({
     const totalPrinters = printers.length;
     const onlinePrinters = printers.filter((p) => p.status.toLowerCase() === "online").length;
 
-    const inFlightJobs = jobs.filter((j) => {
+    const inFlightJobs = kpiJobs.filter((j) => {
       const s = j.status.toLowerCase();
       return s === "queued" || s === "printing" || s === "claimed";
     }).length;
 
-    const completedJobs = jobs.filter((j) => j.status.toLowerCase() === "success").length;
+    const completedJobs = kpiJobs.filter((j) => j.status.toLowerCase() === "success").length;
 
     // "Needs attention" = the physical outcome is UNKNOWN (paper may exist),
     // regardless of whether the row says failed or expired.
-    const attentionJobs = jobs.filter(
+    const attentionJobs = kpiJobs.filter(
       (j) => deriveOutcome(j.status, j.error) === "unknown"
     ).length;
 
-    const failedJobs = jobs.filter((j) => j.status.toLowerCase() === "failed" && deriveOutcome(j.status, j.error) === "not_printed").length;
-    const expiredJobs = jobs.filter((j) => j.status.toLowerCase() === "expired").length;
+    const failedJobs = kpiJobs.filter((j) => j.status.toLowerCase() === "failed" && deriveOutcome(j.status, j.error) === "not_printed").length;
+    const expiredJobs = kpiJobs.filter((j) => j.status.toLowerCase() === "expired").length;
 
     const successRate =
-      jobs.length > 0 ? Math.round((completedJobs / jobs.length) * 100) : null;
+      kpiJobs.length > 0 ? Math.round((completedJobs / kpiJobs.length) * 100) : null;
 
     return {
       totalAgents,
@@ -295,7 +348,7 @@ export default function DashboardClient({
       expiredJobs,
       successRate,
     };
-  }, [agents, printers, jobs, nowMs]);
+  }, [agents, printers, kpiJobs, nowMs]);
 
   const runAction = async (operation: () => Promise<unknown>, successMsg?: string) => {
     setBusy(true);
@@ -382,30 +435,19 @@ export default function DashboardClient({
     });
   }, [printers, printerStatusFilter, printerSearch]);
 
-  // Filtered jobs
+  // Filtered jobs (database-queried via getDashboardJobs with immediate typing refinement)
   const filteredJobs = useMemo(() => {
+    if (!jobSearch.trim()) return jobs;
+    const q = jobSearch.toLowerCase();
     return jobs.filter((j) => {
-      const s = j.status.toLowerCase();
-      const outcome = deriveOutcome(s, j.error);
-      if (jobStatusFilter === "active" && !(s === "printing" || s === "claimed" || s === "queued")) return false;
-      if (jobStatusFilter === "queued" && s !== "queued") return false;
-      if (jobStatusFilter === "attention" && outcome !== "unknown") return false;
-      if (jobStatusFilter === "success" && s !== "success") return false;
-      if (jobStatusFilter === "expired" && s !== "expired") return false;
-      if (jobStatusFilter === "failed" && !(s === "failed" && outcome === "not_printed")) return false;
-
-      if (jobSearch.trim()) {
-        const q = jobSearch.toLowerCase();
-        return (
-          j.id.toLowerCase().includes(q) ||
-          j.printerId.toLowerCase().includes(q) ||
-          (j.destination && j.destination.toLowerCase().includes(q)) ||
-          (j.documentType && j.documentType.toLowerCase().includes(q))
-        );
-      }
-      return true;
+      return (
+        j.id.toLowerCase().includes(q) ||
+        j.printerId.toLowerCase().includes(q) ||
+        (j.destination && j.destination.toLowerCase().includes(q)) ||
+        (j.documentType && j.documentType.toLowerCase().includes(q))
+      );
     });
-  }, [jobs, jobStatusFilter, jobSearch]);
+  }, [jobs, jobSearch]);
 
   // Helper for printer capability chips
   const getPrinterBadges = (printer: Printer) => {
@@ -985,10 +1027,13 @@ export default function DashboardClient({
               {[
                 { id: "all", label: "All Jobs" },
                 { id: "active", label: "In Flight" },
-                { id: "attention", label: "Unknown Outcome" },
                 { id: "queued", label: "Queued" },
+                { id: "claimed", label: "Claimed" },
+                { id: "printing", label: "Printing" },
+                { id: "unassigned", label: "Unassigned" },
                 { id: "success", label: "Printed" },
                 { id: "failed", label: "Failed" },
+                { id: "unknown", label: "Unknown Outcome" },
                 { id: "expired", label: "Expired" },
               ].map((tab) => (
                 <button
@@ -1008,7 +1053,11 @@ export default function DashboardClient({
           </div>
 
           {/* Job Queue Table */}
-          {filteredJobs.length === 0 ? (
+          {jobsLoading && filteredJobs.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-edge p-12 text-center text-sm text-ink-3">
+              Loading print jobs from database...
+            </div>
+          ) : filteredJobs.length === 0 ? (
             <div className="rounded-xl border border-dashed border-edge p-12 text-center text-sm text-ink-3">
               No print jobs match the current filters.
             </div>

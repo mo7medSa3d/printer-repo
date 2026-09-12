@@ -178,11 +178,11 @@ export default function App() {
     }
   }, []);
 
-  const refreshJobs = useCallback(async () => {
+  const refreshJobs = useCallback(async (options?: { status?: string; search?: string; limit?: number }) => {
     if (!gatewayUrl) return;
     setJobsLoading(true);
     try {
-      const data = await fetchGatewayJobs(gatewayUrl);
+      const data = await fetchGatewayJobs(gatewayUrl, options);
       setJobs(Array.isArray(data) ? data : []);
       setJobsError(null);
     } catch (e: unknown) {
@@ -424,8 +424,14 @@ export default function App() {
       list = list.filter((j) => {
         const st = jobStatus(j).toLowerCase();
         const outcome = deriveOutcome(st, String(j.error ?? ""));
-        if (jobTab === "queued") return ["queued", "claimed"].includes(st);
+        if (jobTab === "queued") return st === "queued";
+        if (jobTab === "claimed") return st === "claimed";
         if (jobTab === "printing") return st === "printing";
+        if (jobTab === "unassigned") {
+          const dest = String(j.destination ?? "");
+          const pid = jobPrinterId(j);
+          return dest === "unassigned" || pid === "unassigned" || !printers.some((p) => p.id === pid && p.status === "online");
+        }
         if (jobTab === "printed") return st === "success";
         if (jobTab === "unknown") return outcome === "unknown";
         if (jobTab === "failed") return st === "failed" && outcome === "not_printed";
@@ -448,14 +454,20 @@ export default function App() {
   const jobCounts = useMemo(
     () => ({
       all: jobs.length,
-      queued: pendingJobs,
+      queued: jobs.filter((j) => jobStatus(j) === "queued").length,
+      claimed: jobs.filter((j) => jobStatus(j) === "claimed").length,
       printing: jobs.filter((j) => jobStatus(j) === "printing").length,
+      unassigned: jobs.filter((j) => {
+        const dest = String(j.destination ?? "");
+        const pid = jobPrinterId(j);
+        return dest === "unassigned" || pid === "unassigned" || !printers.some((p) => p.id === pid && p.status === "online");
+      }).length,
       printed: jobs.filter((j) => jobStatus(j) === "success").length,
       unknown: jobs.filter((j) => deriveOutcome(jobStatus(j), String(j.error ?? "")) === "unknown").length,
       failed: failedJobs,
       expired: jobs.filter((j) => jobStatus(j) === "expired" && deriveOutcome("expired", String(j.error ?? "")) !== "unknown").length,
     }),
-    [jobs, pendingJobs, failedJobs]
+    [jobs, printers, failedJobs]
   );
 
   const nav: NavItem[] = [

@@ -69,6 +69,28 @@ export function isJobStatus(value: unknown): value is JobStatus {
   return typeof value === "string" && (JOB_STATUSES as readonly string[]).includes(value);
 }
 
+export const JOB_FILTER_STATUSES = [
+  "all",
+  "active",
+  "in_flight",
+  "queued",
+  "claimed",
+  "printing",
+  "success",
+  "printed",
+  "failed",
+  "expired",
+  "unknown",
+  "attention",
+  "unassigned",
+] as const;
+
+export type JobFilterStatus = (typeof JOB_FILTER_STATUSES)[number];
+
+export function isJobFilterStatus(value: unknown): value is JobFilterStatus {
+  return typeof value === "string" && (JOB_FILTER_STATUSES as readonly string[]).includes(value.toLowerCase());
+}
+
 export function isTerminal(status: JobStatus): boolean {
   return status === "success" || status === "failed" || status === "expired";
 }

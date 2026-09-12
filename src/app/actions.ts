@@ -2,7 +2,7 @@
 
 import { db } from "../db";
 import { agents, printers, printJobs, discoverySessions, discoveredDevices } from "../db/schema";
-import { eq, count, or, inArray, sql, desc } from "drizzle-orm";
+import { eq, count, or, and, inArray, sql, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
@@ -10,7 +10,13 @@ import { generatePairingCode, hashPairingCode } from "../lib/agent-auth";
 import { buildTestPrintPayloadForPrinter } from "../lib/payload";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../lib/manager-auth";
 import { createPrintJobForPrinter } from "../lib/print-job-service";
-import { isTerminal, type JobStatus } from "../lib/job-status";
+import {
+  isTerminal,
+  isJobFilterStatus,
+  derivePhysicalOutcome,
+  PHYSICAL_OUTCOME_UNKNOWN_MARKERS,
+  type JobStatus,
+} from "../lib/job-status";
 import { canTransitionLifecycle } from "../lib/lifecycle";
 import { transitionAgentLifecycle, LifecycleConflict } from "../lib/agent-lifecycle";
 import { hasOpenAgentSocket, closeAgentSockets, publishAgentSessionClose } from "../server/ws";
@@ -215,4 +221,99 @@ export async function getDashboardState() {
 
   return { agents: allAgents, printers: allPrinters, jobs: allJobs };
 }
+
+export async function getDashboardJobs(options?: {
+  status?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  await requireManager();
+  const statusParam = options?.status?.trim().toLowerCase();
+  const searchParam = options?.search?.trim();
+  const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
+  const offset = Math.max(options?.offset ?? 0, 0);
+
+  if (statusParam && !isJobFilterStatus(statusParam)) {
+    throw new ActionError("Invalid status filter", 400);
+  }
+
+  const conditions = [];
+
+  if (statusParam && statusParam !== "all") {
+    if (statusParam === "active" || statusParam === "in_flight") {
+      conditions.push(inArray(printJobs.status, ["queued", "claimed", "printing"]));
+    } else if (statusParam === "queued" || statusParam === "claimed" || statusParam === "printing" || statusParam === "expired") {
+      conditions.push(eq(printJobs.status, statusParam));
+    } else if (statusParam === "success" || statusParam === "printed") {
+      conditions.push(eq(printJobs.status, "success"));
+    } else if (statusParam === "unknown" || statusParam === "attention") {
+      conditions.push(
+        or(...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`${printJobs.error} LIKE ${m + "%"}`))
+      );
+    } else if (statusParam === "failed") {
+      conditions.push(
+        and(
+          eq(printJobs.status, "failed"),
+          ...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`COALESCE(${printJobs.error}, '') NOT LIKE ${m + "%"}`)
+        )
+      );
+    } else if (statusParam === "unassigned") {
+      conditions.push(
+        or(
+          eq(printJobs.destination, "unassigned"),
+          eq(printJobs.printerId, "unassigned"),
+          sql`${printJobs.printerId} NOT IN (SELECT id FROM printers WHERE lifecycle = 'active')`,
+          sql`${printJobs.agentId} NOT IN (SELECT id FROM agents WHERE lifecycle = 'active')`
+        )
+      );
+    }
+  }
+
+  if (searchParam) {
+    const term = `%${searchParam.toLowerCase()}%`;
+    conditions.push(
+      or(
+        sql`LOWER(${printJobs.id}) LIKE ${term}`,
+        sql`LOWER(COALESCE(${printJobs.destination}, '')) LIKE ${term}`,
+        sql`LOWER(COALESCE(${printJobs.documentType}, '')) LIKE ${term}`,
+        sql`LOWER(${printJobs.printerId}) LIKE ${term}`,
+        sql`LOWER(${printJobs.agentId}) LIKE ${term}`,
+        sql`LOWER(COALESCE(${printJobs.error}, '')) LIKE ${term}`
+      )
+    );
+  }
+
+  const rows = await db
+    .select({
+      id: printJobs.id,
+      destination: printJobs.destination,
+      documentType: printJobs.documentType,
+      agentId: printJobs.agentId,
+      printerId: printJobs.printerId,
+      status: printJobs.status,
+      error: printJobs.error,
+      requestedBy: printJobs.requestedBy,
+      idempotencyKey: printJobs.idempotencyKey,
+      retries: printJobs.retries,
+      deliveryAttempts: printJobs.deliveryAttempts,
+      claimedAt: printJobs.claimedAt,
+      deliveredAt: printJobs.deliveredAt,
+      ackedAt: printJobs.ackedAt,
+      expiresAt: printJobs.expiresAt,
+      createdAt: printJobs.createdAt,
+      updatedAt: printJobs.updatedAt,
+    })
+    .from(printJobs)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(printJobs.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  return rows.map((row) => ({
+    ...row,
+    physicalOutcome: derivePhysicalOutcome(row.status, row.error),
+  }));
+}
+
 

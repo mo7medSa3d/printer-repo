@@ -45,7 +45,7 @@ import {
   toneJob,
 } from "../lib/printers";
 
-const TABS = ["all", "queued", "printing", "printed", "unknown", "failed", "expired"] as const;
+const TABS = ["all", "queued", "claimed", "printing", "unassigned", "printed", "unknown", "failed", "expired"] as const;
 
 export function JobsPage({ s }: { s: DesktopState }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
@@ -145,7 +145,9 @@ export function JobsPage({ s }: { s: DesktopState }) {
   const tabCounts = {
     all: s.jobCounts.all,
     queued: s.jobCounts.queued,
+    claimed: s.jobCounts.claimed,
     printing: s.jobCounts.printing,
+    unassigned: s.jobCounts.unassigned,
     printed: s.jobCounts.printed,
     unknown: s.jobCounts.unknown,
     failed: s.jobCounts.failed,

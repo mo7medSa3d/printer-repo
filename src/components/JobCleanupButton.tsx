@@ -12,15 +12,17 @@ export function JobCleanupButton() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const cleanup = async () => {
     setBusy(true);
     setError(null);
+    setSuccessMessage(null);
     try {
       const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
       const response = await fetch(
         `/api/jobs?before=${encodeURIComponent(cutoff)}&limit=5000&confirm=1`,
-        { method: "DELETE" },
+        { method: "DELETE", credentials: "include" },
       );
       const data = (await response.json().catch(() => ({}))) as {
         deleted?: number;
@@ -28,6 +30,12 @@ export function JobCleanupButton() {
       };
       if (!response.ok) throw new Error(data.error ?? "Failed to clean print jobs");
 
+      const count = Number(data.deleted ?? 0);
+      setSuccessMessage(
+        count === 0
+          ? "No terminal print jobs older than 30 days were found."
+          : `Successfully cleaned ${count} print job${count === 1 ? "" : "s"}.`
+      );
       setOpen(false);
       router.refresh();
     } catch (cleanupError) {
@@ -47,12 +55,18 @@ export function JobCleanupButton() {
           size="sm"
           onClick={() => {
             setError(null);
+            setSuccessMessage(null);
             setOpen(true);
           }}
           icon={<Trash2 className="h-4 w-4" />}
         >
           Clean jobs
         </Button>
+        {successMessage ? (
+          <span role="status" className="text-xs text-ok font-medium">
+            {successMessage}
+          </span>
+        ) : null}
         {error ? <span role="alert" className="text-xs text-bad">{error}</span> : null}
       </div>
 

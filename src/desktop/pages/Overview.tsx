@@ -387,7 +387,7 @@ export function OverviewPage({ s }: { s: DesktopState }) {
               </div>
               <p className="text-[11px] text-ink-3">
                 Counts jobs queued, claimed or printing at the Gateway. The agent accepts up to
-                500 in-flight jobs per printer batch.
+                64 in-flight jobs per printer batch.
               </p>
             </div>
             <div className="section-rule mt-5 pt-5">
@@ -517,11 +517,11 @@ export function OverviewPage({ s }: { s: DesktopState }) {
                 </span>
                 <div className="min-w-0">
                   <div className="text-[16px] font-semibold text-ink">
-                    Hardware Profile Validation
+                    Hardware Profile Testing
                   </div>
                   <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
-                    Verify physical rendering across Universal Hardware Profiles: ESC/POS (receipts),
-                    ZPL/TSPL (labels), or OS Spooler (A4 documents).
+                    Verify physical rendering across supported hardware profiles: ESC/POS (receipts),
+                    ZPL/TSPL (labels), or Windows Spooler documents.
                   </p>
                 </div>
               </div>
