@@ -249,6 +249,21 @@ export async function isRunningAsAdmin(): Promise<boolean> {
   }
 }
 
+export async function closeApp(): Promise<void> {
+  if (isTauri) {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+      return;
+    } catch {
+      // Fallback if window API is unavailable
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.close();
+  }
+}
+
 export interface PrinterInfo {
   id: string;
   name: string;

@@ -105,6 +105,8 @@ async function invoke<T>(cmd: string): Promise<T> {
       return { printers, errors: [] } as unknown as T;
     case "get_autostart":
       return { enabled: true } as unknown as T;
+    case "plugin:window|close":
+      return null as unknown as T;
     default:
       throw new Error(`stub: unhandled command ${cmd}`);
   }

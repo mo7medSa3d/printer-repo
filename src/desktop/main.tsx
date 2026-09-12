@@ -29,6 +29,7 @@ import { PageHeader } from "./ui";
 import { JobTimeline } from "./components/JobTimeline";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { AddPrinterDialog } from "./components/AddPrinterDialog";
+import { AdminPrivilegeDialog } from "./components/AdminPrivilegeDialog";
 import { OverviewPage } from "./pages/Overview";
 import { PrintersPage } from "./pages/Printers";
 import { JobsPage } from "./pages/Jobs";
@@ -126,6 +127,7 @@ export default function App() {
   const [msg, setMsg] = useState<ToastMessage>(null);
   const [confirmStop, setConfirmStop] = useState(false);
   const [isAdmin, setIsAdmin] = useState<boolean>(true);
+  const [adminDismissed, setAdminDismissed] = useState<boolean>(false);
   const busyRef = useRef(false);
   const setBusyBoth = useCallback((v: boolean) => {
     busyRef.current = v;
@@ -583,14 +585,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app text-ink">
-      {!isAdmin && (
-        <div className="flex items-center gap-2.5 border-b border-bad-edge bg-bad-bg px-4 py-3 text-sm font-bold text-bad" role="alert">
-          <AlertTriangle className="h-[18px] w-[18px] flex-shrink-0" aria-hidden="true" />
-          <span>
-            <strong>Permission Warning:</strong> The application is not running with Administrator privileges. You will not be able to save settings or control the service. Please close the app and restart it via <u>Run as administrator</u>.
-          </span>
-        </div>
-      )}
+      <AdminPrivilegeDialog
+        open={!isAdmin && !adminDismissed}
+        onClose={() => setAdminDismissed(true)}
+      />
       <Sidebar
         page={page}
         navigate={navigate}
@@ -659,6 +657,26 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {!isAdmin && adminDismissed && (
+          <div
+            className="flex items-center justify-between gap-3 border-b border-warn-edge bg-warn-bg px-5 py-3 text-xs text-warn lg:px-8"
+            role="status"
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>
+                <strong>Read-Only Mode:</strong> Application is running without Administrator privileges. Service management and configuration updates are disabled.
+              </span>
+            </div>
+            <button
+              onClick={() => setAdminDismissed(false)}
+              className="font-medium underline hover:text-warn/80 cursor-pointer"
+            >
+              View details
+            </button>
+          </div>
+        )}
 
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-7 lg:px-8 lg:py-8">
           {page === "dashboard" && <OverviewPage s={state} />}

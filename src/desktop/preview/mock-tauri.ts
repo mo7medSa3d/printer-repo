@@ -181,6 +181,9 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): P
     case "get_autostart":
       return { enabled: true } as unknown as T;
     case "is_running_as_admin":
+      if (typeof window !== "undefined" && window.location.search.includes("nonadmin=1")) {
+        return false as unknown as T;
+      }
       return true as unknown as T;
     case "set_autostart":
       return "Autostart updated" as unknown as T;
@@ -192,6 +195,11 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): P
       return "Agent restarted" as unknown as T;
     case "pair_agent":
       return `Agent paired with ${String((args as Record<string, unknown>)?.args && ((args as Record<string, unknown>).args as Record<string, unknown>)?.gateway_url ? String(((args as Record<string, unknown>).args as Record<string, unknown>).gateway_url) : "gateway")}` as unknown as T;
+    case "plugin:window|close":
+      if (typeof window !== "undefined") {
+        window.close();
+      }
+      return null as unknown as T;
     default:
       throw new Error(`preview: unhandled command ${cmd}`);
   }
