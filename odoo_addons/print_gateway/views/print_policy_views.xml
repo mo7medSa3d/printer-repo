@@ -5,7 +5,7 @@
         <field name="name">print_gateway.policy.list</field>
         <field name="model">print_gateway.policy</field>
         <field name="arch" type="xml">
-            <list string="Print Policies" create="1" delete="1">
+            <list string="Print Policies" create="1" delete="1" class="o_pg_list">
                 <field name="priority" widget="handle"/>
                 <field name="name" string="Policy Name"/>
                 <field name="company_id" string="Odoo Company" optional="hide" groups="base.group_multi_company"/>
