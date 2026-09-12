@@ -91,13 +91,69 @@ function safeTestText(value: string): string {
   return value.replace(/[^\x20-\x7e]/g, "").slice(0, 60);
 }
 
+export function buildTestPdfPayload(printerName: string, agentName: string): string {
+  const safeName = safeTestText(printerName);
+  const safeAgent = safeTestText(agentName);
+  const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+
+  const streamContent = [
+    "BT",
+    "/F1 18 Tf",
+    "50 720 Td",
+    "(ODOO PRINT GATEWAY TEST PAGE) Tj",
+    "/F1 12 Tf",
+    "0 -30 Td",
+    `(Printer: ${safeName}) Tj`,
+    "0 -20 Td",
+    `(Agent: ${safeAgent}) Tj`,
+    "0 -20 Td",
+    `(Status: OK | ${stamp}) Tj`,
+    "ET",
+  ].join("\n");
+
+  const streamLength = Buffer.byteLength(streamContent, "utf-8");
+
+  const header = "%PDF-1.4\n";
+  const obj1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+  const obj2 = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
+  const obj3 = "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n";
+  const obj4 = "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n";
+  const obj5 = `5 0 obj\n<< /Length ${streamLength} >>\nstream\n${streamContent}\nendstream\nendobj\n`;
+
+  const off1 = Buffer.byteLength(header);
+  const off2 = off1 + Buffer.byteLength(obj1);
+  const off3 = off2 + Buffer.byteLength(obj2);
+  const off4 = off3 + Buffer.byteLength(obj3);
+  const off5 = off4 + Buffer.byteLength(obj4);
+  const startxref = off5 + Buffer.byteLength(obj5);
+
+  const pad = (n: number) => String(n).padStart(10, "0");
+
+  const xref = [
+    "xref",
+    "0 6",
+    "0000000000 65535 f ",
+    `${pad(off1)} 00000 n `,
+    `${pad(off2)} 00000 n `,
+    `${pad(off3)} 00000 n `,
+    `${pad(off4)} 00000 n `,
+    `${pad(off5)} 00000 n `,
+    "trailer",
+    "<< /Size 6 /Root 1 0 R >>",
+    "startxref",
+    String(startxref),
+    "%%EOF\n",
+  ].join("\n");
+
+  return header + obj1 + obj2 + obj3 + obj4 + obj5 + xref;
+}
+
 /**
  * Build a test ticket in the LANGUAGE THE PRINTER ACTUALLY SPEAKS. An
  * ESC/POS ticket sent to a ZPL printer is garbage, and the strict capability
  * model now rejects it — so the gateway (like the Odoo router's
  * route_test_page) selects the template from the printer's declared
- * protocol. Document transports (spooler/ipp with no byte protocol) have no
- * honest canned ticket; callers must surface that instead of faking one.
+ * protocol. Document transports (spooler/ipp) use a minimal printable PDF ticket.
  */
 export function buildTestPrintPayloadForPrinter(
   printerName: string,
@@ -105,6 +161,7 @@ export function buildTestPrintPayloadForPrinter(
   printer: { protocol?: string | null; connectionType?: string | null; capabilities?: { supported_protocols?: string[] } | null },
 ): PrintJobPayload {
   const declared = (printer.protocol ?? "").toLowerCase();
+  const conn = (printer.connectionType ?? "").toLowerCase();
   const supported = (printer.capabilities?.supported_protocols ?? []).map((p) => String(p).toLowerCase());
   const byteProto = ["escpos", "zpl", "tspl", "raw"].includes(declared)
     ? declared
@@ -158,5 +215,20 @@ export function buildTestPrintPayloadForPrinter(
     ].join("\n");
     return { type: "raw", protocol: "raw", encoding: "base64", data: Buffer.from(raw, "utf-8").toString("base64") };
   }
-  throw new Error("This printer transport (spooler/IPP document queue) has no printable canned test ticket; print a real report to validate the path.");
+
+  const isDocumentTransport =
+    ["spooler", "ipp", "ipps"].includes(conn) ||
+    ["spooler", "ipp", "ipps"].includes(declared) ||
+    supported.some((p) => ["pdf", "spooler", "ipp", "ipps"].includes(p));
+
+  if (isDocumentTransport) {
+    const pdf = buildTestPdfPayload(name, agent);
+    return {
+      type: "pdf",
+      encoding: "base64",
+      data: Buffer.from(pdf, "utf-8").toString("base64"),
+    };
+  }
+
+  throw new Error("This printer transport has no supported test ticket format; print a real report to validate the path.");
 }

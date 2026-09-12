@@ -147,3 +147,23 @@ export function agentLiveView(agent: { status?: string | null; lastSeenAt?: Date
   if (agent.status === "online") return { tone: "ok", label: "Online" };
   return { tone: "bad", label: "Offline" };
 }
+
+/**
+ * Derives effective printer status taking into account parent agent connectivity.
+ * If the parent agent is stale or offline, the printer is effectively offline.
+ */
+export function effectivePrinterStatus(
+  printer: { status?: string | null; lifecycle?: string | null },
+  agent?: { status?: string | null; lastSeenAt?: Date | string | null; lifecycle?: string | null } | null,
+  nowMs = Date.now(),
+): string {
+  if (printer.lifecycle && printer.lifecycle !== "active") {
+    return printer.lifecycle;
+  }
+  if (!agent) return "offline";
+  const agentView = agentLiveView(agent, nowMs);
+  if (agentView.tone !== "ok") {
+    return "offline";
+  }
+  return printer.status?.toLowerCase() === "online" ? "online" : (printer.status || "offline");
+}

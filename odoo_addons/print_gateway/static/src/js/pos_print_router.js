@@ -4,10 +4,9 @@ import { patch } from "@web/core/utils/patch";
 import { PosStore } from "@point_of_sale/app/services/pos_store";
 import { renderToElement } from "@web/core/utils/render";
 import { htmlToCanvas } from "@point_of_sale/app/services/render_service";
+import { OrderReceipt } from "@point_of_sale/app/screens/receipt_screen/receipt/order_receipt";
 
-async function elementToJpeg(element) {
-    const canvas = await htmlToCanvas(element, { addClass: "pos-receipt-print" });
-    // Enforce white background on exported canvas to prevent inverted black receipts
+function canvasToJpeg(canvas) {
     const ctx = canvas.getContext("2d");
     if (ctx) {
         ctx.globalCompositeOperation = "destination-over";
@@ -17,6 +16,56 @@ async function elementToJpeg(element) {
     // Strip any Data-URL prefix variant (some browsers emit charset/parameters);
     // the payload layer only accepts raw base64.
     return canvas.toDataURL("image/jpeg", 0.65).replace(/^data:image\/[a-z]+;base64,/, "");
+}
+
+async function elementToJpeg(element) {
+    const canvas = await htmlToCanvas(element, { addClass: "pos-receipt-print" });
+    return canvasToJpeg(canvas);
+}
+
+async function renderReceiptImage(pos, currentOrder, basic = false) {
+    const renderer = pos.env?.services?.renderer || pos.printer?.renderer;
+    const props = {
+        order: currentOrder,
+        basic_receipt: Boolean(basic),
+    };
+
+    if (renderer && typeof renderer.toJpeg === "function") {
+        try {
+            return await renderer.toJpeg(OrderReceipt, props, { addClass: "pos-receipt-print" });
+        } catch (err) {
+            console.warn("renderer.toJpeg failed, falling back to toCanvas/toHtml:", err);
+        }
+    }
+
+    if (renderer && typeof renderer.toCanvas === "function") {
+        try {
+            const canvas = await renderer.toCanvas(OrderReceipt, props, { addClass: "pos-receipt-print" });
+            return canvasToJpeg(canvas);
+        } catch (err) {
+            console.warn("renderer.toCanvas failed, falling back to toHtml:", err);
+        }
+    }
+
+    if (renderer && typeof renderer.toHtml === "function") {
+        try {
+            const element = await renderer.toHtml(OrderReceipt, props);
+            return await elementToJpeg(element);
+        } catch (err) {
+            console.warn("renderer.toHtml failed, falling back to renderToElement:", err);
+        }
+    }
+
+    // Direct template fallback if renderer service is unavailable:
+    // Supply doesAnyOrderlineHaveTaxLabel and formatCurrency so that
+    // evaluating the QWeb template directly does not throw "TaxLabel is not a function".
+    const receipt = renderToElement("point_of_sale.OrderReceipt", {
+        order: currentOrder,
+        basic_receipt: Boolean(basic),
+        doesAnyOrderlineHaveTaxLabel: () => Boolean(currentOrder.lines?.some((l) => l.taxGroupLabels)),
+        formatCurrency: (amount) => (pos.formatCurrency ? pos.formatCurrency(amount) : String(amount)),
+    });
+    return await elementToJpeg(receipt);
 }
 
 patch(PosStore.prototype, {
@@ -53,11 +102,7 @@ patch(PosStore.prototype, {
                 return false;
             }
 
-            const receipt = renderToElement("point_of_sale.OrderReceipt", {
-                order: currentOrder,
-                basic_receipt: Boolean(basic),
-            });
-            const image = await elementToJpeg(receipt);
+            const image = await renderReceiptImage(this, currentOrder, basic);
             const result = await this.data.call(
                 "pos.order",
                 "action_print_gateway_receipt",

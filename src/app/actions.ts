@@ -120,17 +120,23 @@ export async function createTestPrintJob(printerId: string) {
   if (!printer) throw new ActionError("Printer not found", 404);
   const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!agent) throw new ActionError("The agent that owns this printer is missing.", 500);
-  const payload = buildTestPrintPayloadForPrinter(printer.name, agent.name ?? printer.agentId, {
-    protocol: printer.protocol,
-    connectionType: printer.connectionType,
-    capabilities: printer.capabilities,
-  });
-  const result = await createPrintJobForPrinter(printerId, payload, {
-    requestedBy: "manager-test",
-    documentType: "test_page",
-  });
-  revalidatePath("/dashboard");
-  return { id: result.id };
+  try {
+    const payload = buildTestPrintPayloadForPrinter(printer.name, agent.name ?? printer.agentId, {
+      protocol: printer.protocol,
+      connectionType: printer.connectionType,
+      capabilities: printer.capabilities,
+    });
+    const result = await createPrintJobForPrinter(printerId, payload, {
+      requestedBy: "manager-test",
+      documentType: "test_page",
+    });
+    revalidatePath("/dashboard");
+    return { id: result.id };
+  } catch (error) {
+    if (error instanceof ActionError) throw error;
+    const msg = error instanceof Error ? error.message : "Failed to generate or queue test page";
+    throw new ActionError(msg, 400);
+  }
 }
 
 /**

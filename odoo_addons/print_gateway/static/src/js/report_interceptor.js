@@ -34,10 +34,13 @@ async function silentPrintReportHandler(action, options, env) {
     const orm = env.services.orm;
     const notification = env.services.notification;
     const resIds =
+        (options && options.active_ids) ||
+        (options && options.res_ids) ||
         action.context?.active_ids ||
         (action.context?.active_id ? [action.context.active_id] : []) ||
         action.res_ids ||
         action.docids ||
+        (action.data && action.data.res_ids) ||
         [];
 
     try {
@@ -47,6 +50,7 @@ async function silentPrintReportHandler(action, options, env) {
             [],
             {
                 report_name: action.report_name,
+                report_id: action.id,
                 res_ids: resIds,
                 context: action.context || {},
             }

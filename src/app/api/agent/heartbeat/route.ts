@@ -64,32 +64,49 @@ function normalizeProtocol(raw?: unknown): string | null {
 }
 
 function sanitizePrinter(p: ReportedPrinter): {
-  id: string; name: string; printerType: string; deviceClass: string; connectionType: string; protocol: string; status: string; config: Record<string, unknown>; capabilities: Record<string, unknown> | null;
-} | null {
-  if (typeof p.id !== "string" || !p.id.trim() || p.id.length > 120) return null;
-  if (typeof p.name !== "string" || !p.name.trim() || p.name.length > 100) return null;
+  ok: true;
+  printer: {
+    id: string;
+    name: string;
+    printerType: string;
+    deviceClass: string;
+    connectionType: string;
+    protocol: string;
+    status: string;
+    config: Record<string, unknown>;
+    capabilities: Record<string, unknown> | null;
+  };
+} | { ok: false; reason: string } {
+  if (typeof p.id !== "string" || !p.id.trim() || p.id.length > 120) {
+    return { ok: false, reason: "invalid_id" };
+  }
+  if (typeof p.name !== "string" || !p.name.trim() || p.name.length > 100) {
+    return { ok: false, reason: "invalid_name" };
+  }
   const connectionType = normalizeConnectionType(p.connectionType, p.type);
-  if (!connectionType) return null;
+  if (!connectionType) {
+    return { ok: false, reason: "invalid_or_unsupported_connection_type" };
+  }
   let printerType = typeof p.printerType === "string" ? p.printerType.trim().toLowerCase() : "";
   let deviceClass = typeof p.deviceClass === "string" ? p.deviceClass.trim().toLowerCase() : "unknown";
   if (!(PRINTER_TYPES as readonly string[]).includes(printerType) && (DEVICE_CLASSES as readonly string[]).includes(printerType)) {
     deviceClass = printerType;
     printerType = "physical";
   }
-  if (!(PRINTER_TYPES as readonly string[]).includes(printerType) || !(DEVICE_CLASSES as readonly string[]).includes(deviceClass)) return null;
+  if (!printerType) {
+    printerType = "physical";
+  }
+  if (!(PRINTER_TYPES as readonly string[]).includes(printerType) || !(DEVICE_CLASSES as readonly string[]).includes(deviceClass)) {
+    return { ok: false, reason: "invalid_device_class_or_printer_type" };
+  }
   const protocol = normalizeProtocol(p.protocol ?? (p.config as Record<string, unknown>)?.protocol);
-  if (!protocol) return null;
+  if (!protocol) {
+    return { ok: false, reason: "invalid_or_unsupported_protocol" };
+  }
   const config = p.config && typeof p.config === "object" ? { ...(p.config as Record<string, unknown>) } : {};
   delete config.protocol;
   let capabilities = p.capabilities && typeof p.capabilities === "object" ? { ...(p.capabilities as Record<string, unknown>) } : null;
   if (capabilities && "supported_protocols" in capabilities) {
-    // Capability trust boundary: an authenticated agent may only NARROW the
-    // routing surface of a device the operator paired - it must never invent
-    // new capabilities (agent/internal/printer/capability.go and
-    // src/lib/routing.ts only ever match this vocabulary). Unknown tokens
-    // are dropped per-row (the heartbeat for the other devices still
-    // succeeds) instead of stored; an emptied or non-array list behaves as
-    // "no explicit caps" on both sides, where the declared transport decides.
     if (Array.isArray(capabilities.supported_protocols)) {
       const known = (capabilities.supported_protocols as unknown[])
         .map((value) => String(value).toLowerCase().trim())
@@ -103,12 +120,30 @@ function sanitizePrinter(p: ReportedPrinter): {
   const status = typeof p.status === "string" && VALID_PRINTER_STATUSES.has(p.status.trim().toLowerCase())
     ? p.status.trim().toLowerCase()
     : "unknown";
-  // Same metadata rules the manager create path applies; a malformed or
-  // oversized report must not land in the routing tables.
-  if (JSON.stringify(config).length > PRINTER_CONFIG_MAX_BYTES) return null;
-  if (capabilities && JSON.stringify(capabilities).length > PRINTER_CAPABILITIES_MAX_BYTES) return null;
-  if (validateConnectionConfig(connectionType, config)) return null;
-  return { id: p.id.trim(), name: p.name.trim(), printerType, deviceClass, connectionType, protocol, status, config, capabilities };
+  if (JSON.stringify(config).length > PRINTER_CONFIG_MAX_BYTES) {
+    return { ok: false, reason: "config_payload_too_large" };
+  }
+  if (capabilities && JSON.stringify(capabilities).length > PRINTER_CAPABILITIES_MAX_BYTES) {
+    return { ok: false, reason: "capabilities_payload_too_large" };
+  }
+  const configErr = validateConnectionConfig(connectionType, config);
+  if (configErr) {
+    return { ok: false, reason: `invalid_connection_config: ${configErr}` };
+  }
+  return {
+    ok: true,
+    printer: {
+      id: p.id.trim(),
+      name: p.name.trim(),
+      printerType,
+      deviceClass,
+      connectionType,
+      protocol,
+      status,
+      config,
+      capabilities,
+    },
+  };
 }
 
 export async function POST(req: Request) {
@@ -130,17 +165,6 @@ export async function POST(req: Request) {
 
     await db.update(agents).set({ status, lastSeenAt: new Date() }).where(eq(agents.id, agent.id));
 
-    // Print-lease keep-alive: the agent reports the (jobId, claimToken)
-    // pairs it is currently holding (gateway status claimed/printing).
-    // While the agent is alive and working those jobs, their `updated_at`
-    // stays fresh, so the stale-printing sweep (10 min) cannot fail a
-    // legitimately long print. A dead agent stops heartbeating, so its jobs
-    // still time out as before. Scoped to this agent's own non-terminal
-    // delivery states AND to the exact live claim: the UPDATE predicate
-    // requires (id, claim_token) to match, so a stale worker's heartbeat
-    // can never refresh the lease of a reclaimed attempt. Legacy bare job
-    // ids (no token, pre-fencing agents) only refresh rows that never
-    // received a token; they can never touch a tokenized claim.
     const rawKeepAlive: unknown[] = Array.isArray(body?.keepAliveJobIds) ? (body.keepAliveJobIds as unknown[]) : [];
     const pairs: Array<{ jobId: string; claimToken: string | null }> = [];
     for (const entry of rawKeepAlive) {
@@ -181,14 +205,16 @@ export async function POST(req: Request) {
         );
     }
 
-    const skipped: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
     for (const raw of reportedPrinters) {
-      const p = sanitizePrinter(raw);
-      if (!p) {
-        skipped.push(typeof raw?.id === "string" ? raw.id : "(unknown)");
+      const rawId = typeof raw?.id === "string" ? raw.id : "(unknown)";
+      const res = sanitizePrinter(raw);
+      if (!res.ok) {
+        skipped.push({ id: rawId, reason: res.reason });
         continue;
       }
 
+      const p = res.printer;
       const printerUpdateSet = {
         name: p.name,
         printerType: p.printerType as typeof printers.$inferInsert.printerType,
@@ -205,15 +231,11 @@ export async function POST(req: Request) {
       const existing = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
       if (existing) {
         if (existing.agentId !== agent.id) {
-          skipped.push(p.id);
+          skipped.push({ id: p.id, reason: `owned_by_another_agent (${existing.agentId})` });
           continue;
         }
         await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
       } else {
-        // Two concurrent heartbeats may both report the same NEW printer
-        // id; a plain insert would send the loser into a 23505 PK violation
-        // that failed the whole heartbeat request. Insert atomically and
-        // fall back to the same-agent update when we lose that race.
         const inserted = await db.insert(printers).values({
           id: p.id,
           agentId: agent.id,
@@ -233,7 +255,7 @@ export async function POST(req: Request) {
           if (raced && raced.agentId === agent.id) {
             await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
           } else {
-            skipped.push(p.id);
+            skipped.push({ id: p.id, reason: "insert_conflict_owned_by_another_agent" });
           }
         }
       }

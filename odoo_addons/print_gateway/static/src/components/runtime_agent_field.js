@@ -20,7 +20,7 @@ export class RuntimeAgentField extends Component {
                 <span t-esc="props.record.data[props.name] || ''"/>
             </t>
             <t t-else="">
-                <select class="o_input" aria-label="Gateway Runtime Agent" t-att-disabled="state.loading || !state.companyId" t-att-aria-invalid="state.error ? 'true' : undefined" t-att-aria-describedby="state.error ? 'o_pg_agent_error' : undefined" t-on-change="onChange">
+                <select class="o_input" aria-label="Gateway Runtime Agent" t-att-value="props.record.data[props.name] || ''" t-att-disabled="state.loading || !state.companyId" t-att-aria-invalid="state.error ? 'true' : undefined" t-att-aria-describedby="state.error ? 'o_pg_agent_error' : undefined" t-on-change="onChange">
                     <option value=""><t t-esc="state.loading ? 'Loading agents…' : (!state.companyId ? 'Select an Odoo Company first' : 'Select Gateway Runtime Agent')"/></option>
                     <option t-foreach="state.agents" t-as="agent" t-key="agent.id" t-att-value="agent.id" t-att-selected="agent.id === props.record.data[props.name]">
                         <t t-esc="agent.name"/> — <t t-esc="agent.id"/>

@@ -57,6 +57,7 @@ import {
   jobTone as sharedJobTone,
   printerLabel,
   printerTone as sharedPrinterTone,
+  effectivePrinterStatus,
 } from "../../shared/job-vocabulary";
 import { copyTextToClipboard } from "../../lib/clipboard";
 
@@ -317,7 +318,11 @@ export default function DashboardClient({
     const onlineAgents = agents.filter((a) => agentLiveView(a, nowMs).tone === "ok").length;
 
     const totalPrinters = printers.length;
-    const onlinePrinters = printers.filter((p) => p.status.toLowerCase() === "online").length;
+    const agentMap = new Map(agents.map((a) => [a.id, a]));
+    const onlinePrinters = printers.filter((p) => {
+      const parentAgent = agentMap.get(p.agentId);
+      return effectivePrinterStatus(p, parentAgent, nowMs) === "online";
+    }).length;
 
     const inFlightJobs = kpiJobs.filter((j) => {
       const s = j.status.toLowerCase();
@@ -421,8 +426,11 @@ export default function DashboardClient({
 
   // Filtered printers
   const filteredPrinters = useMemo(() => {
+    const agentMap = new Map(agents.map((a) => [a.id, a]));
     return printers.filter((p) => {
-      if (printerStatusFilter !== "all" && p.status.toLowerCase() !== printerStatusFilter) {
+      const parentAgent = agentMap.get(p.agentId);
+      const effStatus = effectivePrinterStatus(p, parentAgent, nowMs).toLowerCase();
+      if (printerStatusFilter !== "all" && effStatus !== printerStatusFilter) {
         return false;
       }
       if (printerSearch.trim()) {
@@ -435,7 +443,7 @@ export default function DashboardClient({
       }
       return true;
     });
-  }, [printers, printerStatusFilter, printerSearch]);
+  }, [printers, agents, nowMs, printerStatusFilter, printerSearch]);
 
   // Filtered jobs (database-queried via getDashboardJobs with immediate typing refinement)
   const filteredJobs = useMemo(() => {
@@ -831,6 +839,8 @@ export default function DashboardClient({
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {filteredPrinters.map((printer) => {
                   const caps = getPrinterBadges(printer);
+                  const parentAgent = agents.find((a) => a.id === printer.agentId);
+                  const effStatus = effectivePrinterStatus(printer, parentAgent, nowMs);
                   return (
                     <div
                       key={printer.id}
@@ -850,8 +860,8 @@ export default function DashboardClient({
                             </div>
                           </div>
                           <StatusBadge
-                            label={printerLabel(printer.status)}
-                            tone={sharedPrinterTone(printer.status)}
+                            label={printerLabel(effStatus)}
+                            tone={sharedPrinterTone(effStatus)}
                           />
                         </div>
 
@@ -937,6 +947,8 @@ export default function DashboardClient({
                   <tbody className="divide-y divide-edge">
                     {filteredPrinters.map((printer) => {
                       const caps = getPrinterBadges(printer);
+                      const parentAgent = agents.find((a) => a.id === printer.agentId);
+                      const effStatus = effectivePrinterStatus(printer, parentAgent, nowMs);
                       return (
                         <tr key={printer.id} className="hover:bg-surface-2/40">
                           <td className="px-4 py-3">
@@ -963,8 +975,8 @@ export default function DashboardClient({
                           </td>
                           <td className="px-4 py-3">
                             <StatusBadge
-                              label={printerLabel(printer.status)}
-                              tone={sharedPrinterTone(printer.status)}
+                              label={printerLabel(effStatus)}
+                              tone={sharedPrinterTone(effStatus)}
                             />
                           </td>
                           <td className="px-4 py-3 text-right">

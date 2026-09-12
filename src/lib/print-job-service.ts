@@ -9,6 +9,7 @@ import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { canonicalize } from "./canonicalize";
 import { MAX_AGENT_IN_FLIGHT_JOBS } from "./job-delivery";
+import { isAgentAvailableForJob } from "./agent-availability";
 
 export const MAX_AGENT_QUEUED_JOBS = 1000;
 export const PRINT_JOB_RATE_LIMIT_PER_MINUTE = 60;
@@ -250,6 +251,9 @@ export async function createPrintJobForPrinter(
   const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
   if (!ownerAgent) throw new PrintJobInputError("Printer owner agent not found", "AGENT_NOT_FOUND", 404);
   if (ownerAgent.lifecycle !== "active") throw new PrintJobInputError(`Agent is ${ownerAgent.lifecycle}`, "AGENT_UNAVAILABLE", 409);
+  if (!isAgentAvailableForJob(ownerAgent)) {
+    throw new PrintJobInputError("Printer owner agent is offline or stale", "AGENT_UNAVAILABLE", 503);
+  }
 
   const id = `job_${nanoid(12)}`;
   const expiresAt = options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000);
