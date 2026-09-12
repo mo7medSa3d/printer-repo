@@ -50,14 +50,19 @@ class PrintGatewayRouter(models.AbstractModel):
         """Return (Odoo company owning the Gateway config, branch context)."""
         company = company or self.env.company
         branch = company if company.parent_id else False
-        gateway_company = company.parent_id if branch else company
+        gateway_company = company
+        while gateway_company.parent_id:
+            gateway_company = gateway_company.parent_id
         return gateway_company, branch
 
     @api.model
     def _gateway_config(self, company):
-        gateway_company, _branch = self._binding_scope(company)
+        company = company or self.env.company
+        root_company = company
+        while root_company.parent_id:
+            root_company = root_company.parent_id
         config = self.env["print_gateway.gateway_config"].sudo().search(
-            [("company_id", "=", gateway_company.id)], limit=1,
+            [("company_id", "=", root_company.id)], limit=1,
         )
         return config if config and config.enabled else False
 

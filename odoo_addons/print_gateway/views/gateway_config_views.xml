@@ -4,7 +4,7 @@
         <field name="name">print_gateway.gateway_config.list</field>
         <field name="model">print_gateway.gateway_config</field>
         <field name="arch" type="xml">
-            <list string="Gateway Configuration" create="1" delete="0" class="o_pg_list">
+            <list string="Gateway Configuration" create="1" class="o_pg_list">
                 <field name="company_id" string="Odoo Company"/>
                 <field name="enabled" widget="boolean_toggle"/>
                 <field name="gateway_url"/>
@@ -18,7 +18,7 @@
         <field name="name">print_gateway.gateway_config.form</field>
         <field name="model">print_gateway.gateway_config</field>
         <field name="arch" type="xml">
-            <form string="Gateway Configuration" create="1" delete="0" class="o_pg_view o_pg_form">
+            <form string="Gateway Configuration" create="1" class="o_pg_view o_pg_form">
                 <header>
                     <button name="action_test_connection" type="object" string="Test Connection" class="oe_highlight"/>
                     <button name="action_open_pairing_wizard" type="object" string="Pair New Agent" class="btn-primary" icon="fa-link"/>

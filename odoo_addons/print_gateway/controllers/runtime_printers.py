@@ -48,10 +48,13 @@ class PrintGatewayRuntimePrinterController(http.Controller):
 
     def _get_config(self, company, env=None):
         env = env or request.env
+        root_company = company
+        while root_company.parent_id:
+            root_company = root_company.parent_id
         config = env["print_gateway.gateway_config"].sudo().search(
-            [("company_id", "=", company.id)], limit=1,
+            [("company_id", "=", root_company.id)], limit=1,
         )
-        return config, company
+        return config, root_company
 
     @http.route('/print_gateway/runtime-agents', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_agents(self, company_id=None, branch_id=None):
@@ -82,15 +85,27 @@ class PrintGatewayRuntimePrinterController(http.Controller):
             lifecycle = agent.get('lifecycle') if isinstance(agent.get('lifecycle'), str) else 'active'
             if not isinstance(agent_id, str) or not agent_id.strip() or lifecycle != 'active':
                 continue
+            raw_name = agent.get('name') if isinstance(agent.get('name'), str) and agent.get('name').strip() else agent_id
+            status = agent.get('status') if isinstance(agent.get('status'), str) else 'offline'
+            indicator = "🟢 Online" if status == "online" else "🔴 Offline"
             sanitized.append({
                 'id': agent_id,
-                'name': agent.get('name') if isinstance(agent.get('name'), str) else agent_id,
-                'status': agent.get('status') if isinstance(agent.get('status'), str) else 'offline',
+                'name': f"{raw_name} ({indicator})",
+                'status': status,
             })
-        assignment = request.env['print_gateway.runtime_agent_assignment'].sudo().search([
-            ('company_id', '=', root_company.id), ('branch_id', '=', branch.id if branch else False), ('enabled', '=', True),
-        ], limit=1)
-        return {'enabled': True, 'selectedAgentId': assignment.runtime_agent_id if assignment else False, 'agents': sanitized}
+        assignment = False
+        if branch:
+            assignment = request.env['print_gateway.runtime_agent_assignment'].sudo().search([
+                ('company_id', '=', root_company.id), ('branch_id', '=', branch.id), ('enabled', '=', True),
+            ], limit=1)
+        if not assignment:
+            assignment = request.env['print_gateway.runtime_agent_assignment'].sudo().search([
+                ('company_id', '=', root_company.id), ('branch_id', '=', False), ('enabled', '=', True),
+            ], limit=1)
+        allowed_agent_id = assignment.runtime_agent_id if (assignment and assignment.runtime_agent_id) else False
+        if allowed_agent_id:
+            sanitized = [a for a in sanitized if a['id'] == allowed_agent_id]
+        return {'enabled': True, 'selectedAgentId': allowed_agent_id or False, 'agents': sanitized}
 
     @http.route('/print_gateway/runtime-printers', type='jsonrpc', auth='user', methods=['POST'])
     def runtime_printers(self, company_id=None, branch_id=None, agent_id=None):

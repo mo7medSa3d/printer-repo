@@ -387,6 +387,13 @@ export function onTrayNavigate(
   return listen<string>("tray:navigate", (event) => handler(String(event.payload)));
 }
 
+/** Gateway configuration changed event. Returns the unlisten function. */
+export function onGatewayConfigChanged(
+  handler: (url: string) => void
+): Promise<UnlistenFn> {
+  return listen<string>("gateway:config_changed", (event) => handler(String(event.payload)));
+}
+
 const HEALTH_TIMEOUT_MS = 8000;
 
 /**

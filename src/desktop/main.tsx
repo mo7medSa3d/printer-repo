@@ -48,6 +48,7 @@ import {
   isTauri,
   onTrayNavigate,
   onTrayRestartAgent,
+  onGatewayConfigChanged,
   pairAgent,
   restartAgent as ipcRestartAgent,
   setGatewayUrl,
@@ -200,14 +201,15 @@ export default function App() {
     }
   }, [gatewayUrl]);
 
-  const checkHealth = useCallback(async () => {
-    if (!gatewayUrl) {
+  const checkHealth = useCallback(async (targetUrl?: string) => {
+    const target = targetUrl ?? gatewayUrl;
+    if (!target) {
       setHealthError("Gateway URL not configured");
       return;
     }
     setHealthError(null);
     try {
-      const h = await fetchGatewayHealth(gatewayUrl);
+      const h = await fetchGatewayHealth(target);
       setHealth(h);
       if ((h as { error?: string })?.error) setHealthError(String((h as { error?: string }).error));
     } catch (e) {
@@ -368,14 +370,38 @@ export default function App() {
     onTrayRestartAgent(() => restartAgent());
   }, [navigate, restartAgent]);
 
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    onGatewayConfigChanged((url) => {
+      setGw(url);
+      if (url) {
+        checkHealth(url);
+      } else {
+        setHealth(null);
+        setHealthError("Gateway URL not configured");
+      }
+      refreshStatus();
+    })
+      .then((u) => {
+        unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      unlisten?.();
+    };
+  }, [checkHealth, refreshStatus]);
+
   const isOnline =
     !!agentStatus && !(agentStatus as Record<string, unknown>).error && (agentStatus as { running?: boolean }).running !== false;
-  const gatewayConnected = !!health && (health as { ok?: boolean }).ok !== false && !healthError;
+  const healthOk = Boolean(health && (health as { ok?: boolean }).ok !== false && !healthError);
+  const agentRegistered = Boolean((agentStatus as { registered?: boolean } | null)?.registered);
+  const gatewayConnected = Boolean(gatewayUrl && (healthOk || agentRegistered));
   const gatewaySubLabel = !gatewayUrl
     ? "Set Gateway URL in Settings"
     : gatewayConnected
       ? "Reachable"
-      : "Failed last check";
+      : "Failed last check — verify the URL and network";
   const physicalPrinters = useMemo(() => printers.filter(isProductionPrinter), [printers]);
   const totalPrinters = physicalPrinters.length;
   const onlinePrinters = physicalPrinters.filter((p) => p.status === "online").length;
