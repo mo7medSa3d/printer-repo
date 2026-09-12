@@ -203,8 +203,9 @@ class PrintGatewayPairAgentWizard(models.TransientModel):
     company_id = fields.Many2one("res.company", related="config_id.company_id", readonly=True)
     branch_id = fields.Many2one(
         "res.company", string="Target Branch",
-        domain="[('parent_id', '=', company_id)]",
-        required=True,
+        domain="['|', ('parent_id', '=', company_id), ('id', '=', company_id)]",
+        default=lambda self: self.env.company,
+        required=False,
     )
     agent_id = fields.Char(
         string="Runtime Agent ID",
@@ -250,17 +251,18 @@ class PrintGatewayPairAgentWizard(models.TransientModel):
                     % (matched.get("name") or target, matched.get("lifecycle"))
                 )
             resolved_agent_id = matched["id"]
+            target_branch = self.branch_id or self.company_id or config.company_id
             assignment_model = self.env["print_gateway.runtime_agent_assignment"]
             existing = assignment_model.search([
                 ("company_id", "=", config.company_id.id),
-                ("branch_id", "=", self.branch_id.id),
+                ("branch_id", "=", target_branch.id),
             ], limit=1)
             if existing:
                 existing.write({"runtime_agent_id": resolved_agent_id, "enabled": True})
             else:
                 assignment_model.create({
                     "company_id": config.company_id.id,
-                    "branch_id": self.branch_id.id,
+                    "branch_id": target_branch.id,
                     "runtime_agent_id": resolved_agent_id,
                     "enabled": True,
                 })
@@ -269,7 +271,7 @@ class PrintGatewayPairAgentWizard(models.TransientModel):
                 "tag": "display_notification",
                 "params": {
                     "title": _("Agent Assigned Successfully"),
-                    "message": _("Agent %s assigned to %s.") % (resolved_agent_id, self.branch_id.name),
+                    "message": _("Agent %s assigned to %s.") % (resolved_agent_id, target_branch.name),
                     "type": "success",
                     "sticky": False,
                 },

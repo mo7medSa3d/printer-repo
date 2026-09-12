@@ -1,7 +1,7 @@
 import type { AgentStatus, PrinterInfo, RuntimePaths } from "./lib/ipc";
 
 export type Page = "dashboard" | "printers" | "jobs" | "agents" | "settings";
-export type JobTab = "all" | "queued" | "printing" | "printed" | "failed" | "unknown" | "expired";
+export type JobTab = "all" | "queued" | "claimed" | "printing" | "unassigned" | "printed" | "failed" | "unknown" | "expired";
 export type PrinterStatusFilter = "all" | "online" | "offline" | "busy" | "error" | "unknown";
 
 export type AgentStatusView = Partial<AgentStatus> & { error?: string };
@@ -79,7 +79,7 @@ export interface DesktopState {
   jobCounts: Record<JobTab | "all", number>;
   pendingJobs: number;
   failedJobs: number;
-  refreshJobs: () => void;
+  refreshJobs: (options?: { status?: string; search?: string; limit?: number }) => Promise<void> | void;
   jobPrinterFilter: string | null;
   setJobPrinterFilter: (v: string | null) => void;
   printerFilterName: string;

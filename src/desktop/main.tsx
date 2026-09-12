@@ -29,6 +29,7 @@ import { PageHeader } from "./ui";
 import { JobTimeline } from "./components/JobTimeline";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { AddPrinterDialog } from "./components/AddPrinterDialog";
+import { AdminPrivilegeDialog } from "./components/AdminPrivilegeDialog";
 import { OverviewPage } from "./pages/Overview";
 import { PrintersPage } from "./pages/Printers";
 import { JobsPage } from "./pages/Jobs";
@@ -126,6 +127,7 @@ export default function App() {
   const [msg, setMsg] = useState<ToastMessage>(null);
   const [confirmStop, setConfirmStop] = useState(false);
   const [isAdmin, setIsAdmin] = useState<boolean>(true);
+  const [adminDismissed, setAdminDismissed] = useState<boolean>(false);
   const busyRef = useRef(false);
   const setBusyBoth = useCallback((v: boolean) => {
     busyRef.current = v;
@@ -178,11 +180,11 @@ export default function App() {
     }
   }, []);
 
-  const refreshJobs = useCallback(async () => {
+  const refreshJobs = useCallback(async (options?: { status?: string; search?: string; limit?: number }) => {
     if (!gatewayUrl) return;
     setJobsLoading(true);
     try {
-      const data = await fetchGatewayJobs(gatewayUrl);
+      const data = await fetchGatewayJobs(gatewayUrl, options);
       setJobs(Array.isArray(data) ? data : []);
       setJobsError(null);
     } catch (e: unknown) {
@@ -424,8 +426,14 @@ export default function App() {
       list = list.filter((j) => {
         const st = jobStatus(j).toLowerCase();
         const outcome = deriveOutcome(st, String(j.error ?? ""));
-        if (jobTab === "queued") return ["queued", "claimed"].includes(st);
+        if (jobTab === "queued") return st === "queued";
+        if (jobTab === "claimed") return st === "claimed";
         if (jobTab === "printing") return st === "printing";
+        if (jobTab === "unassigned") {
+          const dest = String(j.destination ?? "");
+          const pid = jobPrinterId(j);
+          return dest === "unassigned" || pid === "unassigned" || !printers.some((p) => p.id === pid && p.status === "online");
+        }
         if (jobTab === "printed") return st === "success";
         if (jobTab === "unknown") return outcome === "unknown";
         if (jobTab === "failed") return st === "failed" && outcome === "not_printed";
@@ -448,14 +456,20 @@ export default function App() {
   const jobCounts = useMemo(
     () => ({
       all: jobs.length,
-      queued: pendingJobs,
+      queued: jobs.filter((j) => jobStatus(j) === "queued").length,
+      claimed: jobs.filter((j) => jobStatus(j) === "claimed").length,
       printing: jobs.filter((j) => jobStatus(j) === "printing").length,
+      unassigned: jobs.filter((j) => {
+        const dest = String(j.destination ?? "");
+        const pid = jobPrinterId(j);
+        return dest === "unassigned" || pid === "unassigned" || !printers.some((p) => p.id === pid && p.status === "online");
+      }).length,
       printed: jobs.filter((j) => jobStatus(j) === "success").length,
       unknown: jobs.filter((j) => deriveOutcome(jobStatus(j), String(j.error ?? "")) === "unknown").length,
       failed: failedJobs,
       expired: jobs.filter((j) => jobStatus(j) === "expired" && deriveOutcome("expired", String(j.error ?? "")) !== "unknown").length,
     }),
-    [jobs, pendingJobs, failedJobs]
+    [jobs, printers, failedJobs]
   );
 
   const nav: NavItem[] = [
@@ -571,14 +585,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app text-ink">
-      {!isAdmin && (
-        <div className="flex items-center gap-2.5 border-b border-bad-edge bg-bad-bg px-4 py-3 text-sm font-bold text-bad" role="alert">
-          <AlertTriangle className="h-[18px] w-[18px] flex-shrink-0" aria-hidden="true" />
-          <span>
-            <strong>Permission Warning:</strong> The application is not running with Administrator privileges. You will not be able to save settings or control the service. Please close the app and restart it via <u>Run as administrator</u>.
-          </span>
-        </div>
-      )}
+      <AdminPrivilegeDialog
+        open={!isAdmin && !adminDismissed}
+        onClose={() => setAdminDismissed(true)}
+      />
       <Sidebar
         page={page}
         navigate={navigate}
@@ -647,6 +657,26 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {!isAdmin && adminDismissed && (
+          <div
+            className="flex items-center justify-between gap-3 border-b border-warn-edge bg-warn-bg px-5 py-3 text-xs text-warn lg:px-8"
+            role="status"
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>
+                <strong>Read-Only Mode:</strong> Application is running without Administrator privileges. Service management and configuration updates are disabled.
+              </span>
+            </div>
+            <button
+              onClick={() => setAdminDismissed(false)}
+              className="font-medium underline hover:text-warn/80 cursor-pointer"
+            >
+              View details
+            </button>
+          </div>
+        )}
 
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-7 lg:px-8 lg:py-8">
           {page === "dashboard" && <OverviewPage s={state} />}

@@ -1,5 +1,4 @@
-/* eslint-disable react-hooks/set-state-in-effect */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import {
   Button,
@@ -36,6 +35,13 @@ export function AddPrinterDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Clear any previous error when dialog transitions to open
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (prevOpen !== open) {
+    setPrevOpen(open);
+    if (open) setError(null);
+  }
+
   // Only physical printers may be picked for a production binding.
   const physicalSpoolers = useMemo(
     () => printers.filter((p) => isProductionPrinter(p) && p.spooler_name),
@@ -48,10 +54,6 @@ export function AddPrinterDialog({
       ),
     [printers]
   );
-
-  useEffect(() => {
-    if (open) setError(null);
-  }, [open]);
 
   const validate = (): string | null => {
     if (!name.trim()) return "Printer name is required.";

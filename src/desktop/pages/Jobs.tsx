@@ -45,7 +45,7 @@ import {
   toneJob,
 } from "../lib/printers";
 
-const TABS = ["all", "queued", "printing", "printed", "unknown", "failed", "expired"] as const;
+const TABS = ["all", "queued", "claimed", "printing", "unassigned", "printed", "unknown", "failed", "expired"] as const;
 
 export function JobsPage({ s }: { s: DesktopState }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
@@ -145,7 +145,9 @@ export function JobsPage({ s }: { s: DesktopState }) {
   const tabCounts = {
     all: s.jobCounts.all,
     queued: s.jobCounts.queued,
+    claimed: s.jobCounts.claimed,
     printing: s.jobCounts.printing,
+    unassigned: s.jobCounts.unassigned,
     printed: s.jobCounts.printed,
     unknown: s.jobCounts.unknown,
     failed: s.jobCounts.failed,
@@ -197,7 +199,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
-              onClick={s.refreshJobs}
+              onClick={() => { void s.refreshJobs(); }}
               loading={s.jobsLoading}
               icon={<RefreshCw className="h-[18px] w-[18px]" />}
             >
@@ -303,7 +305,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
           </div>
         ) : s.jobsError ? (
           <div className="p-6">
-            <ErrorState title="Jobs unavailable" message={s.jobsError} retry={s.refreshJobs} />
+            <ErrorState title="Jobs unavailable" message={s.jobsError} retry={() => { void s.refreshJobs(); }} />
           </div>
         ) : s.jobsFiltered.length === 0 ? (
           <EmptyState

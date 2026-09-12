@@ -4,7 +4,7 @@
         <field name="name">print_gateway.gateway_config.list</field>
         <field name="model">print_gateway.gateway_config</field>
         <field name="arch" type="xml">
-            <list string="Gateway Configuration" create="1" delete="0">
+            <list string="Gateway Configuration" create="1" delete="0" class="o_pg_list">
                 <field name="company_id" string="Odoo Company"/>
                 <field name="enabled" widget="boolean_toggle"/>
                 <field name="gateway_url"/>

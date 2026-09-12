@@ -1,5 +1,5 @@
 import React from "react";
-import appIconRaw from "../../../src-tauri/icons/icon.png";
+import appIconRaw from "../../../src-tauri/icons/icon-source.svg";
 const appIcon = appIconRaw as unknown as string;
 import {
   LayoutDashboard,

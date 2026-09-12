@@ -5,6 +5,8 @@ import {
   createAgent,
   createTestPrintJob,
   deleteAgent,
+  getDashboardJobs,
+  getDashboardState,
   reprintJob,
   setAgentLifecycle,
   setPrinterLifecycle,
@@ -145,23 +147,40 @@ export default function DashboardClient({
   initialJobs: Job[];
   databaseError: string | null;
 }) {
+  const [agents, setAgents] = useState<Agent[]>(initialAgents);
+  const [printers, setPrinters] = useState<Printer[]>(initialPrinters);
+  const [kpiJobs, setKpiJobs] = useState<Job[]>(initialJobs);
+  const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [jobsLoading, setJobsLoading] = useState(false);
+
+  const [prevAgents, setPrevAgents] = useState(initialAgents);
+  if (prevAgents !== initialAgents) {
+    setPrevAgents(initialAgents);
+    setAgents(initialAgents);
+  }
+
+  const [prevPrinters, setPrevPrinters] = useState(initialPrinters);
+  if (prevPrinters !== initialPrinters) {
+    setPrevPrinters(initialPrinters);
+    setPrinters(initialPrinters);
+  }
+
+  const [prevJobs, setPrevJobs] = useState(initialJobs);
+  if (prevJobs !== initialJobs) {
+    setPrevJobs(initialJobs);
+    setKpiJobs(initialJobs);
+    setJobs(initialJobs);
+  }
+
   const [agentName, setAgentName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: "ok" | "err" } | null>(null);
-  const [activePairing, setActivePairing] = useState<{ code: string; expiresAt: Date } | null>(null);
+  const [activePairing, setActivePairing] = useState<{ id?: string; code: string; expiresAt: Date } | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [countdownText, setCountdownText] = useState("10:00");
   const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
   const [pendingAgentAction, setPendingAgentAction] = useState<{ agent: Agent; next: "disabled" | "retired" } | null>(null);
   const [reprintCandidate, setReprintCandidate] = useState<Job | null>(null);
-  // Wall-clock used ONLY for heartbeat freshness (stale agents are not
-  // shown as online). Kept in state + refreshed on an interval so render
-  // stays pure for the react-hooks/purity rule.
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 30000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Filter & view states
   const [printerViewMode, setPrinterViewMode] = useState<"grid" | "table">("grid");
@@ -169,8 +188,113 @@ export default function DashboardClient({
   const [printerStatusFilter, setPrinterStatusFilter] = useState<string>("all");
 
   const [jobSearch, setJobSearch] = useState("");
+  const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobStatusFilter, setJobStatusFilter] = useState<string>("all");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+
+  const filterRef = React.useRef({ status: "all", search: "" });
+  useEffect(() => {
+    filterRef.current = { status: jobStatusFilter, search: debouncedJobSearch };
+  }, [jobStatusFilter, debouncedJobSearch]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedJobSearch(jobSearch), 250);
+    return () => clearTimeout(timer);
+  }, [jobSearch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFilteredJobs() {
+      setJobsLoading(true);
+      try {
+        const res = await getDashboardJobs({
+          status: jobStatusFilter,
+          search: debouncedJobSearch,
+          limit: 100,
+        });
+        if (!cancelled) {
+          setJobs(res as unknown as Job[]);
+        }
+      } catch (err) {
+        console.error("Dashboard jobs query failed:", err);
+      } finally {
+        if (!cancelled) {
+          setJobsLoading(false);
+        }
+      }
+    }
+    void loadFilteredJobs();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobStatusFilter, debouncedJobSearch]);
+
+  // Wall-clock used for heartbeat freshness (stale agents are not shown as online).
+  // Ticked every 5s so heartbeat lapses (90s stale rule) update presence immediately without page reload.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const refreshData = React.useCallback(async () => {
+    try {
+      const data = await getDashboardState();
+      if (data) {
+        setAgents(data.agents as Agent[]);
+        setPrinters(data.printers as Printer[]);
+        setKpiJobs(data.jobs as Job[]);
+
+        const current = filterRef.current;
+        if (current.status === "all" && !current.search) {
+          setJobs(data.jobs as Job[]);
+        } else {
+          void getDashboardJobs({
+            status: current.status,
+            search: current.search,
+            limit: 100,
+          }).then((res) => {
+            setJobs(res as unknown as Job[]);
+          });
+        }
+
+        setActivePairing((currentPairing) => {
+          if (!currentPairing) return null;
+          const target = data.agents.find(
+            (a) =>
+              (currentPairing.id && a.id === currentPairing.id) ||
+              a.pairingCode === currentPairing.code
+          );
+          if (
+            target &&
+            (target.status === "online" ||
+              target.lastSeenAt !== null ||
+              target.pairingCodeExpiresAt === null)
+          ) {
+            setMessage({
+              text: `Agent ${target.name} paired successfully and is now online.`,
+              type: "ok",
+            });
+            return null;
+          }
+          return currentPairing;
+        });
+      }
+    } catch {
+      // background polling error ignored
+    }
+  }, []);
+
+  // Periodic background state reconciliation: 3s during active pairing, 6s otherwise when tab is visible
+  useEffect(() => {
+    const intervalMs = activePairing ? 3000 : 6000;
+    const timer = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void refreshData();
+      }
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [activePairing, refreshData]);
 
   // Active pairing countdown tick
   useEffect(() => {
@@ -187,32 +311,32 @@ export default function DashboardClient({
 
   // KPI calculations
   const kpis = useMemo(() => {
-    const totalAgents = initialAgents.length;
+    const totalAgents = agents.length;
     // A stale heartbeat is NOT an online agent: availability follows the
     // same 90s rule the gateway itself enforces.
-    const onlineAgents = initialAgents.filter((a) => agentLiveView(a, nowMs).tone === "ok").length;
+    const onlineAgents = agents.filter((a) => agentLiveView(a, nowMs).tone === "ok").length;
 
-    const totalPrinters = initialPrinters.length;
-    const onlinePrinters = initialPrinters.filter((p) => p.status.toLowerCase() === "online").length;
+    const totalPrinters = printers.length;
+    const onlinePrinters = printers.filter((p) => p.status.toLowerCase() === "online").length;
 
-    const inFlightJobs = initialJobs.filter((j) => {
+    const inFlightJobs = kpiJobs.filter((j) => {
       const s = j.status.toLowerCase();
       return s === "queued" || s === "printing" || s === "claimed";
     }).length;
 
-    const completedJobs = initialJobs.filter((j) => j.status.toLowerCase() === "success").length;
+    const completedJobs = kpiJobs.filter((j) => j.status.toLowerCase() === "success").length;
 
     // "Needs attention" = the physical outcome is UNKNOWN (paper may exist),
     // regardless of whether the row says failed or expired.
-    const attentionJobs = initialJobs.filter(
+    const attentionJobs = kpiJobs.filter(
       (j) => deriveOutcome(j.status, j.error) === "unknown"
     ).length;
 
-    const failedJobs = initialJobs.filter((j) => j.status.toLowerCase() === "failed" && deriveOutcome(j.status, j.error) === "not_printed").length;
-    const expiredJobs = initialJobs.filter((j) => j.status.toLowerCase() === "expired").length;
+    const failedJobs = kpiJobs.filter((j) => j.status.toLowerCase() === "failed" && deriveOutcome(j.status, j.error) === "not_printed").length;
+    const expiredJobs = kpiJobs.filter((j) => j.status.toLowerCase() === "expired").length;
 
     const successRate =
-      initialJobs.length > 0 ? Math.round((completedJobs / initialJobs.length) * 100) : null;
+      kpiJobs.length > 0 ? Math.round((completedJobs / kpiJobs.length) * 100) : null;
 
     return {
       totalAgents,
@@ -226,16 +350,15 @@ export default function DashboardClient({
       expiredJobs,
       successRate,
     };
-  }, [initialAgents, initialPrinters, initialJobs, nowMs]);
+  }, [agents, printers, kpiJobs, nowMs]);
 
   const runAction = async (operation: () => Promise<unknown>, successMsg?: string) => {
     setBusy(true);
     setMessage(null);
     try {
       const result = await operation();
-      // Server actions revalidatePath themselves; a location.reload() here
-      // used to unmount this banner before the operator could read it.
       if (successMsg) setMessage({ text: successMsg, type: "ok" });
+      void refreshData();
       return result;
     } catch (error) {
       setMessage({
@@ -270,12 +393,13 @@ export default function DashboardClient({
     try {
       const result = await createAgent(name);
       const expiresAt = result.expiresAt ? new Date(result.expiresAt) : (result.expires_at ? new Date(result.expires_at) : new Date(Date.now() + 1000 * 60 * 10));
-      setActivePairing({ code: result.pairingCode, expiresAt });
+      setActivePairing({ id: result.id, code: result.pairingCode, expiresAt });
       setAgentName("");
       setMessage({
         text: `Agent registered! Use pairing code ${result.pairingCode} before expiration.`,
         type: "ok",
       });
+      void refreshData();
     } catch (error) {
       setMessage({
         text: error instanceof Error ? error.message : "Agent registration failed",
@@ -297,7 +421,7 @@ export default function DashboardClient({
 
   // Filtered printers
   const filteredPrinters = useMemo(() => {
-    return initialPrinters.filter((p) => {
+    return printers.filter((p) => {
       if (printerStatusFilter !== "all" && p.status.toLowerCase() !== printerStatusFilter) {
         return false;
       }
@@ -311,32 +435,21 @@ export default function DashboardClient({
       }
       return true;
     });
-  }, [initialPrinters, printerStatusFilter, printerSearch]);
+  }, [printers, printerStatusFilter, printerSearch]);
 
-  // Filtered jobs
+  // Filtered jobs (database-queried via getDashboardJobs with immediate typing refinement)
   const filteredJobs = useMemo(() => {
-    return initialJobs.filter((j) => {
-      const s = j.status.toLowerCase();
-      const outcome = deriveOutcome(s, j.error);
-      if (jobStatusFilter === "active" && !(s === "printing" || s === "claimed" || s === "queued")) return false;
-      if (jobStatusFilter === "queued" && s !== "queued") return false;
-      if (jobStatusFilter === "attention" && outcome !== "unknown") return false;
-      if (jobStatusFilter === "success" && s !== "success") return false;
-      if (jobStatusFilter === "expired" && s !== "expired") return false;
-      if (jobStatusFilter === "failed" && !(s === "failed" && outcome === "not_printed")) return false;
-
-      if (jobSearch.trim()) {
-        const q = jobSearch.toLowerCase();
-        return (
-          j.id.toLowerCase().includes(q) ||
-          j.printerId.toLowerCase().includes(q) ||
-          (j.destination && j.destination.toLowerCase().includes(q)) ||
-          (j.documentType && j.documentType.toLowerCase().includes(q))
-        );
-      }
-      return true;
+    if (!jobSearch.trim()) return jobs;
+    const q = jobSearch.toLowerCase();
+    return jobs.filter((j) => {
+      return (
+        j.id.toLowerCase().includes(q) ||
+        j.printerId.toLowerCase().includes(q) ||
+        (j.destination && j.destination.toLowerCase().includes(q)) ||
+        (j.documentType && j.documentType.toLowerCase().includes(q))
+      );
     });
-  }, [initialJobs, jobStatusFilter, jobSearch]);
+  }, [jobs, jobSearch]);
 
   // Helper for printer capability chips
   const getPrinterBadges = (printer: Printer) => {
@@ -395,7 +508,7 @@ export default function DashboardClient({
           title="Success Rate"
           value={kpis.successRate === null ? "—" : `${kpis.successRate}%`}
           subtitle={
-            initialJobs.length === 0
+            jobs.length === 0
               ? "No jobs in the recent list yet"
               : kpis.attentionJobs > 0
                 ? `${kpis.attentionJobs} with unknown outcome - verify the printer`
@@ -494,7 +607,7 @@ export default function DashboardClient({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => window.location.reload()}
+                onClick={() => void refreshData()}
                 icon={<RefreshCw className="h-3.5 w-3.5" />}
               >
                 Refresh
@@ -534,12 +647,12 @@ export default function DashboardClient({
 
             {/* Agent List */}
             <div className="space-y-3">
-              {initialAgents.length === 0 ? (
+              {agents.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-edge p-6 text-center text-sm text-ink-3">
                   No runtime agents registered yet.
                 </div>
               ) : (
-                initialAgents.map((agent) => {
+                agents.map((agent) => {
                   const meta = agent.metadata as { hostname?: string; os?: string } | undefined;
                   return (
                     <div
@@ -890,7 +1003,7 @@ export default function DashboardClient({
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => window.location.reload()}
+              onClick={() => void refreshData()}
               icon={<RefreshCw className="h-3.5 w-3.5" />}
             >
               Refresh Queue
@@ -916,10 +1029,13 @@ export default function DashboardClient({
               {[
                 { id: "all", label: "All Jobs" },
                 { id: "active", label: "In Flight" },
-                { id: "attention", label: "Unknown Outcome" },
                 { id: "queued", label: "Queued" },
+                { id: "claimed", label: "Claimed" },
+                { id: "printing", label: "Printing" },
+                { id: "unassigned", label: "Unassigned" },
                 { id: "success", label: "Printed" },
                 { id: "failed", label: "Failed" },
+                { id: "unknown", label: "Unknown Outcome" },
                 { id: "expired", label: "Expired" },
               ].map((tab) => (
                 <button
@@ -939,7 +1055,11 @@ export default function DashboardClient({
           </div>
 
           {/* Job Queue Table */}
-          {filteredJobs.length === 0 ? (
+          {jobsLoading && filteredJobs.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-edge p-12 text-center text-sm text-ink-3">
+              Loading print jobs from database...
+            </div>
+          ) : filteredJobs.length === 0 ? (
             <div className="rounded-xl border border-dashed border-edge p-12 text-center text-sm text-ink-3">
               No print jobs match the current filters.
             </div>

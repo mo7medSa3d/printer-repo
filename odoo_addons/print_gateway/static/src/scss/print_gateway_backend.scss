@@ -2,9 +2,9 @@
    print_gateway form carries o_pg_view). Never target bare Odoo classes:
    a leaked selector would restyle unrelated Odoo screens. */
 .o_pg_view {
-    .o_field_widget input,
+    .o_field_widget input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
     .o_field_widget select,
-    .o_input {
+    .o_input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input) {
         border: 1px solid var(--pg-input-border) !important; // Slate-300
         border-radius: 6px !important;
         padding: 6px 10px !important;
@@ -53,10 +53,10 @@
 
     /* Force a readable control surface even when Odoo's native backend
        theme makes form widgets transparent. */
-    input.o_input,
+    input.o_input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
     textarea.o_input,
     select.o_input,
-    .o_field_widget input.o_input,
+    .o_field_widget input.o_input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
     .o_field_widget textarea.o_input,
     .o_field_widget select.o_input,
     .o_field_many2one input,
@@ -73,7 +73,7 @@
             background-color var(--pg-dur) var(--pg-ease);
     }
 
-    input.o_input:hover,
+    input.o_input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input):hover,
     textarea.o_input:hover,
     select.o_input:hover,
     .o_field_many2one input:hover,
@@ -82,7 +82,7 @@
         border-color: var(--pg-brand-400) !important;
     }
 
-    .o_field_widget:focus-within input:not([type="checkbox"]),
+    .o_field_widget:focus-within input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
     .o_field_widget:focus-within select,
     .o_field_widget:focus-within textarea {
         background-color: var(--pg-surface) !important;
@@ -97,10 +97,10 @@
         opacity: 1;
     }
 
-    .o_field_widget.o_field_readonly input,
+    .o_field_widget.o_field_readonly input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
     .o_field_widget.o_field_readonly textarea,
     .o_field_widget.o_field_readonly select,
-    input:read-only,
+    input:read-only:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
     textarea:read-only {
         background-color: var(--pg-bg) !important;
         border-color: var(--pg-border) !important;
@@ -218,14 +218,175 @@
         color: var(--pg-text-2);
     }
 
-    .form-check-input:checked {
-        background-color: var(--pg-brand);
-        border-color: var(--pg-brand);
+    /* Form selection, radio, and toggle controls */
+    .form-check {
+        min-height: 1.5rem;
+        align-items: center;
+
+        .form-check-label {
+            color: var(--pg-text);
+            cursor: pointer;
+            user-select: none;
+        }
     }
 
-    .form-check-input:focus {
-        border-color: var(--pg-brand);
-        box-shadow: 0 0 0 3px var(--pg-brand-ring);
+    .o_field_radio {
+        .o_horizontal {
+            display: inline-flex;
+            flex-wrap: wrap;
+            gap: 16px;
+
+            .o_radio_item {
+                margin-right: 0;
+            }
+        }
+    }
+
+    /* Radio buttons */
+    input[type="radio"].form-check-input,
+    .o_radio_input {
+        width: 16px !important;
+        height: 16px !important;
+        min-width: 16px !important;
+        border-radius: 50% !important;
+        border: 1.5px solid var(--pg-border-strong) !important;
+        background-color: var(--pg-surface) !important;
+        background-image: none !important;
+        cursor: pointer;
+        margin: 0 !important;
+        padding: 0 !important;
+        appearance: none;
+        -webkit-appearance: none;
+        transition: border-color var(--pg-dur) var(--pg-ease),
+                    background-color var(--pg-dur) var(--pg-ease),
+                    box-shadow var(--pg-dur) var(--pg-ease);
+
+        &:hover:not(:disabled) {
+            border-color: var(--pg-brand-400, #60a5fa) !important;
+            background-color: var(--pg-surface-accent) !important;
+        }
+
+        &:focus {
+            border-color: var(--pg-brand) !important;
+            box-shadow: 0 0 0 3px var(--pg-brand-ring) !important;
+            outline: none !important;
+        }
+
+        &:checked {
+            background-color: var(--pg-brand) !important;
+            border-color: var(--pg-brand) !important;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='2' fill='%23ffffff'/%3e%3c/svg%3e") !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            background-size: contain !important;
+        }
+
+        &:disabled,
+        &[disabled] {
+            cursor: default;
+
+            &:not(:checked) {
+                background-color: var(--pg-surface-2) !important;
+                border-color: var(--pg-border) !important;
+                background-image: none !important;
+                opacity: 0.5;
+            }
+
+            &:checked {
+                background-color: var(--pg-brand) !important;
+                border-color: var(--pg-brand) !important;
+                background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='2' fill='%23ffffff'/%3e%3c/svg%3e") !important;
+                opacity: 0.7;
+            }
+        }
+    }
+
+    /* Standard checkboxes */
+    input[type="checkbox"].form-check-input {
+        width: 16px !important;
+        height: 16px !important;
+        min-width: 16px !important;
+        border-radius: 4px !important;
+        border: 1.5px solid var(--pg-border-strong) !important;
+        background-color: var(--pg-surface) !important;
+        background-image: none !important;
+        cursor: pointer;
+        margin: 0 !important;
+        appearance: none;
+        -webkit-appearance: none;
+        transition: border-color var(--pg-dur) var(--pg-ease),
+                    background-color var(--pg-dur) var(--pg-ease),
+                    box-shadow var(--pg-dur) var(--pg-ease);
+
+        &:hover:not(:disabled) {
+            border-color: var(--pg-brand-400, #60a5fa) !important;
+            background-color: var(--pg-surface-accent) !important;
+        }
+
+        &:focus {
+            border-color: var(--pg-brand) !important;
+            box-shadow: 0 0 0 3px var(--pg-brand-ring) !important;
+            outline: none !important;
+        }
+
+        &:checked {
+            background-color: var(--pg-brand) !important;
+            border-color: var(--pg-brand) !important;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23ffffff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e") !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            background-size: contain !important;
+        }
+
+        &:disabled,
+        &[disabled] {
+            cursor: default;
+            opacity: 0.6;
+        }
+    }
+
+    /* Toggle switches (boolean_toggle) - overrides checkbox styles for switch containers */
+    .form-switch .form-check-input,
+    .form-switch input[type="checkbox"].form-check-input,
+    .o_boolean_toggle .form-check-input,
+    .o_boolean_toggle input[type="checkbox"].form-check-input {
+        width: 2.25rem !important;
+        height: 1.25rem !important;
+        min-width: 2.25rem !important;
+        border-radius: var(--pg-r-pill) !important;
+        border: 1.5px solid var(--pg-border-strong) !important;
+        background-color: var(--pg-surface-3) !important;
+        background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23ffffff'/%3e%3c/svg%3e") !important;
+        background-position: left 2px center !important;
+        background-repeat: no-repeat !important;
+        background-size: contain !important;
+        cursor: pointer;
+        margin: 0 !important;
+        appearance: none;
+        -webkit-appearance: none;
+        transition: background-position 0.15s ease-in-out,
+                    background-color 0.15s ease-in-out,
+                    border-color 0.15s ease-in-out,
+                    box-shadow 0.15s ease-in-out;
+
+        &:focus {
+            border-color: var(--pg-brand) !important;
+            box-shadow: 0 0 0 3px var(--pg-brand-ring) !important;
+            outline: none !important;
+        }
+
+        &:checked {
+            background-color: var(--pg-brand) !important;
+            border-color: var(--pg-brand) !important;
+            background-position: right 2px center !important;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23ffffff'/%3e%3c/svg%3e") !important;
+        }
+
+        &:disabled,
+        &[disabled] {
+            cursor: default;
+            opacity: 0.65;
+        }
     }
 
     .o_pg_mono,
@@ -310,6 +471,48 @@
     tbody tr.o_data_row {
         &:hover { background-color: var(--pg-surface-accent) !important; }
         td { border-bottom: 1px solid var(--pg-border); }
+    }
+
+    /* Toggle switches in list cells */
+    .form-switch .form-check-input,
+    .o_boolean_toggle .form-check-input {
+        width: 2.25rem !important;
+        height: 1.25rem !important;
+        min-width: 2.25rem !important;
+        border-radius: var(--pg-r-pill) !important;
+        border: 1.5px solid var(--pg-border-strong) !important;
+        background-color: var(--pg-surface-3) !important;
+        background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23ffffff'/%3e%3c/svg%3e") !important;
+        background-position: left 2px center !important;
+        background-repeat: no-repeat !important;
+        background-size: contain !important;
+        cursor: pointer;
+        margin: 0 !important;
+        appearance: none;
+        -webkit-appearance: none;
+        transition: background-position 0.15s ease-in-out,
+                    background-color 0.15s ease-in-out,
+                    border-color 0.15s ease-in-out,
+                    box-shadow 0.15s ease-in-out;
+
+        &:focus {
+            border-color: var(--pg-brand) !important;
+            box-shadow: 0 0 0 3px var(--pg-brand-ring) !important;
+            outline: none !important;
+        }
+
+        &:checked {
+            background-color: var(--pg-brand) !important;
+            border-color: var(--pg-brand) !important;
+            background-position: right 2px center !important;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23ffffff'/%3e%3c/svg%3e") !important;
+        }
+
+        &:disabled,
+        &[disabled] {
+            cursor: default;
+            opacity: 0.65;
+        }
     }
 }
 

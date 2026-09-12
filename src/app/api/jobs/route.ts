@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { db } from "../../../db";
 import { printJobs } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { isJobStatus, derivePhysicalOutcome } from "../../../lib/job-status";
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import {
+  isJobFilterStatus,
+  derivePhysicalOutcome,
+  PHYSICAL_OUTCOME_UNKNOWN_MARKERS,
+} from "../../../lib/job-status";
 
 export const dynamic = "force-dynamic";
 
@@ -15,18 +19,65 @@ export async function GET(req: Request) {
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(req.url);
-  const status = url.searchParams.get("status");
+  const statusParam = url.searchParams.get("status")?.trim().toLowerCase();
+  const searchParam = (url.searchParams.get("search") ?? url.searchParams.get("q"))?.trim();
   const printerId = url.searchParams.get("printerId");
   const agentId = url.searchParams.get("agentId");
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 200);
+  const offset = Math.max(parseInt(url.searchParams.get("offset") ?? "0", 10) || 0, 0);
 
-  if (status && !isJobStatus(status)) return NextResponse.json({ error: "invalid status filter" }, { status: 400 });
+  if (statusParam && !isJobFilterStatus(statusParam)) {
+    return NextResponse.json({ error: "invalid status filter" }, { status: 400 });
+  }
 
-  const conditions = [
-    ...(status ? [eq(printJobs.status, status)] : []),
-    ...(printerId ? [eq(printJobs.printerId, printerId)] : []),
-    ...(agentId ? [eq(printJobs.agentId, agentId)] : []),
-  ];
+  const conditions = [];
+
+  if (statusParam && statusParam !== "all") {
+    if (statusParam === "active" || statusParam === "in_flight") {
+      conditions.push(inArray(printJobs.status, ["queued", "claimed", "printing"]));
+    } else if (statusParam === "queued" || statusParam === "claimed" || statusParam === "printing" || statusParam === "expired") {
+      conditions.push(eq(printJobs.status, statusParam));
+    } else if (statusParam === "success" || statusParam === "printed") {
+      conditions.push(eq(printJobs.status, "success"));
+    } else if (statusParam === "unknown" || statusParam === "attention") {
+      conditions.push(
+        or(...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`${printJobs.error} LIKE ${m + "%"}`))
+      );
+    } else if (statusParam === "failed") {
+      conditions.push(
+        and(
+          eq(printJobs.status, "failed"),
+          ...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`COALESCE(${printJobs.error}, '') NOT LIKE ${m + "%"}`)
+        )
+      );
+    } else if (statusParam === "unassigned") {
+      conditions.push(
+        or(
+          eq(printJobs.destination, "unassigned"),
+          eq(printJobs.printerId, "unassigned"),
+          sql`${printJobs.printerId} NOT IN (SELECT id FROM printers WHERE lifecycle = 'active')`,
+          sql`${printJobs.agentId} NOT IN (SELECT id FROM agents WHERE lifecycle = 'active')`
+        )
+      );
+    }
+  }
+
+  if (printerId) conditions.push(eq(printJobs.printerId, printerId));
+  if (agentId) conditions.push(eq(printJobs.agentId, agentId));
+
+  if (searchParam) {
+    const term = `%${searchParam.toLowerCase()}%`;
+    conditions.push(
+      or(
+        sql`LOWER(${printJobs.id}) LIKE ${term}`,
+        sql`LOWER(COALESCE(${printJobs.destination}, '')) LIKE ${term}`,
+        sql`LOWER(COALESCE(${printJobs.documentType}, '')) LIKE ${term}`,
+        sql`LOWER(${printJobs.printerId}) LIKE ${term}`,
+        sql`LOWER(${printJobs.agentId}) LIKE ${term}`,
+        sql`LOWER(COALESCE(${printJobs.error}, '')) LIKE ${term}`
+      )
+    );
+  }
 
   const rows = await db
     .select({
@@ -51,7 +102,8 @@ export async function GET(req: Request) {
     .from(printJobs)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(printJobs.createdAt))
-    .limit(limit);
+    .limit(limit)
+    .offset(offset);
   // physicalOutcome is part of the job truth contract (shared with
   // derivePhysicalOutcome on the agent protocol): "failed" alone must never be
   // shown as "definitely not printed" when an unknown-outcome marker proves

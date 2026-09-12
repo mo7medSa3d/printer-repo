@@ -18,6 +18,12 @@
               action="action_print_gateway_binding"
               sequence="20"
               groups="base.group_system"/>
+    <menuitem id="menu_print_gateway_assignments"
+              name="Branch Assignments"
+              parent="menu_print_gateway_main"
+              action="action_print_gateway_runtime_assignments"
+              sequence="22"
+              groups="base.group_system"/>
     <menuitem id="menu_print_gateway_policies"
               name="Print Policies"
               parent="menu_print_gateway_main"
