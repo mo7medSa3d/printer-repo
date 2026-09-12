@@ -193,7 +193,9 @@ export default function DashboardClient({
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   const filterRef = React.useRef({ status: "all", search: "" });
-  filterRef.current = { status: jobStatusFilter, search: debouncedJobSearch };
+  useEffect(() => {
+    filterRef.current = { status: jobStatusFilter, search: debouncedJobSearch };
+  }, [jobStatusFilter, debouncedJobSearch]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedJobSearch(jobSearch), 250);
