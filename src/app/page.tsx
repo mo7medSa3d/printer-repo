@@ -16,16 +16,11 @@ export default async function Home() {
     <div className="flex flex-col items-center">
       <section className="w-full border-b border-edge bg-surface">
         <div className="mx-auto max-w-[1440px] px-4 py-16 text-center sm:px-6 md:py-24">
-          <span className="inline-flex items-center gap-2 rounded-full border border-edge-accent bg-surface-accent px-3.5 py-1 text-xs font-semibold text-brand-subtle-text">
-            <span className="h-1.5 w-1.5 rounded-full bg-ok-solid" aria-hidden /> Production print infrastructure
-          </span>
-          <h1 className="mx-auto mt-6 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight text-ink sm:text-4xl md:text-5xl">
-            Printing infrastructure that just works
+          <h1 className="mx-auto max-w-3xl text-3xl font-extrabold leading-tight tracking-tight text-ink sm:text-4xl md:text-5xl">
+            Odoo Print Gateway
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-ink-2 sm:text-lg">
-            Print Gateway routes every document from Odoo to the right printer — through a
-            durable cloud queue, a Windows print agent, and a desktop manager. One platform,
-            one operations language, from the ERP to the paper.
+            Centralized print queue, Windows agent routing, and hardware status for enterprise Odoo deployments. Reliable document routing from cloud ERP to physical hardware.
           </p>
           <div className="mt-8 flex justify-center">
             <Button
@@ -43,7 +38,7 @@ export default async function Home() {
       <section className="w-full bg-app">
         <div className="mx-auto max-w-[1440px] px-4 py-16 sm:px-6 md:py-20">
           <div className="mb-10 text-center">
-            <h2 className="text-2xl font-bold tracking-tight text-ink">Built for production printing</h2>
+            <h2 className="text-2xl font-bold tracking-tight text-ink">Enterprise print architecture</h2>
             <p className="mt-2 text-sm text-ink-3">End-to-end reliability from cloud ERP to physical hardware</p>
           </div>
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">

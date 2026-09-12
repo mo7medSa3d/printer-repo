@@ -2,7 +2,7 @@
 
 import { db } from "../db";
 import { agents, printers, printJobs, discoverySessions, discoveredDevices } from "../db/schema";
-import { eq, count, or, inArray, sql } from "drizzle-orm";
+import { eq, count, or, inArray, sql, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
@@ -189,3 +189,30 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
     throw error;
   }
 }
+
+export async function getDashboardState() {
+  await requireManager();
+  const allAgents = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      pairingCode: sql<string | null>`NULL`,
+      pairingCodeExpiresAt: agents.pairingCodeExpiresAt,
+      status: agents.status,
+      lifecycle: agents.lifecycle,
+      metadata: agents.metadata,
+      lastSeenAt: agents.lastSeenAt,
+      createdAt: agents.createdAt,
+      printerCount: count(printers.id),
+    })
+    .from(agents)
+    .leftJoin(printers, eq(printers.agentId, agents.id))
+    .groupBy(agents.id)
+    .orderBy(desc(agents.createdAt));
+
+  const allPrinters = await db.select().from(printers).orderBy(desc(printers.createdAt));
+  const allJobs = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(50);
+
+  return { agents: allAgents, printers: allPrinters, jobs: allJobs };
+}
+

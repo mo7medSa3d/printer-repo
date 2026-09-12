@@ -71,7 +71,7 @@
                         <field name="config_id" invisible="1"/>
                         <field name="company_id" invisible="1"/>
                         <field name="branch_id" string="Target Branch" options="{'no_create': True, 'no_open': True}"/>
-                        <field name="agent_id" string="Runtime Agent ID" placeholder="e.g. agent-pos-01" class="o_pg_pairing_code_input text-center fw-bold fs-4" required="1" help="ID of an active agent as shown on the Gateway Agents page."/>
+                        <field name="agent_id" string="Runtime Agent" widget="gateway_runtime_agent" required="1" help="Select an active agent registered on the Central Gateway."/>
                     </group>
                 </sheet>
                 <footer>

@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { Button, Modal } from "./ui";
 
 const RETENTION_DAYS = 30;
 
 export function JobCleanupButton() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +29,7 @@ export function JobCleanupButton() {
       if (!response.ok) throw new Error(data.error ?? "Failed to clean print jobs");
 
       setOpen(false);
-      window.location.reload();
+      router.refresh();
     } catch (cleanupError) {
       setError(
         cleanupError instanceof Error ? cleanupError.message : "Failed to clean print jobs"
