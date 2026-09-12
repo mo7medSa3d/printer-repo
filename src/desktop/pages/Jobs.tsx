@@ -199,7 +199,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
-              onClick={s.refreshJobs}
+              onClick={() => { void s.refreshJobs(); }}
               loading={s.jobsLoading}
               icon={<RefreshCw className="h-[18px] w-[18px]" />}
             >
@@ -305,7 +305,7 @@ export function JobsPage({ s }: { s: DesktopState }) {
           </div>
         ) : s.jobsError ? (
           <div className="p-6">
-            <ErrorState title="Jobs unavailable" message={s.jobsError} retry={s.refreshJobs} />
+            <ErrorState title="Jobs unavailable" message={s.jobsError} retry={() => { void s.refreshJobs(); }} />
           </div>
         ) : s.jobsFiltered.length === 0 ? (
           <EmptyState

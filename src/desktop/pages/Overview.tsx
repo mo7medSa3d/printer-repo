@@ -436,7 +436,7 @@ export function OverviewPage({ s }: { s: DesktopState }) {
             <ErrorState
               title="Jobs unavailable"
               message={s.jobsError}
-              retry={s.refreshJobs}
+              retry={() => { void s.refreshJobs(); }}
             />
           </div>
         ) : s.jobs.length === 0 ? (
