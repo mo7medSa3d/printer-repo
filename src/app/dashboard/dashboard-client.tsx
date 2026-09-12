@@ -150,9 +150,23 @@ export default function DashboardClient({
   const [printers, setPrinters] = useState<Printer[]>(initialPrinters);
   const [jobs, setJobs] = useState<Job[]>(initialJobs);
 
-  useEffect(() => { setAgents(initialAgents); }, [initialAgents]);
-  useEffect(() => { setPrinters(initialPrinters); }, [initialPrinters]);
-  useEffect(() => { setJobs(initialJobs); }, [initialJobs]);
+  const [prevAgents, setPrevAgents] = useState(initialAgents);
+  if (prevAgents !== initialAgents) {
+    setPrevAgents(initialAgents);
+    setAgents(initialAgents);
+  }
+
+  const [prevPrinters, setPrevPrinters] = useState(initialPrinters);
+  if (prevPrinters !== initialPrinters) {
+    setPrevPrinters(initialPrinters);
+    setPrinters(initialPrinters);
+  }
+
+  const [prevJobs, setPrevJobs] = useState(initialJobs);
+  if (prevJobs !== initialJobs) {
+    setPrevJobs(initialJobs);
+    setJobs(initialJobs);
+  }
 
   const [agentName, setAgentName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -179,6 +193,28 @@ export default function DashboardClient({
         setAgents(data.agents as Agent[]);
         setPrinters(data.printers as Printer[]);
         setJobs(data.jobs as Job[]);
+
+        setActivePairing((currentPairing) => {
+          if (!currentPairing) return null;
+          const target = data.agents.find(
+            (a) =>
+              (currentPairing.id && a.id === currentPairing.id) ||
+              a.pairingCode === currentPairing.code
+          );
+          if (
+            target &&
+            (target.status === "online" ||
+              target.lastSeenAt !== null ||
+              target.pairingCodeExpiresAt === null)
+          ) {
+            setMessage({
+              text: `Agent ${target.name} paired successfully and is now online.`,
+              type: "ok",
+            });
+            return null;
+          }
+          return currentPairing;
+        });
       }
     } catch {
       // background polling error ignored
@@ -195,23 +231,6 @@ export default function DashboardClient({
     }, intervalMs);
     return () => clearInterval(timer);
   }, [activePairing, refreshData]);
-
-  // Pair completion detection: automatically clears pairing session when agent reports online/consumed
-  useEffect(() => {
-    if (!activePairing) return;
-    const target = agents.find((a) => (activePairing.id && a.id === activePairing.id) || a.pairingCode === activePairing.code);
-    if (target) {
-      const isOnline = target.status === "online" || target.lastSeenAt !== null;
-      const isCodeConsumed = target.pairingCodeExpiresAt === null;
-      if (isOnline || isCodeConsumed) {
-        setActivePairing(null);
-        setMessage({
-          text: `Agent ${target.name} paired successfully and is now online.`,
-          type: "ok",
-        });
-      }
-    }
-  }, [agents, activePairing]);
 
   // Filter & view states
   const [printerViewMode, setPrinterViewMode] = useState<"grid" | "table">("grid");
