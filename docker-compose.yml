@@ -11,6 +11,12 @@ services:
       - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - printer_backend
 
@@ -52,7 +58,7 @@ services:
       PGHOST: postgres
       PGPORT: 5432
       PGDATABASE: ${POSTGRES_DB:-odoo_print}
-      PGUSER: ${POSTGRES_USER:-odoo_print}
+      PGUSER: ${PGUSER:-odoo_print}
       PGPASSWORD_FILE: /run/secrets/postgres_password
       GATEWAY_JWT_SECRET_FILE: /run/secrets/gateway_jwt_secret
       MANAGER_USERNAME: ${MANAGER_USERNAME:-admin}
