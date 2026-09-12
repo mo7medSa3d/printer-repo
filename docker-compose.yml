@@ -58,7 +58,7 @@ services:
       PGHOST: postgres
       PGPORT: 5432
       PGDATABASE: ${POSTGRES_DB:-odoo_print}
-      PGUSER: ${PGUSER:-odoo_print}
+      PGUSER: ${POSTGRES_USER:-odoo_print}
       PGPASSWORD_FILE: /run/secrets/postgres_password
       GATEWAY_JWT_SECRET_FILE: /run/secrets/gateway_jwt_secret
       MANAGER_USERNAME: ${MANAGER_USERNAME:-admin}
