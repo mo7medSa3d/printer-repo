@@ -111,3 +111,4 @@ This pass used the supplied transformed repository as the authoritative codebase
 ## No fabricated evidence
 
 No numerical end-to-end print latency, physical print result, CI-green statement, production deployment proof, or large-scale tenant capacity claim was fabricated. Those remain explicitly `NOT VERIFIED` or `BLOCKED-BY-ENVIRONMENT`.
+| 00 | PASS | (start) | (end) | (current) | package.json, .node-version, agent/go.mod, src-tauri/Cargo.toml, drizzle/ | phase-context/PHASE-00-CHECKPOINT.md, phase-context/PROJECT-CONTEXT.md | `node -v`, `go version`, `rustc --version` | None | None | N/A | N/A | N/A | baseline OK | None | None | 01 |
