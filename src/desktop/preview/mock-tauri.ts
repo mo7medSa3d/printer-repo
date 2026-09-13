@@ -137,11 +137,38 @@ function transformCallback(callback?: (...args: unknown[]) => void, once = false
   return id;
 }
 
+let mockGatewayUrl = "https://print.example.com";
+const mockEventListeners = new Map<string, Set<(event: unknown) => void>>();
+
+function emitMockEvent(event: string, payload: unknown) {
+  const listeners = mockEventListeners.get(event);
+  if (listeners) {
+    listeners.forEach((fn) => {
+      try {
+        fn({ event, payload, id: 1 });
+      } catch (err) {
+        console.error("mock event error", err);
+      }
+    });
+  }
+}
+
 async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, 120));
   switch (cmd) {
-    case "plugin:event|listen":
+    case "plugin:event|listen": {
+      const eventName = String((args as Record<string, unknown>)?.event);
+      const handlerId = Number((args as Record<string, unknown>)?.handler);
+      const w = window as unknown as Record<string, unknown>;
+      const handler = w[`_preview_cb_${handlerId}`] as ((event: unknown) => void) | undefined;
+      if (eventName && handler) {
+        if (!mockEventListeners.has(eventName)) {
+          mockEventListeners.set(eventName, new Set());
+        }
+        mockEventListeners.get(eventName)!.add(handler);
+      }
       return 1 as unknown as T;
+    }
     case "plugin:event|unlisten":
       return undefined as unknown as T;
     case "get_agent_status":
@@ -156,9 +183,13 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): P
       return "1.0.0" as unknown as T;
     case "get_gateway_config":
       // Switch to "" to preview the "Gateway needs configuration" banner.
-      return { url: "https://print.example.com" } as unknown as T;
-    case "set_gateway_config":
+      return { url: mockGatewayUrl } as unknown as T;
+    case "set_gateway_config": {
+      const newUrl = String((args as Record<string, unknown>)?.url || "");
+      mockGatewayUrl = newUrl;
+      emitMockEvent("gateway:config_changed", newUrl);
       return "Gateway URL saved" as unknown as T;
+    }
     case "get_runtime_paths":
       return {
         manager_data: "C:\\ProgramData\\Odoo Print Manager",

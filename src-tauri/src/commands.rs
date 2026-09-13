@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 use std::collections::HashMap;
+use tauri::Emitter;
 
 use crate::agent;
 use crate::logging;
@@ -332,19 +333,20 @@ pub fn get_gateway_config() -> GatewayConfig {
 }
 
 #[tauri::command]
-pub fn set_gateway_config(url: String) -> Result<String, String> {
+pub fn set_gateway_config(url: String, app: tauri::AppHandle) -> Result<String, String> {
     let url = normalize_gateway_url(&url)?;
     let path = paths::settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create settings dir: {e}"))?;
     }
-    let cfg = GatewayConfig { url };
+    let cfg = GatewayConfig { url: url.clone() };
     let json = serde_json::to_string_pretty(&cfg)
         .map_err(|e| format!("serialize settings: {e}"))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("write settings {}: {e}", path.display()))?;
     logging::info(&format!("gateway settings saved to {}", path.display()));
+    let _ = app.emit("gateway:config_changed", &url);
     Ok(format!("saved gateway settings to {}", path.display()))
 }
 

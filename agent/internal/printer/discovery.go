@@ -827,23 +827,37 @@ func mergeDeviceInfo(existing, incoming DeviceInfo) DeviceInfo {
 }
 
 // TestPrinter executes a real test print against the given printer ID and returns
-// success/failure with meaningful error. It resolves the printer via discovery.
+// success/failure with meaningful error. It resolves the printer via fast local discovery
+// first (registry, spooler, config), falling back to full network discovery only if needed.
 func TestPrinter(cfg *config.Config, registryPath, printerID string) error {
-	printers, err := ListPrinters(cfg, registryPath)
-	if err != nil {
-		return fmt.Errorf("list printers: %w", err)
-	}
 	var target *DeviceInfo
-	for _, p := range printers {
+
+	// Fast path: Check quick local sources (registry, spooler, config) which complete in <10ms
+	quickResult := DiscoverQuick(cfg, registryPath)
+	for _, p := range quickResult.Printers {
 		if p.ID == printerID || p.SpoolerName == printerID || p.Name == printerID {
-			// copy to avoid referencing loop var
 			cp := p
 			target = &cp
 			break
 		}
 	}
+
+	// Slow path fallback: Only run full discovery (including 10s network TCP 9100 sweep) if not found locally
 	if target == nil {
-		return fmt.Errorf("printer %q not found (discovered %d printers)", printerID, len(printers))
+		printers, err := ListPrinters(cfg, registryPath)
+		if err != nil {
+			return fmt.Errorf("list printers: %w", err)
+		}
+		for _, p := range printers {
+			if p.ID == printerID || p.SpoolerName == printerID || p.Name == printerID {
+				cp := p
+				target = &cp
+				break
+			}
+		}
+		if target == nil {
+			return fmt.Errorf("printer %q not found (discovered %d printers)", printerID, len(printers))
+		}
 	}
 	pc := config.PrinterConfig{
 		ID:          target.ID,

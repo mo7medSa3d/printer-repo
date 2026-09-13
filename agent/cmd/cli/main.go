@@ -250,6 +250,7 @@ func handlePrintersAdd(configPath string, args []string) {
 	protocol := fs.String("protocol", "", "Protocol (REQUIRED for network/usb): raw/escpos/zpl/tspl/ipp/spooler/unknown. No default is guessed")
 	spoolerName := fs.String("spooler-name", "", "Windows spooler name (for spooler type)")
 	printerType := fs.String("device-class", "unknown", "Device class: thermal/laser/inkjet/label/unknown")
+	printerTypeAlias := fs.String("printer-type", "", "Alias for --device-class")
 	vid := fs.String("vid", "", "USB VID hex (e.g., 03f0)")
 	pid := fs.String("pid", "", "USB PID hex (e.g., 0c17)")
 	serial := fs.String("serial", "", "USB serial number")
@@ -258,6 +259,9 @@ func handlePrintersAdd(configPath string, args []string) {
 	_ = fs.String("connection-type", "", "Alias for --type")
 	fs.Parse(args)
 
+	if *printerTypeAlias != "" && (*printerType == "unknown" || *printerType == "") {
+		*printerType = *printerTypeAlias
+	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--connection-type" && i+1 < len(args) {
 			*typ = args[i+1]

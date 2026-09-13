@@ -30,6 +30,11 @@ var registryMu sync.Mutex
 //     this machine reports and a future classifier can recover them.
 //
 // If the file does not exist, a nil slice is returned (not an error).
+// LoadRegistryPrinters exports loadRegistryPrinters for external callers.
+func LoadRegistryPrinters(registryPath string) ([]DeviceInfo, error) {
+	return loadRegistryPrinters(registryPath)
+}
+
 func loadRegistryPrinters(registryPath string) ([]DeviceInfo, error) {
 	production, _, _, err := loadRegistryPartitioned(registryPath)
 	return production, err

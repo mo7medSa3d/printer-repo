@@ -16,7 +16,9 @@ class PrintGatewayConfig(models.Model):
 
     company_id = fields.Many2one(
         "res.company", string="Company", required=True,
-        default=lambda self: self.env.company, ondelete="restrict", index=True,
+        domain="[('parent_id', '=', False)]",
+        default=lambda self: (self.env.company.parent_id or self.env.company),
+        ondelete="restrict", index=True,
     )
     enabled = fields.Boolean(string="Gateway Printing Enabled", default=False)
     gateway_url = fields.Char(string="Gateway URL", required=True)
@@ -66,6 +68,15 @@ class PrintGatewayConfig(models.Model):
             raise ValidationError(_("Gateway URL must be the Gateway origin, without an API path."))
         return raw.rstrip("/")
 
+    @api.constrains("company_id")
+    def _check_company_id(self):
+        for record in self:
+            if record.company_id and record.company_id.parent_id:
+                raise ValidationError(
+                    _("Gateway Configuration can only be created for parent companies, not branches (%s).")
+                    % record.company_id.display_name
+                )
+
     @api.constrains("gateway_url")
     def _check_gateway_url(self):
         for record in self:
@@ -108,10 +119,14 @@ class PrintGatewayConfig(models.Model):
         normalized = []
         for original in vals_list:
             vals = dict(original)
-            vals.setdefault("company_id", self.env.company.id)
+            vals.setdefault("company_id", (self.env.company.parent_id or self.env.company).id)
             self._validate_gateway_url(vals.get("gateway_url"))
             normalized.append(vals)
         return super().create(normalized)
+
+    def unlink(self):
+        self._check_admin()
+        return super().unlink()
 
     def action_test_connection(self):
         self.ensure_one()

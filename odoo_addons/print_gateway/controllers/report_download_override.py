@@ -123,7 +123,12 @@ class PrintGatewayReportController(ReportController):
             # Multi-record Scope Isolation: Verify all records belong to compatible scopes and bindings
             initial_route = None
             for rec in records:
-                rec_route = router.resolve_binding(report=report, record=rec, company=request.env.company)
+                rec_route = router.resolve_binding(
+                    report=report,
+                    record=rec,
+                    company=request.env.company,
+                    raise_if_not_found=False,
+                )
                 if initial_route is None:
                     initial_route = rec_route
                 else:

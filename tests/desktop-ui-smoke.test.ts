@@ -107,6 +107,8 @@ async function invoke<T>(cmd: string): Promise<T> {
       return { enabled: true } as unknown as T;
     case "plugin:window|close":
       return null as unknown as T;
+    case "plugin:event|unlisten":
+      return undefined as unknown as T;
     default:
       throw new Error(`stub: unhandled command ${cmd}`);
   }

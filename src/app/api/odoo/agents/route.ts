@@ -3,6 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { db } from "../../../../db";
 import { agents } from "../../../../db/schema";
 import { validateOdooKey } from "../../../../lib/odoo-auth";
+import { isAgentAvailableForJob } from "../../../../lib/agent-availability";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,16 @@ export async function GET(req: Request) {
     .where(eq(agents.lifecycle, "active"))
     .orderBy(asc(agents.name));
 
-  return NextResponse.json({ agents: rows }, {
+  const now = new Date();
+  const sanitized = rows.map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    status: isAgentAvailableForJob(agent, now) ? "online" : "offline",
+    lifecycle: agent.lifecycle,
+    lastSeenAt: agent.lastSeenAt,
+  }));
+
+  return NextResponse.json({ agents: sanitized }, {
     status: 200,
     headers: { "Cache-Control": "no-store" },
   });

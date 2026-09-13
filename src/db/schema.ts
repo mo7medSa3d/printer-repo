@@ -1,8 +1,44 @@
-import { pgTable, text, timestamp, jsonb, integer, bigint, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, bigint, index, uniqueIndex, check, foreignKey, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+
+export const tenants = pgTable("tenants", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const tenantUsers = pgTable("tenant_users", {
+  userId: text("user_id").references(() => users.id).notNull(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
+  role: text("role").notNull().default("viewer"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  pk: uniqueIndex("tenant_users_pk").on(table.userId, table.tenantId),
+  tenantIdx: index("tenant_users_tenant_idx").on(table.tenantId),
+}));
+
+export const applications = pgTable("applications", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
+  name: text("name").notNull(),
+  type: text("type").notNull().default("odoo"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
 
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   name: text("name").notNull(),
   pairingCodeHash: text("pairing_code_hash"),
   pairingCodeExpiresAt: timestamp("pairing_code_expires_at"),
@@ -14,6 +50,7 @@ export const agents = pgTable("agents", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
+  tenantIdUnique: unique("agents_tenant_id_unique").on(table.tenantId, table.id),
   lastSeenIdx: index("agents_last_seen_idx").on(table.lastSeenAt),
   lifecycleCheck: check("agents_lifecycle_check", sql`${table.lifecycle} in ('active','disabled','retired')`),
   statusCheck: check("agents_status_check", sql`${table.status} in ('online','offline')`),
@@ -21,6 +58,7 @@ export const agents = pgTable("agents", {
 
 export const printers = pgTable("printers", {
   id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
   printerType: text("printer_type").notNull().default("physical"),
@@ -35,6 +73,7 @@ export const printers = pgTable("printers", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
+  tenantIdUnique: unique("printers_tenant_id_unique").on(table.tenantId, table.id),
   agentIdx: index("printers_agent_id_idx").on(table.agentId),
   printerTypeIdx: index("printers_printer_type_idx").on(table.printerType),
   statusIdx: index("printers_status_idx").on(table.status),
@@ -48,6 +87,7 @@ export const printers = pgTable("printers", {
 
 export const apiKeys = pgTable("api_keys", {
   id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   scope: text("scope").notNull().default("standard"),
   name: text("name").notNull(),
   description: text("description"),
@@ -56,7 +96,9 @@ export const apiKeys = pgTable("api_keys", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   lastUsedAt: timestamp("last_used_at"),
   revokedAt: timestamp("revoked_at"),
-});
+}, (table) => ({
+  tenantIdUnique: unique("api_keys_tenant_id_unique").on(table.tenantId, table.id),
+}));
 
 export const managerSessions = pgTable("manager_sessions", {
   jti: text("jti").primaryKey(),
@@ -78,6 +120,7 @@ export const authRateLimits = pgTable("auth_rate_limits", {
 
 export const discoverySessions = pgTable("discovery_sessions", {
   id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   status: text("status").notNull().default("running"),
   config: jsonb("config").$type<{ cidr?: string; protocols?: string[]; timeoutMs?: number; concurrency?: number; }>().default({}).notNull(),
@@ -87,12 +130,14 @@ export const discoverySessions = pgTable("discovery_sessions", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
+  tenantIdUnique: unique("discovery_sessions_tenant_id_unique").on(table.tenantId, table.id),
   agentIdIdx: index("discovery_sessions_agent_id_idx").on(table.agentId),
   statusIdx: index("discovery_sessions_status_idx").on(table.status),
 }));
 
 export const discoveredDevices = pgTable("discovered_devices", {
   id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   discoveryId: text("discovery_id").references(() => discoverySessions.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   source: text("source").array().notNull().default(sql`ARRAY[]::text[]`),
@@ -121,6 +166,7 @@ export const discoveredDevices = pgTable("discovered_devices", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
+  tenantIdUnique: unique("discovered_devices_tenant_id_unique").on(table.tenantId, table.id),
   discoveryIdIdx: index("discovered_devices_discovery_id_idx").on(table.discoveryId),
   agentIdIdx: index("discovered_devices_agent_id_idx").on(table.agentId),
   candidateStatusIdx: index("discovered_devices_candidate_status_idx").on(table.candidateStatus),
@@ -129,11 +175,12 @@ export const discoveredDevices = pgTable("discovered_devices", {
 
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   apiKeyId: text("api_key_id").references(() => apiKeys.id),
   destination: text("destination"),
   documentType: text("document_type"),
-  agentId: text("agent_id").references(() => agents.id).notNull(),
-  printerId: text("printer_id").references(() => printers.id).notNull(),
+  agentId: text("agent_id").notNull(),
+  printerId: text("printer_id").notNull(),
   status: text("status").notNull().default("queued"),
   payload: jsonb("payload").notNull(),
   error: text("error"),
@@ -149,6 +196,10 @@ export const printJobs = pgTable("print_jobs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
+  agentFk: foreignKey({ columns: [table.tenantId, table.agentId], foreignColumns: [agents.tenantId, agents.id] }),
+  printerFk: foreignKey({ columns: [table.tenantId, table.printerId], foreignColumns: [printers.tenantId, printers.id] }),
+  tenantIdUnique: unique("print_jobs_tenant_id_unique").on(table.tenantId, table.id),
+  tenantStatusIdx: index("print_jobs_tenant_status_idx").on(table.tenantId, table.status),
   agentStatusIdx: index("print_jobs_agent_status_idx").on(table.agentId, table.status),
   printerStatusIdx: index("print_jobs_printer_status_idx").on(table.printerId, table.status),
   statusExpiresIdx: index("print_jobs_status_expires_idx").on(table.status, table.expiresAt),

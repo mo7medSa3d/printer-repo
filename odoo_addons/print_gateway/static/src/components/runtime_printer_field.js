@@ -20,12 +20,15 @@ export class RuntimePrinterField extends Component {
                 <span t-esc="props.record.data[props.name] || ''"/>
             </t>
             <t t-else="">
-                <select class="o_input" aria-label="Gateway Runtime Printer" t-att-disabled="state.loading || !state.agentId" t-att-aria-invalid="state.error ? 'true' : undefined" t-att-aria-describedby="state.error ? 'o_pg_printer_error' : undefined" t-on-change="onChange">
+                <select class="o_input" aria-label="Gateway Runtime Printer" t-att-value="props.record.data[props.name] || ''" t-att-disabled="state.loading || !state.agentId" t-att-aria-invalid="state.error ? 'true' : undefined" t-att-aria-describedby="state.error ? 'o_pg_printer_error' : undefined" t-on-change="onChange">
                     <option value=""><t t-esc="state.loading ? 'Loading printers…' : (!state.agentId ? 'Select Gateway Runtime Agent first' : 'Select Gateway Runtime Printer')"/></option>
+                    <option t-if="configuredPrinterMissing" t-att-value="props.record.data[props.name]" selected="selected">
+                        <t t-esc="props.record.data[props.name]"/> (configured / currently unreachable)
+                    </option>
                     <option t-foreach="filteredPrinters" t-as="printer" t-key="printer.id" t-att-value="printer.id" t-att-selected="printer.id === props.record.data[props.name]">
                         <t t-esc="printer.name"/> [<t t-esc="printer.deviceClass || 'generic'"/>] — <t t-esc="printer.status"/>
                     </option>
-                    <option t-if="!state.loading &amp;&amp; !state.error &amp;&amp; state.agentId &amp;&amp; !filteredPrinters.length" value="" disabled="disabled">No printers reported by this agent — check the agent PC</option>
+                    <option t-if="!state.loading &amp;&amp; !state.error &amp;&amp; state.agentId &amp;&amp; !filteredPrinters.length &amp;&amp; !configuredPrinterMissing" value="" disabled="disabled">No printers reported by this agent — check the agent PC</option>
                 </select>
                 <div t-if="state.error" class="mt-1 d-flex align-items-center gap-2">
                     <small id="o_pg_printer_error" class="text-danger">Gateway printer discovery failed. Check the agent connection, then retry.</small>
@@ -65,6 +68,12 @@ export class RuntimePrinterField extends Component {
             return labels.length ? labels : this.state.printers;
         }
         return this.state.printers;
+    }
+
+    get configuredPrinterMissing() {
+        const val = this.props.record?.data?.[this.props.name];
+        if (!val || typeof val !== "string" || !val.trim()) return false;
+        return !this.filteredPrinters.some((p) => p.id === val);
     }
 
     scope(props) {
@@ -110,7 +119,15 @@ export class RuntimePrinterField extends Component {
     }
 
     onChange(event) {
-        this.props.record.update({ [this.props.name]: event.target.value || false });
+        const selectedId = event.target.value || false;
+        const updateData = { [this.props.name]: selectedId };
+        if (selectedId) {
+            const found = this.state.printers.find((p) => p.id === selectedId);
+            if (found && found.protocol && found.protocol !== "unknown" && this.props.record?.fields?.printer_protocol) {
+                updateData.printer_protocol = found.protocol;
+            }
+        }
+        this.props.record.update(updateData);
     }
 
     retryLoad() {

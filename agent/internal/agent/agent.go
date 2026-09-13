@@ -1448,7 +1448,38 @@ func endpointToConfig(pc config.PrinterConfig) map[string]interface{} {
 	return cfgMap
 }
 
+func (a *Agent) reloadRegistryPrinters() {
+	if a.registryPath == "" {
+		return
+	}
+	infos, err := printer.LoadRegistryPrinters(a.registryPath)
+	if err != nil {
+		return
+	}
+	for _, di := range infos {
+		pc := config.PrinterConfig{
+			ID:           di.ID,
+			Name:         di.Name,
+			Type:         di.ConnectionType,
+			Endpoint:     di.Endpoint,
+			Protocol:     di.Protocol,
+			SpoolerName:  di.SpoolerName,
+			PrinterType:  di.PrinterType,
+			USBVID:       di.USBVID,
+			USBPID:       di.USBPID,
+			USBSerial:    di.USBSerial,
+			Capabilities: di.Capabilities,
+		}
+		p, err := printer.New(pc)
+		if err != nil {
+			continue
+		}
+		a.addPrinter(di.ID, p, pc)
+	}
+}
+
 func (a *Agent) sendHeartbeat() {
+	a.reloadRegistryPrinters()
 	reqURL := fmt.Sprintf("%s/api/agent/heartbeat", a.cfg.Server.URL)
 	payload := map[string]interface{}{
 		"status":   "online",
@@ -1471,9 +1502,25 @@ func (a *Agent) sendHeartbeat() {
 		return
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
 		log.Printf("Heartbeat rejected (%d): %s", resp.StatusCode, string(body))
+		return
+	}
+
+	var hbResp struct {
+		Success         bool `json:"success"`
+		SkippedPrinters []struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason"`
+		} `json:"skippedPrinters"`
+	}
+	if err := json.Unmarshal(body, &hbResp); err == nil {
+		if len(hbResp.SkippedPrinters) > 0 {
+			for _, sp := range hbResp.SkippedPrinters {
+				log.Printf("[heartbeat] printer %q rejected by gateway: %s", sp.ID, sp.Reason)
+			}
+		}
 	}
 }
 

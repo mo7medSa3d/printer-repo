@@ -55,7 +55,7 @@ export function SettingsPage({ s }: { s: DesktopState }) {
             />
             <div className="min-w-0 flex-1">
               <div className="text-[16px] font-semibold leading-tight text-ink">
-                {s.gatewayConnected ? "Connected" : s.gatewayUrl ? "Not reachable" : "Not configured"}
+                {s.gatewayConnected ? "Connected" : s.gatewayUrl ? "Unreachable" : "Not configured"}
               </div>
               <div className="truncate text-[13px] text-ink-3">
                 {s.gatewayUrl || "Enter the gateway URL below"}

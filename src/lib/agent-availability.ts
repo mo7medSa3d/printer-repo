@@ -33,3 +33,24 @@ export function isAgentAvailableForJob(
 ): boolean {
   return getAgentAvailability(agent, now).available;
 }
+
+export function getEffectivePrinterStatus(
+  printer: { lifecycle?: string | null; status?: string | null },
+  agent?: { lifecycle?: string | null; status?: string | null; lastSeenAt?: Date | string | null } | null,
+  now = new Date(),
+): "online" | "offline" | "disabled" | "retired" | "unknown" {
+  if (printer.lifecycle === "disabled") return "disabled";
+  if (printer.lifecycle === "retired") return "retired";
+  if (printer.lifecycle !== "active") return "offline";
+
+  // If the parent agent is missing or unavailable (stale heartbeat, offline, disabled),
+  // the printer cannot be reached physically. It is effectively offline.
+  if (!agent || !isAgentAvailableForJob(agent, now)) {
+    return "offline";
+  }
+
+  const rawStatus = (printer.status ?? "").toLowerCase().trim();
+  if (rawStatus === "online") return "online";
+  if (rawStatus === "offline") return "offline";
+  return rawStatus ? (rawStatus as "unknown") : "unknown";
+}

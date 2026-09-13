@@ -34,7 +34,7 @@ class PrintGatewayBinding(models.Model):
     _order = "priority, id"
 
     company_id = fields.Many2one(
-        "res.company", required=True, default=lambda self: self.env.company,
+        "res.company", required=True, default=lambda self: self.env.company.parent_id or self.env.company,
         ondelete="restrict", index=True, string="Odoo Company",
         domain="[('parent_id', '=', False)]",
     )
@@ -514,9 +514,18 @@ class PrintGatewayBinding(models.Model):
         ], order="priority asc, id asc", limit=1)
 
     @api.model
-    def dispatch_report_action(self, report_name=None, res_ids=None, context=None):
+    def dispatch_report_action(self, report_name=None, report_id=None, res_ids=None, context=None):
         context = dict(context or self.env.context)
-        report = self.env["ir.actions.report"].search([("report_name", "=", report_name)], limit=1)
+        report = False
+        if report_id:
+            try:
+                report = self.env["ir.actions.report"].browse(int(report_id)).exists()
+            except (TypeError, ValueError):
+                report = False
+        if not report and report_name:
+            report = self.env["ir.actions.report"].search([("report_name", "=", report_name)], limit=1)
+            if not report:
+                report = self.env["ir.actions.report"].search([("report_file", "=", report_name)], limit=1)
         if not report:
             return {"dispatched": False, "has_binding": False}
 

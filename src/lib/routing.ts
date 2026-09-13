@@ -117,17 +117,25 @@ export interface PrinterAvailability extends PrinterLike {
   status: string | null;
 }
 
-export function isPrinterAvailableForJob(printer: PrinterAvailability): boolean {
+export function isPrinterAvailableForJob(
+  printer: PrinterAvailability,
+  agent?: { lifecycle?: string | null; status?: string | null; lastSeenAt?: Date | string | null } | null,
+  now = new Date(),
+): boolean {
   if (printer.lifecycle !== "active") return false;
   if (isVirtualPrinterRecord(printer)) return false;
+  if (agent !== undefined && !isAgentAvailableForPrinter(agent, now)) return false;
   return printer.status === "online";
 }
 
-export function isAgentAvailableForPrinter(agent: {
-  lifecycle?: string | null;
-  status?: string | null;
-  lastSeenAt?: Date | string | null;
-}) {
-  if (agent.lifecycle !== "active") return false;
-  return getAgentAvailability(agent).available;
+export function isAgentAvailableForPrinter(
+  agent: {
+    lifecycle?: string | null;
+    status?: string | null;
+    lastSeenAt?: Date | string | null;
+  } | null | undefined,
+  now = new Date(),
+): boolean {
+  if (!agent || agent.lifecycle !== "active") return false;
+  return getAgentAvailability(agent, now).available;
 }
