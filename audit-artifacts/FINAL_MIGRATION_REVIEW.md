@@ -16,3 +16,15 @@ Included in upgrade-test migration list verification; 0030 deletes manager sessi
 
 ## Odoo migrations
 `migrations/1.1.0` vs `19.0.1.1.0` dual naming retained (owner decision; out of defect scope — no evidence of mis-ordering beyond naming smell).
+
+## 0028 idempotency repair (this cycle)
+0028 was a regenerate-style dump that re-created 5 tables / ~25 columns /
+~15 constraints already created by 0005-0027, so every fresh `migrate()`
+died (CI evidence: 42P07 `auth_rate_limits`). Repaired WITHOUT changing any
+definition: IF NOT EXISTS / IF EXISTS / DO-block guards only, plus the two
+convergence statements 0031's composite FKs structurally require
+(discovery `tenant_id` columns + backing uniques). A scripted full-chain
+collision scan now reports zero bare duplicate-adds (0011/0013/0021/0024/
+0025/0027 individually verified as drop-then-add or guarded). 0028 never
+completed anywhere via the supported path, so the in-place repair cannot
+diverge any applied database.
