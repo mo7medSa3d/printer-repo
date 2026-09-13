@@ -326,6 +326,7 @@ class TestControlPlane(TransactionCase):
                 })
                 created_config_id = wconfig.id
             wbinding = wenv["print_gateway.binding"].create({
+                "branch_id": self.branch.id,
                 "company_id": self.company.id,
                 "destination_type": "report",
                 "destination_report_id": report.id if report else False,

@@ -56,12 +56,7 @@ export async function GET(req: Request) {
       );
     } else if (statusParam === "unassigned") {
       conditions.push(
-        or(
-          eq(printJobs.destination, "unassigned"),
-          eq(printJobs.printerId, "unassigned"),
-          sql`${printJobs.printerId} NOT IN (SELECT id FROM printers WHERE lifecycle = 'active')`,
-          sql`${printJobs.agentId} NOT IN (SELECT id FROM agents WHERE lifecycle = 'active')`
-        )
+        or(eq(printJobs.destination, "unassigned"), eq(printJobs.printerId, "unassigned"), sql`${printJobs.printerId} NOT IN (SELECT id FROM printers WHERE lifecycle = 'active')`, sql`${printJobs.agentId} NOT IN (SELECT id FROM agents WHERE lifecycle = 'active')`)!
       );
     }
   }
