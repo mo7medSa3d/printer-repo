@@ -192,6 +192,39 @@ export default function DashboardClient({
   const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobStatusFilter, setJobStatusFilter] = useState<string>("all");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  // The job list is metadata-only (payload bytes can be multi-MB per job).
+  // The inspector loads the full payload lazily, per selected job, and never
+  // keeps it in the polling snapshots. Loading state is derived (no separate
+  // state variable): payload is loading while a job without an inline
+  // payload is selected and no fetch has settled yet.
+  const [selectedJobPayload, setSelectedJobPayload] = useState<unknown>(undefined);
+  const selectedJobPayloadLoading =
+    selectedJob !== null && selectedJob.payload === undefined && selectedJobPayload === undefined;
+
+  useEffect(() => {
+    if (!selectedJob || selectedJob.payload !== undefined) return;
+    let cancelled = false;
+    void fetch(`/api/jobs/${encodeURIComponent(selectedJob.id)}`, { credentials: "include", cache: "no-store" })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setSelectedJobPayload(null);
+          return;
+        }
+        const row = (await res.json()) as { payload?: unknown };
+        setSelectedJobPayload(row?.payload ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedJobPayload(null);
+      });
+    return () => {
+      cancelled = true;
+      // Clear the previous job's payload when the selection changes so a
+      // stale document is never shown while the next fetch is in flight.
+      setSelectedJobPayload(undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedJob?.id]);
 
   const filterRef = React.useRef({ status: "all", search: "" });
   useEffect(() => {
@@ -1294,12 +1327,22 @@ export default function DashboardClient({
                   Diagnostic Payload
                 </span>
                 <CopyButton
-                  value={JSON.stringify(selectedJob.payload, null, 2) || ""}
+                  value={(() => {
+                    const p = selectedJob.payload ?? selectedJobPayload;
+                    return p === undefined ? "" : JSON.stringify(p, null, 2) || "";
+                  })()}
                   label="Copy Payload"
                 />
               </div>
-              <div className="max-h-72 overflow-auto rounded-xl border border-edge bg-surface-2 p-3 font-mono text-[11px] text-ink-2 shadow-inner leading-relaxed">
-                <pre>{JSON.stringify(selectedJob.payload, null, 2) || "No payload stored."}</pre>
+              <div className="max-h-72 overflow-auto rounded-xl border border-edge bg-surface-2 p-3 font-mono text-[11px] text-ink-2 shadow-inner leading-relaxed" aria-live="polite">
+                {selectedJobPayloadLoading ? (
+                  <span role="status">Loading payload…</span>
+                ) : (
+                  <pre>{(() => {
+                    const p = selectedJob.payload ?? selectedJobPayload;
+                    return p === undefined ? "Loading payload…" : JSON.stringify(p, null, 2) || "No payload stored.";
+                  })()}</pre>
+                )}
               </div>
             </div>
           </div>

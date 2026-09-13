@@ -53,6 +53,11 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0025_constraint_scope_and_protocol_contract_fix.sql",
       "0026_printer_type_default_alignment.sql",
       "0027_printers_protocol_check_windows_spooler.sql",
+      "0028_add_multi_tenancy.sql",
+      "0029_enforce_tenant_id_not_null.sql",
+      "0030_tenant_domains_and_manager_sessions.sql",
+      "0031_enforce_tenant_cross_table_foreign_keys.sql",
+      "0032_pairing_code_hash_unique.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
@@ -129,6 +134,13 @@ suite("production-like PostgreSQL migration upgrade", () => {
         pairing_code_hash: hashPairingCode("AB22CD"),
       }]);
 
+      // 0029 guarded backfill (legacy DBs carry zero tenants): exactly one
+      // tenant must exist and own all of the legacy rows before any new
+      // runtime row may reference them through the (tenant_id, id) FKs.
+      const upgradedTenants = await pool.query(`SELECT id FROM tenants`);
+      expect(upgradedTenants.rows.map((r) => r.id)).toEqual(["legacy_default"]);
+      const tenantId = upgradedTenants.rows[0].id as string;
+
       const uniqueIndex = await pool.query(`SELECT indexname FROM pg_indexes WHERE tablename='print_jobs' AND indexname='print_jobs_idempotency_unique'`);
       expect(uniqueIndex.rowCount).toBe(1);
       const trigger = await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid='print_jobs'::regclass AND tgname='print_jobs_notify_agent_job_available'`);
@@ -155,19 +167,19 @@ suite("production-like PostgreSQL migration upgrade", () => {
       const legacyPayload = await pool.query(`SELECT payload FROM print_jobs WHERE id=$1`, [jobId]);
       expect(legacyPayload.rows[0].payload).toEqual({ type: "raw", encoding: "base64", data: "aA==" });
       // ...while NEW writes must declare the protocol explicitly.
-      await expect(pool.query(`INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at)
-        VALUES ('job_bad_contract', $1, $2, 'queued', '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [agentId, printerId])).rejects.toThrow(/constraint|check/i);
-      await pool.query(`INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at)
-        VALUES ('job_good_contract', $1, $2, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [agentId, printerId]);
+      await expect(pool.query(`INSERT INTO print_jobs (id, tenant_id, agent_id, printer_id, status, payload, expires_at)
+        VALUES ('job_bad_contract', $1, $2, $3, 'queued', '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [tenantId, agentId, printerId])).rejects.toThrow(/constraint|check/i);
+      await pool.query(`INSERT INTO print_jobs (id, tenant_id, agent_id, printer_id, status, payload, expires_at)
+        VALUES ('job_good_contract', $1, $2, $3, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`, [tenantId, agentId, printerId]);
       // 0027: Windows spooler queues reported with protocol windows_spooler
       // must sync instead of failing the CHECK with 23514.
-      await pool.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle)
-        VALUES ('printer_ws_fixture', $1, 'Spooler Queue', 'physical', 'other', 'spooler', 'windows_spooler', 'online', 'active')`, [agentId]);
+      await pool.query(`INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle)
+        VALUES ('printer_ws_fixture', $1, $2, 'Spooler Queue', 'physical', 'other', 'spooler', 'windows_spooler', 'online', 'active')`, [tenantId, agentId]);
       // 0027: SNMP-discovered Zebra/TSC candidates (zpl/tspl) must persist
       // instead of aborting the discovery session with 23514.
-      await pool.query(`INSERT INTO discovery_sessions (id, agent_id, status) VALUES ('disc_upgrade_fixture', $1, 'completed') ON CONFLICT (id) DO NOTHING`, [agentId]);
-      await pool.query(`INSERT INTO discovered_devices (id, discovery_id, agent_id, protocol) VALUES ('dev_zpl_fixture', 'disc_upgrade_fixture', $1, 'zpl')`, [agentId]);
-      await pool.query(`INSERT INTO discovered_devices (id, discovery_id, agent_id, protocol) VALUES ('dev_tspl_fixture', 'disc_upgrade_fixture', $1, 'tspl')`, [agentId]);
+      await pool.query(`INSERT INTO discovery_sessions (id, tenant_id, agent_id, status) VALUES ('disc_upgrade_fixture', $1, $2, 'completed') ON CONFLICT (id) DO NOTHING`, [tenantId, agentId]);
+      await pool.query(`INSERT INTO discovered_devices (id, tenant_id, discovery_id, agent_id, protocol) VALUES ('dev_zpl_fixture', $1, 'disc_upgrade_fixture', $2, 'zpl')`, [tenantId, agentId]);
+      await pool.query(`INSERT INTO discovered_devices (id, tenant_id, discovery_id, agent_id, protocol) VALUES ('dev_tspl_fixture', $1, 'disc_upgrade_fixture', $2, 'tspl')`, [tenantId, agentId]);
       const devprotos = await pool.query(`SELECT protocol FROM discovered_devices WHERE id IN ('dev_zpl_fixture','dev_tspl_fixture') ORDER BY id`);
       expect(devprotos.rows.map((r) => r.protocol).sort()).toEqual(["tspl", "zpl"]);
     } finally { await pool.end(); }

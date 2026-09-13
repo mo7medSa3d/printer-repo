@@ -14,7 +14,10 @@ Odoo Gateway authentication is based on the Odoo installation API key. The Odoo 
 
 ## Odoo API keys
 
-The key is installation-level, not branch-scoped and not document-type-scoped.
+The key is installation-level (one installation shares one scope of keys), not
+branch-scoped. Keys DO carry an authorization model: `scope` (`standard` |
+`read_only`) and an optional `allowedDocumentTypes` allowlist enforced on
+every submission and status read (`isOdooKeyAllowedForDocumentType`).
 
 - Generate from the Gateway manager.
 - Copy the raw key once.
@@ -24,7 +27,7 @@ The key is installation-level, not branch-scoped and not document-type-scoped.
 
 No branch id is encoded in the Odoo key authorization model.
 
-## Gateway URL / SSRF protection
+## Gateway URL / SSRF posture
 
 Odoo Gateway URLs are validated before storage and before requests:
 
@@ -34,8 +37,16 @@ Odoo Gateway URLs are validated before storage and before requests:
 - No query string or fragment.
 - Origin only; no API path.
 - Newlines and oversized values rejected.
-- Local/private/loopback/link-local/reserved targets rejected unless explicitly allow-listed by deployment configuration.
 - Requests use `allow_redirects=False` so the configured origin cannot silently redirect to another host.
+
+What is NOT enforced (deliberate zero-config design — do not mistake the
+absence for a bug, but do not deploy as if the check existed either):
+local/private/loopback/link-local targets ARE accepted
+(`test_gateway_url_transport.py` pins this). The operative control is that
+only system administrators (`base.group_system`, plus model-level
+`_check_admin` on every mutation) can set the URL. Deployments that must
+reach the gateway from sensitive networks should terminate the Odoo→Gateway
+leg at a proxy and pin `https://` operationally.
 
 ## Odoo permissions
 
@@ -48,11 +59,15 @@ The module has no custom ACL for branches, agents, printers, destinations, or do
 When Gateway printing is enabled, a routing/submission/rendering failure is fail-closed:
 
 ```text
-Gateway enabled + error -> visible error
+Gateway enabled + binding exists + error -> visible error, native cancelled
+Gateway enabled + NO binding for this destination -> native Odoo download
 Gateway disabled -> native Odoo printing
 ```
 
-There is no silent browser/native fallback in the Gateway-enabled path.
+Bound routes never silently bypass to the browser. Unbound destinations fall
+back to the native download by design (`report_download_override` returns
+`super()` when no binding resolves) — operators auditing "no print left the
+browser" must read this as *per binding*, not global.
 
 ## Secret and log handling
 

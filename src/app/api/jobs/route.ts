@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../db";
 import { printJobs } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../lib/authorization";
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import {
   isJobFilterStatus,
@@ -17,6 +18,7 @@ const MAX_CLEANUP_ROWS = 5000;
 export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "jobs.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const url = new URL(req.url);
   const statusParam = url.searchParams.get("status")?.trim().toLowerCase();
@@ -30,7 +32,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "invalid status filter" }, { status: 400 });
   }
 
-  const conditions = [];
+  const conditions = [eq(printJobs.tenantId, claims.tenantId)];
 
   if (statusParam && statusParam !== "all") {
     if (statusParam === "active" || statusParam === "in_flight") {
@@ -41,14 +43,16 @@ export async function GET(req: Request) {
       conditions.push(eq(printJobs.status, "success"));
     } else if (statusParam === "unknown" || statusParam === "attention") {
       conditions.push(
-        or(...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`${printJobs.error} LIKE ${m + "%"}`))
+        // Non-null: PHYSICAL_OUTCOME_UNKNOWN_MARKERS is a non-empty tuple, so or() always receives >= 1 clause.
+        or(...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`${printJobs.error} LIKE ${m + "%"}`))!
       );
     } else if (statusParam === "failed") {
       conditions.push(
+        // Non-null: and() always receives the fixed eq() clause plus the marker clauses.
         and(
           eq(printJobs.status, "failed"),
           ...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`COALESCE(${printJobs.error}, '') NOT LIKE ${m + "%"}`)
-        )
+        )!
       );
     } else if (statusParam === "unassigned") {
       conditions.push(
@@ -68,6 +72,7 @@ export async function GET(req: Request) {
   if (searchParam) {
     const term = `%${searchParam.toLowerCase()}%`;
     conditions.push(
+      // Non-null: or() always receives six fixed LIKE clauses.
       or(
         sql`LOWER(${printJobs.id}) LIKE ${term}`,
         sql`LOWER(COALESCE(${printJobs.destination}, '')) LIKE ${term}`,
@@ -75,7 +80,7 @@ export async function GET(req: Request) {
         sql`LOWER(${printJobs.printerId}) LIKE ${term}`,
         sql`LOWER(${printJobs.agentId}) LIKE ${term}`,
         sql`LOWER(COALESCE(${printJobs.error}, '')) LIKE ${term}`
-      )
+      )!
     );
   }
 
@@ -100,7 +105,7 @@ export async function GET(req: Request) {
       updatedAt: printJobs.updatedAt,
     })
     .from(printJobs)
-    .where(conditions.length ? and(...conditions) : undefined)
+    .where(conditions.length ? and(...conditions)! : undefined)
     .orderBy(desc(printJobs.createdAt))
     .limit(limit)
     .offset(offset);
@@ -114,6 +119,7 @@ export async function GET(req: Request) {
 export async function DELETE(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "jobs.cancel"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const url = new URL(req.url);
   const beforeRaw = url.searchParams.get("before");
@@ -133,10 +139,10 @@ export async function DELETE(req: Request) {
 
   const deleted = await db.transaction(async (tx) => {
     const candidates = await tx.select({ id: printJobs.id }).from(printJobs).where(
-      and(inArray(printJobs.status, [...TERMINAL_JOB_STATUSES]), lt(printJobs.createdAt, before)),
+      and(eq(printJobs.tenantId, claims.tenantId), inArray(printJobs.status, [...TERMINAL_JOB_STATUSES]), lt(printJobs.createdAt, before)),
     ).orderBy(printJobs.createdAt).limit(requestedLimit);
     if (candidates.length === 0) return 0;
-    const result = await tx.delete(printJobs).where(inArray(printJobs.id, candidates.map((row) => row.id)));
+    const result = await tx.delete(printJobs).where(and(eq(printJobs.tenantId, claims.tenantId), inArray(printJobs.id, candidates.map((row) => row.id))));
     return result.rowCount ?? 0;
   });
   return NextResponse.json({ deleted, before: before.toISOString(), limit: requestedLimit });

@@ -640,12 +640,12 @@ suite("WS claim-before-delivery", () => {
     // bound. Fill the agent to exactly the ceiling with live claimed rows,
     // then prove the next WS claim is refused without touching the row.
     await pool().query(
-      `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
-       SELECT 'cap_fill_' || g, $1, 'receipt', $2, $3, 'claimed',
+      `INSERT INTO print_jobs (id, tenant_id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
+       SELECT 'cap_fill_' || g, $1, $2, 'receipt', $3, $4, 'claimed',
               '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb,
               now() + interval '1 hour'
-       FROM generate_series(1, $4) g`,
-      [f.destination, f.agentId, f.printerId, MAX_AGENT_IN_FLIGHT_JOBS],
+       FROM generate_series(1, $5) g`,
+      [f.tenantId, f.destination, f.agentId, f.printerId, MAX_AGENT_IN_FLIGHT_JOBS],
     );
     await insertQueuedJob(f, "job_cap_saturated");
     expect(await claimJobForDelivery("job_cap_saturated", f.agentId)).toBeNull();
@@ -661,12 +661,12 @@ suite("WS claim-before-delivery", () => {
     // exactly one claim lands and delivery_attempts increments exactly once
     // across both rows. Against the old uncapped code both would claim.
     await pool().query(
-      `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
-       SELECT 'cap_race_' || g, $1, 'receipt', $2, $3, 'claimed',
+      `INSERT INTO print_jobs (id, tenant_id, destination, document_type, agent_id, printer_id, status, payload, expires_at)
+       SELECT 'cap_race_' || g, $1, $2, 'receipt', $3, $4, 'claimed',
               '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb,
               now() + interval '1 hour'
-       FROM generate_series(1, $4) g`,
-      [f.destination, f.agentId, f.printerId, MAX_AGENT_IN_FLIGHT_JOBS - 1],
+       FROM generate_series(1, $5) g`,
+      [f.tenantId, f.destination, f.agentId, f.printerId, MAX_AGENT_IN_FLIGHT_JOBS - 1],
     );
     await insertQueuedJob(f, "job_cap_race_a");
     await insertQueuedJob(f, "job_cap_race_b");

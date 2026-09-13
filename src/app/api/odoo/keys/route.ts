@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { apiKeys } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../lib/authorization";
 import { generateOdooApiKey } from "../../../../lib/odoo-auth";
 import { eq, and, desc, isNotNull } from "drizzle-orm";
 import { z } from "zod";
+import { writeAuditEvent } from "../../../../lib/audit";
 
 const keyInputSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -31,6 +33,7 @@ function pgErrorCode(error: unknown): string | null {
 export async function GET(req: Request) {
   const manager = await validateManager(req);
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(manager, "integrations.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const rows = await db
     .select({
       id: apiKeys.id,
@@ -43,12 +46,14 @@ export async function GET(req: Request) {
       revokedAt: apiKeys.revokedAt,
     })
     .from(apiKeys)
+    .where(eq(apiKeys.tenantId, manager.tenantId))
     .orderBy(desc(apiKeys.createdAt));
   return NextResponse.json(rows);
 }
 
 export async function POST(req: Request) {
   const manager = await validateManager(req);
+  if (manager) { try { requireManagerPermission(manager, "integrations.manage"); } catch { return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "content-type": "application/json" } }); } }
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let body: unknown = {};
@@ -68,8 +73,10 @@ export async function POST(req: Request) {
     hashedKey: hashed,
     scope: parsed.data.scope,
     allowedDocumentTypes: parsed.data.allowedDocumentTypes?.length ? parsed.data.allowedDocumentTypes : null,
+    tenantId: manager.tenantId,
   });
 
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: "api_key.created", resourceType: "api_key", resourceId: id, metadata: { scope: parsed.data.scope } }).catch(() => undefined);
   return NextResponse.json({
     id,
     name,
@@ -84,6 +91,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const manager = await validateManager(req);
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(manager, "integrations.manage"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   let body: unknown = {};
   try { body = await req.json(); } catch { /* invalid body handled below */ }
   const bodyRecord = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -97,7 +105,7 @@ export async function DELETE(req: Request) {
   if (bodyRecord.remove === true) {
     try {
       const removed = await db.delete(apiKeys)
-        .where(and(eq(apiKeys.id, id), isNotNull(apiKeys.revokedAt)))
+        .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId), isNotNull(apiKeys.revokedAt)))
         .returning({ id: apiKeys.id });
       if (removed.length) return NextResponse.json({ id: removed[0].id, removed: true }, { status: 200 });
     } catch (error) {
@@ -106,15 +114,16 @@ export async function DELETE(req: Request) {
       }
       throw error;
     }
-    const existing = await db.query.apiKeys.findFirst({ where: eq(apiKeys.id, id) });
+    const existing = await db.query.apiKeys.findFirst({ where: and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId)) });
     if (!existing) return NextResponse.json({ error: "API key not found" }, { status: 404 });
     return NextResponse.json({ error: "Only revoked API keys can be removed. Revoke the key first." }, { status: 409 });
   }
 
   const revoked = await db.update(apiKeys)
     .set({ revokedAt: new Date() })
-    .where(eq(apiKeys.id, id))
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId)))
     .returning({ id: apiKeys.id, revokedAt: apiKeys.revokedAt });
   if (!revoked.length) return NextResponse.json({ error: "API key not found" }, { status: 404 });
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: "api_key.revoked", resourceType: "api_key", resourceId: id }).catch(() => undefined);
   return NextResponse.json(revoked[0], { status: 200 });
 }

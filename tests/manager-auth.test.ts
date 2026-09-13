@@ -5,6 +5,7 @@ import {
   applyMigrations,
   truncateAll,
   closePool,
+  pool,
 } from "./helpers/pg";
 import {
   createManagerSession,
@@ -30,6 +31,7 @@ suite("manager authentication hardening", () => {
 
   beforeEach(async () => {
     await truncateAll();
+    await pool().query(`INSERT INTO tenants (id, name) VALUES ($1, $2)`, ["tenant_manager_test", "Manager Test Tenant"]);
     vi.stubEnv("NODE_ENV", "test");
   });
 
@@ -38,7 +40,7 @@ suite("manager authentication hardening", () => {
   });
 
   it("creates a session that verifies and is backed by a DB session", async () => {
-    const created = await createManagerSession();
+    const created = await createManagerSession("tenant_manager_test");
     const claims = verifyManagerToken(created.token);
     expect(claims).not.toBeNull();
     expect(claims?.jti).toBe(created.jti);
@@ -47,7 +49,7 @@ suite("manager authentication hardening", () => {
   });
 
   it("rejects a token signed with a different JWT header", async () => {
-    const created = await createManagerSession();
+    const created = await createManagerSession("tenant_manager_test");
     const parts = created.token.split(".");
     const alteredHeader = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
     const tampered = `${alteredHeader}.${parts[1]}.${parts[2]}`;
@@ -55,7 +57,7 @@ suite("manager authentication hardening", () => {
   });
 
   it("rejects a correctly signed token whose iat is too far in the future", async () => {
-    const created = await createManagerSession();
+    const created = await createManagerSession("tenant_manager_test");
     const parts = created.token.split(".");
     const header = parts[0];
     const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));

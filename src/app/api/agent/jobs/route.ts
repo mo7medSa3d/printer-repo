@@ -166,7 +166,7 @@ export async function PATCH(req: Request) {
   const reason = typeof rawReason === "string" ? rawReason.trim() : "";
   const claimToken = typeof rawClaimToken === "string" && rawClaimToken.length > 0 && rawClaimToken.length <= 120 ? rawClaimToken : null;
 
-  const whereClause = and(eq(printJobs.id, jobId), eq(printJobs.agentId, agent.id));
+  const whereClause = and(eq(printJobs.id, jobId), eq(printJobs.tenantId, agent.tenantId), eq(printJobs.agentId, agent.id));
   const job = await db.query.printJobs.findFirst({ where: whereClause });
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
 

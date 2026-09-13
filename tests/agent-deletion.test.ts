@@ -26,6 +26,11 @@ vi.mock("next/cache", () => ({
 // Import actions after mocks
 import { deleteAgent, createAgent } from "../src/app/actions";
 
+// Tenant contract (migrations 0028-0031): every runtime row is tenant-owned
+// and agents/printers/jobs require tenant_id (NOT NULL). Fixtures carry the
+// same tenant the manager session is issued for.
+const TENANT_ID = "tenant_agent_deletion";
+
 const suite = describe.skipIf(!hasTestDatabase);
 
 suite("permanent agent deletion lifecycle & invariants", () => {
@@ -46,7 +51,8 @@ suite("permanent agent deletion lifecycle & invariants", () => {
 
   beforeEach(async () => {
     await truncateAll();
-    const session = await createManagerSession();
+    await pool().query(`INSERT INTO tenants (id, name) VALUES ($1, $2)`, [TENANT_ID, "Agent Deletion Test Tenant"]);
+    const session = await createManagerSession(TENANT_ID);
     currentManagerToken = session.token;
   });
 
@@ -72,9 +78,9 @@ suite("permanent agent deletion lifecycle & invariants", () => {
   it("rejects deletion of an online agent", async () => {
     const agentId = "agt_online_test";
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle, last_seen_at)
-       VALUES ($1, 'Online Agent', $2, 'online', 'active', now())`,
-      [agentId, sha256("secret123")],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle, last_seen_at)
+       VALUES ($1, $2, 'Online Agent', $3, 'online', 'active', now())`,
+      [agentId, TENANT_ID, sha256("secret123")],
     );
 
     await expect(deleteAgent(agentId)).rejects.toThrow(
@@ -89,9 +95,9 @@ suite("permanent agent deletion lifecycle & invariants", () => {
   it("rejects deletion of a retired agent to preserve audit history", async () => {
     const agentId = "agt_retired_test";
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle, last_seen_at)
-       VALUES ($1, 'Retired Agent', $2, 'offline', 'retired', now())`,
-      [agentId, sha256("secret123")],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle, last_seen_at)
+       VALUES ($1, $2, 'Retired Agent', $3, 'offline', 'retired', now())`,
+      [agentId, TENANT_ID, sha256("secret123")],
     );
 
     await expect(deleteAgent(agentId)).rejects.toThrow(
@@ -108,19 +114,19 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     const printerId = "prn_with_jobs";
     const jobId = "job_audit_fixture";
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle, last_seen_at)
-       VALUES ($1, 'Job Agent', $2, 'offline', 'active', now())`,
-      [agentId, sha256("secret123")],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle, last_seen_at)
+       VALUES ($1, $2, 'Job Agent', $3, 'offline', 'active', now())`,
+      [agentId, TENANT_ID, sha256("secret123")],
     );
     await pool().query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, connection_type, protocol, status, lifecycle)
-       VALUES ($1, $2, 'Test Printer', 'physical', 'network', 'raw', 'offline', 'active')`,
-      [printerId, agentId],
+      `INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, connection_type, protocol, status, lifecycle)
+       VALUES ($1, $2, $3, 'Test Printer', 'physical', 'network', 'raw', 'offline', 'active')`,
+      [printerId, TENANT_ID, agentId],
     );
     await pool().query(
-      `INSERT INTO print_jobs (id, agent_id, printer_id, destination, status, payload, expires_at)
-       VALUES ($1, $2, $3, 'POS-1', 'success', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`,
-      [jobId, agentId, printerId],
+      `INSERT INTO print_jobs (id, tenant_id, agent_id, printer_id, destination, status, payload, expires_at)
+       VALUES ($1, $2, $3, $4, 'POS-1', 'success', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`,
+      [jobId, TENANT_ID, agentId, printerId],
     );
 
     await expect(deleteAgent(agentId)).rejects.toThrow(
@@ -144,25 +150,25 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     const deviceId = "dev_candidate_1";
 
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle, last_seen_at)
-       VALUES ($1, 'Eligible Agent', $2, 'offline', 'active', now())`,
-      [agentId, sha256("secret123")],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle, last_seen_at)
+       VALUES ($1, $2, 'Eligible Agent', $3, 'offline', 'active', now())`,
+      [agentId, TENANT_ID, sha256("secret123")],
     );
     await pool().query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, connection_type, protocol, status, lifecycle)
-       VALUES ($1, $2, 'Printer 1', 'physical', 'network', 'raw', 'offline', 'active'),
-              ($3, $2, 'Printer 2', 'physical', 'network', 'raw', 'offline', 'active')`,
-      [printerId1, agentId, printerId2],
+      `INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, connection_type, protocol, status, lifecycle)
+       VALUES ($1, $2, $3, 'Printer 1', 'physical', 'network', 'raw', 'offline', 'active'),
+              ($4, $2, $3, 'Printer 2', 'physical', 'network', 'raw', 'offline', 'active')`,
+      [printerId1, TENANT_ID, agentId, printerId2],
     );
     await pool().query(
-      `INSERT INTO discovery_sessions (id, agent_id, status, config, stats)
-       VALUES ($1, $2, 'completed', '{}'::jsonb, '{}'::jsonb)`,
-      [discoveryId, agentId],
+      `INSERT INTO discovery_sessions (id, tenant_id, agent_id, status, config, stats)
+       VALUES ($1, $2, $3, 'completed', '{}'::jsonb, '{}'::jsonb)`,
+      [discoveryId, TENANT_ID, agentId],
     );
     await pool().query(
-      `INSERT INTO discovered_devices (id, discovery_id, agent_id, protocol, provisioned_printer_id)
-       VALUES ($1, $2, $3, 'raw', $4)`,
-      [deviceId, discoveryId, agentId, printerId1],
+      `INSERT INTO discovered_devices (id, tenant_id, discovery_id, agent_id, protocol, provisioned_printer_id)
+       VALUES ($1, $2, $3, $4, 'raw', $5)`,
+      [deviceId, TENANT_ID, discoveryId, agentId, printerId1],
     );
 
     const result = await deleteAgent(agentId);
@@ -186,9 +192,9 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     const agentId = "agt_auth_invalidation";
     const rawSecret = "my-super-secret-password-123";
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle, last_seen_at)
-       VALUES ($1, 'Auth Agent', $2, 'offline', 'active', now())`,
-      [agentId, sha256(rawSecret)],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle, last_seen_at)
+       VALUES ($1, $2, 'Auth Agent', $3, 'offline', 'active', now())`,
+      [agentId, TENANT_ID, sha256(rawSecret)],
     );
 
     const authHeader = `Bearer ${agentId}:${rawSecret}`;
@@ -210,9 +216,9 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     const agentId = "agt_pairing_cleanup";
     const pairingCode = "KL77MN";
     await pool().query(
-      `INSERT INTO agents (id, name, pairing_code_hash, pairing_code_expires_at, status, lifecycle)
-       VALUES ($1, 'Pairing Agent', $2, now() + interval '30 minutes', 'offline', 'active')`,
-      [agentId, hashPairingCode(pairingCode)],
+      `INSERT INTO agents (id, tenant_id, name, pairing_code_hash, pairing_code_expires_at, status, lifecycle)
+       VALUES ($1, $2, 'Pairing Agent', $3, now() + interval '30 minutes', 'offline', 'active')`,
+      [agentId, TENANT_ID, hashPairingCode(pairingCode)],
     );
 
     // Delete agent before pairing code is consumed
@@ -234,9 +240,9 @@ suite("permanent agent deletion lifecycle & invariants", () => {
     // 1. Initial Agent on Customer Windows PC
     const agentId1 = "agt_initial_pc";
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle)
-       VALUES ($1, 'Reception PC', $2, 'offline', 'active')`,
-      [agentId1, sha256("old-secret")],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle)
+       VALUES ($1, $2, 'Reception PC', $3, 'offline', 'active')`,
+      [agentId1, TENANT_ID, sha256("old-secret")],
     );
 
     // 2. Windows Agent was uninstalled from PC; Agent remains offline in Gateway
@@ -277,9 +283,9 @@ suite("permanent agent deletion lifecycle & invariants", () => {
   it("handles double-delete deterministically", async () => {
     const agentId = "agt_double_delete";
     await pool().query(
-      `INSERT INTO agents (id, name, secret, status, lifecycle)
-       VALUES ($1, 'Double Agent', $2, 'offline', 'active')`,
-      [agentId, sha256("sec")],
+      `INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle)
+       VALUES ($1, $2, 'Double Agent', $3, 'offline', 'active')`,
+      [agentId, TENANT_ID, sha256("sec")],
     );
 
     // First delete succeeds

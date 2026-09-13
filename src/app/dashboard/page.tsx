@@ -1,6 +1,6 @@
 import { db } from "../../db";
 import { agents, printers, printJobs } from "../../db/schema";
-import { count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getManagerCookieName, verifyManagerToken, validateManagerClaims } from "../../lib/manager-auth";
@@ -27,7 +27,8 @@ export default async function DashboardPage() {
     printerCount: number;
   }> = [];
   let allPrinters: Array<typeof printers.$inferSelect> = [];
-  let allJobs: Array<typeof printJobs.$inferSelect> = [];
+  type JobMeta = Omit<typeof printJobs.$inferSelect, "payload">;
+  let allJobs: JobMeta[] = [];
   let databaseError: string | null = null;
 
   try {
@@ -45,11 +46,40 @@ export default async function DashboardPage() {
         printerCount: count(printers.id),
       })
       .from(agents)
-      .leftJoin(printers, eq(printers.agentId, agents.id))
+      .where(eq(agents.tenantId, claims.tenantId))
+      .leftJoin(printers, and(eq(printers.agentId, agents.id), eq(printers.tenantId, claims.tenantId)))
       .groupBy(agents.id)
       .orderBy(desc(agents.createdAt));
-    allPrinters = await db.select().from(printers).orderBy(desc(printers.createdAt));
-    allJobs = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(50);
+    allPrinters = await db.select().from(printers).where(eq(printers.tenantId, claims.tenantId)).orderBy(desc(printers.createdAt));
+    // Metadata-only projection: `payload` (base64 document bytes, up to ~5 MB
+    // per job) must never ride along in the 50-row list. Full payloads are
+    // fetched per-job on demand by the inspector via GET /api/jobs/[id].
+    const jobColumns = {
+      id: printJobs.id,
+      tenantId: printJobs.tenantId,
+      destination: printJobs.destination,
+      documentType: printJobs.documentType,
+      agentId: printJobs.agentId,
+      printerId: printJobs.printerId,
+      status: printJobs.status,
+      error: printJobs.error,
+      requestedBy: printJobs.requestedBy,
+      idempotencyKey: printJobs.idempotencyKey,
+      retries: printJobs.retries,
+      deliveryAttempts: printJobs.deliveryAttempts,
+      claimedAt: printJobs.claimedAt,
+      deliveredAt: printJobs.deliveredAt,
+      ackedAt: printJobs.ackedAt,
+      expiresAt: printJobs.expiresAt,
+      createdAt: printJobs.createdAt,
+      updatedAt: printJobs.updatedAt,
+    } as const;
+    allJobs = await db
+      .select(jobColumns)
+      .from(printJobs)
+      .where(eq(printJobs.tenantId, claims.tenantId))
+      .orderBy(desc(printJobs.createdAt))
+      .limit(50);
   } catch (error: unknown) {
     console.error("[dashboard] database load failed", error);
     databaseError = "PostgreSQL unavailable";

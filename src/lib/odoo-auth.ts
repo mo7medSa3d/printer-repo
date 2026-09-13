@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { apiKeys } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 function hashKey(raw: string): string {
@@ -53,6 +53,6 @@ export async function validateOdooKey(req: Request) {
   const row = await db.query.apiKeys.findFirst({ where: eq(apiKeys.hashedKey, hashed) });
   if (!row || row.revokedAt || !timingSafeEqualStr(row.hashedKey, hashed)) return null;
 
-  await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.id)).catch(() => undefined);
+  await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(and(eq(apiKeys.id, row.id), eq(apiKeys.tenantId, row.tenantId))).catch(() => undefined);
   return row;
 }

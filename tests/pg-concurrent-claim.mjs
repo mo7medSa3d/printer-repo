@@ -13,14 +13,17 @@ const AGENT_ID = process.env.AGENT_ID ?? "agt_concurrent_test";
 const PRINTER_ID = process.env.PRINTER_ID ?? "printer_concurrent";
 
 async function ensureFixture() {
+  // Tenant contract (migrations 0028-0031): runtime rows are tenant-owned.
+  const tenantId = process.env.TENANT_ID ?? "tenant_concurrent";
+  await pool.query(`INSERT INTO tenants (id, name) VALUES ($1, 'concurrent-claim tenant') ON CONFLICT (id) DO NOTHING`, [tenantId]);
   // ensure agent and printer exist for FK
-  await pool.query(`INSERT INTO agents (id, name, status, lifecycle) VALUES ($1, 'concurrent-test', 'online', 'active') ON CONFLICT (id) DO NOTHING`, [AGENT_ID]);
-  await pool.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config) VALUES ($1, $2, 'concurrent', 'physical', 'other', 'network', 'raw', 'online', 'active', '{"ip":"127.0.0.1","port":9100}'::jsonb) ON CONFLICT (id) DO NOTHING`, [PRINTER_ID, AGENT_ID]);
+  await pool.query(`INSERT INTO agents (id, tenant_id, name, status, lifecycle) VALUES ($1, $2, 'concurrent-test', 'online', 'active') ON CONFLICT (id) DO NOTHING`, [AGENT_ID, tenantId]);
+  await pool.query(`INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config) VALUES ($1, $2, $3, 'concurrent', 'physical', 'other', 'network', 'raw', 'online', 'active', '{"ip":"127.0.0.1","port":9100}'::jsonb) ON CONFLICT (id) DO NOTHING`, [PRINTER_ID, tenantId, AGENT_ID]);
   await pool.query(`DELETE FROM print_jobs WHERE agent_id=$1 AND id LIKE 'job_cc_%'`, [AGENT_ID]);
   for (let i = 0; i < 20; i++) {
     await pool.query(
-      `INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at) VALUES ($1,$2,$3,'queued','{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now()+interval '1 hour')`,
-      [`job_cc_${String(i).padStart(2,"0")}`, AGENT_ID, PRINTER_ID]
+      `INSERT INTO print_jobs (id, tenant_id, agent_id, printer_id, status, payload, expires_at) VALUES ($1,$2,$3,$4,'queued','{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now()+interval '1 hour')`,
+      [`job_cc_${String(i).padStart(2,"0")}`, tenantId, AGENT_ID, PRINTER_ID]
     );
   }
   console.log("Seeded 20 queued jobs");

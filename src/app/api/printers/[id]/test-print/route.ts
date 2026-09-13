@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { agents, printers } from "../../../../../db/schema";
 import { validateManager } from "../../../../../lib/manager-auth";
-import { eq } from "drizzle-orm";
+import { requireManagerPermission } from "../../../../../lib/authorization";
+import { requestIdFrom } from "../../../../../lib/log";
+import { and, eq } from "drizzle-orm";
 import { createPrintJobForPrinter, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError, PrintJobInputError } from "../../../../../lib/print-job-service";
 import { buildTestPrintPayloadForPrinter } from "../../../../../lib/payload";
+import { MAX_AGENT_IN_FLIGHT_JOBS } from "../../../../../lib/job-delivery";
 import { logError } from "../../../../../lib/log";
 
 export const dynamic = "force-dynamic";
@@ -21,11 +24,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "printers.test"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
+  const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
   if (!printer) return NextResponse.json({ error: "Printer not found" }, { status: 404 });
 
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, printer.agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Printer owner agent missing", code: "AGENT_NOT_FOUND" }, { status: 500 });
   if (printer.lifecycle !== "active") return NextResponse.json({ error: "printer disabled" }, { status: 409 });
 
@@ -43,6 +47,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const result = await createPrintJobForPrinter(printer.id, payload, {
       requestedBy: "manager-test",
+      tenantId: claims.tenantId,
+      requestId: requestIdFrom(req),
     });
     return NextResponse.json({ ok: true, jobId: result.id, printerId: printer.id, status: result.status }, { status: 201 });
   } catch (e) {
@@ -51,7 +57,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         error: "AGENT_QUEUE_FULL",
         code: "AGENT_QUEUE_FULL",
         agentId: e.agentId,
-        limit: 500,
+        limit: MAX_AGENT_IN_FLIGHT_JOBS,
         retryable: true,
       }, { status: 503 });
     }

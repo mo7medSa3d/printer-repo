@@ -1,0 +1,71 @@
+DATE: 2026-09-13T11:54:30Z
+ROOT: /home/mo7amed_saad/work/odoo github
+BRANCH: codebase-update
+HEAD: 312ab631d4ac1766687fb48580fa1f23902435c0
+REMOTE: https://github.com/mo7medSa3d/printer-repo.git
+GIT STATUS (porcelain):
+ M CURRENT_STATE.md
+ M PRINTERS.md
+ M docker-compose.yml
+ M drizzle/0029_enforce_tenant_id_not_null.sql
+ M drizzle/meta/_journal.json
+ M odoo_addons/print_gateway/models/stock_picking.py
+ M package.json
+ M src/app/actions.ts
+ M src/app/api/agent/discovery/route.ts
+ M src/app/api/agent/heartbeat/route.ts
+ M src/app/api/agent/jobs/route.ts
+ M src/app/api/agents/[id]/discovered-printers/[deviceId]/provision/route.ts
+ M src/app/api/agents/[id]/discovered-printers/[deviceId]/verify/route.ts
+ M src/app/api/agents/[id]/discovery/[discoveryId]/cancel/route.ts
+ M src/app/api/agents/[id]/discovery/[discoveryId]/route.ts
+ M src/app/api/agents/[id]/discovery/route.ts
+ M src/app/api/agents/[id]/route.ts
+ M src/app/api/agents/route.ts
+ M src/app/api/auth/manager/login/route.ts
+ M src/app/api/auth/manager/me/route.ts
+ M src/app/api/jobs/[id]/route.ts
+ M src/app/api/jobs/route.ts
+ M src/app/api/metrics/route.ts
+ M src/app/api/odoo/agents/route.ts
+ M src/app/api/odoo/keys/route.ts
+ M src/app/api/odoo/printers/route.ts
+ M src/app/api/print/jobs/batch-status/route.ts
+ M src/app/api/print/jobs/route.ts
+ M src/app/api/printers/[id]/route.ts
+ M src/app/api/printers/[id]/test-connection/route.ts
+ M src/app/api/printers/[id]/test-print/route.ts
+ M src/app/api/printers/route.ts
+ M src/app/dashboard/page.tsx
+ M src/db/schema.ts
+ M src/lib/agent-lifecycle.ts
+ M src/lib/job-delivery.ts
+ M src/lib/manager-auth.ts
+ M src/lib/odoo-auth.ts
+ M src/lib/print-job-service.ts
+ M tests/helpers/pg.ts
+ M tests/manager-auth.test.ts
+ M tests/migration-upgrade.integration.test.ts
+ M tests/print-idempotency.test.ts
+ M tests/production-hardening-contract.test.ts
+ M tests/tenant-isolation.test.ts
+?? ARCHITECTURE_DECISIONS.md
+?? CURRENT_ARCHITECTURE_REPORT.md
+?? DEPLOYMENT_STAMPS.md
+?? EXHAUSTIVE_FORENSIC_AUDIT_2026-09-13.md
+?? FINAL_GATE_CHECKLIST_2026-09-13.md
+?? FINAL_SOURCE_MANIFEST_2026-09-13.sha256
+?? FINAL_VERIFICATION_REPORT.md
+?? FULL_PROJECT_STRUCTURE_2026-09-13.txt
+?? MIGRATION_PLAN.md
+?? OPERATIONS.md
+?? SECURITY_MODEL.md
+?? TARGET_ARCHITECTURE.md
+?? TENANT_ISOLATION_MODEL.md
+?? TROUBLESHOOTING.md
+?? drizzle/0030_tenant_domains_and_manager_sessions.sql
+?? drizzle/0031_enforce_tenant_cross_table_foreign_keys.sql
+---counts---
+61
+TRACKED: 438
+SUBMODULES: 0

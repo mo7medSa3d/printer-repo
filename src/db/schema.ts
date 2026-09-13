@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, bigint, index, uniqueIndex, check, foreignKey, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, bigint, boolean, index, uniqueIndex, check, foreignKey, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const tenants = pgTable("tenants", {
@@ -7,6 +7,19 @@ export const tenants = pgTable("tenants", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const tenantDomains = pgTable("tenant_domains", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
+  domain: text("domain").notNull().unique(),
+  verifiedAt: timestamp("verified_at"),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  tenantIdx: index("tenant_domains_tenant_idx").on(table.tenantId),
+  verifiedIdx: index("tenant_domains_verified_idx").on(table.verifiedAt),
+}));
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
@@ -25,6 +38,7 @@ export const tenantUsers = pgTable("tenant_users", {
 }, (table) => ({
   pk: uniqueIndex("tenant_users_pk").on(table.userId, table.tenantId),
   tenantIdx: index("tenant_users_tenant_idx").on(table.tenantId),
+  roleCheck: check("tenant_users_role_check", sql`${table.role} in ('owner','admin','operator','viewer','integration_admin','billing_admin')`),
 }));
 
 export const applications = pgTable("applications", {
@@ -52,6 +66,11 @@ export const agents = pgTable("agents", {
 }, (table) => ({
   tenantIdUnique: unique("agents_tenant_id_unique").on(table.tenantId, table.id),
   lastSeenIdx: index("agents_last_seen_idx").on(table.lastSeenAt),
+  // 0032: only one agent may hold a pending (non-consumed) pairing code at
+  // a time. Register looks codes up globally (no tenant is provable before
+  // authentication), so the database enforces collision-freedom; consumed
+  // (NULLed) rows are excluded by the partial predicate.
+  pairingCodeHashPendingUnique: uniqueIndex("agents_pairing_code_hash_pending_unique").on(table.pairingCodeHash).where(sql`pairing_code_hash IS NOT NULL`),
   lifecycleCheck: check("agents_lifecycle_check", sql`${table.lifecycle} in ('active','disabled','retired')`),
   statusCheck: check("agents_status_check", sql`${table.status} in ('online','offline')`),
 }));
@@ -59,7 +78,7 @@ export const agents = pgTable("agents", {
 export const printers = pgTable("printers", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").references(() => tenants.id).notNull(),
-  agentId: text("agent_id").references(() => agents.id).notNull(),
+  agentId: text("agent_id").notNull(),
   name: text("name").notNull(),
   printerType: text("printer_type").notNull().default("physical"),
   deviceClass: text("device_class").notNull().default("unknown"),
@@ -74,6 +93,7 @@ export const printers = pgTable("printers", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   tenantIdUnique: unique("printers_tenant_id_unique").on(table.tenantId, table.id),
+  agentFk: foreignKey({ columns: [table.tenantId, table.agentId], foreignColumns: [agents.tenantId, agents.id] }),
   agentIdx: index("printers_agent_id_idx").on(table.agentId),
   printerTypeIdx: index("printers_printer_type_idx").on(table.printerType),
   statusIdx: index("printers_status_idx").on(table.status),
@@ -102,10 +122,18 @@ export const apiKeys = pgTable("api_keys", {
 
 export const managerSessions = pgTable("manager_sessions", {
   jti: text("jti").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
+  userId: text("user_id").references(() => users.id),
+  role: text("role").notNull().default("owner"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   expiresAt: timestamp("expires_at").notNull(),
   revokedAt: timestamp("revoked_at"),
-}, (table) => ({ expiresIdx: index("manager_sessions_expires_idx").on(table.expiresAt) }));
+}, (table) => ({
+  expiresIdx: index("manager_sessions_expires_idx").on(table.expiresAt),
+  tenantIdx: index("manager_sessions_tenant_idx").on(table.tenantId),
+  userIdx: index("manager_sessions_user_idx").on(table.userId),
+  roleCheck: check("manager_sessions_role_check", sql`${table.role} in ('owner','admin','operator','viewer','integration_admin','billing_admin')`),
+}));
 
 export const authRateLimits = pgTable("auth_rate_limits", {
   key: text("key").primaryKey(),
@@ -121,7 +149,7 @@ export const authRateLimits = pgTable("auth_rate_limits", {
 export const discoverySessions = pgTable("discovery_sessions", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").references(() => tenants.id).notNull(),
-  agentId: text("agent_id").references(() => agents.id).notNull(),
+  agentId: text("agent_id").notNull(),
   status: text("status").notNull().default("running"),
   config: jsonb("config").$type<{ cidr?: string; protocols?: string[]; timeoutMs?: number; concurrency?: number; }>().default({}).notNull(),
   stats: jsonb("stats").$type<{ candidates?: number; verified?: number; errors?: number; durationMs?: number; }>().default({}).notNull(),
@@ -131,6 +159,7 @@ export const discoverySessions = pgTable("discovery_sessions", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   tenantIdUnique: unique("discovery_sessions_tenant_id_unique").on(table.tenantId, table.id),
+  agentFk: foreignKey({ columns: [table.tenantId, table.agentId], foreignColumns: [agents.tenantId, agents.id] }),
   agentIdIdx: index("discovery_sessions_agent_id_idx").on(table.agentId),
   statusIdx: index("discovery_sessions_status_idx").on(table.status),
 }));
@@ -138,8 +167,8 @@ export const discoverySessions = pgTable("discovery_sessions", {
 export const discoveredDevices = pgTable("discovered_devices", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").references(() => tenants.id).notNull(),
-  discoveryId: text("discovery_id").references(() => discoverySessions.id).notNull(),
-  agentId: text("agent_id").references(() => agents.id).notNull(),
+  discoveryId: text("discovery_id").notNull(),
+  agentId: text("agent_id").notNull(),
   source: text("source").array().notNull().default(sql`ARRAY[]::text[]`),
   protocol: text("protocol").notNull().default("unknown"),
   ipAddress: text("ip_address"),
@@ -159,7 +188,7 @@ export const discoveredDevices = pgTable("discovered_devices", {
   deviceClass: text("device_class").notNull().default("unknown"),
   capabilities: jsonb("capabilities").$type<Record<string, unknown>>(),
   rawMetadata: jsonb("raw_metadata").$type<Record<string, unknown>>(),
-  provisionedPrinterId: text("provisioned_printer_id").references(() => printers.id),
+  provisionedPrinterId: text("provisioned_printer_id"),
   candidateStatus: text("candidate_status").notNull().default("discovered"),
   discoveredAt: timestamp("discovered_at").defaultNow().notNull(),
   lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
@@ -167,6 +196,9 @@ export const discoveredDevices = pgTable("discovered_devices", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   tenantIdUnique: unique("discovered_devices_tenant_id_unique").on(table.tenantId, table.id),
+  discoveryFk: foreignKey({ columns: [table.tenantId, table.discoveryId], foreignColumns: [discoverySessions.tenantId, discoverySessions.id] }),
+  agentFk: foreignKey({ columns: [table.tenantId, table.agentId], foreignColumns: [agents.tenantId, agents.id] }),
+  provisionedPrinterFk: foreignKey({ columns: [table.tenantId, table.provisionedPrinterId], foreignColumns: [printers.tenantId, printers.id] }),
   discoveryIdIdx: index("discovered_devices_discovery_id_idx").on(table.discoveryId),
   agentIdIdx: index("discovered_devices_agent_id_idx").on(table.agentId),
   candidateStatusIdx: index("discovered_devices_candidate_status_idx").on(table.candidateStatus),
@@ -176,7 +208,7 @@ export const discoveredDevices = pgTable("discovered_devices", {
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").references(() => tenants.id).notNull(),
-  apiKeyId: text("api_key_id").references(() => apiKeys.id),
+  apiKeyId: text("api_key_id"),
   destination: text("destination"),
   documentType: text("document_type"),
   agentId: text("agent_id").notNull(),
@@ -185,6 +217,7 @@ export const printJobs = pgTable("print_jobs", {
   payload: jsonb("payload").notNull(),
   error: text("error"),
   requestedBy: text("requested_by"),
+  requestId: text("request_id"),
   idempotencyKey: text("idempotency_key"),
   retries: integer("retries").notNull().default(0),
   claimedAt: timestamp("claimed_at"),
@@ -198,6 +231,7 @@ export const printJobs = pgTable("print_jobs", {
 }, (table) => ({
   agentFk: foreignKey({ columns: [table.tenantId, table.agentId], foreignColumns: [agents.tenantId, agents.id] }),
   printerFk: foreignKey({ columns: [table.tenantId, table.printerId], foreignColumns: [printers.tenantId, printers.id] }),
+  apiKeyTenantFk: foreignKey({ columns: [table.tenantId, table.apiKeyId], foreignColumns: [apiKeys.tenantId, apiKeys.id] }),
   tenantIdUnique: unique("print_jobs_tenant_id_unique").on(table.tenantId, table.id),
   tenantStatusIdx: index("print_jobs_tenant_status_idx").on(table.tenantId, table.status),
   agentStatusIdx: index("print_jobs_agent_status_idx").on(table.agentId, table.status),
@@ -205,6 +239,7 @@ export const printJobs = pgTable("print_jobs", {
   statusExpiresIdx: index("print_jobs_status_expires_idx").on(table.status, table.expiresAt),
   claimedAtIdx: index("print_jobs_claimed_at_idx").on(table.status, table.claimedAt),
   apiKeyIdIdx: index("print_jobs_api_key_id_idx").on(table.apiKeyId),
+  requestIdIdx: index("print_jobs_request_id_idx").on(table.requestId),
   idempotencyUnique: uniqueIndex("print_jobs_idempotency_unique").on(table.apiKeyId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL AND api_key_id IS NOT NULL`),
   internalIdempotencyUnique: uniqueIndex("print_jobs_internal_idempotency_unique").on(table.idempotencyKey).where(sql`idempotency_key IS NOT NULL AND api_key_id IS NULL`),
   statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
@@ -233,6 +268,72 @@ export const gatewayMetrics = pgTable("gateway_metrics", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   valueCheck: check("gateway_metrics_value_check", sql`${table.value} >= 0`),
+}));
+
+
+export const auditEvents = pgTable("audit_events", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
+  actorType: text("actor_type").notNull(),
+  actorId: text("actor_id"),
+  action: text("action").notNull(),
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  requestId: text("request_id"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  tenantCreatedIdx: index("audit_events_tenant_created_idx").on(table.tenantId, table.createdAt),
+  actorIdx: index("audit_events_actor_idx").on(table.actorType, table.actorId),
+  resourceIdx: index("audit_events_resource_idx").on(table.resourceType, table.resourceId),
+  actionCheck: check("audit_events_actor_type_check", sql`${table.actorType} in ('user','odoo','agent','desktop','system','platform')`),
+}));
+
+export const plans = pgTable("plans", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  entitlements: jsonb("entitlements").$type<Record<string, number | boolean | string>>().default({}).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const tenantSubscriptions = pgTable("tenant_subscriptions", {
+  tenantId: text("tenant_id").references(() => tenants.id).primaryKey(),
+  planId: text("plan_id").references(() => plans.id).notNull(),
+  status: text("status").notNull().default("active"),
+  currentPeriodEnd: timestamp("current_period_end"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  statusCheck: check("tenant_subscriptions_status_check", sql`${table.status} in ('trialing','active','past_due','paused','cancelled')`),
+}));
+
+export const deploymentStamps = pgTable("deployment_stamps", {
+  id: text("id").primaryKey(),
+  region: text("region").notNull(),
+  tier: text("tier").notNull().default("shared"),
+  capacityClass: text("capacity_class").notNull().default("standard"),
+  state: text("state").notNull().default("active"),
+  version: text("version").notNull(),
+  health: text("health").notNull().default("unknown"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  regionStateIdx: index("deployment_stamps_region_state_idx").on(table.region, table.state),
+  tierCheck: check("deployment_stamps_tier_check", sql`${table.tier} in ('shared','bridge','dedicated')`),
+  stateCheck: check("deployment_stamps_state_check", sql`${table.state} in ('provisioning','active','draining','degraded','retired')`),
+}));
+
+export const tenantDeploymentAssignments = pgTable("tenant_deployment_assignments", {
+  tenantId: text("tenant_id").references(() => tenants.id).primaryKey(),
+  deploymentId: text("deployment_id").references(() => deploymentStamps.id).notNull(),
+  state: text("state").notNull().default("active"),
+  desiredVersion: text("desired_version"),
+  assignedAt: timestamp("assigned_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  deploymentIdx: index("tenant_deployment_assignments_deployment_idx").on(table.deploymentId),
+  stateCheck: check("tenant_deployment_assignments_state_check", sql`${table.state} in ('pending','active','draining','migrating','failed')`),
 }));
 
 export const printJobRateLimits = pgTable("print_job_rate_limits", {

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { db } from "../../../db";
 import { agents } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
-import { desc } from "drizzle-orm";
+import { requireManagerPermission } from "../../../lib/authorization";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { createAgent } from "../../actions";
 import { ActionError } from "../../../lib/action-error";
@@ -14,15 +15,17 @@ const createAgentSchema = z.object({ name: z.string().trim().min(1).max(200) }).
 export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "agents.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const rows = await db.select({
     id: agents.id, name: agents.name, status: agents.status, lifecycle: agents.lifecycle,
     metadata: agents.metadata, lastSeenAt: agents.lastSeenAt, createdAt: agents.createdAt,
-  }).from(agents).orderBy(desc(agents.createdAt));
+  }).from(agents).where(eq(agents.tenantId, claims.tenantId)).orderBy(desc(agents.createdAt));
   return NextResponse.json(rows);
 }
 
 export async function POST(req: Request) {
   const claims = await validateManager(req);
+  if (claims) { try { requireManagerPermission(claims, "agents.pair"); } catch { return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "content-type": "application/json" } }); } }
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   let body: unknown;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }

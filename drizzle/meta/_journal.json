@@ -202,8 +202,64 @@
       "idx": 28,
       "version": "7",
       "when": 1789257401607,
-      "tag": "0028_regular_umar",
+      "tag": "0028_add_multi_tenancy",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1789340000000,
+      "tag": "0029_enforce_tenant_id_not_null",
+      "breakpoints": false
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1789340000001,
+      "tag": "0030_tenant_domains_and_manager_sessions",
+      "breakpoints": false
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790000000001,
+      "tag": "0031_enforce_tenant_cross_table_foreign_keys",
+      "breakpoints": false
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790000000002,
+      "tag": "0032_pairing_code_hash_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789257600033,
+      "tag": "0033_manager_identity",
+      "breakpoints": false
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789257600034,
+      "tag": "0034_saas_control_plane",
+      "breakpoints": false
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789257600035,
+      "tag": "0035_tenant_membership_role_check",
+      "breakpoints": false
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789257600036,
+      "tag": "0036_print_job_request_id",
+      "breakpoints": false
     }
   ]
 }

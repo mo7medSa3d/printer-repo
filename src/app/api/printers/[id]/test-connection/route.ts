@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { printers, agents } from "../../../../../db/schema";
 import { validateManager } from "../../../../../lib/manager-auth";
-import { eq } from "drizzle-orm";
+import { requireManagerPermission } from "../../../../../lib/authorization";
+import { and, eq } from "drizzle-orm";
 import { getAgentAvailability } from "../../../../../lib/agent-availability";
 
 export const dynamic = "force-dynamic";
@@ -13,9 +14,10 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "printers.test"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const { id } = await params;
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
+  const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
   if (!printer) return NextResponse.json({ error: "Printer not found" }, { status: 404 });
 
   const lastHeartbeatAt = printer.lastSeenAt;
@@ -31,7 +33,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
   }
 
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, printer.agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({
     reachable: false,
     latencyMs: null,

@@ -459,6 +459,13 @@ class PrintGatewayJob(models.Model):
         self.ensure_one()
         cr = self.env.registry.cursor()
         try:
+            # Cross-cursor deadlock guard. The interactive submit path opens
+            # this second cursor while the caller's own transaction (cursor
+            # C1) may still be open; if C1 ever holds an uncommitted lock on
+            # this row, this UPDATE must fail loudly instead of hanging a
+            # worker forever (deadlocks in this topology are invisible to
+            # PostgreSQL, which only sees the C2->C1 wait edge).
+            cr.execute("SET LOCAL lock_timeout = '5s'")
             env = api.Environment(cr, self.env.uid, dict(self.env.context))
             env["print_gateway.print_job"].sudo().browse(self.id).write(values)
             cr.commit()
@@ -725,11 +732,29 @@ class PrintGatewayJob(models.Model):
                     "Primary printer %s connection failed; triggering safe pre-dispatch failover (%d/%d) to %s",
                     job.printer_id, failover_count, MAX_FAILOVER_DEPTH, next_printer,
                 )
-                job.write({
+                failover_values = {
                     "printer_id": next_printer,
                     "destination": current_binding.destination_ref.display_name if current_binding.destination_ref else current_binding.name,
                     "last_error": "PRE_DISPATCH_FAILOVER: Routed to backup printer %s" % next_printer,
-                })
+                }
+                if raise_on_failure:
+                    # Same-cursor prohibition (deadlock): in the interactive
+                    # raise-on-failure path the caller transaction (C1) later
+                    # persists terminal state through _persist_state (a
+                    # dedicated cursor C2 committing immediately). Any
+                    # uncommitted C1 write to this row would block C2
+                    # forever — a worker hang PG cannot detect (it only sees
+                    # the C2->C1 wait edge). Route every raise-path write
+                    # through the dedicated cursor so C1 stays read-only.
+                    job._persist_state(failover_values)
+                    # Reload the C2-committed row into this environment's
+                    # cache (plain SELECT, takes no row lock). Without this,
+                    # the next loop iteration's _submission_body() would
+                    # still see the pre-failover printer and retry the dead
+                    # primary instead of the backup.
+                    job.invalidate_recordset(["printer_id", "destination", "last_error"])
+                else:
+                    job.write(failover_values)
                 job._post_source_audit(_("Primary printer offline. Failover engaged: routed to backup printer '%s'") % next_printer)
                 current_binding = current_binding.fallback_binding_id
                 return current_binding, failover_count, "continue"

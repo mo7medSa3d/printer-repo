@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { agents, discoverySessions } from "../../../../../db/schema";
 import { validateManager } from "../../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../../lib/authorization";
 import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { validateDiscoveryRequest } from "../../../../../lib/discovery";
@@ -12,12 +13,13 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "agents.pair"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const { id: agentId } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
 
-  const active = await db.query.discoverySessions.findFirst({ where: and(eq(discoverySessions.agentId, agentId), eq(discoverySessions.status, "running")) });
+  const active = await db.query.discoverySessions.findFirst({ where: and(eq(discoverySessions.agentId, agentId), eq(discoverySessions.tenantId, claims.tenantId), eq(discoverySessions.status, "running")) });
   if (active) return NextResponse.json({ error: "Discovery already running for this agent", discoveryId: active.id }, { status: 409 });
 
   let body: unknown = {};
@@ -28,9 +30,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const discoveryId = `dsc_${nanoid(12)}`;
   await db.insert(discoverySessions).values({
     id: discoveryId,
+    tenantId: claims.tenantId,
     agentId,
     status: "running",
-    config: body as any,
+    config: {
+      ...(v.cidr ? { cidr: v.cidr } : {}),
+      ...((body && typeof body === "object" && !Array.isArray(body)) ? body as Record<string, unknown> : {}),
+    },
     stats: {},
     startedAt: new Date(),
   });
@@ -40,9 +46,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "agents.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const { id: agentId } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  const rows = await db.query.discoverySessions.findMany({ where: eq(discoverySessions.agentId, agentId), orderBy: [desc(discoverySessions.createdAt)], limit: 20 });
+  const rows = await db.query.discoverySessions.findMany({ where: and(eq(discoverySessions.agentId, agentId), eq(discoverySessions.tenantId, claims.tenantId)), orderBy: [desc(discoverySessions.createdAt)], limit: 20 });
   return NextResponse.json(rows);
 }

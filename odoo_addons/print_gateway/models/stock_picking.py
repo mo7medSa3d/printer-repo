@@ -44,7 +44,6 @@ class StockPickingPrintGateway(models.Model):
                             continue
                         executed_targets.add(target_key)
                         intent_model.create_and_route(policy, picking, "picking_validated")
-                        break
             except Exception as exc:
                 # Print scheduling must never break stock validation: log
                 # per picking and continue, mirroring account_move handling.

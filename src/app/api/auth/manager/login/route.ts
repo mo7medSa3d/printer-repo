@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername } from "../../../../../lib/manager-auth";
+import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername, resolveManagerTenantId, authenticateManagerUser } from "../../../../../lib/manager-auth";
 import {
   clientIpFrom,
   inspectAuthRateLimit,
@@ -8,6 +8,7 @@ import {
 } from "../../../../../lib/auth-rate-limit";
 import { hasBodyOverLimit } from "../../../../../lib/request-limits";
 import { logWarn, logInfo, logError, requestIdFrom } from "../../../../../lib/log";
+import { writeAuditEvent } from "../../../../../lib/audit";
 
 const INVALID = "Invalid credentials";
 
@@ -34,10 +35,8 @@ export async function POST(req: Request) {
   }
 
   const expectedUser = getManagerUsername();
-  if (!expectedUser) {
-    return NextResponse.json({ error: "Manager auth not configured (set MANAGER_USERNAME / MANAGER_PASSWORD or MANAGER_PASSWORD_HASH)" }, { status: 500 });
-  }
-
+  const legacyTenantPinned = Boolean((process.env.MANAGER_TENANT_ID ?? "").trim());
+  const desktopClient = req.headers.get("x-odoo-print-desktop") === "1";
   const ip = clientIpFrom(req);
 
   try {
@@ -51,7 +50,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Authentication temporarily unavailable" }, { status: 503 });
   }
 
-  if (!(await verifyManagerPassword(username, password))) {
+  const tenantId = await resolveManagerTenantId(req);
+  if (!tenantId) {
+    return NextResponse.json({ error: "Manager tenant is not configured for this hostname" }, { status: 503 });
+  }
+
+  let identity: { userId: string; role: import("../../../../../lib/manager-auth").ManagerRole } | null = null;
+  if (!identity && username.includes("@")) {
+    try { identity = await authenticateManagerUser(username, password, tenantId); } catch (e) {
+      logWarn("auth.login.user_lookup_failed", { requestId, error: e instanceof Error ? e.message : "unknown" });
+    }
+  }
+  const legacyValid = expectedUser && legacyTenantPinned ? await verifyManagerPassword(username, password) : false;
+  if (!identity && !legacyValid) {
     let locked: { allowed: false; retryAfterSec: number } | null = null;
     try {
       const after = await recordAuthFailure(ip, username);
@@ -72,14 +83,14 @@ export async function POST(req: Request) {
 
   let sess;
   try {
-    sess = await createManagerSession();
+    sess = await createManagerSession(tenantId, identity ? { userId: identity.userId, role: identity.role } : { role: "owner" });
   } catch (e) {
     logError("auth.login.session_failed", { requestId, error: e instanceof Error ? e.message : "unknown" });
     return NextResponse.json({ error: "Sign-in is temporarily unavailable. Try again in a moment." }, { status: 500 });
   }
 
   logInfo("auth.login.success", { requestId, ip });
-  const desktopClient = req.headers.get("x-odoo-print-desktop") === "1";
+  void writeAuditEvent({ tenantId, actorType: identity ? "user" : "system", actorId: identity?.userId ?? "legacy-manager", action: "user.login.success", requestId, metadata: { desktopClient } }).catch((error) => logWarn("audit.write_failed", { requestId, error: error instanceof Error ? error.message : "unknown" }));
   const bodyOut: { ok: true; expiresAt: string; accessToken?: string } = {
     ok: true,
     expiresAt: sess.exp.toISOString(),

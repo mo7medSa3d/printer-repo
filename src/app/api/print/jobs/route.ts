@@ -4,8 +4,9 @@ import { printJobs } from "../../../../db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../lib/odoo-auth";
 import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
 import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError, PrintJobInputError, idempotencyFingerprint } from "../../../../lib/print-job-service";
+import { TenantEntitlementError } from "../../../../lib/entitlements";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
-import { logError } from "../../../../lib/log";
+import { logError, requestIdFrom } from "../../../../lib/log";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -95,7 +96,7 @@ export async function POST(req: Request) {
 
   if (parsed.data.idempotencyKey) {
     const existing = await db.query.printJobs.findFirst({
-      where: and(eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
+      where: and(eq(printJobs.tenantId, odoo.tenantId), eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
     });
     if (existing) {
       if (idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
@@ -111,10 +112,12 @@ export async function POST(req: Request) {
       documentType: parsed.data.documentType,
       expiresAt,
       rateLimitKeyId: odoo.id,
+      tenantId: odoo.tenantId,
+      requestId: requestIdFrom(req),
     });
     if (result.isReused) {
       const existing = await db.query.printJobs.findFirst({
-        where: eq(printJobs.id, result.id),
+        where: and(eq(printJobs.id, result.id), eq(printJobs.tenantId, odoo.tenantId)),
       });
       if (existing) {
         return NextResponse.json(responseForRow(existing), { status: 200 });
@@ -132,6 +135,7 @@ export async function POST(req: Request) {
       documentType: parsed.data.documentType,
     }, { status: 201 });
   } catch (error) {
+    if (error instanceof TenantEntitlementError) return NextResponse.json({ error: error.message, code: error.code }, { status: 429, headers: { "Retry-After": "60" } });
     if (error instanceof PrintJobRateLimitError) {
       return NextResponse.json({ error: error.code, retryable: true, retryAfterSeconds: error.retryAfterSeconds }, {
         status: 429,
@@ -152,7 +156,7 @@ export async function POST(req: Request) {
     }
     if (error instanceof Error && (error as Error & { code?: string }).code === "IDEMPOTENCY_CONFLICT" && parsed.data.idempotencyKey) {
       const existing = await db.query.printJobs.findFirst({
-        where: and(eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
+        where: and(eq(printJobs.tenantId, odoo.tenantId), eq(printJobs.apiKeyId, odoo.id), eq(printJobs.idempotencyKey, parsed.data.idempotencyKey)),
       });
       if (existing && idempotencyMatches(existing, request)) return NextResponse.json(responseForRow(existing), { status: 200 });
       return idempotencyConflict();
@@ -171,7 +175,7 @@ export async function GET(req: Request) {
   const id = new URL(req.url).searchParams.get("id")?.trim();
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 });
   const row = await db.query.printJobs.findFirst({
-    where: and(eq(printJobs.id, id), eq(printJobs.apiKeyId, odoo.id)),
+    where: and(eq(printJobs.id, id), eq(printJobs.tenantId, odoo.tenantId), eq(printJobs.apiKeyId, odoo.id)),
   });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!isOdooKeyAllowedForDocumentType(odoo, row.documentType, "read")) {

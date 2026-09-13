@@ -281,6 +281,124 @@ class TestControlPlane(TransactionCase):
             self.assertEqual(job.printer_id, self.primary_binding.printer_id)
             self.assertIn("UNKNOWN_SUBMISSION_OUTCOME", job.last_error or "")
 
+    def test_04b2_interactive_failover_never_deadlocks(self):
+        """Cross-cursor deadlock regression (audit P2-01): on the interactive
+        raise-on-failure path the SAME row is written twice — first the
+        failover re-route, then the terminal retry/backoff. Both writes must
+        go through _persist_state's dedicated committing cursor; if the
+        failover write ran on the caller's open transaction while the
+        terminal write used the second cursor, the worker would hang
+        (a lock wait PG cannot report as a deadlock cycle).
+
+        Both gateway hops refuse the connection (primary, then backup), so
+        the flow exercises failover-write followed by terminal-persist on
+        the raise path. On regression this test blocks at most 5 s on the
+        lock_timeout guard instead of hanging a worker forever.
+        """
+        # Cross-cursor fixture contract: EVERY row the dedicated cursor
+        # touches must already be committed, otherwise its FK checks fail
+        # (rows created in this test's own uncommitted transaction are
+        # invisible to independent cursors). self.company is pre-existing
+        # module data (always committed); the config/binding/job below are
+        # created + committed here and cleaned up at the end. The fallback
+        # binding is root-scoped (branch_id=False) so it stays
+        # company-compatible with the root-company job.
+        report = (
+            self.env.ref("account.account_invoices", raise_if_not_found=False)
+            or self.env.ref("sale.action_report_saleorder", raise_if_not_found=False)
+            or self.env["ir.actions.report"].search([], limit=1)
+        )
+        wcr = self.env.registry.cursor()
+        created_config_id = False
+        job_id = False
+        binding_id = False
+        config_id = False
+        try:
+            wenv = api.Environment(wcr, self.env.uid, dict(self.env.context))
+            wconfig = wenv["print_gateway.gateway_config"].search(
+                [("company_id", "=", self.company.id)], limit=1)
+            if not wconfig:
+                wconfig = wenv["print_gateway.gateway_config"].create({
+                    "company_id": self.company.id,
+                    "gateway_url": "https://gateway.example.com",
+                    "enabled": True,
+                    "gateway_api_key": "test_api_key_deadlock_fixture",
+                })
+                created_config_id = wconfig.id
+            wbinding = wenv["print_gateway.binding"].create({
+                "company_id": self.company.id,
+                "destination_type": "report",
+                "destination_report_id": report.id if report else False,
+                "report_id": report.id if report else False,
+                "runtime_agent_id": "agent-cp-01",
+                "printer_id": "printer-root-backup-04b2",
+                "printer_protocol": "escpos",
+                "enabled": True,
+                "drawer_kick_mode": "pin2",
+                "cutter_mode": "full",
+                "buzzer_mode": "epson_pulse",
+                "priority": 20,
+            })
+            wjob = wenv["print_gateway.print_job"].create({
+                "company_id": self.company.id,
+                "gateway_config_id": wconfig.id,
+                "printer_id": "printer-primary-04b2",
+                "destination": "Primary Destination",
+                "document_type": "invoice",
+                "status": "queued",
+                "payload": json.dumps({"type": "escpos", "protocol": "escpos", "encoding": "base64", "data": "dGVzdA=="}),
+                "idempotency_key": "test_failover_deadlock_key_01",
+                "fallback_binding_id": wbinding.id,
+            })
+            job_id = wjob.id
+            binding_id = wbinding.id
+            config_id = wconfig.id
+            wcr.commit()
+        finally:
+            wcr.close()
+        job = self.env["print_gateway.print_job"].browse(job_id)
+
+        import requests
+
+        def _refused_connection():
+            exc = requests.exceptions.ConnectionError("Connection refused")
+            exc.__cause__ = ConnectionRefusedError(111, "Connection refused")
+            return exc
+
+        ConfigClass = type(self.gateway_config)
+        try:
+            with patch.object(ConfigClass, "_validate_gateway_host", return_value=None), \
+                 patch("requests.post", side_effect=[_refused_connection(), _refused_connection()]):
+                with self.assertRaises(ValidationError):
+                    job._action_submit_trusted(raise_on_failure=True)
+
+            # The failure state was committed by the dedicated cursor even
+            # though the outer transaction raised: read it on a fresh cursor.
+            wcr = self.env.registry.cursor()
+            try:
+                wenv = api.Environment(wcr, self.env.uid, dict(self.env.context))
+                wjob = wenv["print_gateway.print_job"].browse(job_id).exists()
+                self.assertTrue(wjob, "job must be readable on a fresh cursor")
+                self.assertEqual(wjob.printer_id, "printer-root-backup-04b2",
+                                 "failover route must be persisted even when the backup then fails")
+                self.assertEqual(wjob.attempts, 1)
+                self.assertEqual(wjob.status, "queued", "pre-dispatch failures stay retryable")
+                self.assertTrue(wjob.next_retry_at, "retry must be scheduled, not frozen")
+            finally:
+                wcr.close()
+        finally:
+            # Committed fixtures must not leak into other tests in this run.
+            wcr = self.env.registry.cursor()
+            try:
+                wenv = api.Environment(wcr, self.env.uid, dict(self.env.context))
+                wenv["print_gateway.print_job"].browse(job_id).exists().unlink()
+                wenv["print_gateway.binding"].browse(binding_id).exists().unlink()
+                if created_config_id:
+                    wenv["print_gateway.gateway_config"].browse(created_config_id).exists().unlink()
+                wcr.commit()
+            finally:
+                wcr.close()
+
     def test_04c_connect_timeout_is_pre_dispatch_and_retries(self):
         """A connect-phase timeout proves zero bytes left the host: it is
         retryable with backoff and failover-eligible, unlike a read timeout."""
