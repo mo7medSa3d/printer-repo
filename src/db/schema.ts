@@ -29,7 +29,7 @@ export const tenantUsers = pgTable("tenant_users", {
 
 export const applications = pgTable("applications", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   name: text("name").notNull(),
   type: text("type").notNull().default("odoo"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -38,7 +38,7 @@ export const applications = pgTable("applications", {
 
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   name: text("name").notNull(),
   pairingCodeHash: text("pairing_code_hash"),
   pairingCodeExpiresAt: timestamp("pairing_code_expires_at"),
@@ -58,7 +58,7 @@ export const agents = pgTable("agents", {
 
 export const printers = pgTable("printers", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   name: text("name").notNull(),
   printerType: text("printer_type").notNull().default("physical"),
@@ -87,7 +87,7 @@ export const printers = pgTable("printers", {
 
 export const apiKeys = pgTable("api_keys", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   scope: text("scope").notNull().default("standard"),
   name: text("name").notNull(),
   description: text("description"),
@@ -120,7 +120,7 @@ export const authRateLimits = pgTable("auth_rate_limits", {
 
 export const discoverySessions = pgTable("discovery_sessions", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   status: text("status").notNull().default("running"),
   config: jsonb("config").$type<{ cidr?: string; protocols?: string[]; timeoutMs?: number; concurrency?: number; }>().default({}).notNull(),
@@ -137,7 +137,7 @@ export const discoverySessions = pgTable("discovery_sessions", {
 
 export const discoveredDevices = pgTable("discovered_devices", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   discoveryId: text("discovery_id").references(() => discoverySessions.id).notNull(),
   agentId: text("agent_id").references(() => agents.id).notNull(),
   source: text("source").array().notNull().default(sql`ARRAY[]::text[]`),
@@ -175,7 +175,7 @@ export const discoveredDevices = pgTable("discovered_devices", {
 
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id),
+  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
   apiKeyId: text("api_key_id").references(() => apiKeys.id),
   destination: text("destination"),
   documentType: text("document_type"),
