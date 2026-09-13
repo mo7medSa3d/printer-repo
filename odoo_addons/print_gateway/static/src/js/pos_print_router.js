@@ -26,7 +26,9 @@ async function elementToJpeg(element) {
 async function renderReceiptImage(pos, currentOrder, basic = false) {
     const renderer = pos.env?.services?.renderer || pos.printer?.renderer;
     const props = {
+        data: typeof currentOrder.export_for_printing === "function" ? currentOrder.export_for_printing() : currentOrder,
         order: currentOrder,
+        formatCurrency: pos.env?.utils?.formatCurrency || pos.formatCurrency || ((amount) => String(amount)),
         basic_receipt: Boolean(basic),
     };
 
@@ -57,14 +59,7 @@ async function renderReceiptImage(pos, currentOrder, basic = false) {
     }
 
     // Direct template fallback if renderer service is unavailable:
-    // Supply doesAnyOrderlineHaveTaxLabel and formatCurrency so that
-    // evaluating the QWeb template directly does not throw "TaxLabel is not a function".
-    const receipt = renderToElement("point_of_sale.OrderReceipt", {
-        order: currentOrder,
-        basic_receipt: Boolean(basic),
-        doesAnyOrderlineHaveTaxLabel: () => Boolean(currentOrder.lines?.some((l) => l.taxGroupLabels)),
-        formatCurrency: (amount) => (pos.formatCurrency ? pos.formatCurrency(amount) : String(amount)),
-    });
+        const receipt = renderToElement("point_of_sale.OrderReceipt", props);
     return await elementToJpeg(receipt);
 }
 
