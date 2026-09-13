@@ -1561,11 +1561,8 @@ func (a *Agent) pollJobs(ctx context.Context) {
 // Callers should normally schedule it through dispatchJob; the tests drive
 // it directly.
 func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
-	receivedAt := time.Now()
-	requestID, _ := job["requestId"].(string)
 	jobID, _ := job["id"].(string)
 	printerID, _ := job["printerId"].(string)
-	log.Printf("print.trace agent_receive request_id=%s job_id=%s printer_id=%s latency_agent_receive_ms=%d", requestID, jobID, printerID, time.Since(receivedAt).Milliseconds())
 	expiresAtStr, _ := job["expiresAt"].(string)
 	claimToken := jobClaimToken(job)
 
@@ -1782,10 +1779,7 @@ func (a *Agent) processJob(ctx context.Context, job map[string]interface{}) {
 		}
 		printData = printer.WrapPeripheralCommands(printData, pl.Protocol, profile)
 	}
-	printStart := time.Now()
-	log.Printf("print.trace render_transport_start request_id=%s job_id=%s printer_id=%s local_execution_ms=%d payload_bytes=%d kind=%s", requestID, jobID, printerID, time.Since(receivedAt).Milliseconds(), len(printData), kind)
 	printErr := printer.PrintDocument(printCtx, p, printer.Document{Kind: kind, Data: printData, JobID: jobID})
-	log.Printf("print.trace transport_complete request_id=%s job_id=%s printer_id=%s transport_latency_ms=%d success=%t", requestID, jobID, printerID, time.Since(printStart).Milliseconds(), printErr == nil)
 
 	failureMsg := ""
 	if printErr != nil {

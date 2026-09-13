@@ -56,8 +56,6 @@ export type ClaimedJobRow = {
   deliveryAttempts: number;
   claimToken: string | null;
   error?: string | null;
-  createdAt: Date;
-  requestId: string | null;
 };
 
 export const CLAIM_RETURNING = sql`
@@ -71,9 +69,7 @@ export const CLAIM_RETURNING = sql`
   print_jobs.retries AS retries,
   print_jobs.delivery_attempts AS "deliveryAttempts",
   print_jobs.claim_token AS "claimToken",
-  print_jobs.error AS error,
-  print_jobs.created_at AS "createdAt",
-  print_jobs.request_id AS "requestId"
+  print_jobs.error AS error
 `;
 
 /**

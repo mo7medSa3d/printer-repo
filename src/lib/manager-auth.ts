@@ -1,6 +1,6 @@
 import { db } from "../db";
-import { managerSessions, tenants, tenantDomains, tenantUsers, users } from "../db/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { managerSessions, tenants, tenantDomains } from "../db/schema";
+import { eq, sql } from "drizzle-orm";
 import { createHmac, randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { requiredRuntimeSecret, runtimeSecret } from "./runtime-secret";
 
@@ -21,11 +21,7 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s, "base64url");
 }
 
-export type ManagerRole = "owner" | "admin" | "operator" | "viewer" | "integration_admin" | "billing_admin";
-export type ManagerClaims = {
-  jti: string; iat: number; exp: number; sub: "manager"; tenantId: string;
-  userId?: string; role: ManagerRole;
-};
+export type ManagerClaims = { jti: string; iat: number; exp: number; sub: "manager"; tenantId: string };
 
 function sign(claims: ManagerClaims): string {
   const header = b64urlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
@@ -69,10 +65,7 @@ function verify(token: string): ManagerClaims | null {
       typeof claims.exp !== "number" ||
       !Number.isSafeInteger(claims.exp) ||
       claims.exp <= claims.iat ||
-      claims.exp - claims.iat > MAX_AGE_SECONDS ||
-      typeof claims.role !== "string" ||
-      !(["owner", "admin", "operator", "viewer", "integration_admin", "billing_admin"] as string[]).includes(claims.role) ||
-      (claims.userId !== undefined && (typeof claims.userId !== "string" || claims.userId.length < 1 || claims.userId.length > 128))
+      claims.exp - claims.iat > MAX_AGE_SECONDS
     ) return null;
     if (claims.exp * 1000 <= Date.now()) return null;
     if (claims.iat * 1000 > Date.now() + 60_000) return null;
@@ -95,14 +88,7 @@ export async function validateManagerClaims(claims: ManagerClaims | null): Promi
   const row = await db.query.managerSessions.findFirst({ where: eq(managerSessions.jti, claims.jti) });
   if (!row || row.revokedAt) return null;
   if (row.expiresAt.getTime() <= Date.now()) return null;
-  if (row.tenantId !== claims.tenantId || row.role !== claims.role || (row.userId ?? undefined) !== claims.userId) return null;
-  if (row.userId) {
-    const membership = await db.query.tenantUsers.findFirst({
-      where: and(eq(tenantUsers.userId, row.userId), eq(tenantUsers.tenantId, row.tenantId)),
-      columns: { role: true },
-    });
-    if (!membership || membership.role !== row.role) return null;
-  }
+  if (row.tenantId !== claims.tenantId) return null;
   return claims;
 }
 
@@ -132,21 +118,17 @@ export async function resolveManagerTenantId(req: Request): Promise<string | nul
     if (tenant) return tenant.id;
   }
 
-  // Never infer the login tenant from the number of rows in the database.
-  // A global bootstrap credential must be explicitly pinned to one tenant;
-  // otherwise an attacker who controls Host could turn the legacy credential
-  // into a cross-tenant owner login.
-  return null;
+  const all = await db.select({ id: tenants.id }).from(tenants).limit(2);
+  return all.length === 1 ? all[0].id : null;
 }
 
-export async function createManagerSession(tenantId: string, identity?: { userId?: string; role?: ManagerRole }): Promise<{ token: string; jti: string; exp: Date }> {
+export async function createManagerSession(tenantId: string): Promise<{ token: string; jti: string; exp: Date }> {
   const jti = randomBytes(16).toString("hex");
   const now = Math.floor(Date.now() / 1000);
   const exp = now + MAX_AGE_SECONDS;
-  const role = identity?.role ?? "owner";
-  const claims: ManagerClaims = { jti, iat: now, exp, sub: "manager", tenantId, role, ...(identity?.userId ? { userId: identity.userId } : {}) };
+  const claims: ManagerClaims = { jti, iat: now, exp, sub: "manager", tenantId };
   const token = sign(claims);
-  await db.insert(managerSessions).values({ jti, tenantId, userId: identity?.userId ?? null, role, expiresAt: new Date(exp * 1000) });
+  await db.insert(managerSessions).values({ jti, tenantId, expiresAt: new Date(exp * 1000) });
   return { token, jti, exp: new Date(exp * 1000) };
 }
 
@@ -240,33 +222,6 @@ export async function verifyManagerPassword(username: string, input: string): Pr
 
   if (process.env.ALLOW_PLAINTEXT_MANAGER_PASSWORD !== "1" || !expectedPass) return false;
   return compareStringsSafe(input, expectedPass);
-}
-
-export async function verifyScryptPasswordHash(input: string, stored: string | null | undefined): Promise<boolean> {
-  if (!stored || !stored.includes(":")) return false;
-  const [salt, hash] = stored.split(":", 2);
-  if (!salt || !hash || !/^[0-9a-fA-F]{64}$/.test(hash)) return false;
-  const derived = await scryptAsync(input, salt, 32);
-  return compareStringsSafe(derived.toString("hex"), hash.toLowerCase());
-}
-
-export async function authenticateManagerUser(username: string, password: string, tenantId: string): Promise<{ userId: string; role: ManagerRole } | null> {
-  const normalized = username.trim().toLowerCase();
-  if (!normalized || typeof password !== "string") return null;
-  const row = await db.query.users.findFirst({
-    where: eq(users.email, normalized),
-    columns: { id: true, passwordHash: true },
-  });
-  if (!row) return null;
-  const valid = await verifyScryptPasswordHash(password, row.passwordHash);
-  if (!valid) return null;
-  const membership = await db.query.tenantUsers.findFirst({
-    where: and(eq(tenantUsers.userId, row.id), eq(tenantUsers.tenantId, tenantId)),
-    columns: { role: true },
-  });
-  if (!membership) return null;
-  if (!( ["owner", "admin", "operator", "viewer", "integration_admin", "billing_admin"] as string[]).includes(membership.role)) return null;
-  return { userId: row.id, role: membership.role as ManagerRole };
 }
 
 export function getManagerUsername(): string | null {

@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { agents, printers } from "../../../../../db/schema";
 import { validateManager } from "../../../../../lib/manager-auth";
-import { requireManagerPermission } from "../../../../../lib/authorization";
-import { requestIdFrom } from "../../../../../lib/log";
 import { and, eq } from "drizzle-orm";
 import { createPrintJobForPrinter, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError, PrintJobInputError } from "../../../../../lib/print-job-service";
 import { buildTestPrintPayloadForPrinter } from "../../../../../lib/payload";
@@ -24,7 +22,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  try { requireManagerPermission(claims, "printers.test"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
   if (!printer) return NextResponse.json({ error: "Printer not found" }, { status: 404 });
@@ -48,7 +45,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const result = await createPrintJobForPrinter(printer.id, payload, {
       requestedBy: "manager-test",
       tenantId: claims.tenantId,
-      requestId: requestIdFrom(req),
     });
     return NextResponse.json({ ok: true, jobId: result.id, printerId: printer.id, status: result.status }, { status: 201 });
   } catch (e) {

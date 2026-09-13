@@ -38,7 +38,6 @@ export const tenantUsers = pgTable("tenant_users", {
 }, (table) => ({
   pk: uniqueIndex("tenant_users_pk").on(table.userId, table.tenantId),
   tenantIdx: index("tenant_users_tenant_idx").on(table.tenantId),
-  roleCheck: check("tenant_users_role_check", sql`${table.role} in ('owner','admin','operator','viewer','integration_admin','billing_admin')`),
 }));
 
 export const applications = pgTable("applications", {
@@ -123,17 +122,10 @@ export const apiKeys = pgTable("api_keys", {
 export const managerSessions = pgTable("manager_sessions", {
   jti: text("jti").primaryKey(),
   tenantId: text("tenant_id").references(() => tenants.id).notNull(),
-  userId: text("user_id").references(() => users.id),
-  role: text("role").notNull().default("owner"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   expiresAt: timestamp("expires_at").notNull(),
   revokedAt: timestamp("revoked_at"),
-}, (table) => ({
-  expiresIdx: index("manager_sessions_expires_idx").on(table.expiresAt),
-  tenantIdx: index("manager_sessions_tenant_idx").on(table.tenantId),
-  userIdx: index("manager_sessions_user_idx").on(table.userId),
-  roleCheck: check("manager_sessions_role_check", sql`${table.role} in ('owner','admin','operator','viewer','integration_admin','billing_admin')`),
-}));
+}, (table) => ({ expiresIdx: index("manager_sessions_expires_idx").on(table.expiresAt) }));
 
 export const authRateLimits = pgTable("auth_rate_limits", {
   key: text("key").primaryKey(),
@@ -217,7 +209,6 @@ export const printJobs = pgTable("print_jobs", {
   payload: jsonb("payload").notNull(),
   error: text("error"),
   requestedBy: text("requested_by"),
-  requestId: text("request_id"),
   idempotencyKey: text("idempotency_key"),
   retries: integer("retries").notNull().default(0),
   claimedAt: timestamp("claimed_at"),
@@ -239,7 +230,6 @@ export const printJobs = pgTable("print_jobs", {
   statusExpiresIdx: index("print_jobs_status_expires_idx").on(table.status, table.expiresAt),
   claimedAtIdx: index("print_jobs_claimed_at_idx").on(table.status, table.claimedAt),
   apiKeyIdIdx: index("print_jobs_api_key_id_idx").on(table.apiKeyId),
-  requestIdIdx: index("print_jobs_request_id_idx").on(table.requestId),
   idempotencyUnique: uniqueIndex("print_jobs_idempotency_unique").on(table.apiKeyId, table.idempotencyKey).where(sql`idempotency_key IS NOT NULL AND api_key_id IS NOT NULL`),
   internalIdempotencyUnique: uniqueIndex("print_jobs_internal_idempotency_unique").on(table.idempotencyKey).where(sql`idempotency_key IS NOT NULL AND api_key_id IS NULL`),
   statusCheck: check("print_jobs_status_check", sql`${table.status} in ('queued','claimed','printing','success','failed','expired')`),
@@ -268,72 +258,6 @@ export const gatewayMetrics = pgTable("gateway_metrics", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   valueCheck: check("gateway_metrics_value_check", sql`${table.value} >= 0`),
-}));
-
-
-export const auditEvents = pgTable("audit_events", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").references(() => tenants.id).notNull(),
-  actorType: text("actor_type").notNull(),
-  actorId: text("actor_id"),
-  action: text("action").notNull(),
-  resourceType: text("resource_type"),
-  resourceId: text("resource_id"),
-  requestId: text("request_id"),
-  metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  tenantCreatedIdx: index("audit_events_tenant_created_idx").on(table.tenantId, table.createdAt),
-  actorIdx: index("audit_events_actor_idx").on(table.actorType, table.actorId),
-  resourceIdx: index("audit_events_resource_idx").on(table.resourceType, table.resourceId),
-  actionCheck: check("audit_events_actor_type_check", sql`${table.actorType} in ('user','odoo','agent','desktop','system','platform')`),
-}));
-
-export const plans = pgTable("plans", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull().unique(),
-  entitlements: jsonb("entitlements").$type<Record<string, number | boolean | string>>().default({}).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
-
-export const tenantSubscriptions = pgTable("tenant_subscriptions", {
-  tenantId: text("tenant_id").references(() => tenants.id).primaryKey(),
-  planId: text("plan_id").references(() => plans.id).notNull(),
-  status: text("status").notNull().default("active"),
-  currentPeriodEnd: timestamp("current_period_end"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  statusCheck: check("tenant_subscriptions_status_check", sql`${table.status} in ('trialing','active','past_due','paused','cancelled')`),
-}));
-
-export const deploymentStamps = pgTable("deployment_stamps", {
-  id: text("id").primaryKey(),
-  region: text("region").notNull(),
-  tier: text("tier").notNull().default("shared"),
-  capacityClass: text("capacity_class").notNull().default("standard"),
-  state: text("state").notNull().default("active"),
-  version: text("version").notNull(),
-  health: text("health").notNull().default("unknown"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  regionStateIdx: index("deployment_stamps_region_state_idx").on(table.region, table.state),
-  tierCheck: check("deployment_stamps_tier_check", sql`${table.tier} in ('shared','bridge','dedicated')`),
-  stateCheck: check("deployment_stamps_state_check", sql`${table.state} in ('provisioning','active','draining','degraded','retired')`),
-}));
-
-export const tenantDeploymentAssignments = pgTable("tenant_deployment_assignments", {
-  tenantId: text("tenant_id").references(() => tenants.id).primaryKey(),
-  deploymentId: text("deployment_id").references(() => deploymentStamps.id).notNull(),
-  state: text("state").notNull().default("active"),
-  desiredVersion: text("desired_version"),
-  assignedAt: timestamp("assigned_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  deploymentIdx: index("tenant_deployment_assignments_deployment_idx").on(table.deploymentId),
-  stateCheck: check("tenant_deployment_assignments_state_check", sql`${table.state} in ('pending','active','draining','migrating','failed')`),
 }));
 
 export const printJobRateLimits = pgTable("print_job_rate_limits", {

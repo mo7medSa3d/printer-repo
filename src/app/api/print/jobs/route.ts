@@ -4,9 +4,8 @@ import { printJobs } from "../../../../db/schema";
 import { isOdooKeyAllowedForDocumentType, validateOdooKey } from "../../../../lib/odoo-auth";
 import { validatePrintJobPayload, type PrintJobPayload } from "../../../../lib/payload";
 import { createPrintJobForPrinter, PrintJobRateLimitError, AgentQueueFullError, AgentQueuedJobsFullError, PrintJobCapabilityError, PrintJobInputError, idempotencyFingerprint } from "../../../../lib/print-job-service";
-import { TenantEntitlementError } from "../../../../lib/entitlements";
 import { hasBodyOverLimit } from "../../../../lib/request-limits";
-import { logError, requestIdFrom } from "../../../../lib/log";
+import { logError } from "../../../../lib/log";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -113,7 +112,6 @@ export async function POST(req: Request) {
       expiresAt,
       rateLimitKeyId: odoo.id,
       tenantId: odoo.tenantId,
-      requestId: requestIdFrom(req),
     });
     if (result.isReused) {
       const existing = await db.query.printJobs.findFirst({
@@ -135,7 +133,6 @@ export async function POST(req: Request) {
       documentType: parsed.data.documentType,
     }, { status: 201 });
   } catch (error) {
-    if (error instanceof TenantEntitlementError) return NextResponse.json({ error: error.message, code: error.code }, { status: 429, headers: { "Retry-After": "60" } });
     if (error instanceof PrintJobRateLimitError) {
       return NextResponse.json({ error: error.code, retryable: true, retryAfterSeconds: error.retryAfterSeconds }, {
         status: 429,

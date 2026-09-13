@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { db } from "../../../db";
 import { printJobs } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
-import { requireManagerPermission } from "../../../lib/authorization";
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import {
   isJobFilterStatus,
@@ -18,7 +17,6 @@ const MAX_CLEANUP_ROWS = 5000;
 export async function GET(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  try { requireManagerPermission(claims, "jobs.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const url = new URL(req.url);
   const statusParam = url.searchParams.get("status")?.trim().toLowerCase();
@@ -114,7 +112,6 @@ export async function GET(req: Request) {
 export async function DELETE(req: Request) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  try { requireManagerPermission(claims, "jobs.cancel"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const url = new URL(req.url);
   const beforeRaw = url.searchParams.get("before");
