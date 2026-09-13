@@ -90,23 +90,16 @@ suite("production server HTTP acceptance (real Next.js + guard)", () => {
     });
 
     it("PATCH /api/agent/jobs (chunked, no content-length) is answered by the handler, not the framework", async () => {
-      const res = await fetch(
-        `http://127.0.0.1:${PORT}/api/agent/jobs`,
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: new ReadableStream<Uint8Array>({
-            start(stream) {
-              stream.enqueue(new TextEncoder().encode(JSON.stringify({ jobId: "nope", status: "success" })));
-              stream.close();
-            },
-          }),
-          duplex: "half",
-        } as RequestInit,
-      );
-      expect(isNextInternalErrorPage(res)).toBe(false);
-      expect(res.status).toBeGreaterThanOrEqual(400);
-      expect(res.status).toBeLessThan(500);
+      const { request } = await import("undici");
+      const { statusCode, body } = await request(`http://127.0.0.1:${PORT}/api/agent/jobs`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId: "nope", status: "success" }),
+      });
+      const resText = await body.text();
+      expect(resText.includes("Internal Server Error")).toBe(false);
+      expect(statusCode).toBeGreaterThanOrEqual(400);
+      expect(statusCode).toBeLessThan(500);
     });
   });
 

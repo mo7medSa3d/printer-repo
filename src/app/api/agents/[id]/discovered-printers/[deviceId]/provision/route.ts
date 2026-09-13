@@ -91,9 +91,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       config: { ip: device.ipAddress ?? undefined, port: device.port ?? undefined, address: device.uri ?? undefined },
       capabilities: {
         ...(device.capabilities as Record<string, unknown> | null ?? {}),
-        discovered_via: device.source,
-        confidence: device.confidence,
-        verification: device.verification,
       },
     });
     await tx.update(discoveredDevices)

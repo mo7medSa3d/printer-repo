@@ -250,6 +250,7 @@ export type JobDeliveryEnvelope = {
   printerId: string;
   payload: unknown;
   expiresAt: string;
+  requestId: string | null;
 };
 
 export function buildJobEnvelope(job: ClaimedJobRow): JobDeliveryEnvelope {
