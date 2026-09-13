@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { agents, discoverySessions } from "../../../../../db/schema";
 import { validateManager } from "../../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../../lib/authorization";
 import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { validateDiscoveryRequest } from "../../../../../lib/discovery";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "agents.pair"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const { id: agentId } = await params;
   const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
@@ -31,7 +33,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     tenantId: claims.tenantId,
     agentId,
     status: "running",
-    config: body as any,
+    config: {
+      ...(v.cidr ? { cidr: v.cidr } : {}),
+      ...((body && typeof body === "object" && !Array.isArray(body)) ? body as Record<string, unknown> : {}),
+    },
     stats: {},
     startedAt: new Date(),
   });
@@ -41,6 +46,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "agents.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const { id: agentId } = await params;
   const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });

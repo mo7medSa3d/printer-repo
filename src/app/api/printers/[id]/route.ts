@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents, printers } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../lib/authorization";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { PRINTER_TYPES, CONNECTION_TYPES, PRINTER_PROTOCOLS, assertPrinterMetadataLimits } from "../../../../lib/printer-model";
+import { writeAuditEvent } from "../../../../lib/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +26,7 @@ const patchSchema = z.object({
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "printers.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const { id } = await params;
   const row = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -32,6 +35,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
+  if (claims) { try { requireManagerPermission(claims, "printers.manage"); } catch { return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "content-type": "application/json" } }); } }
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
   const existing = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
@@ -62,5 +66,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (err) return NextResponse.json({ error: err }, { status: 400 });
   }
   const [row] = await db.update(printers).set(update as never).where(and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId))).returning();
+  void writeAuditEvent({ tenantId: claims.tenantId, actorType: claims.userId ? "user" : "system", actorId: claims.userId ?? "legacy-manager", action: "printer.changed", resourceType: "printer", resourceId: id, metadata: { lifecycle: parsed.data.lifecycle ?? null } }).catch(() => undefined);
   return NextResponse.json(row);
 }

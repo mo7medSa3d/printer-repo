@@ -361,6 +361,10 @@ CREATE INDEX IF NOT EXISTS "printers_status_idx" ON "printers" USING btree ("sta
 ALTER TABLE "agents" DROP COLUMN IF EXISTS "pairing_code";--> statement-breakpoint
 ALTER TABLE "printers" DROP COLUMN IF EXISTS "type";--> statement-breakpoint
 ALTER TABLE "printers" DROP COLUMN IF EXISTS "enabled";--> statement-breakpoint
+--> statement-breakpoint
+--> statement-breakpoint
+--> statement-breakpoint
+--> statement-breakpoint
 DO $$
 BEGIN
   IF NOT EXISTS (

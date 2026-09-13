@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { printers, agents } from "../../../../../db/schema";
 import { validateManager } from "../../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../../lib/authorization";
 import { and, eq } from "drizzle-orm";
 import { getAgentAvailability } from "../../../../../lib/agent-availability";
 
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "printers.test"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
 
   const { id } = await params;
   const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });

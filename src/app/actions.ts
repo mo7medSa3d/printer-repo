@@ -21,6 +21,9 @@ import { canTransitionLifecycle } from "../lib/lifecycle";
 import { transitionAgentLifecycle, LifecycleConflict } from "../lib/agent-lifecycle";
 import { hasOpenAgentSocket, closeAgentSockets, publishAgentSessionClose } from "../server/ws";
 import { ActionError } from "../lib/action-error";
+import { writeAuditEvent } from "../lib/audit";
+import { requireManagerPermission } from "../lib/authorization";
+import { enforceTenantResourceEntitlement, TenantEntitlementError } from "../lib/entitlements";
 
 async function requireManager() {
   const token = (await cookies()).get(getManagerCookieName())?.value ?? null;
@@ -31,6 +34,7 @@ async function requireManager() {
 
 export async function createAgent(name: string) {
   const manager = await requireManager();
+  requireManagerPermission(manager, "agents.pair");
   if (typeof name !== "string" || !name.trim() || name.trim().length > 200) throw new ActionError("Agent name must be 1-200 characters.", 400);
   // 0032 guarantees that no two rows share a pending pairing-code hash
   // (the register route looks codes up without a tenant boundary), so
@@ -51,18 +55,34 @@ export async function createAgent(name: string) {
   if (!pairingCode) throw new ActionError("Could not mint a unique pairing code. Try again.", 500);
   const id = `agt_${nanoid(8)}`;
   const expiresAt = new Date(Date.now() + 1000 * 60 * 10);
-  await db.insert(agents).values({
-    id, tenantId: manager.tenantId, name: name.trim(),
-    pairingCodeHash: hashPairingCode(pairingCode),
-    pairingCodeExpiresAt: expiresAt,
-    status: "offline", lifecycle: "active",
-  });
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('agents:' || ${manager.tenantId}))`);
+      await enforceTenantResourceEntitlement(
+        tx,
+        manager.tenantId,
+        "max_agents",
+        sql`SELECT COUNT(*)::int AS count FROM agents WHERE tenant_id = ${manager.tenantId} AND lifecycle <> 'retired'`,
+      );
+      await tx.insert(agents).values({
+        id, tenantId: manager.tenantId, name: name.trim(),
+        pairingCodeHash: hashPairingCode(pairingCode),
+        pairingCodeExpiresAt: expiresAt,
+        status: "offline", lifecycle: "active",
+      });
+    });
+  } catch (error) {
+    if (error instanceof TenantEntitlementError) throw new ActionError(error.message, 429);
+    throw error;
+  }
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: "agent.paired", resourceType: "agent", resourceId: id }).catch(() => undefined);
   revalidatePath("/dashboard");
   return { id, pairingCode, expiresAt, expires_at: expiresAt.toISOString() };
 }
 
 export async function deleteAgent(id: string) {
   const manager = await requireManager();
+  requireManagerPermission(manager, "agents.retire");
   if (typeof id !== "string" || !id.trim()) throw new ActionError("agent id is required", 400);
   const agentId = id.trim();
 
@@ -119,12 +139,14 @@ export async function deleteAgent(id: string) {
   try { closeAgentSockets(agentId); } catch {}
   void publishAgentSessionClose(agentId).catch(() => { /* best-effort revocation */ });
 
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: "agent.deleted", resourceType: "agent", resourceId: agentId }).catch(() => undefined);
   revalidatePath("/dashboard");
   return { ok: true };
 }
 
 export async function createPrintJob(printerId: string, payload: unknown) {
   const manager = await requireManager();
+  requireManagerPermission(manager, "jobs.create");
   const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager", tenantId: manager.tenantId });
   revalidatePath("/dashboard");
   return { id: result.id };
@@ -132,6 +154,7 @@ export async function createPrintJob(printerId: string, payload: unknown) {
 
 export async function createTestPrintJob(printerId: string) {
   const manager = await requireManager();
+  requireManagerPermission(manager, "printers.test");
   const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, printerId), eq(printers.tenantId, manager.tenantId)) });
   if (!printer) throw new ActionError("Printer not found", 404);
   const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, printer.agentId), eq(agents.tenantId, manager.tenantId)) });
@@ -167,6 +190,7 @@ export async function createTestPrintJob(printerId: string) {
  */
 export async function reprintJob(jobId: string) {
   const manager = await requireManager();
+  requireManagerPermission(manager, "jobs.retry");
   if (typeof jobId !== "string" || !jobId.trim()) throw new ActionError("job id is required", 400);
   const job = await db.query.printJobs.findFirst({ where: and(eq(printJobs.id, jobId.trim()), eq(printJobs.tenantId, manager.tenantId)) });
   if (!job) throw new ActionError("Job not found", 404);
@@ -191,6 +215,7 @@ export async function reprintJob(jobId: string) {
 
 export async function setPrinterLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
   const manager = await requireManager();
+  requireManagerPermission(manager, "printers.manage");
   const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, manager.tenantId)) });
   if (!printer) throw new ActionError("Printer not found", 404);
   if (printer.lifecycle === lifecycle) {
@@ -204,14 +229,17 @@ export async function setPrinterLifecycle(id: string, lifecycle: "active" | "dis
     if (owner.lifecycle !== "active") throw new ActionError(`The agent owning this printer is ${owner.lifecycle}; reactivate the agent first.`, 409);
   }
   await db.update(printers).set({ lifecycle, updatedAt: new Date() }).where(and(eq(printers.id, id), eq(printers.tenantId, manager.tenantId)));
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: `printer.${lifecycle}`, resourceType: "printer", resourceId: id }).catch(() => undefined);
   revalidatePath("/dashboard");
 }
 
 export async function setAgentLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
   const manager = await requireManager();
+  requireManagerPermission(manager, "agents.disable");
   try {
     const result = await transitionAgentLifecycle(id, lifecycle, manager.tenantId);
     if (!result) throw new ActionError("Agent not found", 404);
+    void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: `agent.${lifecycle}`, resourceType: "agent", resourceId: id }).catch(() => undefined);
     revalidatePath("/dashboard");
     return { lifecycle: result.lifecycle, pairingCode: result.pairingCode };
   } catch (error) {
@@ -222,6 +250,7 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
 
 export async function getDashboardState() {
   const manager = await requireManager();
+  requireManagerPermission(manager, "tenant.read");
   const allAgents = await db
     .select({
       id: agents.id,
@@ -249,7 +278,6 @@ export async function getDashboardState() {
     .select({
       id: printJobs.id,
       tenantId: printJobs.tenantId,
-      apiKeyId: printJobs.apiKeyId,
       destination: printJobs.destination,
       documentType: printJobs.documentType,
       agentId: printJobs.agentId,
@@ -261,7 +289,6 @@ export async function getDashboardState() {
       retries: printJobs.retries,
       deliveryAttempts: printJobs.deliveryAttempts,
       claimedAt: printJobs.claimedAt,
-      claimToken: printJobs.claimToken,
       deliveredAt: printJobs.deliveredAt,
       ackedAt: printJobs.ackedAt,
       expiresAt: printJobs.expiresAt,
@@ -283,6 +310,7 @@ export async function getDashboardJobs(options?: {
   offset?: number;
 }) {
   const manager = await requireManager();
+  requireManagerPermission(manager, "jobs.read");
   const statusParam = options?.status?.trim().toLowerCase();
   const searchParam = options?.search?.trim();
   const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
@@ -316,14 +344,12 @@ export async function getDashboardJobs(options?: {
       );
     } else if (statusParam === "unassigned") {
       conditions.push(
-        // Non-null: or() always receives four fixed clauses (drizzle types
-        // the result SQL|undefined regardless of arity).
         or(
           eq(printJobs.destination, "unassigned"),
           eq(printJobs.printerId, "unassigned"),
           sql`${printJobs.printerId} NOT IN (SELECT id FROM printers WHERE lifecycle = 'active')`,
           sql`${printJobs.agentId} NOT IN (SELECT id FROM agents WHERE lifecycle = 'active')`
-        )!
+        )
       );
     }
   }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents, printers, printJobs } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../lib/authorization";
 import { eq, count, desc, and } from "drizzle-orm";
 import { z } from "zod";
 import { transitionAgentLifecycle, LifecycleConflict } from "../../../../lib/agent-lifecycle";
@@ -13,6 +14,7 @@ const patchSchema = z.object({ lifecycle: z.enum(["active", "disabled", "retired
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(claims, "agents.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const { id } = await params;
   const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, id), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -24,6 +26,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const claims = await validateManager(req);
+  if (claims) { try { requireManagerPermission(claims, "agents.disable"); } catch { return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "content-type": "application/json" } }); } }
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
   let body: unknown; try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
