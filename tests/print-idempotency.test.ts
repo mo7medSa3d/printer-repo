@@ -247,6 +247,7 @@ suite("print idempotency (Odoo → Gateway)", () => {
     await expect(
       createPrintJobForPrinter(otherPrinterId, payload, {
         requestedBy: "internal-service",
+        tenantId: f.tenantId,
         idempotencyKey: key,
         destination: "POS",
         documentType: "invoice",

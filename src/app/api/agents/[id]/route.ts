@@ -29,8 +29,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   let body: unknown; try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
   const parsed = patchSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "lifecycle is required" }, { status: 400 });
+  const { lifecycle } = parsed.data;
   try {
-    const result = await transitionAgentLifecycle(id, parsed.data.lifecycle, claims.tenantId);
+    const result = await transitionAgentLifecycle(id, lifecycle, claims.tenantId);
     if (!result) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ ok: true, lifecycle: result.lifecycle, pairingCode: result.pairingCode });
   } catch (error) {

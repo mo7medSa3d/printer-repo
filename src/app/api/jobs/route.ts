@@ -41,14 +41,16 @@ export async function GET(req: Request) {
       conditions.push(eq(printJobs.status, "success"));
     } else if (statusParam === "unknown" || statusParam === "attention") {
       conditions.push(
-        or(...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`${printJobs.error} LIKE ${m + "%"}`))
+        // Non-null: PHYSICAL_OUTCOME_UNKNOWN_MARKERS is a non-empty tuple, so or() always receives >= 1 clause.
+        or(...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`${printJobs.error} LIKE ${m + "%"}`))!
       );
     } else if (statusParam === "failed") {
       conditions.push(
+        // Non-null: and() always receives the fixed eq() clause plus the marker clauses.
         and(
           eq(printJobs.status, "failed"),
           ...PHYSICAL_OUTCOME_UNKNOWN_MARKERS.map((m) => sql`COALESCE(${printJobs.error}, '') NOT LIKE ${m + "%"}`)
-        )
+        )!
       );
     } else if (statusParam === "unassigned") {
       conditions.push(
@@ -68,6 +70,7 @@ export async function GET(req: Request) {
   if (searchParam) {
     const term = `%${searchParam.toLowerCase()}%`;
     conditions.push(
+      // Non-null: or() always receives six fixed LIKE clauses.
       or(
         sql`LOWER(${printJobs.id}) LIKE ${term}`,
         sql`LOWER(COALESCE(${printJobs.destination}, '')) LIKE ${term}`,
@@ -75,7 +78,7 @@ export async function GET(req: Request) {
         sql`LOWER(${printJobs.printerId}) LIKE ${term}`,
         sql`LOWER(${printJobs.agentId}) LIKE ${term}`,
         sql`LOWER(COALESCE(${printJobs.error}, '')) LIKE ${term}`
-      )
+      )!
     );
   }
 
@@ -100,7 +103,7 @@ export async function GET(req: Request) {
       updatedAt: printJobs.updatedAt,
     })
     .from(printJobs)
-    .where(conditions.length ? and(...conditions) : undefined)
+    .where(conditions.length ? and(...conditions)! : undefined)
     .orderBy(desc(printJobs.createdAt))
     .limit(limit)
     .offset(offset);

@@ -194,22 +194,16 @@ export default function DashboardClient({
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   // The job list is metadata-only (payload bytes can be multi-MB per job).
   // The inspector loads the full payload lazily, per selected job, and never
-  // keeps it in the polling snapshots.
+  // keeps it in the polling snapshots. Loading state is derived (no separate
+  // state variable): payload is loading while a job without an inline
+  // payload is selected and no fetch has settled yet.
   const [selectedJobPayload, setSelectedJobPayload] = useState<unknown>(undefined);
-  const [selectedJobPayloadLoading, setSelectedJobPayloadLoading] = useState(false);
+  const selectedJobPayloadLoading =
+    selectedJob !== null && selectedJob.payload === undefined && selectedJobPayload === undefined;
 
   useEffect(() => {
+    if (!selectedJob || selectedJob.payload !== undefined) return;
     let cancelled = false;
-    if (!selectedJob) {
-      setSelectedJobPayload(undefined);
-      return;
-    }
-    if (selectedJob.payload !== undefined) {
-      setSelectedJobPayload(selectedJob.payload);
-      return;
-    }
-    setSelectedJobPayload(undefined);
-    setSelectedJobPayloadLoading(true);
     void fetch(`/api/jobs/${encodeURIComponent(selectedJob.id)}`, { credentials: "include", cache: "no-store" })
       .then(async (res) => {
         if (cancelled) return;
@@ -222,12 +216,12 @@ export default function DashboardClient({
       })
       .catch(() => {
         if (!cancelled) setSelectedJobPayload(null);
-      })
-      .finally(() => {
-        if (!cancelled) setSelectedJobPayloadLoading(false);
       });
     return () => {
       cancelled = true;
+      // Clear the previous job's payload when the selection changes so a
+      // stale document is never shown while the next fetch is in flight.
+      setSelectedJobPayload(undefined);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedJob?.id]);

@@ -1,6 +1,6 @@
 import { createServer } from "http";
 import type { Server as HttpServer } from "http";
-import type { WebSocketServer } from "ws";
+import type { WebSocket, WebSocketServer } from "ws";
 import next from "next";
 import { attachAgentWSS } from "./src/server/ws";
 import { guardApiRequest } from "./src/server/request-guard";
@@ -69,7 +69,17 @@ function shutdown(signal: string): void {
   // Close agent WebSockets FIRST so agents fail over to their poll path with
   // a clean 1001 instead of a TCP reset mid-frame; this also releases the
   // LISTEN connection owned by the notification listener (wss 'close' hook).
-  try { agentWss?.close(1001, "gateway shutting down"); } catch { /* already closed */ }
+  // NOTE: WebSocketServer.close() takes only an optional callback — the
+  // close code/reason is a per-socket API, so each client is closed
+  // individually before the server itself is shut down.
+  try {
+    agentWss?.clients.forEach((client: WebSocket) => {
+      try {
+        client.close(1001, "gateway shutting down");
+      } catch { /* already closing */ }
+    });
+  } catch { /* already closed */ }
+  try { agentWss?.close(); } catch { /* already closed */ }
   if (!httpServer) {
     void pool.end().finally(() => process.exit(0));
     return;
