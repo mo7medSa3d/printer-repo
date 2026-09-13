@@ -291,6 +291,42 @@ END $$;
 DO $$
 BEGIN
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'agents_tenant_id_unique'
+  ) THEN
+    ALTER TABLE "agents" ADD CONSTRAINT "agents_tenant_id_unique" UNIQUE("tenant_id","id");
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'api_keys_tenant_id_unique'
+  ) THEN
+    ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_tenant_id_unique" UNIQUE("tenant_id","id");
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'print_jobs_tenant_id_unique'
+  ) THEN
+    ALTER TABLE "print_jobs" ADD CONSTRAINT "print_jobs_tenant_id_unique" UNIQUE("tenant_id","id");
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'printers_tenant_id_unique'
+  ) THEN
+    ALTER TABLE "printers" ADD CONSTRAINT "printers_tenant_id_unique" UNIQUE("tenant_id","id");
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'print_jobs_tenant_id_agent_id_agents_tenant_id_id_fk'
   ) THEN
     ALTER TABLE "print_jobs" ADD CONSTRAINT "print_jobs_tenant_id_agent_id_agents_tenant_id_id_fk" FOREIGN KEY ("tenant_id","agent_id") REFERENCES "public"."agents"("tenant_id","id") ON DELETE no action ON UPDATE no action;
@@ -325,42 +361,6 @@ CREATE INDEX IF NOT EXISTS "printers_status_idx" ON "printers" USING btree ("sta
 ALTER TABLE "agents" DROP COLUMN IF EXISTS "pairing_code";--> statement-breakpoint
 ALTER TABLE "printers" DROP COLUMN IF EXISTS "type";--> statement-breakpoint
 ALTER TABLE "printers" DROP COLUMN IF EXISTS "enabled";--> statement-breakpoint
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agents_tenant_id_unique'
-  ) THEN
-    ALTER TABLE "agents" ADD CONSTRAINT "agents_tenant_id_unique" UNIQUE("tenant_id","id");
-  END IF;
-END $$;
---> statement-breakpoint
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'api_keys_tenant_id_unique'
-  ) THEN
-    ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_tenant_id_unique" UNIQUE("tenant_id","id");
-  END IF;
-END $$;
---> statement-breakpoint
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'print_jobs_tenant_id_unique'
-  ) THEN
-    ALTER TABLE "print_jobs" ADD CONSTRAINT "print_jobs_tenant_id_unique" UNIQUE("tenant_id","id");
-  END IF;
-END $$;
---> statement-breakpoint
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'printers_tenant_id_unique'
-  ) THEN
-    ALTER TABLE "printers" ADD CONSTRAINT "printers_tenant_id_unique" UNIQUE("tenant_id","id");
-  END IF;
-END $$;
---> statement-breakpoint
 DO $$
 BEGIN
   IF NOT EXISTS (
