@@ -1,6 +1,7 @@
 import { createServer } from "http";
 import type { Server as HttpServer } from "http";
 import type { WebSocket, WebSocketServer } from "ws";
+import { parse } from "url";
 import next from "next";
 import { attachAgentWSS } from "./src/server/ws";
 import { guardApiRequest } from "./src/server/request-guard";
@@ -121,7 +122,7 @@ app.prepare().then(() => {
     guardApiRequest(req, res)
       .then((guarded) => {
         if (!guarded) return;
-        handle(guarded, res);
+        handle(guarded as any, res as any);
       })
       .catch((error) => {
         console.error("[request-guard] failed to process request", error);
