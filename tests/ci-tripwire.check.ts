@@ -42,13 +42,15 @@ describe("CI PostgreSQL tripwire", () => {
         internal_idem: 1,
       });
       // DB-enforced payload protocol contract: a raw payload without an
-      // explicit protocol must be rejected by PostgreSQL itself.
+      // explicit protocol must be rejected by PostgreSQL itself. tenant_id
+      // is included so the rejection provably comes from the contract
+      // CHECK (23514), not from a NOT NULL violation (23502).
       await expect(
         client.query(
-          `INSERT INTO print_jobs (id, agent_id, printer_id, status, payload, expires_at)
-           VALUES ('tripwire_bad_payload', $1, $2, 'queued',
+          `INSERT INTO print_jobs (id, tenant_id, agent_id, printer_id, status, payload, expires_at)
+           VALUES ('tripwire_bad_payload', $1, $2, $3, 'queued',
                    '{"type":"raw","encoding":"base64","data":"aA=="}'::jsonb, now() + interval '1 hour')`,
-          [f.agentId, f.printerId]
+          [f.tenantId, f.agentId, f.printerId]
         )
       ).rejects.toThrow(/contract|check/i);
     } finally {

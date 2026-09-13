@@ -7,9 +7,9 @@ How to work on this repository. Setup and operations for a deployed system are i
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Node | ≥ 22 (`.nvmrc`, `.node-version`) | Gateway, tests, desktop WebView bundle |
-| PostgreSQL | 14+ (developed against 18) | Runtime and the database-backed test suites |
-| Go | 1.21+ (`agent/go.mod`) | Agent and CLI |
+| Node | ≥ 24.15 (`package.json` engines, `engine-strict` in `.npmrc`; pinned 24.20/24.21 in `.nvmrc`/Dockerfile) | Gateway, tests, desktop WebView bundle |
+| PostgreSQL | 16.x (compose pins `postgres:16.15-alpine`) | Runtime and the database-backed test suites |
+| Go | ≥ 1.26 (`agent/go.mod`) | Agent and CLI |
 | Rust + `cargo-tauri` v2 | stable | Desktop shell — **Windows host required** for the installer |
 | Python 3 | any 3.x | Odoo addon syntax/XML checks |
 

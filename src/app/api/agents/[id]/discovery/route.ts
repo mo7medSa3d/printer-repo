@@ -13,11 +13,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id: agentId } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
 
-  const active = await db.query.discoverySessions.findFirst({ where: and(eq(discoverySessions.agentId, agentId), eq(discoverySessions.status, "running")) });
+  const active = await db.query.discoverySessions.findFirst({ where: and(eq(discoverySessions.agentId, agentId), eq(discoverySessions.tenantId, claims.tenantId), eq(discoverySessions.status, "running")) });
   if (active) return NextResponse.json({ error: "Discovery already running for this agent", discoveryId: active.id }, { status: 409 });
 
   let body: unknown = {};
@@ -28,6 +28,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const discoveryId = `dsc_${nanoid(12)}`;
   await db.insert(discoverySessions).values({
     id: discoveryId,
+    tenantId: claims.tenantId,
     agentId,
     status: "running",
     config: body as any,
@@ -41,8 +42,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id: agentId } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  const rows = await db.query.discoverySessions.findMany({ where: eq(discoverySessions.agentId, agentId), orderBy: [desc(discoverySessions.createdAt)], limit: 20 });
+  const rows = await db.query.discoverySessions.findMany({ where: and(eq(discoverySessions.agentId, agentId), eq(discoverySessions.tenantId, claims.tenantId)), orderBy: [desc(discoverySessions.createdAt)], limit: 20 });
   return NextResponse.json(rows);
 }

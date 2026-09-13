@@ -12,7 +12,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id: agentId, deviceId } = await params;
 
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
 
@@ -20,7 +20,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const locked = await tx.execute(sql`
       SELECT id, candidate_status, verification, provisioned_printer_id
       FROM discovered_devices
-      WHERE id = ${deviceId} AND agent_id = ${agentId}
+      WHERE id = ${deviceId} AND agent_id = ${agentId} AND tenant_id = ${claims.tenantId}
       FOR UPDATE
     `);
     const row = (locked as any).rows?.[0];
@@ -33,7 +33,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     const device = await tx.query.discoveredDevices.findFirst({
-      where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId)),
+      where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId), eq(discoveredDevices.tenantId, claims.tenantId)),
     });
     if (!device) return { kind: "not_found" as const };
 
@@ -60,14 +60,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     if (device.ipAddress && device.port) {
-      const all = await tx.query.printers.findMany({ where: eq(printers.agentId, agentId) });
+      const all = await tx.query.printers.findMany({ where: and(eq(printers.agentId, agentId), eq(printers.tenantId, claims.tenantId)) });
       for (const p of all) {
         const cfg = p.config as { ip?: string; address?: string; port?: number } | null;
         const ip = cfg?.ip ?? cfg?.address;
         if (ip === device.ipAddress && cfg?.port === device.port) {
           await tx.update(discoveredDevices)
             .set({ candidateStatus: "provisioned", provisionedPrinterId: p.id, updatedAt: new Date() })
-            .where(and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.candidateStatus, "verified")));
+            .where(and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.tenantId, claims.tenantId), eq(discoveredDevices.candidateStatus, "verified")));
           return { kind: "already" as const, printerId: p.id };
         }
       }
@@ -76,6 +76,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const printerId = `printer_${nanoid(10)}`;
     await tx.insert(printers).values({
       id: printerId,
+      tenantId: claims.tenantId,
       agentId,
       name: device.deviceName ?? device.model ?? `Printer ${device.ipAddress ?? deviceId}`,
       printerType: "physical",
@@ -94,7 +95,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     await tx.update(discoveredDevices)
       .set({ candidateStatus: "provisioned", provisionedPrinterId: printerId, updatedAt: new Date() })
-      .where(and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.candidateStatus, "verified")));
+      .where(and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.tenantId, claims.tenantId), eq(discoveredDevices.candidateStatus, "verified")));
 
     return { kind: "created" as const, printerId };
   });

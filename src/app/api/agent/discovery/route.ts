@@ -50,7 +50,7 @@ export async function POST(req: Request) {
   if (!discoveryId) return NextResponse.json({ error: "discoveryId required" }, { status: 400 });
   if (devices.length > 5000) return NextResponse.json({ error: "Too many devices in one discovery report" }, { status: 413 });
 
-  const session = await db.query.discoverySessions.findFirst({ where: eq(discoverySessions.id, discoveryId) });
+  const session = await db.query.discoverySessions.findFirst({ where: and(eq(discoverySessions.id, discoveryId), eq(discoverySessions.agentId, agent.id), eq(discoverySessions.tenantId, agent.tenantId)) });
   if (!session) return NextResponse.json({ error: "Discovery not found" }, { status: 404 });
   if (session.agentId !== agent.id) return NextResponse.json({ error: "Forbidden: discovery belongs to another agent" }, { status: 403 });
   if (session.status !== "running") return NextResponse.json({ error: `Discovery already ${session.status}` }, { status: 409 });
@@ -85,13 +85,14 @@ export async function POST(req: Request) {
       verification: "candidate",
       capabilities: d.capabilities as any,
       rawMetadata: d.rawMetadata as any,
+      tenantId: agent.tenantId,
     }).onConflictDoNothing();
   }
 
   if (status && ["completed", "partial", "failed", "cancelled"].includes(status)) {
     await db.update(discoverySessions)
       .set({ status, completedAt: new Date(), updatedAt: new Date(), stats: { candidates: parsedDevices.length } as any })
-      .where(eq(discoverySessions.id, discoveryId));
+      .where(and(eq(discoverySessions.id, discoveryId), eq(discoverySessions.agentId, agent.id), eq(discoverySessions.tenantId, agent.tenantId)));
   }
   return NextResponse.json({ ok: true, inserted: parsedDevices.length, verification: "candidate-only" });
 }

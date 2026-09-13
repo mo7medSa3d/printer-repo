@@ -56,7 +56,10 @@ Exactly-once physical printing is not claimed. A device can accept bytes immedia
 - list/read endpoints never expose raw secrets
 - revoke immediately invalidates a key
 - Odoo Gateway authentication is based on the Odoo installation API key
-- Gateway URL validation blocks credentials, query/fragment, and unauthorized private targets
+- Gateway URL validation blocks credentials, query/fragment, and API paths
+  (shape only). Private/loopback targets are accepted by design; the control
+  is admin-only configuration — verify operationally that production Gateway
+  URLs are `https://` and non-internal.
 - no secret/payload logging
 - Odoo company ACL and record-rule isolation
 - Gateway runtime authentication and rate limits remain active

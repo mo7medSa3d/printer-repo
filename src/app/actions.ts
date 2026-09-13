@@ -30,13 +30,29 @@ async function requireManager() {
 }
 
 export async function createAgent(name: string) {
-  await requireManager();
+  const manager = await requireManager();
   if (typeof name !== "string" || !name.trim() || name.trim().length > 200) throw new ActionError("Agent name must be 1-200 characters.", 400);
-  const pairingCode = generatePairingCode();
+  // 0032 guarantees that no two rows share a pending pairing-code hash
+  // (the register route looks codes up without a tenant boundary), so
+  // regenerate on the astronomically rare collision instead of letting
+  // the INSERT violate the constraint and mint an ambiguous code.
+  let pairingCode = "";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = generatePairingCode();
+    const clash = await db.query.agents.findFirst({
+      where: eq(agents.pairingCodeHash, hashPairingCode(candidate)),
+      columns: { id: true },
+    });
+    if (!clash) {
+      pairingCode = candidate;
+      break;
+    }
+  }
+  if (!pairingCode) throw new ActionError("Could not mint a unique pairing code. Try again.", 500);
   const id = `agt_${nanoid(8)}`;
   const expiresAt = new Date(Date.now() + 1000 * 60 * 10);
   await db.insert(agents).values({
-    id, name: name.trim(),
+    id, tenantId: manager.tenantId, name: name.trim(),
     pairingCodeHash: hashPairingCode(pairingCode),
     pairingCodeExpiresAt: expiresAt,
     status: "offline", lifecycle: "active",
@@ -46,7 +62,7 @@ export async function createAgent(name: string) {
 }
 
 export async function deleteAgent(id: string) {
-  await requireManager();
+  const manager = await requireManager();
   if (typeof id !== "string" || !id.trim()) throw new ActionError("agent id is required", 400);
   const agentId = id.trim();
 
@@ -60,24 +76,24 @@ export async function deleteAgent(id: string) {
     const locked = await tx.execute(sql`
       SELECT id, status, lifecycle
       FROM agents
-      WHERE id = ${agentId}
+      WHERE id = ${agentId} AND tenant_id = ${manager.tenantId}
       FOR UPDATE
     `);
     const agent = (locked as unknown as { rows?: { id: string; status: string; lifecycle: string }[] }).rows?.[0];
     if (!agent) throw new ActionError("Agent not found", 404);
     if (agent.status === "online") {
-      throw new Error("This agent is still connected. Stop the agent service first, then delete it.");
+      throw new ActionError("This agent is still connected. Stop the agent service first, then delete it.", 409);
     }
     if (agent.lifecycle === "retired") {
       throw new ActionError("Retired agents are kept for audit history and cannot be deleted.", 409);
     }
 
     // Referential integrity: check if this agent or any of its printers have historical print jobs
-    const agentPrinters = await tx.select({ id: printers.id }).from(printers).where(eq(printers.agentId, agent.id));
+    const agentPrinters = await tx.select({ id: printers.id }).from(printers).where(and(eq(printers.agentId, agent.id), eq(printers.tenantId, manager.tenantId)));
     const printerIds = agentPrinters.map((p) => p.id);
-    const jobConditions = [eq(printJobs.agentId, agent.id)];
+    const jobConditions = [and(eq(printJobs.agentId, agent.id), eq(printJobs.tenantId, manager.tenantId))];
     if (printerIds.length > 0) {
-      jobConditions.push(inArray(printJobs.printerId, printerIds));
+      jobConditions.push(and(inArray(printJobs.printerId, printerIds), eq(printJobs.tenantId, manager.tenantId)));
     }
     const [{ c: jobCount }] = await tx
       .select({ c: count() })
@@ -89,14 +105,14 @@ export async function deleteAgent(id: string) {
     }
 
     // Clean removable transient discovery runtime records
-    await tx.delete(discoveredDevices).where(eq(discoveredDevices.agentId, agent.id));
-    await tx.delete(discoverySessions).where(eq(discoverySessions.agentId, agent.id));
+    await tx.delete(discoveredDevices).where(and(eq(discoveredDevices.agentId, agent.id), eq(discoveredDevices.tenantId, manager.tenantId)));
+    await tx.delete(discoverySessions).where(and(eq(discoverySessions.agentId, agent.id), eq(discoverySessions.tenantId, manager.tenantId)));
 
     // Clean removable runtime printers registered by this agent
-    await tx.delete(printers).where(eq(printers.agentId, agent.id));
+    await tx.delete(printers).where(and(eq(printers.agentId, agent.id), eq(printers.tenantId, manager.tenantId)));
 
     // Permanently delete the agent
-    await tx.delete(agents).where(eq(agents.id, agent.id));
+    await tx.delete(agents).where(and(eq(agents.id, agent.id), eq(agents.tenantId, manager.tenantId)));
   });
 
   // Terminate any remaining socket connections and publish revocation across cluster
@@ -108,17 +124,17 @@ export async function deleteAgent(id: string) {
 }
 
 export async function createPrintJob(printerId: string, payload: unknown) {
-  await requireManager();
-  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager" });
+  const manager = await requireManager();
+  const result = await createPrintJobForPrinter(printerId, payload, { requestedBy: "manager", tenantId: manager.tenantId });
   revalidatePath("/dashboard");
   return { id: result.id };
 }
 
 export async function createTestPrintJob(printerId: string) {
-  await requireManager();
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, printerId) });
+  const manager = await requireManager();
+  const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, printerId), eq(printers.tenantId, manager.tenantId)) });
   if (!printer) throw new ActionError("Printer not found", 404);
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, printer.agentId), eq(agents.tenantId, manager.tenantId)) });
   if (!agent) throw new ActionError("The agent that owns this printer is missing.", 500);
   try {
     const payload = buildTestPrintPayloadForPrinter(printer.name, agent.name ?? printer.agentId, {
@@ -129,6 +145,7 @@ export async function createTestPrintJob(printerId: string) {
     const result = await createPrintJobForPrinter(printerId, payload, {
       requestedBy: "manager-test",
       documentType: "test_page",
+      tenantId: manager.tenantId,
     });
     revalidatePath("/dashboard");
     return { id: result.id };
@@ -149,9 +166,9 @@ export async function createTestPrintJob(printerId: string) {
  * reprints of unknown outcomes are always an explicit operator action.
  */
 export async function reprintJob(jobId: string) {
-  await requireManager();
+  const manager = await requireManager();
   if (typeof jobId !== "string" || !jobId.trim()) throw new ActionError("job id is required", 400);
-  const job = await db.query.printJobs.findFirst({ where: eq(printJobs.id, jobId.trim()) });
+  const job = await db.query.printJobs.findFirst({ where: and(eq(printJobs.id, jobId.trim()), eq(printJobs.tenantId, manager.tenantId)) });
   if (!job) throw new ActionError("Job not found", 404);
   if (!isTerminal(job.status as JobStatus)) {
     throw new ActionError("Only finished, failed, or expired jobs can be reprinted. The current job is still in progress.", 409);
@@ -159,21 +176,22 @@ export async function reprintJob(jobId: string) {
   const [attempts] = await db
     .select({ c: count() })
     .from(printJobs)
-    .where(sql`idempotency_key LIKE ${`gw-reprint:${job.id}:%`}`);
+    .where(and(eq(printJobs.tenantId, manager.tenantId), sql`idempotency_key LIKE ${`gw-reprint:${job.id}:%`}`));
   const derivedKey = `gw-reprint:${job.id}:${Number(attempts?.c ?? 0) + 1}`;
   const result = await createPrintJobForPrinter(job.printerId, job.payload, {
     requestedBy: "manager-reprint",
     idempotencyKey: derivedKey,
     destination: job.destination,
     documentType: job.documentType ?? undefined,
+    tenantId: manager.tenantId,
   });
   revalidatePath("/dashboard");
   return { id: result.id, reused: result.isReused === true };
 }
 
 export async function setPrinterLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
-  await requireManager();
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, id) });
+  const manager = await requireManager();
+  const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, manager.tenantId)) });
   if (!printer) throw new ActionError("Printer not found", 404);
   if (printer.lifecycle === lifecycle) {
     revalidatePath("/dashboard");
@@ -181,18 +199,18 @@ export async function setPrinterLifecycle(id: string, lifecycle: "active" | "dis
   }
   if (!canTransitionLifecycle(printer.lifecycle, lifecycle)) throw new ActionError(`This printer cannot go from ${printer.lifecycle} to ${lifecycle}.`, 409);
   if (lifecycle === "active") {
-    const owner = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+    const owner = await db.query.agents.findFirst({ where: and(eq(agents.id, printer.agentId), eq(agents.tenantId, manager.tenantId)) });
     if (!owner) throw new ActionError("The agent that owns this printer no longer exists.", 404);
     if (owner.lifecycle !== "active") throw new ActionError(`The agent owning this printer is ${owner.lifecycle}; reactivate the agent first.`, 409);
   }
-  await db.update(printers).set({ lifecycle, updatedAt: new Date() }).where(eq(printers.id, id));
+  await db.update(printers).set({ lifecycle, updatedAt: new Date() }).where(and(eq(printers.id, id), eq(printers.tenantId, manager.tenantId)));
   revalidatePath("/dashboard");
 }
 
 export async function setAgentLifecycle(id: string, lifecycle: "active" | "disabled" | "retired") {
-  await requireManager();
+  const manager = await requireManager();
   try {
-    const result = await transitionAgentLifecycle(id, lifecycle);
+    const result = await transitionAgentLifecycle(id, lifecycle, manager.tenantId);
     if (!result) throw new ActionError("Agent not found", 404);
     revalidatePath("/dashboard");
     return { lifecycle: result.lifecycle, pairingCode: result.pairingCode };
@@ -203,7 +221,7 @@ export async function setAgentLifecycle(id: string, lifecycle: "active" | "disab
 }
 
 export async function getDashboardState() {
-  await requireManager();
+  const manager = await requireManager();
   const allAgents = await db
     .select({
       id: agents.id,
@@ -218,12 +236,42 @@ export async function getDashboardState() {
       printerCount: count(printers.id),
     })
     .from(agents)
-    .leftJoin(printers, eq(printers.agentId, agents.id))
+    .leftJoin(printers, and(eq(printers.agentId, agents.id), eq(printers.tenantId, manager.tenantId)))
+    .where(eq(agents.tenantId, manager.tenantId))
     .groupBy(agents.id)
     .orderBy(desc(agents.createdAt));
 
-  const allPrinters = await db.select().from(printers).orderBy(desc(printers.createdAt));
-  const allJobs = await db.select().from(printJobs).orderBy(desc(printJobs.createdAt)).limit(50);
+  const allPrinters = await db.select().from(printers).where(eq(printers.tenantId, manager.tenantId)).orderBy(desc(printers.createdAt));
+  // Metadata-only projection (same contract as the dashboard page): the
+  // 50-row list must not carry multi-MB base64 payload blobs into the
+  // browser on every poll; the inspector fetches payloads per job.
+  const allJobs = await db
+    .select({
+      id: printJobs.id,
+      tenantId: printJobs.tenantId,
+      apiKeyId: printJobs.apiKeyId,
+      destination: printJobs.destination,
+      documentType: printJobs.documentType,
+      agentId: printJobs.agentId,
+      printerId: printJobs.printerId,
+      status: printJobs.status,
+      error: printJobs.error,
+      requestedBy: printJobs.requestedBy,
+      idempotencyKey: printJobs.idempotencyKey,
+      retries: printJobs.retries,
+      deliveryAttempts: printJobs.deliveryAttempts,
+      claimedAt: printJobs.claimedAt,
+      claimToken: printJobs.claimToken,
+      deliveredAt: printJobs.deliveredAt,
+      ackedAt: printJobs.ackedAt,
+      expiresAt: printJobs.expiresAt,
+      createdAt: printJobs.createdAt,
+      updatedAt: printJobs.updatedAt,
+    })
+    .from(printJobs)
+    .where(eq(printJobs.tenantId, manager.tenantId))
+    .orderBy(desc(printJobs.createdAt))
+    .limit(50);
 
   return { agents: allAgents, printers: allPrinters, jobs: allJobs };
 }
@@ -234,7 +282,7 @@ export async function getDashboardJobs(options?: {
   limit?: number;
   offset?: number;
 }) {
-  await requireManager();
+  const manager = await requireManager();
   const statusParam = options?.status?.trim().toLowerCase();
   const searchParam = options?.search?.trim();
   const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
@@ -244,7 +292,7 @@ export async function getDashboardJobs(options?: {
     throw new ActionError("Invalid status filter", 400);
   }
 
-  const conditions = [];
+  const conditions = [eq(printJobs.tenantId, manager.tenantId)];
 
   if (statusParam && statusParam !== "all") {
     if (statusParam === "active" || statusParam === "in_flight") {

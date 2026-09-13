@@ -14,7 +14,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const agentId = searchParams.get("agent_id")?.trim();
 
-  const conditions = [eq(printers.lifecycle, "active"), eq(agents.lifecycle, "active")];
+  const conditions = [eq(printers.lifecycle, "active"), eq(agents.lifecycle, "active"), eq(printers.tenantId, apiKey.tenantId), eq(agents.tenantId, apiKey.tenantId)];
   if (agentId) {
     conditions.push(eq(agents.id, agentId));
   }

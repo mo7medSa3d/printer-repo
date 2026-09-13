@@ -1,7 +1,7 @@
 {
   "name": "odoo-print-gateway",
   "version": "1.0.0",
-  "description": "Odoo Local Print Agent \u2014 cloud print gateway (Next.js + PostgreSQL + Drizzle), Windows Go agent, and Tauri desktop manager",
+  "description": "Odoo Local Print Agent — cloud print gateway (Next.js + PostgreSQL + Drizzle), Windows Go agent, and Tauri desktop manager",
   "license": "MIT",
   "private": true,
   "engines": {

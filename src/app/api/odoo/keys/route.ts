@@ -43,6 +43,7 @@ export async function GET(req: Request) {
       revokedAt: apiKeys.revokedAt,
     })
     .from(apiKeys)
+    .where(eq(apiKeys.tenantId, manager.tenantId))
     .orderBy(desc(apiKeys.createdAt));
   return NextResponse.json(rows);
 }
@@ -68,6 +69,7 @@ export async function POST(req: Request) {
     hashedKey: hashed,
     scope: parsed.data.scope,
     allowedDocumentTypes: parsed.data.allowedDocumentTypes?.length ? parsed.data.allowedDocumentTypes : null,
+    tenantId: manager.tenantId,
   });
 
   return NextResponse.json({
@@ -97,7 +99,7 @@ export async function DELETE(req: Request) {
   if (bodyRecord.remove === true) {
     try {
       const removed = await db.delete(apiKeys)
-        .where(and(eq(apiKeys.id, id), isNotNull(apiKeys.revokedAt)))
+        .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId), isNotNull(apiKeys.revokedAt)))
         .returning({ id: apiKeys.id });
       if (removed.length) return NextResponse.json({ id: removed[0].id, removed: true }, { status: 200 });
     } catch (error) {
@@ -106,14 +108,14 @@ export async function DELETE(req: Request) {
       }
       throw error;
     }
-    const existing = await db.query.apiKeys.findFirst({ where: eq(apiKeys.id, id) });
+    const existing = await db.query.apiKeys.findFirst({ where: and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId)) });
     if (!existing) return NextResponse.json({ error: "API key not found" }, { status: 404 });
     return NextResponse.json({ error: "Only revoked API keys can be removed. Revoke the key first." }, { status: 409 });
   }
 
   const revoked = await db.update(apiKeys)
     .set({ revokedAt: new Date() })
-    .where(eq(apiKeys.id, id))
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId)))
     .returning({ id: apiKeys.id, revokedAt: apiKeys.revokedAt });
   if (!revoked.length) return NextResponse.json({ error: "API key not found" }, { status: 404 });
   return NextResponse.json(revoked[0], { status: 200 });

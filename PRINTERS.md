@@ -193,7 +193,7 @@ agent, so one agent can never overwrite another agent's printer row.
 | `discoverNetworkPrinters` — active TCP 9100 scan of private IPv4 subnets, `/16`+ clamped to `/24`, 32 workers, 500 ms per host, 8 s global budget | implemented |
 | `discoverUSBPrinters` — `SetupDiGetClassDevsW`, VID/PID/serial parsing, device-interface path map | implemented (Windows); **COMPILE VERIFIED** |
 | `discoverIPPPrinters` — TCP 631 scan (+ best-effort name lookup) | implemented |
-| mDNS (`_ipp._tcp`, `_printer._tcp`), SNMP (`1.3.6.1.2.1.43`), WSD | **NOT IMPLEMENTED** — they only log "not yet implemented" and return nothing (`network_discovery.go`, `ipp_discovery.go`) |
+| mDNS (`_ipp._tcp`, `_ipps._tcp`, `_printer._tcp`), SNMP (`1.3.6.1.2.1.43`), WSD | implemented; bounded, best-effort discovery with result de-duplication; WSD emits the normative probe plus a legacy compatibility variant |
 
 `DiscoverQuick` (config + spooler + registry) runs synchronously at startup so the agent is
 usable immediately; the full scan (network + USB + IPP) runs asynchronously ~2 s later.

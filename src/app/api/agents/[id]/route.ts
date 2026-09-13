@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents, printers, printJobs } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
-import { eq, count, desc } from "drizzle-orm";
+import { eq, count, desc, and } from "drizzle-orm";
 import { z } from "zod";
 import { transitionAgentLifecycle, LifecycleConflict } from "../../../../lib/agent-lifecycle";
 import { logError } from "../../../../lib/log";
@@ -14,10 +14,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, id), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const agentPrinters = await db.query.printers.findMany({ where: eq(printers.agentId, id), orderBy: [desc(printers.createdAt)] });
-  const [jobs] = await db.select({ c: count() }).from(printJobs).where(eq(printJobs.agentId, id));
+  const agentPrinters = await db.query.printers.findMany({ where: and(eq(printers.agentId, id), eq(printers.tenantId, claims.tenantId)), orderBy: [desc(printers.createdAt)] });
+  const [jobs] = await db.select({ c: count() }).from(printJobs).where(and(eq(printJobs.agentId, id), eq(printJobs.tenantId, claims.tenantId)));
   const { secret: _secret, pairingCodeHash: _pch, pairingCode: _pc, pairingCodeExpiresAt: _exp, ...safe } = agent as Record<string, unknown>;
   return NextResponse.json({ agent: safe, printers: agentPrinters, jobCount: jobs?.c ?? 0 });
 }
@@ -30,7 +30,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const parsed = patchSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "lifecycle is required" }, { status: 400 });
   try {
-    const result = await transitionAgentLifecycle(id, parsed.data.lifecycle);
+    const result = await transitionAgentLifecycle(id, parsed.data.lifecycle, claims.tenantId);
     if (!result) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ ok: true, lifecycle: result.lifecycle, pairingCode: result.pairingCode });
   } catch (error) {

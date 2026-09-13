@@ -104,7 +104,7 @@ suite("print idempotency (Odoo → Gateway)", () => {
   it("same idempotency key with a different printer is rejected", async () => {
     const secondPrinter = "printer_second";
     await pool().query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+      `INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
        VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
       [secondPrinter, f.agentId, "Second Printer", JSON.stringify({ supported_protocols: ["pdf"] })],
     );
@@ -176,8 +176,8 @@ suite("print idempotency (Odoo → Gateway)", () => {
   it("isolates job lookup and idempotency by Odoo installation key", async () => {
     const otherKey = "odoo_other_installation";
     await pool().query(
-      `INSERT INTO api_keys (id, scope, name, hashed_key) VALUES ($1, 'standard', 'other installation', $2)`,
-      ["key_other_installation", sha256(otherKey)],
+      `INSERT INTO api_keys (id, tenant_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'other installation', $3)`,
+      ["key_other_installation", f.tenantId, sha256(otherKey)],
     );
 
     const first = await create(jobBody("op-installation-scope"));
@@ -201,6 +201,7 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const payload = { type: "pdf", encoding: "base64", data: pdfBase64() };
     const opts = {
       requestedBy: "internal-service",
+      tenantId: f.tenantId,
       idempotencyKey: key,
       destination: "POS",
       documentType: "invoice",
@@ -222,19 +223,20 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const otherAgentId = "agent_other_internal";
     const otherPrinterId = "printer_other_internal";
     await pool().query(
-      `INSERT INTO agents (id, name, status, lifecycle, metadata) VALUES ($1, 'Other Agent', 'online', 'active', '{"hostname":"host2","version":"1.0.0"}'::jsonb)`,
-      [otherAgentId],
+      `INSERT INTO agents (id, tenant_id, name, status, lifecycle, metadata) VALUES ($1, $2, 'Other Agent', 'online', 'active', '{"hostname":"host2","version":"1.0.0"}'::jsonb)`,
+      [otherAgentId, f.tenantId],
     );
     await pool().query(
-      `INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
-       VALUES ($1, $2, 'Other Printer', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, '{"supported_protocols":["pdf"]}'::jsonb)`,
-      [otherPrinterId, otherAgentId],
+      `INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
+       VALUES ($1, $2, $3, 'Other Printer', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, '{"supported_protocols":["pdf"]}'::jsonb)`,
+      [otherPrinterId, f.tenantId, otherAgentId],
     );
 
     const key = "op-internal-agent-conflict";
     const payload = { type: "pdf", encoding: "base64", data: pdfBase64() };
     const first = await createPrintJobForPrinter(f.printerId, payload, {
       requestedBy: "internal-service",
+      tenantId: f.tenantId,
       idempotencyKey: key,
       destination: "POS",
       documentType: "invoice",

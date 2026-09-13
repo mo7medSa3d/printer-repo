@@ -1,6 +1,8 @@
 server:
-  # Production gateways must use HTTPS. Plain HTTP requires the explicit
-  # development-only environment opt-in described in the agent documentation.
+  # Production gateways SHOULD use HTTPS. The agent accepts both http:// and
+  # https:// for any host by design (zero-config LAN support; there is no
+  # environment opt-in gate in code). Over http:// the pairing code and agent
+  # secret travel in plaintext — use https:// outside a trusted LAN.
   url: "https://your-print-gateway.example.com"
 
 agent:

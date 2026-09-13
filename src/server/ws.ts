@@ -188,7 +188,12 @@ function trackAgentSocket(agentId: string, ws: AgentSocket) {
   ws.on("close", () => {
     set!.delete(ws);
     void incrementMetric("websocket_connections_closed_total");
-    if (set!.size === 0) agentSockets.delete(agentId);
+    // Identity guard: a terminated-but-late-closing evicted socket must
+    // never delete a replacement Set that a newer connection created after
+    // this socket's set was emptied and removed from the map.
+    if (set!.size === 0 && agentSockets.get(agentId) === set) {
+      agentSockets.delete(agentId);
+    }
   });
 }
 

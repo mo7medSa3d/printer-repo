@@ -1,8 +1,6 @@
 services:
   postgres:
     image: postgres:16.15-alpine
-    ports:
-      - "5432:5432"
     restart: unless-stopped
     environment:
       TZ: UTC
@@ -89,7 +87,7 @@ services:
       - printer_backend
 
   caddy:
-    image: caddy:2.11.3-alpine
+    image: caddy:2.11.4-alpine
     restart: unless-stopped
     depends_on:
       gateway:

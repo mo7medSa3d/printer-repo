@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { agents, printers } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { canTransitionLifecycle } from "../../../../lib/lifecycle";
 import { PRINTER_TYPES, CONNECTION_TYPES, PRINTER_PROTOCOLS, assertPrinterMetadataLimits } from "../../../../lib/printer-model";
@@ -25,7 +25,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-  const row = await db.query.printers.findFirst({ where: eq(printers.id, id) });
+  const row = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(row);
 }
@@ -34,7 +34,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const claims = await validateManager(req);
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-  const existing = await db.query.printers.findFirst({ where: eq(printers.id, id) });
+  const existing = await db.query.printers.findFirst({ where: and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId)) });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
   let body: unknown;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
@@ -46,7 +46,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   try { assertPrinterMetadataLimits(parsed.data as unknown as Parameters<typeof assertPrinterMetadataLimits>[0]); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "printer metadata exceeds limits" }, { status: 400 }); }
   if (parsed.data.lifecycle && !canTransitionLifecycle(existing.lifecycle, parsed.data.lifecycle)) return NextResponse.json({ error: `invalid lifecycle transition: ${existing.lifecycle} -> ${parsed.data.lifecycle}` }, { status: 409 });
   if (parsed.data.lifecycle === "active") {
-    const owner = await db.query.agents.findFirst({ where: eq(agents.id, existing.agentId) });
+    const owner = await db.query.agents.findFirst({ where: and(eq(agents.id, existing.agentId), eq(agents.tenantId, claims.tenantId)) });
     if (!owner) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
     if (owner.lifecycle !== "active") return NextResponse.json({ error: `cannot activate printer while agent is ${owner.lifecycle}` }, { status: 409 });
   }
@@ -61,6 +61,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const err = connectionType === "network" && (!cfg.ip || !cfg.port) ? "network printer requires config.ip and config.port" : connectionType === "spooler" && !(cfg.spooler_name || cfg.address) ? "spooler printer requires config.spooler_name or config.address" : null;
     if (err) return NextResponse.json({ error: err }, { status: 400 });
   }
-  const [row] = await db.update(printers).set(update as never).where(eq(printers.id, id)).returning();
+  const [row] = await db.update(printers).set(update as never).where(and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId))).returning();
   return NextResponse.json(row);
 }

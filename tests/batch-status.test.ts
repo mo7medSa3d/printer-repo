@@ -18,9 +18,9 @@ suite("POST /api/print/jobs/batch-status", () => {
   }
   async function insertJob(id: string, apiKeyId: string | null) {
     await pool().query(
-      `INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, api_key_id, status, payload, expires_at)
-       VALUES ($1, $2, 'receipt', $3, $4, $5, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour')`,
-      [id, f.destination, f.agentId, f.printerId, apiKeyId],
+      `INSERT INTO print_jobs (id, tenant_id, destination, document_type, agent_id, printer_id, api_key_id, status, payload, expires_at)
+       VALUES ($1, $2, $3, 'receipt', $4, $5, $6, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + interval '1 hour')`,
+      [id, f.tenantId, f.destination, f.agentId, f.printerId, apiKeyId],
     );
   }
   const post = (key: string, body: unknown) => batchPOST(new Request("http://gateway.test/api/print/jobs/batch-status", {

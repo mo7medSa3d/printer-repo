@@ -15,12 +15,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id: agentId, deviceId } = await params;
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+  const agent = await db.query.agents.findFirst({ where: and(eq(agents.id, agentId), eq(agents.tenantId, claims.tenantId)) });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
 
   const device = await db.query.discoveredDevices.findFirst({
-    where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId)),
+    where: and(eq(discoveredDevices.id, deviceId), eq(discoveredDevices.agentId, agentId), eq(discoveredDevices.tenantId, claims.tenantId)),
   });
   if (!device) return NextResponse.json({ error: "Device not found" }, { status: 404 });
   if (device.candidateStatus === "provisioned") {
@@ -35,6 +35,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .where(and(
       eq(discoveredDevices.id, deviceId),
       eq(discoveredDevices.agentId, agentId),
+      eq(discoveredDevices.tenantId, claims.tenantId),
       eq(discoveredDevices.candidateStatus, "discovered"),
     ))
     .returning({ id: discoveredDevices.id });

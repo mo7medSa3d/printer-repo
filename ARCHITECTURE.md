@@ -155,10 +155,16 @@ Gateway delivery uses an atomic claim (`FOR UPDATE SKIP LOCKED`) that mints a fr
 - Odoo Print Gateway routing requires the active company and rejects document/company mismatches.
 - Company-specific native destinations use Odoo `check_company` validation plus explicit server-side constraints.
 - No API key or complete print payload is written to logs.
-- HTTP/HTTPS-only Gateway URLs with credential/query/fragment restrictions and SSRF controls.
+- HTTP/HTTPS Gateway URLs are validated for shape only (scheme/host/origin,
+  no userinfo/query/fragment); private, loopback and link-local targets are
+  accepted by design — the control is that only system administrators can
+  configure the URL. See docs/PRODUCTION_TLS.md.
 - Authenticated Odoo Gateway endpoints.
 - Runtime queue and rate limits remain Gateway responsibilities.
-- No browser/native fallback when Gateway printing is enabled.
+- No browser/native fallback on bound routes when Gateway printing is
+  enabled: a bound failure surfaces visibly and cancels the native dialog.
+  Destinations with no binding fall back to the native Odoo download by
+  design. See docs/SECURITY.md ("Print safety").
 - Agent WebSocket delivery is authenticated, bounded, and recoverable through polling.
 
 ## Validation boundary

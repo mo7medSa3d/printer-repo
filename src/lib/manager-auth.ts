@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { managerSessions } from "../db/schema";
+import { managerSessions, tenants, tenantDomains } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
 import { createHmac, randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { requiredRuntimeSecret, runtimeSecret } from "./runtime-secret";
@@ -21,7 +21,7 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s, "base64url");
 }
 
-export type ManagerClaims = { jti: string; iat: number; exp: number; sub: "manager" };
+export type ManagerClaims = { jti: string; iat: number; exp: number; sub: "manager"; tenantId: string };
 
 function sign(claims: ManagerClaims): string {
   const header = b64urlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
@@ -54,6 +54,9 @@ function verify(token: string): ManagerClaims | null {
     const claims = JSON.parse(b64urlDecode(p).toString("utf8")) as Partial<ManagerClaims>;
     if (
       claims.sub !== "manager" ||
+      typeof claims.tenantId !== "string" ||
+      claims.tenantId.length < 1 ||
+      claims.tenantId.length > 128 ||
       typeof claims.jti !== "string" ||
       claims.jti.length < 16 ||
       claims.jti.length > 128 ||
@@ -85,16 +88,47 @@ export async function validateManagerClaims(claims: ManagerClaims | null): Promi
   const row = await db.query.managerSessions.findFirst({ where: eq(managerSessions.jti, claims.jti) });
   if (!row || row.revokedAt) return null;
   if (row.expiresAt.getTime() <= Date.now()) return null;
+  if (row.tenantId !== claims.tenantId) return null;
   return claims;
 }
 
-export async function createManagerSession(): Promise<{ token: string; jti: string; exp: Date }> {
+function normalizeHost(host: string | null): string | null {
+  if (!host) return null;
+  const raw = host.trim().toLowerCase().replace(/\.$/, "");
+  if (!raw || raw.length > 255 || raw.includes("@") || raw.includes("/")) return null;
+  const withoutPort = raw.startsWith("[") ? raw.replace(/^\[([^\]]+)\](?::\d+)?$/, "$1") : raw.replace(/:\d+$/, "");
+  if (!withoutPort || withoutPort.length > 253) return null;
+  return withoutPort;
+}
+
+/** Resolve the manager tenant from the trusted request host. A static env mapping is only a bootstrap fallback. */
+export async function resolveManagerTenantId(req: Request): Promise<string | null> {
+  const host = normalizeHost(req.headers.get("host"));
+  if (host) {
+    const domain = await db.query.tenantDomains.findFirst({
+      where: eq(tenantDomains.domain, host),
+      columns: { tenantId: true, verifiedAt: true },
+    });
+    if (domain?.verifiedAt) return domain.tenantId;
+  }
+
+  const configured = runtimeSecret("MANAGER_TENANT_ID")?.trim();
+  if (configured) {
+    const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, configured), columns: { id: true } });
+    if (tenant) return tenant.id;
+  }
+
+  const all = await db.select({ id: tenants.id }).from(tenants).limit(2);
+  return all.length === 1 ? all[0].id : null;
+}
+
+export async function createManagerSession(tenantId: string): Promise<{ token: string; jti: string; exp: Date }> {
   const jti = randomBytes(16).toString("hex");
   const now = Math.floor(Date.now() / 1000);
   const exp = now + MAX_AGE_SECONDS;
-  const claims: ManagerClaims = { jti, iat: now, exp, sub: "manager" };
+  const claims: ManagerClaims = { jti, iat: now, exp, sub: "manager", tenantId };
   const token = sign(claims);
-  await db.insert(managerSessions).values({ jti, expiresAt: new Date(exp * 1000) });
+  await db.insert(managerSessions).values({ jti, tenantId, expiresAt: new Date(exp * 1000) });
   return { token, jti, exp: new Date(exp * 1000) };
 }
 

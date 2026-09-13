@@ -163,7 +163,7 @@ export async function POST(req: Request) {
     if (reportedPrinters.length > 500) return NextResponse.json({ error: "too many printers in heartbeat" }, { status: 400 });
     if (JSON.stringify(reportedPrinters).length > 256_000) return NextResponse.json({ error: "heartbeat printer metadata exceeds 256KB" }, { status: 400 });
 
-    await db.update(agents).set({ status, lastSeenAt: new Date() }).where(eq(agents.id, agent.id));
+    await db.update(agents).set({ status, lastSeenAt: new Date() }).where(and(eq(agents.id, agent.id), eq(agents.tenantId, agent.tenantId)));
 
     const rawKeepAlive: unknown[] = Array.isArray(body?.keepAliveJobIds) ? (body.keepAliveJobIds as unknown[]) : [];
     const pairs: Array<{ jobId: string; claimToken: string | null }> = [];
@@ -197,6 +197,7 @@ export async function POST(req: Request) {
         .set({ updatedAt: new Date() })
         .where(
           and(
+            eq(printJobs.tenantId, agent.tenantId),
             eq(printJobs.agentId, agent.id),
             inArray(printJobs.status, ["claimed", "printing"]),
             inArray(printJobs.id, tokenless.map((p) => p.jobId)),
@@ -228,16 +229,17 @@ export async function POST(req: Request) {
         updatedAt: new Date(),
       };
 
-      const existing = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
+      const existing = await db.query.printers.findFirst({ where: and(eq(printers.id, p.id), eq(printers.tenantId, agent.tenantId)) });
       if (existing) {
         if (existing.agentId !== agent.id) {
           skipped.push({ id: p.id, reason: `owned_by_another_agent (${existing.agentId})` });
           continue;
         }
-        await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
+        await db.update(printers).set(printerUpdateSet).where(and(eq(printers.id, p.id), eq(printers.tenantId, agent.tenantId)));
       } else {
         const inserted = await db.insert(printers).values({
           id: p.id,
+          tenantId: agent.tenantId,
           agentId: agent.id,
           name: p.name,
           printerType: p.printerType as typeof printers.$inferInsert.printerType,
@@ -251,9 +253,9 @@ export async function POST(req: Request) {
           lastSeenAt: new Date(),
         }).onConflictDoNothing({ target: printers.id }).returning({ id: printers.id });
         if (inserted.length === 0) {
-          const raced = await db.query.printers.findFirst({ where: eq(printers.id, p.id) });
+          const raced = await db.query.printers.findFirst({ where: and(eq(printers.id, p.id), eq(printers.tenantId, agent.tenantId)) });
           if (raced && raced.agentId === agent.id) {
-            await db.update(printers).set(printerUpdateSet).where(eq(printers.id, p.id));
+            await db.update(printers).set(printerUpdateSet).where(and(eq(printers.id, p.id), eq(printers.tenantId, agent.tenantId)));
           } else {
             skipped.push({ id: p.id, reason: "insert_conflict_owned_by_another_agent" });
           }

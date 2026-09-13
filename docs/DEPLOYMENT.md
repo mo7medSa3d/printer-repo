@@ -64,14 +64,21 @@ Internet :443 (HTTPS/WSS)
  gateway:3000 (private Docker network)
 ```
 
-Only Caddy publishes ports 80/443. Odoo branch configuration and Windows agent configuration
-reject plaintext `http://` gateway URLs outside an explicit development-only opt-in.
+Only Caddy publishes ports 80/443. The Odoo branch configuration and the
+Windows agent accept both `http://` and `https://` gateway URLs for any host
+by design (zero-config LAN support; see docs/PRODUCTION_TLS.md). There is no
+development-only opt-in gate in code. Deploy production systems behind
+`https://` operationally — anything else sends API keys, agent secrets and
+documents in plaintext.
 
 ### Request size limits
 
-The application rejects mutating `/api/*` requests above 8 MiB using both early
-`Content-Length` validation and a streaming byte counter for chunked requests. Reverse proxies
-should retain an equivalent or stricter limit.
+The custom HTTP server admits mutating `/api/*` requests only with a declared
+`Content-Length` within the 8 MiB ceiling; requests without a length
+(chunked/no-length) are rejected with 411 before any auth- or budget-costly
+work, and payload-bearing endpoints reserve against a 32 MiB shared
+concurrency budget (`src/server/request-guard.ts`). Reverse proxies should
+retain an equivalent or stricter limit.
 
 ### Scaling notes
 

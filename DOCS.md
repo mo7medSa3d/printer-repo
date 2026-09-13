@@ -43,7 +43,7 @@ document and the code ever disagree, the code wins and the document is a bug.
 | File | Scope |
 |---|---|
 | [src-tauri/README.md](src-tauri/README.md) | Rust/Tauri shell layout and build |
-| [odoo_addons/print_gateway/SECURITY_AUDIT.md](odoo_addons/print_gateway/SECURITY_AUDIT.md) | Historical Odoo-side security audit (see docs/SECURITY.md for the current model) |
+| [docs/SECURITY.md](docs/SECURITY.md) | Current security model (the historical Odoo-side SECURITY_AUDIT.md no longer exists; do not link to it) |
 
 ## Verification vocabulary
 

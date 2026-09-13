@@ -35,9 +35,9 @@ suite("discovery trust and approval flow", () => {
 
   async function createDiscoverySession(id = `disc_${Date.now()}`) {
     await pool().query(
-      `INSERT INTO discovery_sessions (id, agent_id, status, config, stats)
-       VALUES ($1, $2, 'running', '{}'::jsonb, '{}'::jsonb)`,
-      [id, f.agentId],
+      `INSERT INTO discovery_sessions (id, tenant_id, agent_id, status, config, stats)
+       VALUES ($1, $2, $3, 'running', '{}'::jsonb, '{}'::jsonb)`,
+      [id, f.tenantId, f.agentId],
     );
     return id;
   }
@@ -86,7 +86,7 @@ suite("discovery trust and approval flow", () => {
       uri: "ipp://192.168.10.50/ipp/print", deviceName: "Approved Printer",
     }]);
 
-    const manager = await createManagerSession();
+    const manager = await createManagerSession(f.tenantId);
     const unapproved = await provisionPOST(
       await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-provision-1/provision`),
       { params: Promise.resolve({ id: f.agentId, deviceId: "device-provision-1" }) } as any,
@@ -129,7 +129,7 @@ suite("discovery trust and approval flow", () => {
       uri: "lpd://192.168.10.77", deviceName: "LPR Printer",
     }]);
 
-    const manager = await createManagerSession();
+    const manager = await createManagerSession(f.tenantId);
     const verify = await verifyPOST(
       await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-lpr-1/verify`),
       { params: Promise.resolve({ id: f.agentId, deviceId: "device-lpr-1" }) } as any,
@@ -157,7 +157,7 @@ suite("discovery trust and approval flow", () => {
       uri: "ipp://192.168.10.51/ipp/print", deviceName: "Concurrent Printer",
     }]);
 
-    const manager = await createManagerSession();
+    const manager = await createManagerSession(f.tenantId);
     const verify = await verifyPOST(
       await managerRequest(manager.token, `/api/agents/${f.agentId}/discovered-printers/device-concurrent-1/verify`),
       { params: Promise.resolve({ id: f.agentId, deviceId: "device-concurrent-1" }) } as any,

@@ -5,7 +5,7 @@ import { validatePayloadForPrinter } from "./routing";
 import { validatePrintJobPayload } from "./payload";
 import { claimAndPushJobToAgent } from "../server/ws";
 import { logWarn } from "./log";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { canonicalize } from "./canonicalize";
 import { MAX_AGENT_IN_FLIGHT_JOBS } from "./job-delivery";
@@ -72,6 +72,7 @@ export function idempotencyFingerprint(input: {
 export type CreatePrintJobOptions = {
   requestedBy: string;
   idempotencyKey?: string | null;
+  tenantId: string;
   destination?: string | null;
   documentType?: string | null;
   expiresAt?: Date;
@@ -93,12 +94,13 @@ function normalizeRequestedBy(value: string): string {
 }
 
 async function insertQueuedJobAtomically({
-  jobId, printerId, agentId, validatedPayload, expiresAt, requestedBy,
+  jobId, printerId, agentId, tenantId, validatedPayload, expiresAt, requestedBy,
   idempotencyKey, destination, documentType, rateLimitKeyId,
 }: {
   jobId: string;
   printerId: string;
   agentId: string;
+  tenantId: string;
   validatedPayload: ReturnType<typeof validatePrintJobPayload>;
   expiresAt: Date;
   requestedBy: string;
@@ -107,6 +109,8 @@ async function insertQueuedJobAtomically({
   documentType?: string | null;
   rateLimitKeyId?: string | null;
 }): Promise<{ jobId: string; status: string; agentId: string; printerId: string; isReused: boolean }> {
+  if (!tenantId || tenantId.length > 128) throw new PrintJobInputError("tenantId is invalid", "INVALID_TENANT", 400);
+
   return await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
     if (rateLimitKeyId) {
@@ -119,8 +123,8 @@ async function insertQueuedJobAtomically({
 
     if (idempotencyKey) {
       const existing = rateLimitKeyId
-        ? await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`)
-        : await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`);
+        ? await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE tenant_id = ${tenantId} AND api_key_id = ${rateLimitKeyId} AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`)
+        : await tx.execute(sql`SELECT id, printer_id, destination, document_type, payload, agent_id, status FROM print_jobs WHERE tenant_id = ${tenantId} AND api_key_id IS NULL AND idempotency_key = ${idempotencyKey} LIMIT 1 FOR UPDATE`);
       if (existing.rows.length > 0) {
         const row = existing.rows[0] as {
           id: string;
@@ -163,7 +167,7 @@ async function insertQueuedJobAtomically({
       SELECT
         COUNT(*) FILTER (WHERE agent_id = ${agentId} AND status = 'queued' AND expires_at > now())::int AS agent_queued,
         COUNT(*) FILTER (WHERE agent_id = ${agentId} AND status IN ('claimed', 'printing') AND expires_at > now())::int AS agent_in_flight
-      FROM print_jobs WHERE agent_id = ${agentId}
+      FROM print_jobs WHERE tenant_id = ${tenantId} AND agent_id = ${agentId}
     `);
     const row = counts.rows[0] as { agent_queued?: number | string; agent_in_flight?: number | string } | undefined;
     const agentQueued = Number(row?.agent_queued ?? 0);
@@ -206,6 +210,7 @@ async function insertQueuedJobAtomically({
 
     await tx.insert(printJobs).values({
       id: jobId,
+      tenantId,
       apiKeyId: rateLimitKeyId ?? null,
       destination: destination ?? null,
       documentType: documentType ?? null,
@@ -236,7 +241,7 @@ export async function createPrintJobForPrinter(
   const normalizedPrinterId = typeof printerId === "string" ? printerId.trim() : "";
   if (!normalizedPrinterId) throw new PrintJobInputError("printer id is required", "INVALID_REQUEST", 400);
   const requestedBy = normalizeRequestedBy(options.requestedBy);
-  const printer = await db.query.printers.findFirst({ where: eq(printers.id, normalizedPrinterId) });
+  const printer = await db.query.printers.findFirst({ where: and(eq(printers.id, normalizedPrinterId), eq(printers.tenantId, options.tenantId)) });
   if (!printer) throw new PrintJobInputError("Printer not found", "PRINTER_NOT_FOUND", 404);
   if (printer.lifecycle !== "active") throw new PrintJobInputError(`Printer is ${printer.lifecycle}`, "PRINTER_UNAVAILABLE", 409);
   if (isVirtualPrinterRecord(printer)) throw new PrintJobInputError("Printer is virtual or redirected", "PRINTER_VIRTUAL", 409);
@@ -248,12 +253,14 @@ export async function createPrintJobForPrinter(
   });
   if (!capability.ok) throw new PrintJobCapabilityError(capability.reason);
 
-  const ownerAgent = await db.query.agents.findFirst({ where: eq(agents.id, printer.agentId) });
+  const ownerAgent = await db.query.agents.findFirst({ where: and(eq(agents.id, printer.agentId), eq(agents.tenantId, options.tenantId)) });
   if (!ownerAgent) throw new PrintJobInputError("Printer owner agent not found", "AGENT_NOT_FOUND", 404);
   if (ownerAgent.lifecycle !== "active") throw new PrintJobInputError(`Agent is ${ownerAgent.lifecycle}`, "AGENT_UNAVAILABLE", 409);
   if (!isAgentAvailableForJob(ownerAgent)) {
     throw new PrintJobInputError("Printer owner agent is offline or stale", "AGENT_UNAVAILABLE", 503);
   }
+
+  if (typeof options.tenantId !== "string" || !options.tenantId.trim()) throw new PrintJobInputError("tenant context is required", "TENANT_CONTEXT_REQUIRED", 500);
 
   const id = `job_${nanoid(12)}`;
   const expiresAt = options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000);
@@ -272,6 +279,7 @@ export async function createPrintJobForPrinter(
     destination: options.destination ?? null,
     documentType: options.documentType ?? null,
     rateLimitKeyId: options.rateLimitKeyId ?? null,
+    tenantId: options.tenantId,
   });
 
   if (result.isReused) {

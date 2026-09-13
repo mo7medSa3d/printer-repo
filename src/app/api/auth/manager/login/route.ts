@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername } from "../../../../../lib/manager-auth";
+import { createManagerSession, managerCookieHeader, verifyManagerPassword, getManagerUsername, resolveManagerTenantId } from "../../../../../lib/manager-auth";
 import {
   clientIpFrom,
   inspectAuthRateLimit,
@@ -64,6 +64,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: INVALID }, { status: 401 });
   }
 
+  const tenantId = await resolveManagerTenantId(req);
+  if (!tenantId) {
+    return NextResponse.json({ error: "Manager tenant is not configured for this hostname" }, { status: 503 });
+  }
+
   try {
     await recordAuthSuccess(username);
   } catch (e) {
@@ -72,7 +77,7 @@ export async function POST(req: Request) {
 
   let sess;
   try {
-    sess = await createManagerSession();
+    sess = await createManagerSession(tenantId);
   } catch (e) {
     logError("auth.login.session_failed", { requestId, error: e instanceof Error ? e.message : "unknown" });
     return NextResponse.json({ error: "Sign-in is temporarily unavailable. Try again in a moment." }, { status: 500 });

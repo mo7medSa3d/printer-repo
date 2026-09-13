@@ -80,7 +80,7 @@ export async function truncateAll(): Promise<void> {
     try {
       if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
       await client.query("BEGIN");
-      for (const table of ["agents", "api_keys", "auth_rate_limits", "discovered_devices", "discovery_sessions", "manager_sessions", "printers", "print_jobs", "print_job_rate_limits"]) {
+      for (const table of ["agents", "api_keys", "auth_rate_limits", "discovered_devices", "discovery_sessions", "manager_sessions", "printers", "print_jobs", "print_job_rate_limits", "tenant_domains", "applications", "tenant_users", "users", "tenants"]) {
         try { await client.query(`TRUNCATE TABLE ${quoteIdent(table)} RESTART IDENTITY CASCADE`); } catch (error: any) { if (error?.code !== "42P01") throw error; }
       }
       await client.query("COMMIT");
@@ -90,7 +90,7 @@ export async function truncateAll(): Promise<void> {
 }
 export function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 
-export type Fixture = { agentId: string; agentSecret: string; agentAuth: string; printerId: string; destination: string; odooKey: string };
+export type Fixture = { tenantId: string; agentId: string; agentSecret: string; agentAuth: string; printerId: string; destination: string; odooKey: string };
 
 export async function seedFixture(opts?: { printerCapabilities?: unknown }): Promise<Fixture> {
   const suffix = randomBytes(8).toString("hex");
@@ -106,14 +106,16 @@ export async function seedFixture(opts?: { printerCapabilities?: unknown }): Pro
       const schema = getOrCreateWorkerSchema();
       if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
       await client.query("BEGIN");
-      await client.query(`INSERT INTO agents (id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, 'online', 'active', now())`, [agentId, `Agent ${suffix}`, sha256(agentSecret)]);
-      await client.query(`INSERT INTO printers (id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`, [printerId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf", "image"] })]);
-      await client.query(`INSERT INTO api_keys (id, scope, name, hashed_key) VALUES ($1, 'standard', 'test key', $2)`, [`key_${suffix}`, sha256(odooKey)]);
+      const tenantId = `tenant_${suffix}`;
+      await client.query(`INSERT INTO tenants (id, name) VALUES ($1, $2)`, [tenantId, `Tenant ${suffix}`]);
+      await client.query(`INSERT INTO agents (id, tenant_id, name, secret, status, lifecycle, last_seen_at) VALUES ($1, $2, $3, $4, 'online', 'active', now())`, [agentId, tenantId, `Agent ${suffix}`, sha256(agentSecret)]);
+      await client.query(`INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities) VALUES ($1, $2, $3, $4, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $5::jsonb)`, [printerId, tenantId, agentId, `Printer ${suffix}`, JSON.stringify(opts?.printerCapabilities ?? { supported_protocols: ["raw", "escpos", "pdf", "image"] })]);
+      await client.query(`INSERT INTO api_keys (id, tenant_id, scope, name, hashed_key) VALUES ($1, $2, 'standard', 'test key', $3)`, [`key_${suffix}`, tenantId, sha256(odooKey)]);
       await client.query("COMMIT");
     } catch (error) { try { await client.query("ROLLBACK"); } catch {} throw error; }
     finally { try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {} }
   } finally { client.release(); }
-  return { agentId, agentSecret, agentAuth: `Bearer ${agentId}:${agentSecret}`, printerId, destination, odooKey };
+  return { tenantId: `tenant_${suffix}`, agentId, agentSecret, agentAuth: `Bearer ${agentId}:${agentSecret}`, printerId, destination, odooKey };
 }
 
 export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expiresInMs?: number }): Promise<void> {
@@ -124,7 +126,7 @@ export async function insertQueuedJob(f: Fixture, jobId: string, opts?: { expire
       const schema = getOrCreateWorkerSchema();
       if (schema) await client.query(`SET search_path TO ${quoteIdent(schema)}, public`);
       await client.query("BEGIN");
-      await client.query(`INSERT INTO print_jobs (id, destination, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, 'receipt', $3, $4, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($5 || ' milliseconds')::interval)`, [jobId, f.destination, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
+      await client.query(`INSERT INTO print_jobs (id, tenant_id, destination, document_type, agent_id, printer_id, status, payload, expires_at) VALUES ($1, $2, $3, 'receipt', $4, $5, 'queued', '{"type":"raw","protocol":"raw","encoding":"base64","data":"aGVsbG8="}'::jsonb, now() + ($6 || ' milliseconds')::interval)`, [jobId, f.tenantId, f.destination, f.agentId, f.printerId, String(opts?.expiresInMs ?? 3600_000)]);
       await client.query("COMMIT");
     } catch (error) { try { await client.query("ROLLBACK"); } catch {} throw error; }
     finally { try { await client.query("SELECT pg_advisory_unlock($1)", [GLOBAL_PG_LOCK]); } catch {} }

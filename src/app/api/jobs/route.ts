@@ -30,7 +30,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "invalid status filter" }, { status: 400 });
   }
 
-  const conditions = [];
+  const conditions = [eq(printJobs.tenantId, claims.tenantId)];
 
   if (statusParam && statusParam !== "all") {
     if (statusParam === "active" || statusParam === "in_flight") {
@@ -133,10 +133,10 @@ export async function DELETE(req: Request) {
 
   const deleted = await db.transaction(async (tx) => {
     const candidates = await tx.select({ id: printJobs.id }).from(printJobs).where(
-      and(inArray(printJobs.status, [...TERMINAL_JOB_STATUSES]), lt(printJobs.createdAt, before)),
+      and(eq(printJobs.tenantId, claims.tenantId), inArray(printJobs.status, [...TERMINAL_JOB_STATUSES]), lt(printJobs.createdAt, before)),
     ).orderBy(printJobs.createdAt).limit(requestedLimit);
     if (candidates.length === 0) return 0;
-    const result = await tx.delete(printJobs).where(inArray(printJobs.id, candidates.map((row) => row.id)));
+    const result = await tx.delete(printJobs).where(and(eq(printJobs.tenantId, claims.tenantId), inArray(printJobs.id, candidates.map((row) => row.id))));
     return result.rowCount ?? 0;
   });
   return NextResponse.json({ deleted, before: before.toISOString(), limit: requestedLimit });

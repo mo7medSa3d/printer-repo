@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "../../../db";
 import { agents } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { createAgent } from "../../actions";
 import { ActionError } from "../../../lib/action-error";
@@ -17,7 +17,7 @@ export async function GET(req: Request) {
   const rows = await db.select({
     id: agents.id, name: agents.name, status: agents.status, lifecycle: agents.lifecycle,
     metadata: agents.metadata, lastSeenAt: agents.lastSeenAt, createdAt: agents.createdAt,
-  }).from(agents).orderBy(desc(agents.createdAt));
+  }).from(agents).where(eq(agents.tenantId, claims.tenantId)).orderBy(desc(agents.createdAt));
   return NextResponse.json(rows);
 }
 

@@ -103,6 +103,26 @@ describe("production hardening contracts", () => {
     expect(dashboard).not.toContain("Technical confidence remains unchanged");
   });
 
+  it("keeps tenant scoping fail-closed in manager dashboard and agent lifecycle routes", () => {
+    const dashboard = read("src/app/dashboard/page.tsx");
+    const lifecycle = read("src/app/api/agents/[id]/route.ts");
+    const helper = read("src/lib/agent-lifecycle.ts");
+    expect(dashboard).toContain("eq(agents.tenantId, claims.tenantId)");
+    expect(dashboard).toContain("eq(printers.tenantId, claims.tenantId)");
+    expect(dashboard).toContain("eq(printJobs.tenantId, claims.tenantId)");
+    expect(lifecycle).toContain("transitionAgentLifecycle(id, lifecycle, claims.tenantId)");
+    expect(helper).toContain("eq(agents.tenantId, tenantId)");
+    expect(helper).toContain("eq(printers.tenantId, tenantId)");
+  });
+
+  it("keeps stock validation print-policy fan-out intact", () => {
+    const stock = read("odoo_addons/print_gateway/models/stock_picking.py");
+    expect(stock).toContain("Multi-destination fan-out");
+    expect(stock).toContain("executed_targets = set()");
+    expect(stock).toContain("intent_model.create_and_route(policy, picking, \"picking_validated\")");
+    expect(stock).not.toMatch(/create_and_route\(policy, picking, [^\n]+\n\s*break/);
+  });
+
   it("keeps direct print submission printer-scoped and payload-validated", () => {
     const route = read("src/app/api/print/jobs/route.ts");
     expect(route).toContain("validatePrintJobPayload(parsed.data.payload)");

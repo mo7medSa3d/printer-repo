@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { agents, printers } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { canTransitionLifecycle } from "./lifecycle";
 import { generatePairingCode, hashPairingCode } from "./agent-auth";
 import { logWarn } from "./log";
@@ -26,8 +26,9 @@ export type AgentLifecycleResult = {
  *  - every real transition tears down live WebSocket sessions locally and
  *    publishes a cluster-wide close.
  */
-export async function transitionAgentLifecycle(agentId: string, next: "active" | "disabled" | "retired"): Promise<AgentLifecycleResult | null> {
-  const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+export async function transitionAgentLifecycle(agentId: string, next: "active" | "disabled" | "retired", tenantId: string): Promise<AgentLifecycleResult | null> {
+  const agentWhere = and(eq(agents.id, agentId), eq(agents.tenantId, tenantId));
+  const agent = await db.query.agents.findFirst({ where: agentWhere });
   if (!agent) return null;
   if (agent.lifecycle === next) {
     return { changed: false, lifecycle: next, pairingCode: null };
@@ -37,7 +38,24 @@ export async function transitionAgentLifecycle(agentId: string, next: "active" |
   }
   const now = new Date();
   const reenable = agent.lifecycle === "disabled" && next === "active";
-  const pairingCode = reenable ? generatePairingCode() : null;
+  // Same collision rule as createAgent (migration 0032): pending
+  // pairing-code hashes are globally unique because registration resolves
+  // codes without a tenant boundary.
+  let pairingCode: string | null = null;
+  if (reenable) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = generatePairingCode();
+      const clash = await db.query.agents.findFirst({
+        where: eq(agents.pairingCodeHash, hashPairingCode(candidate)),
+        columns: { id: true },
+      });
+      if (!clash || clash.id === agentId) {
+        pairingCode = candidate;
+        break;
+      }
+    }
+    if (!pairingCode) throw new Error("could not mint a unique pairing code");
+  }
   const pairingCodeHash = pairingCode ? hashPairingCode(pairingCode) : null;
   await db.transaction(async (tx) => {
     await tx.update(agents).set({
@@ -47,9 +65,9 @@ export async function transitionAgentLifecycle(agentId: string, next: "active" |
       pairingCodeExpiresAt: pairingCode ? new Date(now.getTime() + 10 * 60 * 1000) : null,
       status: "offline",
       updatedAt: now,
-    }).where(eq(agents.id, agentId));
+    }).where(agentWhere);
     if (next !== "active") {
-      await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(eq(printers.agentId, agentId));
+      await tx.update(printers).set({ lifecycle: "disabled", updatedAt: now }).where(and(eq(printers.agentId, agentId), eq(printers.tenantId, tenantId)));
     }
   });
 

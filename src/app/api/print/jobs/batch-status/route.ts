@@ -50,6 +50,7 @@ export async function POST(req: Request) {
   const rows = await db.query.printJobs.findMany({
     where: and(
       inArray(printJobs.id, uniqueIds),
+      eq(printJobs.tenantId, odoo.tenantId),
       eq(printJobs.apiKeyId, odoo.id),
     ),
   });

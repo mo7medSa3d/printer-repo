@@ -94,8 +94,8 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
     const live = await tx.execute(sql`
       SELECT COUNT(*)::int AS count
       FROM print_jobs p
-      JOIN agents a ON a.id = p.agent_id
-      JOIN printers pr ON pr.id = p.printer_id
+      JOIN agents a ON a.id = p.agent_id AND a.tenant_id = p.tenant_id
+      JOIN printers pr ON pr.id = p.printer_id AND pr.tenant_id = p.tenant_id
       WHERE p.agent_id = ${agentId}
         AND p.status IN ('claimed', 'printing')
         AND p.expires_at > now()
@@ -113,9 +113,10 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
     const locked = await tx.execute(sql`
       SELECT p.id
       FROM print_jobs p
-      JOIN agents a ON a.id = p.agent_id
-      JOIN printers pr ON pr.id = p.printer_id
+      JOIN agents a ON a.id = p.agent_id AND a.tenant_id = p.tenant_id
+      JOIN printers pr ON pr.id = p.printer_id AND pr.tenant_id = p.tenant_id
       WHERE p.id = ${jobId}
+        AND p.tenant_id = a.tenant_id
         AND p.agent_id = ${agentId}
         AND p.status = 'queued'
         AND p.expires_at > now()
@@ -139,6 +140,7 @@ export async function claimJobForDelivery(jobId: string, agentId: string): Promi
           acked_at = NULL,
           delivery_attempts = print_jobs.delivery_attempts + 1
       WHERE id = ${jobId}
+        AND tenant_id = (SELECT tenant_id FROM agents WHERE id = ${agentId})
         AND agent_id = ${agentId}
         AND status = 'queued'
         AND expires_at > now()
