@@ -57,7 +57,6 @@ export default async function DashboardPage() {
     const jobColumns = {
       id: printJobs.id,
       tenantId: printJobs.tenantId,
-      apiKeyId: printJobs.apiKeyId,
       destination: printJobs.destination,
       documentType: printJobs.documentType,
       agentId: printJobs.agentId,
@@ -69,7 +68,6 @@ export default async function DashboardPage() {
       retries: printJobs.retries,
       deliveryAttempts: printJobs.deliveryAttempts,
       claimedAt: printJobs.claimedAt,
-      claimToken: printJobs.claimToken,
       deliveredAt: printJobs.deliveredAt,
       ackedAt: printJobs.ackedAt,
       expiresAt: printJobs.expiresAt,

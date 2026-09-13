@@ -1,121 +1,121 @@
 # Final Verification Report
 
-## Scope
-This report covers the supplied repository archive after the tenant-isolation and production-architecture patch. The archive did not contain `.git`, so Git branch/HEAD history could not be verified from the supplied bytes.
+Date: 2026-09-13
+Final verdict: **NOT READY**
 
-## Current repository state
-- Source tree: patched working tree derived from `printer-repo-main final222.zip`.
-- Git branch: not available in archive (`.git` absent).
-- Git HEAD: not available in archive.
-- Working tree state: intentionally modified relative to the supplied archive; no Git metadata was available to produce a native diff.
-- Final package excludes transient `node_modules`, `.next`, coverage, and build outputs.
+## Required maturity table
 
-## Architecture changes
-- Added `tenant_id` as a mandatory security boundary for Manager sessions and runtime resources.
-- Added verified `tenant_domains` mapping. Hostname resolves a tenant but is not itself authorization.
-- Manager JWT/session claims now carry and validate `tenantId`.
-- Manager agent/printer/job/discovery/API-key operations are tenant-scoped.
-- Odoo printer/agent/job reads and writes are tenant-scoped from the authenticated API-key record.
-- Print-job creation requires an explicit tenant context and validates printer/agent ownership inside that tenant.
-- Job delivery keeps `FOR UPDATE SKIP LOCKED`, claim-token fencing, stale-claim protection, and delivery-attempt limits.
-- Discovery sessions/devices and Gateway admission are tenant-scoped.
-- Legacy migration was changed to backfill before `NOT NULL` enforcement and to abort instead of guessing when multiple tenants make ownership ambiguous.
-- New migration adds verified `tenant_domains` and tenant ownership to `manager_sessions`.
-- Enterprise isolation is modeled as future deployment-stamp mapping; the default remains pooled/shared infrastructure.
-- PostgreSQL RLS is documented as future defense-in-depth, not enabled prematurely.
+| AreaStatusEvidenceRemaining Risk |   |   |   |
+| --- | --- | --- | --- |
+| Architecture | PARTIAL | Code/schema ownership reviewed; control/data plane coherent | Stamp automation and runtime proof |
+| Tenant isolation | PARTIAL | Tenant predicates, membership validation, negative-test design | Live cross-tenant test campaign |
+| Identity | PARTIAL | User/membership/session model | Legacy bootstrap + SSO lifecycle |
+| RBAC | PARTIAL | Central permission map used by important routes/actions | Full route dynamic audit |
+| API security | PARTIAL | Authz helpers, tenant predicates, structured inputs | Full dynamic OWASP-style testing |
+| Database | PASS (static) | 37 migrations/journal entries; schema reviewed | Runtime DB verification |
+| Migrations | PASS (static) | 0035/0036 + journal consistent | Upgrade/rollback rehearsal |
+| Queue | PARTIAL | Durable job model, idempotency | Failure injection |
+| Claim fencing | PARTIAL | Claim token logic reviewed | Concurrent runtime proof |
+| WebSocket | PARTIAL | Authenticated delivery paths reviewed | Multi-instance/churn tests |
+| Agent | PARTIAL | Go source reviewed; ledger/recovery patterns present | Windows runtime |
+| Agent performance | NOT VERIFIED | Correlation instrumentation added | Warm/cold measurements |
+| Printer discovery | PARTIAL | Discovery implementations inspected | Physical/network lab |
+| Printer registration | PARTIAL | Tenant/agent ownership/admission checks | Live heartbeat/UI verification |
+| Print payloads | PARTIAL | Transport-aware builders/backends | Physical protocol proof |
+| Gateway test print | PARTIAL | Payload/capability/queue path inspected | Browser + physical test |
+| Windows printing | NOT VERIFIED | Windows backend source inspected | Windows/driver/spooler lab |
+| Odoo integration | PARTIAL | Router/outbox/controllers inspected | Live Odoo 19 |
+| Odoo 19 reports | NOT VERIFIED | Current Odoo 19 docs + code review | Browser/runtime E2E |
+| Odoo 19 POS | NOT VERIFIED | POS paths inspected | Full POS E2E |
+| Observability | PARTIAL | Request/job/agent correlation + audit table | Live telemetry validation |
+| Entitlements | PARTIAL | Jobs/agents/printers enforcement | Full billing/metering |
+| Deployment stamps | PARTIAL | Schema/control-plane model | Actual IaC/provisioning |
+| Noisy neighbors | PARTIAL | Tenant/rate/concurrency guards | Load test |
+| Disaster recovery | NOT VERIFIED | No restore environment | Backup/restore rehearsal |
+| CI/CD | BLOCKED | Static checks pass; runtime CI not executable here | Green current-HEAD CI |
+| Physical E2E | BLOCKED | No Windows/printer lab | Physical certification |
+| Commercial readiness | NOT READY | Architecture foundation exists | Billing, lifecycle, DR, scale, physical proof |
 
-## Security changes
-- Client-supplied tenant IDs are not trusted for Manager/Odoo runtime authorization.
-- Cross-tenant printer/job access is denied through authenticated tenant context plus resource ownership checks.
-- Composite `(tenant_id, agent_id)` and `(tenant_id, printer_id)` relationships are preserved for `print_jobs`.
-- Agent credentials remain workload identities distinct from Manager sessions and Odoo API keys.
-- Pairing remains short-lived and hashed; pairing is bootstrap, not the permanent Agent credential.
+## Exact environment results
 
-## API/runtime changes
-- Manager APIs now filter by session tenant.
-- Odoo printer listing filters both printer and parent Agent by tenant.
-- Odoo batch-status and individual job reads include tenant ownership.
-- Agent discovery reports bind sessions/devices to the authenticated Agent tenant.
-- Agent heartbeat printer admission stamps the owning tenant.
-- WebSocket/delivery claim path enforces matching tenant ownership through Agent/Printer joins.
+### TypeScript / frontend
 
-## Tests added/changed
-- Replaced six `it.todo` tenant-isolation placeholders with concrete negative/ownership tests.
-- Added tests for cross-tenant Odoo printer reads.
-- Added cross-tenant Odoo dispatch rejection.
-- Added cross-tenant Agent job-claim rejection.
-- Added tenant-scoped print-job admission coverage.
-- Added delivery ownership invariant coverage.
-- Added composite ownership FK rejection coverage.
-- Updated PostgreSQL test fixture to seed tenant ownership and truncate tenant/control-plane tables safely.
-- Updated Manager-auth tests for tenant-bound sessions.
-- Updated print-idempotency fixtures for tenant-bound records.
+- Syntax parser: **PASS**, 101 files, 0 failures.
+- `tsc --noEmit`: **BLOCKED**, missing installed type packages after incomplete dependency installation.
+- `npm run lint`: **BLOCKED**, `eslint` unavailable.
+- `npm test`: **BLOCKED**, `vitest` unavailable.
 
-## Seven previously observed defects
+### Odoo
 
-### DEFECT 1 — Gateway Send Test Page / React #441
-Root cause/status: the supplied snapshot already contained transport-aware canned test payload generation for RAW, ESC/POS, ZPL, TSPL and document transports, and the Gateway test-print route uses it.
+- Python compile: **PASS**.
+- XML parse: **PASS**, 9 files.
+- Odoo server/browser runtime: **BLOCKED**, `odoo` Python package unavailable.
 
-Verification: static code inspection only in this Linux environment. Physical Spooler/IPP printing was not available.
+### Go
 
-### DEFECT 2 — Printer remains Online after Agent heartbeat loss
-Root cause/status: effective availability derives from Agent lifecycle/status/heartbeat freshness; heartbeat writes are now tenant-scoped and the printer remains configured while runtime availability is lost.
+- `gofmt`: **PASS**.
+- Project requires Go 1.26.
+- Host has Go 1.23.2.
+- `GOTOOLCHAIN=local go test ./...`: **BLOCKED** by version requirement.
+- `GOTOOLCHAIN=auto go test ./...`: attempted Go 1.26 download but failed due network/DNS access.
 
-Verification: static inspection; no live Agent heartbeat integration environment was available.
+### Rust / Tauri
 
-### DEFECT 3 — Manual printer exists locally but not in Gateway
-Root cause/status: Agent heartbeat admission now carries `tenantId` when persisting previously unseen printers and performs Gateway-side admission in the authenticated Agent scope.
+- `cargo`: unavailable.
+- Tauri compile/test: **BLOCKED**.
 
-Verification: static inspection; no physical Windows Agent runtime was available.
+### Docker
 
-### DEFECT 4 — Odoo Agent selection does not populate that Agent's printers
-Root cause/status: Gateway Odoo printer discovery filters by both the requested Agent ID and the authenticated Odoo key's tenant; an Agent from another tenant produces no printers.
+- Docker CLI: unavailable.
+- Container build/runtime smoke: **BLOCKED**.
 
-Verification: regression test added; execution requires PostgreSQL + Node dependencies.
+### Windows / physical printing
 
-### DEFECT 5 — POS `TaxLabel is not a function`
-Root cause/status: the supplied current Odoo POS router contains no `TaxLabel` call and the known `doesAnyOrderline` mismatch is absent from the current code.
+- Windows: unavailable.
+- Physical printers: unavailable.
+- Physical E2E: **BLOCKED**.
 
-Verification: static inspection of the supplied current tree. Browser-level Odoo 19 POS execution was not available.
+## Exact print-command latency measurements
 
-### DEFECT 6 — Gateway-enabled Odoo reports unexpectedly download PDFs
-Root cause/status: the supplied snapshot already contains Gateway report routing code and the architecture preserves Odoo as business truth. This patch did not rewrite unrelated Odoo report semantics without a reproducible failing browser case.
+**No numerical end-to-end latency measurement is available.** The required infrastructure was not present. Instrumentation was added around Gateway/Agent dispatch boundaries, but Odoo/UI/Windows/printer timestamps were not available. Any 9–10 second figure remains historical only.
 
-Verification: source-level inspection only; live Odoo browser/POS/report execution was not available.
+## Gateway test-print findings
 
-### DEFECT 7 — Local Agent test takes ~9–10 seconds
-Root cause/status: the prompt requires instrumentation before changing timeouts/retries. Existing Agent tests contain bounded timing assertions, but this patch does not claim a measured root cause without the Windows runtime.
+- Tenant-scoped printer and agent lookup: implemented.
+- Transport-aware test payload: implemented.
+- Capability validation before queue insertion: implemented.
+- Job idempotency/claim fencing: present.
+- React #441 live regression: NOT VERIFIED.
+- Physical print result: NOT VERIFIED.
 
-Verification: not physically measured in this Linux environment.
+## Agent findings
 
-## Verification executed
-### TypeScript syntax parsing
-A syntax-only parse of `src`, `tests`, `scripts`, and `server.ts` was executed with the installed TypeScript parser:
-- Parsed files: 158
-- Syntax errors: 0
+- Durable local execution ledger and unknown-outcome handling are present.
+- WS delivery and fallback polling logic are present.
+- 30-second WS safety poll interval exists for claimed-but-undelivered recovery; it is a safety path, not the healthy WS path.
+- Windows execution could not be run here.
 
-### Python/Odoo
-`python3 -m compileall -q odoo_addons scripts`
-- Result: PASS
+## Odoo findings
 
-### Full Node typecheck/test/build
-Not completed because the environment provides Node `22.16.0` while the project declares Node `>=24.15.0`. A dependency installation attempt with engine checks disabled did not complete in the offline environment, leaving no trustworthy local `next`, `tsc`, or `vitest` project dependency set for a full verification run.
+- Business truth remains in Odoo.
+- Gateway routing hooks are present for reports/POS-related paths.
+- Odoo `sudo()` requires live company-boundary proof because it bypasses record rules/access rights. citeturn639871search0turn639871search2
 
-### Go Agent tests
-`go test ./...` was attempted, but the module requests Go 1.26 and the environment attempted an online toolchain download. Network access to `proxy.golang.org` was unavailable, so the test command could not execute.
+## Final blockers
 
-### Rust/Tauri
-No `cargo`/`rustc` executable is installed in the verification environment, so Rust checks could not execute.
+1. Current-HEAD full dependency installation/runtime CI is not green and cannot be reproduced in this environment.
+2. Odoo 19 runtime/browser verification is missing.
+3. Windows Agent and spooler verification is missing.
+4. Physical printer verification is missing.
+5. Exact end-to-end latency measurement is missing.
+6. Full load/noisy-neighbor characterization is missing.
+7. Backup/restore and disaster-recovery rehearsal is missing.
+8. Deployment-stamp provisioning is metadata-level rather than operationally proven.
+9. Billing/metering and complete tenant lifecycle are incomplete.
+10. Desktop identity hardening remains an enterprise concern.
 
-### PostgreSQL integration tests
-No `DATABASE_URL` was present and no `psql` client was available. PostgreSQL migration/integration and tenant-isolation tests therefore could not be executed against a real database in this environment.
+## Final classification
 
-## Proof standard
-This repository is **not being labeled production-ready solely from this offline verification**. The patch is code-complete for the implemented tenant boundary and migration work, but full production certification still requires:
-- Node 24.15+ dependency install and complete TypeScript/lint/test/build suite.
-- PostgreSQL migration execution and integration tests.
-- Go 1.26 toolchain and Agent test suite.
-- Windows/Tauri build and Session 0 validation.
-- Live Odoo 19 browser/POS/report acceptance tests.
-- Physical printer verification for supported transports.
-- Load/fairness measurements at representative tenant/Agent/job volumes.
+# NOT READY
+
+This is not a statement that the architecture is poor. It is a strict evidence statement: the repository has a substantially stronger SaaS/security foundation, but the required runtime, Windows, physical, scale, CI, and operational evidence for a production certification does not exist in the available environment.

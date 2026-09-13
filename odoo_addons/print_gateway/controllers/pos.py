@@ -13,10 +13,6 @@ class PrintGatewayPosController(PosController):
 
     @http.route('/pos/sale_details_report', type='http', auth='user')
     def print_sale_details(self, date_start=False, date_stop=False, **kw):
-        accept = request.httprequest.headers.get('Accept', '')
-        if 'application/pdf' in accept:
-            return super().print_sale_details(date_start=date_start, date_stop=date_stop, **kw)
-
         gateway = request.env['print_gateway.print_router']._gateway_config(request.env.company)
         if not gateway:
             return super().print_sale_details(date_start=date_start, date_stop=date_stop, **kw)

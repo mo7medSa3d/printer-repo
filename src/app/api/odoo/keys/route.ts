@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "../../../../db";
 import { apiKeys } from "../../../../db/schema";
 import { validateManager } from "../../../../lib/manager-auth";
+import { requireManagerPermission } from "../../../../lib/authorization";
 import { generateOdooApiKey } from "../../../../lib/odoo-auth";
 import { eq, and, desc, isNotNull } from "drizzle-orm";
 import { z } from "zod";
+import { writeAuditEvent } from "../../../../lib/audit";
 
 const keyInputSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -31,6 +33,7 @@ function pgErrorCode(error: unknown): string | null {
 export async function GET(req: Request) {
   const manager = await validateManager(req);
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(manager, "integrations.read"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   const rows = await db
     .select({
       id: apiKeys.id,
@@ -50,6 +53,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   const manager = await validateManager(req);
+  if (manager) { try { requireManagerPermission(manager, "integrations.manage"); } catch { return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "content-type": "application/json" } }); } }
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let body: unknown = {};
@@ -72,6 +76,7 @@ export async function POST(req: Request) {
     tenantId: manager.tenantId,
   });
 
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: "api_key.created", resourceType: "api_key", resourceId: id, metadata: { scope: parsed.data.scope } }).catch(() => undefined);
   return NextResponse.json({
     id,
     name,
@@ -86,6 +91,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const manager = await validateManager(req);
   if (!manager) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try { requireManagerPermission(manager, "integrations.manage"); } catch { return NextResponse.json({ error: "Forbidden" }, { status: 403 }); }
   let body: unknown = {};
   try { body = await req.json(); } catch { /* invalid body handled below */ }
   const bodyRecord = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -118,5 +124,6 @@ export async function DELETE(req: Request) {
     .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, manager.tenantId)))
     .returning({ id: apiKeys.id, revokedAt: apiKeys.revokedAt });
   if (!revoked.length) return NextResponse.json({ error: "API key not found" }, { status: 404 });
+  void writeAuditEvent({ tenantId: manager.tenantId, actorType: manager.userId ? "user" : "system", actorId: manager.userId ?? "legacy-manager", action: "api_key.revoked", resourceType: "api_key", resourceId: id }).catch(() => undefined);
   return NextResponse.json(revoked[0], { status: 200 });
 }

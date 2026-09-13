@@ -4,12 +4,13 @@ import { isVirtualPrinterRecord } from "./printer-virtual";
 import { validatePayloadForPrinter } from "./routing";
 import { validatePrintJobPayload } from "./payload";
 import { claimAndPushJobToAgent } from "../server/ws";
-import { logWarn } from "./log";
+import { logInfo, logWarn } from "./log";
 import { and, eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { canonicalize } from "./canonicalize";
 import { MAX_AGENT_IN_FLIGHT_JOBS } from "./job-delivery";
 import { isAgentAvailableForJob } from "./agent-availability";
+import { enforceTenantJobEntitlements, TenantEntitlementError } from "./entitlements";
 
 export const MAX_AGENT_QUEUED_JOBS = 1000;
 export const PRINT_JOB_RATE_LIMIT_PER_MINUTE = 60;
@@ -77,6 +78,7 @@ export type CreatePrintJobOptions = {
   documentType?: string | null;
   expiresAt?: Date;
   rateLimitKeyId?: string | null;
+  requestId?: string | null;
 };
 
 export type CreatePrintJobResult = {
@@ -95,7 +97,7 @@ function normalizeRequestedBy(value: string): string {
 
 async function insertQueuedJobAtomically({
   jobId, printerId, agentId, tenantId, validatedPayload, expiresAt, requestedBy,
-  idempotencyKey, destination, documentType, rateLimitKeyId,
+  idempotencyKey, destination, documentType, rateLimitKeyId, requestId,
 }: {
   jobId: string;
   printerId: string;
@@ -108,10 +110,14 @@ async function insertQueuedJobAtomically({
   destination?: string | null;
   documentType?: string | null;
   rateLimitKeyId?: string | null;
+  requestId?: string | null;
 }): Promise<{ jobId: string; status: string; agentId: string; printerId: string; isReused: boolean }> {
   if (!tenantId || tenantId.length > 128) throw new PrintJobInputError("tenantId is invalid", "INVALID_TENANT", 400);
 
   return await db.transaction(async (tx) => {
+    // Serialize admission per tenant so max_jobs_per_minute and
+    // max_concurrent_jobs cannot be exceeded by racing requests.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:tenant:${tenantId}`}))`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:agent:${agentId}`}))`);
     if (rateLimitKeyId) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`print_jobs:key:${rateLimitKeyId}`}))`);
@@ -162,6 +168,8 @@ async function insertQueuedJobAtomically({
         throw conflictErr;
       }
     }
+
+    await enforceTenantJobEntitlements(tx, tenantId);
 
     const counts = await tx.execute(sql`
       SELECT
@@ -219,6 +227,7 @@ async function insertQueuedJobAtomically({
       status: "queued",
       payload: validatedPayload,
       requestedBy,
+      requestId: requestId ?? null,
       idempotencyKey: idempotencyKey ?? null,
       expiresAt,
     });
@@ -279,6 +288,7 @@ export async function createPrintJobForPrinter(
     destination: options.destination ?? null,
     documentType: options.documentType ?? null,
     rateLimitKeyId: options.rateLimitKeyId ?? null,
+    requestId: options.requestId ?? null,
     tenantId: options.tenantId,
   });
 
@@ -287,9 +297,13 @@ export async function createPrintJobForPrinter(
   }
 
   try {
-    await claimAndPushJobToAgent({ id: result.jobId, agentId: ownerAgent.id });
+    const pushOutcome = await claimAndPushJobToAgent({ id: result.jobId, agentId: ownerAgent.id });
+    logInfo("print.job.dispatch_boundary", {
+      requestId: options.requestId ?? null, jobId: result.jobId, agentId: ownerAgent.id,
+      dispatchOutcome: pushOutcome,
+    });
   } catch (error) {
-    logWarn("print.job.ws_push_deferred", { jobId: result.jobId, agentId: ownerAgent.id, error: error instanceof Error ? error.message : String(error) });
+    logWarn("print.job.ws_push_deferred", { requestId: options.requestId ?? null, jobId: result.jobId, agentId: ownerAgent.id, error: error instanceof Error ? error.message : String(error) });
   }
   return { id: result.jobId, printerId: printer.id, agentId: ownerAgent.id, status: "queued", isReused: false };
 }

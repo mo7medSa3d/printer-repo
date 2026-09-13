@@ -236,9 +236,9 @@ Legend: [PASS]=line-reviewed, no defect. [FIXED]=defect fixed this cycle. [NOT V
 - [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0025_constraint_scope_and_protocol_contract_fix.sql`
 - [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0026_printer_type_default_alignment.sql`
 - [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0027_printers_protocol_check_windows_spooler.sql`
-- [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0028_add_multi_tenancy.sql`
+- [FIXED] (idempotency repair; SQL apply BLOCKED: no psql) `0028_add_multi_tenancy.sql`
 - [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0029_enforce_tenant_id_not_null.sql`
-- [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0030_tenant_domains_and_manager_sessions.sql`
+- [FIXED] (FK guard; SQL apply BLOCKED: no psql) `0030_tenant_domains_and_manager_sessions.sql`
 - [NOT VERIFIED] (SQL apply BLOCKED: no psql; journal mapping verified 1:1) `0031_enforce_tenant_cross_table_foreign_keys.sql`
 
 ## drizzle/meta

@@ -15,7 +15,14 @@ CREATE INDEX IF NOT EXISTS "tenant_domains_verified_idx" ON "tenant_domains" USI
 --> statement-breakpoint
 ALTER TABLE "manager_sessions" ADD COLUMN IF NOT EXISTS "tenant_id" text;
 --> statement-breakpoint
-ALTER TABLE "manager_sessions" ADD CONSTRAINT "manager_sessions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'manager_sessions_tenant_id_tenants_id_fk'
+  ) THEN
+    ALTER TABLE "manager_sessions" ADD CONSTRAINT "manager_sessions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
+  END IF;
+END $$;
 --> statement-breakpoint
 -- Existing manager sessions are ephemeral authentication state. Revoke them during migration
 -- instead of guessing tenant ownership; users must sign in again.

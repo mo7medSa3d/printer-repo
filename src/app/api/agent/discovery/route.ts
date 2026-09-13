@@ -42,11 +42,12 @@ export async function POST(req: Request) {
   if (agent.lifecycle !== "active") return NextResponse.json({ error: `Agent is ${agent.lifecycle}` }, { status: 409 });
   if (hasBodyOverLimit(req, MAX_DISCOVERY_BODY_BYTES)) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
 
-  let body: any;
+  let body: unknown;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
-  const discoveryId = typeof body?.discoveryId === "string" ? body.discoveryId : null;
-  const status = typeof body?.status === "string" ? body.status : null;
-  const devices: unknown[] = Array.isArray(body?.devices) ? body.devices : [];
+  const bodyRecord = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+  const discoveryId = typeof bodyRecord.discoveryId === "string" ? bodyRecord.discoveryId : null;
+  const status = typeof bodyRecord.status === "string" ? bodyRecord.status : null;
+  const devices: unknown[] = Array.isArray(bodyRecord.devices) ? bodyRecord.devices : [];
   if (!discoveryId) return NextResponse.json({ error: "discoveryId required" }, { status: 400 });
   if (devices.length > 5000) return NextResponse.json({ error: "Too many devices in one discovery report" }, { status: 413 });
 
@@ -83,15 +84,15 @@ export async function POST(req: Request) {
       serialNumber: d.serialNumber ?? null,
       confidence: "low",
       verification: "candidate",
-      capabilities: d.capabilities as any,
-      rawMetadata: d.rawMetadata as any,
+      capabilities: d.capabilities ?? null,
+      rawMetadata: d.rawMetadata ?? null,
       tenantId: agent.tenantId,
     }).onConflictDoNothing();
   }
 
   if (status && ["completed", "partial", "failed", "cancelled"].includes(status)) {
     await db.update(discoverySessions)
-      .set({ status, completedAt: new Date(), updatedAt: new Date(), stats: { candidates: parsedDevices.length } as any })
+      .set({ status, completedAt: new Date(), updatedAt: new Date(), stats: { candidates: parsedDevices.length } })
       .where(and(eq(discoverySessions.id, discoveryId), eq(discoverySessions.agentId, agent.id), eq(discoverySessions.tenantId, agent.tenantId)));
   }
   return NextResponse.json({ ok: true, inserted: parsedDevices.length, verification: "candidate-only" });

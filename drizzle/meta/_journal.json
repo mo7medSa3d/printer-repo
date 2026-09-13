@@ -232,6 +232,34 @@
       "when": 1790000000002,
       "tag": "0032_pairing_code_hash_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789257600033,
+      "tag": "0033_manager_identity",
+      "breakpoints": false
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789257600034,
+      "tag": "0034_saas_control_plane",
+      "breakpoints": false
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789257600035,
+      "tag": "0035_tenant_membership_role_check",
+      "breakpoints": false
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789257600036,
+      "tag": "0036_print_job_request_id",
+      "breakpoints": false
     }
   ]
 }
