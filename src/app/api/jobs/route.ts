@@ -54,12 +54,14 @@ export async function GET(req: Request) {
       );
     } else if (statusParam === "unassigned") {
       conditions.push(
+        // Non-null: or() always receives four fixed clauses (drizzle types
+        // the result SQL|undefined regardless of arity).
         or(
           eq(printJobs.destination, "unassigned"),
           eq(printJobs.printerId, "unassigned"),
           sql`${printJobs.printerId} NOT IN (SELECT id FROM printers WHERE lifecycle = 'active')`,
           sql`${printJobs.agentId} NOT IN (SELECT id FROM agents WHERE lifecycle = 'active')`
-        )
+        )!
       );
     }
   }
