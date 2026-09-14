@@ -184,7 +184,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'discovered_devices_agent_id_agents_id_fk'
   ) THEN
-    ALTER TABLE "discovered_devices" ADD CONSTRAINT "discovered_devices_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+    ALTER TABLE "discovered_devices" ADD CONSTRAINT "discovered_devices_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action NOT VALID;
   END IF;
 END $$;
 --> statement-breakpoint
@@ -211,7 +211,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'discovery_sessions_agent_id_agents_id_fk'
   ) THEN
-    ALTER TABLE "discovery_sessions" ADD CONSTRAINT "discovery_sessions_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+    ALTER TABLE "discovery_sessions" ADD CONSTRAINT "discovery_sessions_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action NOT VALID;
   END IF;
 END $$;
 --> statement-breakpoint

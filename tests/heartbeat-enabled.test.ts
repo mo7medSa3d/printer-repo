@@ -71,7 +71,7 @@ suite("heartbeat validation and lifecycle preservation", () => {
     }));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.skippedPrinters).toContain(other.printerId);
+    expect(body.skippedPrinters.some((s: any) => s.id === other.printerId)).toBe(true);
     const row = await pool().query(`SELECT agent_id, name FROM printers WHERE id = $1`, [other.printerId]);
     expect(row.rows[0].agent_id).toBe(other.agentId);
     expect(row.rows[0].name).not.toBe("Hijack");

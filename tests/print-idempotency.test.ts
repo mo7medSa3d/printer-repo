@@ -105,8 +105,8 @@ suite("print idempotency (Odoo → Gateway)", () => {
     const secondPrinter = "printer_second";
     await pool().query(
       `INSERT INTO printers (id, tenant_id, agent_id, name, printer_type, device_class, connection_type, protocol, status, lifecycle, config, capabilities)
-       VALUES ($1, $2, $3, 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
-      [secondPrinter, f.agentId, "Second Printer", JSON.stringify({ supported_protocols: ["pdf"] })],
+       VALUES ($1, $2, $3, 'Second Printer', 'physical', 'other', 'spooler', 'spooler', 'online', 'active', '{}'::jsonb, $4::jsonb)`,
+      [secondPrinter, f.tenantId, f.agentId, JSON.stringify({ supported_protocols: ["pdf"] })],
     );
 
     const first = await create(jobBody("op-printer-conflict"));

@@ -63,6 +63,7 @@ suite("manager login rate limiting", () => {
     await applyMigrations();
     process.env.MANAGER_USERNAME = USER;
     process.env.MANAGER_PASSWORD = PASS;
+    process.env.MANAGER_TENANT_ID = "legacy_default";
     // Plaintext credentials are explicitly opt-in in production code. This
     // integration suite uses the simple password fixture, so opt in only for
     // the duration of this test suite rather than weakening the production
@@ -79,6 +80,7 @@ suite("manager login rate limiting", () => {
 
   beforeEach(async () => {
     await truncateAll();
+    await pool().query(`INSERT INTO tenants (id, name) VALUES (\'legacy_default\', \'Legacy installation\') ON CONFLICT DO NOTHING`);
   });
 
   function login(username: string, password: string, ip = "198.51.100.10") {

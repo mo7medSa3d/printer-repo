@@ -58,6 +58,10 @@ suite("production-like PostgreSQL migration upgrade", () => {
       "0030_tenant_domains_and_manager_sessions.sql",
       "0031_enforce_tenant_cross_table_foreign_keys.sql",
       "0032_pairing_code_hash_unique.sql",
+      "0033_manager_identity.sql",
+      "0034_saas_control_plane.sql",
+      "0035_tenant_membership_role_check.sql",
+      "0036_print_job_request_id.sql",
     ];
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
     const oldEntries = journal.entries.slice(0, 17);
