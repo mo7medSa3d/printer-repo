@@ -73,6 +73,9 @@ export default async function DashboardPage() {
       expiresAt: printJobs.expiresAt,
       createdAt: printJobs.createdAt,
       updatedAt: printJobs.updatedAt,
+      apiKeyId: printJobs.apiKeyId,
+      requestId: printJobs.requestId,
+      claimToken: printJobs.claimToken,
     } as const;
     allJobs = await db
       .select(jobColumns)

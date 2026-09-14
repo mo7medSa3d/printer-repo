@@ -3,7 +3,7 @@ import { db } from "../../../db";
 import { agents, printers } from "../../../db/schema";
 import { validateManager } from "../../../lib/manager-auth";
 import { requireManagerPermission } from "../../../lib/authorization";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { parsePrinterInput, validateConnectionConfig } from "../../../lib/printer-model";
 import { writeAuditEvent } from "../../../lib/audit";
