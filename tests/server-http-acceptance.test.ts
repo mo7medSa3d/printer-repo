@@ -91,17 +91,17 @@ suite("production server HTTP acceptance (real Next.js + guard)", () => {
 
     it("PATCH /api/agent/jobs (chunked, no content-length) is answered by the handler, not the framework", async () => {
       const { request } = await import("undici");
+      const { Readable } = await import("node:stream");
 
-      const asyncIterable = {
-        async *[Symbol.asyncIterator]() {
-          yield new TextEncoder().encode(JSON.stringify({ jobId: "nope", status: "success" }));
-        },
-      };
+      // Wrap an async generator into a Node Readable stream
+      const stream = Readable.from((async function* () {
+        yield new TextEncoder().encode(JSON.stringify({ jobId: "nope", status: "success" }));
+      })());
 
       const { statusCode, body } = await request(`http://127.0.0.1:${PORT}/api/agent/jobs`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: asyncIterable,
+        body: stream,
       });
       const resText = await body.text();
       expect(resText.includes("Internal Server Error")).toBe(false);
