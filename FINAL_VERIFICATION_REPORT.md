@@ -1,121 +1,65 @@
 # Final Verification Report
 
-Date: 2026-09-13
-Final verdict: **NOT READY**
+Date: 2026-09-14T15:53:41Z
+Input ZIP: `printer-repo-main-final-clean.zip`
 
-## Required maturity table
+## Repository state
+- Git metadata: **absent**
+- Final commit SHA: **not available**
+- Commits created in this environment: **0**
 
-| AreaStatusEvidenceRemaining Risk |   |   |   |
-| --- | --- | --- | --- |
-| Architecture | PARTIAL | Code/schema ownership reviewed; control/data plane coherent | Stamp automation and runtime proof |
-| Tenant isolation | PARTIAL | Tenant predicates, membership validation, negative-test design | Live cross-tenant test campaign |
-| Identity | PARTIAL | User/membership/session model | Legacy bootstrap + SSO lifecycle |
-| RBAC | PARTIAL | Central permission map used by important routes/actions | Full route dynamic audit |
-| API security | PARTIAL | Authz helpers, tenant predicates, structured inputs | Full dynamic OWASP-style testing |
-| Database | PASS (static) | 37 migrations/journal entries; schema reviewed | Runtime DB verification |
-| Migrations | PASS (static) | 0035/0036 + journal consistent | Upgrade/rollback rehearsal |
-| Queue | PARTIAL | Durable job model, idempotency | Failure injection |
-| Claim fencing | PARTIAL | Claim token logic reviewed | Concurrent runtime proof |
-| WebSocket | PARTIAL | Authenticated delivery paths reviewed | Multi-instance/churn tests |
-| Agent | PARTIAL | Go source reviewed; ledger/recovery patterns present | Windows runtime |
-| Agent performance | NOT VERIFIED | Correlation instrumentation added | Warm/cold measurements |
-| Printer discovery | PARTIAL | Discovery implementations inspected | Physical/network lab |
-| Printer registration | PARTIAL | Tenant/agent ownership/admission checks | Live heartbeat/UI verification |
-| Print payloads | PARTIAL | Transport-aware builders/backends | Physical protocol proof |
-| Gateway test print | PARTIAL | Payload/capability/queue path inspected | Browser + physical test |
-| Windows printing | NOT VERIFIED | Windows backend source inspected | Windows/driver/spooler lab |
-| Odoo integration | PARTIAL | Router/outbox/controllers inspected | Live Odoo 19 |
-| Odoo 19 reports | NOT VERIFIED | Current Odoo 19 docs + code review | Browser/runtime E2E |
-| Odoo 19 POS | NOT VERIFIED | POS paths inspected | Full POS E2E |
-| Observability | PARTIAL | Request/job/agent correlation + audit table | Live telemetry validation |
-| Entitlements | PARTIAL | Jobs/agents/printers enforcement | Full billing/metering |
-| Deployment stamps | PARTIAL | Schema/control-plane model | Actual IaC/provisioning |
-| Noisy neighbors | PARTIAL | Tenant/rate/concurrency guards | Load test |
-| Disaster recovery | NOT VERIFIED | No restore environment | Backup/restore rehearsal |
-| CI/CD | BLOCKED | Static checks pass; runtime CI not executable here | Green current-HEAD CI |
-| Physical E2E | BLOCKED | No Windows/printer lab | Physical certification |
-| Commercial readiness | NOT READY | Architecture foundation exists | Billing, lifecycle, DR, scale, physical proof |
+## Source changes in this execution
+1. `src/db/schema.ts`: printer `capabilities` JSONB typing aligned with the existing validated arbitrary capability-record contract, removing an unnecessary narrow type that forced an escape-hatch cast.
+2. `src/app/api/printers/[id]/route.ts`: removed `as never` update cast and `as unknown as` metadata-limit cast; uses typed Drizzle update data.
+3. `src/desktop/components/AddPrinterDialog.tsx`: replaced `Record<string, unknown>` plus `as never` with the declared `RegisterPrinterRequest` contract.
+4. `tests/production-type-safety.contract.test.ts`: added a regression guard against production `as any`/`as never` and TypeScript suppression directives in the corrected source surface.
+5. `phase-context/PHASE-00-CHECKPOINT.md` through `PHASE-29-CHECKPOINT.md`, `PROJECT-CONTEXT.md`, and `AI_EXECUTION_LEDGER.md`: canonical phase memory refreshed.
 
-## Exact environment results
+## Exact static verification
+- TypeScript/TSX syntax parse: **165 files / 0 syntax errors**.
+- Python `compileall`: **34 files / PASS**.
+- Odoo XML parse: **9 files / 0 errors**.
+- Go `gofmt`: **PASS**.
+- Production escape-hatch scan in `src`: **0 matches** for `as any`, `as never`, `@ts-ignore`, `@ts-expect-error`.
+- Test files present: **59**.
+- SQL migrations: **37**.
+- API route handlers: **29**.
 
-### TypeScript / frontend
+## Exact failed/blocked runtime checks
+- `npm ci`: **BLOCKED** because host Node is 22.16.0 and project requires >=24.15.0; engine override attempt timed out.
+- `tsc --noEmit`: **BLOCKED** by incomplete dependency installation/type libraries.
+- Vitest: **NOT RUN** because dependencies were unavailable.
+- Go tests/vet/race: **BLOCKED** by host Go 1.23.2 vs module minimum 1.26.
+- Docker build/runtime: **BLOCKED**; Docker unavailable.
+- Cargo/Tauri: **BLOCKED**; suitable Cargo toolchain unavailable.
+- Odoo 19 runtime: **BLOCKED**; Odoo unavailable.
+- Windows Agent and physical printer: **BLOCKED**; no Windows/printer lab.
 
-- Syntax parser: **PASS**, 101 files, 0 failures.
-- `tsc --noEmit`: **BLOCKED**, missing installed type packages after incomplete dependency installation.
-- `npm run lint`: **BLOCKED**, `eslint` unavailable.
-- `npm test`: **BLOCKED**, `vitest` unavailable.
+## Exact latency measurements
+None. No trustworthy end-to-end numbers were fabricated.
 
-### Odoo
+## Final maturity table
+| Area | Status | Evidence | Risk |
+|---|---|---|---|
+| Architecture | IMPLEMENTED | Source ownership boundaries | Runtime topology unproven |
+| Security | IMPLEMENTED | Auth/RBAC/proxy/pairing/fencing source | Dynamic attack campaign unverified |
+| Tenant isolation | IMPLEMENTED | Tenant predicates + composite FKs | Runtime cross-tenant negatives unverified |
+| Identity/RBAC | IMPLEMENTED | Session + membership validation | Live auth flow unverified |
+| Database/migrations | IMPLEMENTED | 37 migrations + journal, static review | Live upgrade path unverified |
+| Queue/idempotency | IMPLEMENTED | Claim fencing/idempotency source + tests present | PostgreSQL concurrency runtime unverified |
+| WebSocket | IMPLEMENTED | Auth/caps/backpressure/PG notify | Multi-instance runtime unverified |
+| Agent | PARTIAL | Go source and tests present | Windows/runtime blocked |
+| Printer | PARTIAL | Discovery/payload/source implementations | Physical behavior unverified |
+| Performance | NOT VERIFIED | Timestamp surfaces exist | No end-to-end measurements |
+| Odoo 19 | PARTIAL | Addon source + Python/XML static pass | Runtime/browser unverified |
+| POS | PARTIAL | POS routing source/tests | Real Odoo POS runtime unverified |
+| Observability | IMPLEMENTED | requestId/audit/metrics/log redaction | Runtime telemetry unverified |
+| Entitlements | IMPLEMENTED | Backend quota enforcement | Billing/runtime integration unverified |
+| Deployment stamps | DESIGNED | DB/control-plane structures | No provisioner/routing runtime found |
+| Scale | NOT VERIFIED | Multi-instance design considerations | No load evidence |
+| DR | NOT VERIFIED | Durable job state and recovery code | No backup/restore drill |
+| CI | BLOCKED | Workflow definitions reviewed | Local toolchain cannot execute CI |
+| Physical E2E | NOT VERIFIED | No physical lab | Critical release gate |
 
-- Python compile: **PASS**.
-- XML parse: **PASS**, 9 files.
-- Odoo server/browser runtime: **BLOCKED**, `odoo` Python package unavailable.
-
-### Go
-
-- `gofmt`: **PASS**.
-- Project requires Go 1.26.
-- Host has Go 1.23.2.
-- `GOTOOLCHAIN=local go test ./...`: **BLOCKED** by version requirement.
-- `GOTOOLCHAIN=auto go test ./...`: attempted Go 1.26 download but failed due network/DNS access.
-
-### Rust / Tauri
-
-- `cargo`: unavailable.
-- Tauri compile/test: **BLOCKED**.
-
-### Docker
-
-- Docker CLI: unavailable.
-- Container build/runtime smoke: **BLOCKED**.
-
-### Windows / physical printing
-
-- Windows: unavailable.
-- Physical printers: unavailable.
-- Physical E2E: **BLOCKED**.
-
-## Exact print-command latency measurements
-
-**No numerical end-to-end latency measurement is available.** The required infrastructure was not present. Instrumentation was added around Gateway/Agent dispatch boundaries, but Odoo/UI/Windows/printer timestamps were not available. Any 9–10 second figure remains historical only.
-
-## Gateway test-print findings
-
-- Tenant-scoped printer and agent lookup: implemented.
-- Transport-aware test payload: implemented.
-- Capability validation before queue insertion: implemented.
-- Job idempotency/claim fencing: present.
-- React #441 live regression: NOT VERIFIED.
-- Physical print result: NOT VERIFIED.
-
-## Agent findings
-
-- Durable local execution ledger and unknown-outcome handling are present.
-- WS delivery and fallback polling logic are present.
-- 30-second WS safety poll interval exists for claimed-but-undelivered recovery; it is a safety path, not the healthy WS path.
-- Windows execution could not be run here.
-
-## Odoo findings
-
-- Business truth remains in Odoo.
-- Gateway routing hooks are present for reports/POS-related paths.
-- Odoo `sudo()` requires live company-boundary proof because it bypasses record rules/access rights. citeturn639871search0turn639871search2
-
-## Final blockers
-
-1. Current-HEAD full dependency installation/runtime CI is not green and cannot be reproduced in this environment.
-2. Odoo 19 runtime/browser verification is missing.
-3. Windows Agent and spooler verification is missing.
-4. Physical printer verification is missing.
-5. Exact end-to-end latency measurement is missing.
-6. Full load/noisy-neighbor characterization is missing.
-7. Backup/restore and disaster-recovery rehearsal is missing.
-8. Deployment-stamp provisioning is metadata-level rather than operationally proven.
-9. Billing/metering and complete tenant lifecycle are incomplete.
-10. Desktop identity hardening remains an enterprise concern.
-
-## Final classification
-
-# NOT READY
-
-This is not a statement that the architecture is poor. It is a strict evidence statement: the repository has a substantially stronger SaaS/security foundation, but the required runtime, Windows, physical, scale, CI, and operational evidence for a production certification does not exist in the available environment.
+## Final readiness classification
+**NOT READY** in the current execution environment. The source is materially hardened, but production/enterprise readiness cannot honestly be certified without the blocked runtime, CI, Odoo, Windows, and physical-printer gates.

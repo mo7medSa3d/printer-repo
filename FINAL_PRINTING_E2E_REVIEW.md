@@ -1,35 +1,14 @@
 # Final Printing E2E Review
 
-## Static protocol matrix
+Date: 2026-09-14T15:53:41Z
 
-| Protocol / path | Code path found | Physical proof |
-|---|---|---|
-| RAW | Network/raw backend | NOT VERIFIED |
-| ESC/POS | Test payload + network backend | NOT VERIFIED |
-| ZPL | Test payload + network backend | NOT VERIFIED |
-| TSPL | Test payload + network backend | NOT VERIFIED |
-| Windows Spooler | Spooler backend | NOT VERIFIED |
-| PDF/document | PDF payload/render path | NOT VERIFIED |
-| IPP/IPPS | IPP backend | NOT VERIFIED |
-| USB | Windows/raw or spooler paths | NOT VERIFIED |
+## Verdict
+**LOGICAL PATH IMPLEMENTED / PHYSICAL E2E NOT VERIFIED.**
 
-A protocol enum or type is not treated as support proof; support classification here is based on actual backend code paths, while physical behavior remains unproven.
+The source traces the logical print path through validation, durable queue insertion, claim fencing, WebSocket/poll delivery, Agent acknowledgement, and protocol-specific payload selection.
 
-## Test-print path inspected
+The test-print implementation selects ESC/POS/ZPL/TSPL/RAW based on the printer contract and uses PDF for document transports such as Spooler/IPP. This matches the architectural requirement not to send an incompatible byte protocol to the wrong printer.
 
-`Manager action → tenant-scoped printer lookup → tenant-scoped agent lookup → transport-aware test payload → durable job → fenced delivery → Agent execution path`.
+Odoo 19 documentation confirms receipt printing and printer integration semantics, including the distinction between directly supported ePOS/ESC-POS paths and IoT-managed printers.
 
-The implementation avoids assuming every printer is a canned raw ticket endpoint and validates payload capabilities before inserting the job.
-
-## Historical defects
-
-- React error #441: structured failure path exists, but live browser regression is NOT VERIFIED.
-- Manual printer admission mismatch: code now has explicit agent/printer ownership checks, but live heartbeat/UI path is NOT VERIFIED.
-- Unknown physical outcome: Agent design intentionally avoids automatic blind reprint; operator-driven reprint exists in Gateway action layer.
-- PDF/browser fallback: Gateway-enabled Odoo sale-detail path no longer silently falls back to native super behavior in the reviewed controller path.
-
-## Final physical status
-
-`BLOCKED-BY-ENVIRONMENT` — no Windows machine or representative physical printers were available.
-
-An HTTP 200, spooler API success, or queued DB job must not be treated as physical print proof.
+No claim of physical success is made because Windows and a physical printer were unavailable.

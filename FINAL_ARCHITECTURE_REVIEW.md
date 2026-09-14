@@ -1,46 +1,19 @@
 # Final Architecture Review
 
+Date: 2026-09-14T15:53:41Z
+
+Current evidence: ZIP snapshot has no .git. Static verification available; runtime/physical labs unavailable. All claims below are limited accordingly.
+
 ## Verdict
-**Architecture: materially improved but not production-certified.**
+**COHERENT AT SOURCE LEVEL / NOT RUNTIME-CERTIFIED.**
 
-### Current architecture
+The implementation preserves the intended control/data separation: Odoo owns business truth and print intent; Gateway owns SaaS control-plane/runtime queue state; the Agent owns local physical execution. Composite tenant foreign keys and tenant predicates are present in the relevant runtime paths.
 
-- Odoo owns business truth, report/POS context, bindings, and durable intent/outbox behavior.
-- Gateway owns tenant-aware runtime inventory, jobs, agent connections, and operational state.
-- Windows Agent owns local execution and physical printer interaction.
-- Tauri acts as a desktop client/manager, not as the physical print source of truth.
+## Evidence
+- `src/db/schema.ts` defines tenant-scoped entities and composite foreign keys for agent/printer/job relationships.
+- `src/app/actions.ts` derives manager tenant authority from validated manager claims before mutations.
+- `src/lib/job-delivery.ts` performs tenant-consistent joins and fenced claim updates.
+- `src/server/ws.ts` authenticates the Agent before WebSocket delivery and retains PostgreSQL notification recovery.
 
-### Industry expectation and gap
-
-| Area | Current | Expected | Gap / severity |
-|---|---|---|---|
-| Pool/Bridge/Silo | Assignment metadata exists | Repeatable operational placement and unified management | HIGH — infrastructure implementation missing |
-| Identity | User + membership + session support added | Fully lifecycle-managed SaaS identity | MEDIUM — legacy bootstrap path remains |
-| Authorization | Central permission layer + tenant predicates | Route-complete policy enforcement | MEDIUM — full dynamic coverage not run |
-| Runtime/data ownership | Explicit and coherent | Same | LOW |
-| Queue | Durable DB state + fencing | Proven under failure injection | HIGH — runtime proof missing |
-| Observability | Correlation and audit primitives | Full production telemetry/dashboards | MEDIUM |
-| Enterprise isolation | Model documented/schema exists | Actual dedicated deployment automation | HIGH |
-
-AWS SaaS Lens explicitly recognizes Pool, Bridge and Silo as valid combinations and requires a unified onboarding/operations experience around them. The repository has the logical direction, but not the complete operational stamp machinery. citeturn639871search1turn639871search3turn639871search11
-
-## Architecture competitors / mature-platform comparison
-
-The repository is structurally closer to a sensible SaaS control-plane/runtime split than to a monolithic ERP plugin. That is the correct direction. It does **not** yet match mature platform operational depth in these areas:
-
-1. automated tenant placement and migration;
-2. unified entitlement/metering/billing state;
-3. runtime isolation and capacity management across stamps;
-4. complete identity lifecycle/SSO readiness;
-5. production load/failure proof;
-6. physical Windows/printing certification.
-
-## Architectural decisions that should be preserved
-
-- PostgreSQL remains the durable runtime queue/system of record until measured evidence justifies another broker.
-- Claim fencing + local Agent ledger remains preferable to claiming exactly-once physical printing.
-- Odoo should not regain Gateway-owned business entities.
-- RLS should remain defense-in-depth, not a replacement for application authorization.
-- Custom Next.js server should remain thin and behind the edge proxy.
-
-Next.js current self-hosting guidance continues to recommend a reverse proxy and cautions that custom servers should only be used when necessary. citeturn639871search2
+## Remaining risk
+Deployment stamps are represented in schema/control-plane tables, but no infrastructure provisioner or runtime tenant-to-stamp router was found. Treat Pool/Bridge/Silo as control-plane metadata, not proven deployment isolation.
