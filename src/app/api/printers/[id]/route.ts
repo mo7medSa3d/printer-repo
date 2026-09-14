@@ -47,25 +47,30 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
   const parsed = patchSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid body" }, { status: 400 });
-  try { assertPrinterMetadataLimits(parsed.data as unknown as Parameters<typeof assertPrinterMetadataLimits>[0]); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "printer metadata exceeds limits" }, { status: 400 }); }
+  try { assertPrinterMetadataLimits({ config: parsed.data.config, capabilities: parsed.data.capabilities }); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "printer metadata exceeds limits" }, { status: 400 }); }
   if (parsed.data.lifecycle && !canTransitionLifecycle(existing.lifecycle, parsed.data.lifecycle)) return NextResponse.json({ error: `invalid lifecycle transition: ${existing.lifecycle} -> ${parsed.data.lifecycle}` }, { status: 409 });
   if (parsed.data.lifecycle === "active") {
     const owner = await db.query.agents.findFirst({ where: and(eq(agents.id, existing.agentId), eq(agents.tenantId, claims.tenantId)) });
     if (!owner) return NextResponse.json({ error: "Printer owner agent missing" }, { status: 500 });
     if (owner.lifecycle !== "active") return NextResponse.json({ error: `cannot activate printer while agent is ${owner.lifecycle}` }, { status: 409 });
   }
-  const update: Record<string, unknown> = { updatedAt: new Date() };
-  for (const key of ["name", "printerType", "deviceClass", "connectionType", "protocol", "config", "capabilities", "status", "lifecycle"] as const) {
-    const value = parsed.data[key];
-    if (value !== undefined) update[key] = value;
-  }
+  const update: Partial<typeof printers.$inferInsert> = { updatedAt: new Date() };
+  if (parsed.data.name !== undefined) update.name = parsed.data.name;
+  if (parsed.data.printerType !== undefined) update.printerType = parsed.data.printerType;
+  if (parsed.data.deviceClass !== undefined) update.deviceClass = parsed.data.deviceClass;
+  if (parsed.data.connectionType !== undefined) update.connectionType = parsed.data.connectionType;
+  if (parsed.data.protocol !== undefined) update.protocol = parsed.data.protocol;
+  if (parsed.data.config !== undefined) update.config = parsed.data.config;
+  if (parsed.data.capabilities !== undefined) update.capabilities = parsed.data.capabilities;
+  if (parsed.data.status !== undefined) update.status = parsed.data.status;
+  if (parsed.data.lifecycle !== undefined) update.lifecycle = parsed.data.lifecycle;
   if (parsed.data.connectionType || parsed.data.config) {
     const connectionType = parsed.data.connectionType ?? existing.connectionType;
     const cfg = (parsed.data.config ?? existing.config ?? {}) as Record<string, unknown>;
     const err = connectionType === "network" && (!cfg.ip || !cfg.port) ? "network printer requires config.ip and config.port" : connectionType === "spooler" && !(cfg.spooler_name || cfg.address) ? "spooler printer requires config.spooler_name or config.address" : null;
     if (err) return NextResponse.json({ error: err }, { status: 400 });
   }
-  const [row] = await db.update(printers).set(update as never).where(and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId))).returning();
+  const [row] = await db.update(printers).set(update).where(and(eq(printers.id, id), eq(printers.tenantId, claims.tenantId))).returning();
   void writeAuditEvent({ tenantId: claims.tenantId, actorType: claims.userId ? "user" : "system", actorId: claims.userId ?? "legacy-manager", action: "printer.changed", resourceType: "printer", resourceId: id, metadata: { lifecycle: parsed.data.lifecycle ?? null } }).catch(() => undefined);
   return NextResponse.json(row);
 }

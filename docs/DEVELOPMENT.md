@@ -7,7 +7,7 @@ How to work on this repository. Setup and operations for a deployed system are i
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Node | ≥ 24.15 (`package.json` engines, `engine-strict` in `.npmrc`; pinned 24.20/24.21 in `.nvmrc`/Dockerfile) | Gateway, tests, desktop WebView bundle |
+| Node | ≥ 24.15 (`package.json` engines, `engine-strict` in `.npmrc`; pinned 24.21.0 in `.nvmrc` and Dockerfile) | Gateway, tests, desktop WebView bundle |
 | PostgreSQL | 16.x (compose pins `postgres:16.15-alpine`) | Runtime and the database-backed test suites |
 | Go | ≥ 1.26 (`agent/go.mod`) | Agent and CLI |
 | Rust + `cargo-tauri` v2 | stable | Desktop shell — **Windows host required** for the installer |

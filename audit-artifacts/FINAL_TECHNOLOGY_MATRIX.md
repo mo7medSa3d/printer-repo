@@ -2,7 +2,7 @@
 
 | Technology | Repo | Latest stable | Supported? | Security | Breaking/deprecations relevant | Source | Impact / Action |
 |---|---|---|---|---|---|---|---|
-| Node | engines ≥24.15; .nvmrc 24.20; Docker 24.21.0 | 24.21.0 LTS ("Krypton") | yes | current | — | nodejs.org/dist/index.json | pin drift .nvmrc↔Dockerfile (doc note); sandbox host runs 22 → cannot execute gateway tests here |
+| Node | engines ≥24.15; .nvmrc 24.21.0; Docker 24.21.0 | 24.21.0 LTS ("Krypton") | yes | current | — | nodejs.org/dist/index.json | sandbox host runs 22 → cannot execute gateway tests here |
 | Next.js | 16.3.4 | 16.3.5 (patch) | yes | current | — | registry.npmjs.org/next/latest | 16.3.5 deferred (lockfile regen needs npm install — blocked) |
 | React / pg / ws / drizzle-orm / nanoid / tailwind / drizzle-kit | 19.3.0 / 8.23.0 / 8.21.3 / 0.45.2 / 6.0.1 / 4.3.3 / 0.31.10 | identical | yes | current | — | npm registry | none |
 | zod | ^4.6.1 | 4.6.4 | yes | current | — | npm registry | none |

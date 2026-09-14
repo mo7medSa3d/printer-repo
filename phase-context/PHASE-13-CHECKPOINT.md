@@ -1,23 +1,19 @@
-# PHASE-00 CHECKPOINT — Baseline Snapshot
+# PHASE-13 CHECKPOINT — Printer Registration / Inventory
 
 Date: 2026-09-14T15:53:06Z
-Status: PASS
+Status: BLOCKED
 Repository snapshot: printer-repo-main-final-clean.zip
 Repository identity: ZIP snapshot without .git; SHA-256 of input ZIP: 540f1797249e7831fd3cf2296ab13e1f09ba0d3c3068c8b985f4953ca12ac9d7
 
 ## Scope
-Repository tree, manifests, CI, migrations, Odoo addon, Agent, Tauri, frontend/API.
+Manual registration, discovery provisioning, ownership propagation across layers.
 
 ## Files inspected
-- package.json
-- .nvmrc
-- Dockerfile
-- .github/workflows/*
-- drizzle/*
-- src/**
-- agent/**
-- odoo_addons/**
-- src-tauri/**
+- agent/internal/printer/**
+- src/lib/payload.ts
+- src/lib/printer-model.ts
+- src/app/api/printers/**
+- odoo_addons/print_gateway/models/**
 - tests/**
 
 ## Architecture facts / invariants
@@ -28,22 +24,17 @@ Repository tree, manifests, CI, migrations, Odoo addon, Agent, Tauri, frontend/A
 - Physical printing is at-least-once/uncertain-outcome semantics, not exactly-once.
 
 ## Internet research
-Node.js release history: Node 24.21.0 is the latest Node 24 LTS (2026-09-09).
+Odoo 19 printer/IoT documentation reviewed; local discovery versus Odoo ownership kept distinct.
 Primary-source basis used for this phase: current official documentation from Node.js, Next.js, PostgreSQL, Odoo, Go, Tauri, and/or OWASP as applicable.
 
 ## Findings / root causes
 - Source-level controls present: tenant predicates, centralized permission checks, pairing expiry/hashing, claim fencing, payload validation, body limits, proxy-token validation, socket caps, and entitlement locks.
 - Significant remaining gates are mostly runtime-environment dependent rather than documentation-only failures.
-- Aligned Node pin to .nvmrc/Dockerfile: 24.21.0; this matches the latest Node 24 LTS release.
-- Removed previously identified dead/diagnostic artifacts from the supplied snapshot.
+- No additional source correction justified by evidence in this phase.
 
 ## Tests / commands / results
-- TypeScript parser: 165 TS/TSX files, 0 syntax errors.
-- Python compileall: 34 files, PASS.
-- XML parsing: 9 files, 0 failures.
-- gofmt: PASS.
-- Production source escape-hatch scan: 0 as any/as never/@ts-ignore/@ts-expect-error.
-- npm ci: BLOCKED by Node 22 engine requirement; retry with engine override timed out.
+- Static source inspection completed where applicable.
+- Runtime gate: NOT VERIFIED due environment limitations.
 
 
 ## Risks / unresolved / deferred
@@ -55,4 +46,4 @@ Primary-source basis used for this phase: current official documentation from No
 - Do not treat PASS/BLOCKED here as final product readiness.
 
 ## Next phase
-Continue to PHASE 01.
+Continue to PHASE 14.

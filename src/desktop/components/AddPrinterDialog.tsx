@@ -8,7 +8,7 @@ import {
   Select,
   ErrorState,
 } from "../../components/ui";
-import { registerPrinter, type PrinterInfo } from "../lib/ipc";
+import { registerPrinter, type PrinterInfo, type RegisterPrinterRequest } from "../lib/ipc";
 import { errMsg, friendlyPrinterError, isProductionPrinter } from "../lib/printers";
 
 type Conn = "spooler" | "network" | "usb" | "ipp";
@@ -95,7 +95,7 @@ export function AddPrinterDialog({
     setBusy(true);
     setError(null);
     try {
-      const req: Record<string, unknown> = { name: name.trim(), connectionType: conn };
+      const req: RegisterPrinterRequest = { name: name.trim(), connectionType: conn };
       if (conn === "spooler") {
         req.spoolerName = spoolerName.trim();
         req.endpoint = spoolerName.trim();
@@ -119,7 +119,7 @@ export function AddPrinterDialog({
           if (req.spoolerName) req.endpoint = req.spoolerName;
         }
       }
-      await registerPrinter(req as never);
+      await registerPrinter(req);
       onSuccess();
       onClose();
       reset();

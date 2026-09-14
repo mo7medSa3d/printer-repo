@@ -87,7 +87,7 @@ export const printers = pgTable("printers", {
   status: text("status").notNull().default("unknown"),
   lifecycle: text("lifecycle").notNull().default("active"),
   config: jsonb("config").$type<{ ip?: string; port?: number; vid?: number; pid?: number; serial?: string; address?: string; spooler_name?: string; paper_widths?: number[]; color_capable?: boolean; duplex_capable?: boolean; }>(),
-  capabilities: jsonb("capabilities").$type<{ max_paper_width?: number; supports_color?: boolean; supports_duplex?: boolean; supported_protocols?: string[]; }>(),
+  capabilities: jsonb("capabilities").$type<Record<string, unknown>>(),
   lastSeenAt: timestamp("last_seen_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

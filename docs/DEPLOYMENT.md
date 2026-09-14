@@ -4,7 +4,7 @@
 
 ### Requirements
 
-* Node ≥ 24.20 (`.nvmrc` / `.node-version` and `engine-strict=true` enforce the supported runtime), PostgreSQL 14+.
+* Node 24.21.0 (`.nvmrc`; `engine-strict=true` enforces the supported runtime), PostgreSQL 14+.
 * One process serves both HTTP and the agent WebSocket (`server.ts`). In the reference production
   deployment the gateway listens privately on port `3000`; Caddy is the only public entry point.
 * Production traffic is HTTPS at Caddy on ports 80/443. Do not expose gateway port 3000 publicly.
